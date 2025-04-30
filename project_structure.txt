@@ -1,0 +1,40 @@
+# Mixed-Membership Stochastic Block Model (MMSB) Project Structure
+
+## Directory Structure
+
+```
+.
+├── experiments/
+│   ├── core/
+│   │   ├── __init__.py
+│   │   ├── analysis.py
+│   │   ├── data.py
+│   │   ├── experiment.py
+│   │   ├── metrics.py
+│   │   ├── models.py
+│   │   └── training.py
+│   ├── __init__.py
+│   ├── run_experiment.py
+│   ├── run_multiple_experiments.py
+│   └── single_experiment_dashboard.py
+├── mmsb/
+│   ├── __pycache__/
+│   ├── __init__.py
+│   ├── analyze_parameter_space_coverage.py
+│   └── model.py
+├── results/
+├── streamlit_app/
+│   ├── app.py
+│   ├── run.py
+│   └── widgets.py
+├── utils/
+│   ├── __pycache__/
+│   ├── __init__.py
+│   ├── io.py
+│   ├── metrics.py
+│   ├── parameter_analysis.py
+│   ├── sampler.py
+│   └── visualizations.py
+├── project_description.txt
+└── project_structure.txt
+```

@@ -1,0 +1,86 @@
+{
+  "timestamp": "20250430_105258",
+  "varied_parameters": [
+    "feature_signal",
+    "homophily"
+  ],
+  "parameter_ranges": {
+    "num_communities": [
+      10,
+      15,
+      5
+    ],
+    "num_nodes": [
+      80,
+      180,
+      50
+    ],
+    "feature_dim": [
+      32,
+      32,
+      0
+    ],
+    "edge_density": [
+      0.01,
+      0.21,
+      0.05
+    ],
+    "inter_community_density": [
+      0.01,
+      0.21,
+      0.05
+    ],
+    "homophily": [
+      0.0,
+      1.0,
+      0.2
+    ],
+    "feature_signal": [
+      0.0,
+      0.08,
+      0.02
+    ],
+    "randomness_factor": [
+      0.0,
+      1.0,
+      0.25
+    ],
+    "overlap_density": [
+      0.0,
+      0.5,
+      0.25
+    ],
+    "min_connection_strength": [
+      0.02,
+      0.1,
+      0.02
+    ],
+    "min_component_size": [
+      2,
+      10,
+      4
+    ],
+    "degree_heterogeneity": [
+      0,
+      1,
+      0.2
+    ],
+    "indirect_influence": [
+      0.0,
+      0.5,
+      0.15
+    ]
+  },
+  "model_types": {
+    "gnn": [
+      "gcn"
+    ],
+    "mlp": true,
+    "rf": true
+  },
+  "training_params": {
+    "epochs": 400,
+    "patience": 100,
+    "n_repeats": 1
+  }
+}
