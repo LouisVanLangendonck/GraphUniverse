@@ -14,8 +14,6 @@ from typing import Dict, List, Optional, Tuple, Union, Any
 
 from experiments.core.data import prepare_data
 
-# ... existing code ... 
-
 class GNNModel(nn.Module):
     """
     Base class for GNN models.
@@ -32,7 +30,8 @@ class GNNModel(nn.Module):
         dropout: float = 0.5,
         gnn_type: str = "gcn",
         residual: bool = False,
-        batch_norm: bool = False
+        norm_type: str = "none",  # "none", "batch", "layer"
+        agg_type: str = "mean"  # "mean", "sum", "max"
     ):
         """
         Initialize the GNN model.
@@ -45,7 +44,8 @@ class GNNModel(nn.Module):
             dropout: Dropout rate
             gnn_type: Type of GNN ("gcn", "gat", "sage")
             residual: Whether to use residual connections
-            batch_norm: Whether to use batch normalization
+            norm_type: Type of normalization ("none", "batch", "layer")
+            agg_type: Type of aggregation ("mean", "sum", "max")
         """
         super(GNNModel, self).__init__()
         
@@ -56,7 +56,8 @@ class GNNModel(nn.Module):
         self.dropout = dropout
         self.gnn_type = gnn_type
         self.residual = residual
-        self.batch_norm = batch_norm
+        self.norm_type = norm_type
+        self.agg_type = agg_type
         
         # Initialize layers
         self.convs = nn.ModuleList()
@@ -72,11 +73,14 @@ class GNNModel(nn.Module):
         if num_layers > 1:
             self.convs.append(self._create_conv_layer(hidden_dim, output_dim))
             
-        # Batch normalization layers
-        if self.batch_norm:
-            self.bns = nn.ModuleList()
+        # Normalization layers
+        if self.norm_type != "none":
+            self.norms = nn.ModuleList()
             for _ in range(num_layers - 1):
-                self.bns.append(nn.BatchNorm1d(hidden_dim))
+                if self.norm_type == "batch":
+                    self.norms.append(nn.BatchNorm1d(hidden_dim))
+                elif self.norm_type == "layer":
+                    self.norms.append(nn.LayerNorm(hidden_dim))
     
     def _create_conv_layer(self, in_dim: int, out_dim: int) -> nn.Module:
         """Create a GNN convolutional layer of the specified type."""
@@ -85,7 +89,7 @@ class GNNModel(nn.Module):
         elif self.gnn_type == "gat":
             return GATConv(in_dim, out_dim, heads=1)
         elif self.gnn_type == "sage":
-            return SAGEConv(in_dim, out_dim)
+            return SAGEConv(in_dim, out_dim, aggr=self.agg_type)
         else:
             raise ValueError(f"Unknown GNN type: {self.gnn_type}")
     
@@ -112,9 +116,9 @@ class GNNModel(nn.Module):
             
             # Final layer doesn't have activation or other operations
             if i < len(self.convs) - 1:
-                # Apply batch norm if enabled
-                if self.batch_norm:
-                    x = self.bns[i](x)
+                # Apply normalization if enabled
+                if self.norm_type != "none":
+                    x = self.norms[i](x)
                 
                 # Apply activation
                 x = F.relu(x)

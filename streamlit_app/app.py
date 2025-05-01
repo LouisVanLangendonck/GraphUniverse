@@ -181,13 +181,13 @@ if page == "Universe Creation":
     col3, col4 = st.columns(2)
     
     with col3:
-        edge_density = st.slider("Edge density within communities", min_value=0.01, max_value=0.5, value=0.1, 
-                                step=0.01, help="Probability of edges within communities")
+        edge_density = st.slider("Overall edge density", min_value=0.01, max_value=0.5, value=0.1, 
+                                step=0.01, help="Controls the overall density of edges in the graph")
         
     with col4:
-        inter_community_density = st.slider("Edge density between communities", min_value=0.001, max_value=0.1, 
-                                          value=0.01, step=0.001, 
-                                          help="Probability of edges between different communities")
+        homophily = st.slider("Homophily", min_value=0.0, max_value=1.0, value=0.8, 
+                             step=0.01, help="Controls the ratio between intra and inter-community probabilities. " +
+                                           "0 = equal probabilities, 1 = maximum homophily (all edges within communities)")
         
     randomness_factor = st.slider(
             "Edge probability randomness", 
@@ -197,7 +197,6 @@ if page == "Universe Creation":
             step=0.05, 
             help="Amount of random variation in edge probabilities (0=deterministic, 1=highly random)"
         )
-    
     
     overlap_density = st.slider("Community overlap density", min_value=0.0, max_value=0.5, value=0.2, 
                               step=0.01, help="Density of community overlaps")
@@ -209,10 +208,10 @@ if page == "Universe Creation":
             universe = GraphUniverse(
                 K=K,
                 feature_dim=feature_dim,
-                feature_signal=feature_signal,  # Add the new parameter
+                feature_signal=feature_signal,
                 block_structure=block_structure,
                 edge_density=edge_density,
-                inter_community_density=inter_community_density,
+                homophily=homophily,
                 randomness_factor=randomness_factor,
             )
             
@@ -784,17 +783,10 @@ elif page == "Benchmark Generation":
 
         if st.button("Generate Benchmark"):
             with st.spinner("Generating benchmark..."):
-                # Create benchmark
-                benchmark = MMSBBenchmark(
-                    K=universe.K,
-                    feature_dim=universe.feature_dim,
-                    feature_signal=universe.feature_signal,  # Use the simplified feature parameter
-                    block_structure="hierarchical",
-                    overlap_structure="modular",
-                    edge_density=0.1,
-                    inter_community_density=0.01,
-                    overlap_density=0.2
-                )
+                # Create a minimal benchmark instance
+                benchmark = MMSBBenchmark.__new__(MMSBBenchmark)
+                benchmark.universe = universe
+                benchmark.graphs = []
                 
                 # Ensure the benchmark class has sample_connected_community_subset
                 if connected_communities and not hasattr(benchmark.universe, 'sample_connected_community_subset'):

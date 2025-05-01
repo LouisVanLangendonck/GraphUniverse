@@ -8,6 +8,7 @@
 │   ├── core/
 │   │   ├── __init__.py
 │   │   ├── analysis.py
+│   │   ├── config.py
 │   │   ├── data.py
 │   │   ├── experiment.py
 │   │   ├── metrics.py
@@ -22,7 +23,8 @@
 │   ├── __init__.py
 │   ├── analyze_parameter_space_coverage.py
 │   └── model.py
-├── results/
+├── parameter_coverage_results/
+├── single_graph_multiple_results/
 ├── streamlit_app/
 │   ├── app.py
 │   ├── run.py

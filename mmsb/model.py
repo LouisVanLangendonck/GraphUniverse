@@ -46,7 +46,7 @@ class GraphUniverse:
         community_co_membership: Optional[np.ndarray] = None,
         block_structure: str = "assortative",
         edge_density: float = 0.1,
-        inter_community_density: float = 0.01,
+        homophily: float = 0.8,
         randomness_factor: float = 0.0,
         feature_structure: str = "distinct",
         feature_subtypes_per_community: int = 1,
@@ -63,8 +63,8 @@ class GraphUniverse:
             feature_signal: How strongly features correlate with community membership (0=random, 1=perfect)
             community_co_membership: Probability matrix for community co-membership
             block_structure: Structure of the probability matrix if P is None
-            edge_density: Overall edge density within communities
-            inter_community_density: Edge density between different communities
+            edge_density: Overall target edge density
+            homophily: Controls ratio between intra/inter probabilities (0=equal, 1=maximum homophily)
             randomness_factor: Amount of random variation to add to the probability matrix (0.0-1.0)
             feature_structure: Structure for feature prototypes ("distinct", "correlated", "hierarchical", "random")
             feature_subtypes_per_community: Number of feature subtypes within each community
@@ -76,12 +76,17 @@ class GraphUniverse:
         # Initialize probability matrix if not provided
         if P is None:
             self.P = self._generate_probability_matrix(
-                K, block_structure, edge_density, inter_community_density, randomness_factor
+                K, block_structure, edge_density, homophily, randomness_factor
             )
         else:
             assert P.shape == (K, K), f"P should be a {K}×{K} matrix"
             self.P = P
             
+        # Store parameters for reference
+        self.edge_density = edge_density
+        self.homophily = homophily
+        self.block_structure = block_structure
+        
         # Feature parameters
         self.feature_dim = feature_dim
         self.feature_signal = feature_signal
@@ -132,8 +137,8 @@ class GraphUniverse:
         self, 
         K: int, 
         structure: str, 
-        edge_density: float, 
-        inter_density: float,
+        edge_density: float,
+        homophily: float = 0.8,  # Controls ratio between intra/inter probabilities
         randomness_factor: float = 0.0
     ) -> np.ndarray:
         """
@@ -142,8 +147,10 @@ class GraphUniverse:
         Args:
             K: Number of communities
             structure: Type of block structure
-            edge_density: Edge density within communities
-            inter_density: Edge density between communities
+            edge_density: Overall target edge density
+            homophily: Controls ratio between intra/inter probabilities (0-1)
+                0 = no homophily (equal probabilities)
+                1 = maximum homophily (all edges within communities)
             randomness_factor: Amount of random noise to add (0.0-1.0)
             
         Returns:
@@ -152,14 +159,43 @@ class GraphUniverse:
         P = np.zeros((K, K))
         
         if structure == "assortative":
-            # Higher probabilities within communities, lower between
-            np.fill_diagonal(P, edge_density)
-            P[~np.eye(K, dtype=bool)] = inter_density
+            # Calculate intra and inter probabilities based on homophily and target density
+            # Let x be intra prob and y be inter prob
+            # We want: x * f + y * (1-f) = d where:
+            # f = fraction of possible edges that are intra-community = 1/K
+            # d = target density
+            # And we want: x = y * (1 + h/(1-h)) where h = homophily
+            
+            f = 1/K  # Fraction of possible edges that are intra-community
+            d = edge_density  # Target density
+            
+            if homophily < 1.0:
+                # Calculate ratio between intra and inter probabilities
+                ratio = (1 + homophily/(1-homophily))
+                
+                # Solve for y (inter probability)
+                # y * (f*ratio + (1-f)) = d
+                inter_prob = d / (f*ratio + (1-f))
+                intra_prob = ratio * inter_prob
+                
+                # Ensure probabilities are valid
+                if intra_prob > 1.0:
+                    intra_prob = 1.0
+                    inter_prob = (d - f) / (1-f)
+            else:
+                # Maximum homophily - all edges within communities
+                intra_prob = min(1.0, d/f)
+                inter_prob = 0.0
+            
+            # Set probabilities
+            np.fill_diagonal(P, intra_prob)
+            P[~np.eye(K, dtype=bool)] = inter_prob
             
         elif structure == "disassortative":
-            # Lower probabilities within communities, higher between
-            np.fill_diagonal(P, inter_density)
-            P[~np.eye(K, dtype=bool)] = edge_density
+            # For disassortative structure, we invert the homophily
+            return self._generate_probability_matrix(
+                K, "assortative", edge_density, 1-homophily, randomness_factor
+            )
             
         elif structure == "core-periphery":
             # First community is the core, others are periphery
@@ -173,7 +209,7 @@ class GraphUniverse:
             P[:core_size, core_size:] = edge_density / 2
             
             # Periphery-periphery connections
-            P[core_size:, core_size:] = inter_density
+            P[core_size:, core_size:] = edge_density / 4
             
         elif structure == "hierarchical":
             # Create hierarchical block structure
@@ -199,15 +235,15 @@ class GraphUniverse:
             for i in range(K):
                 for j in range(K):
                     if i == j:  # Diagonal blocks
-                        P[i, j] = np.random.uniform(inter_density, edge_density)
+                        P[i, j] = np.random.uniform(edge_density/2, edge_density)
                     else:
                         # Off-diagonal blocks have varying probabilities
                         # but generally lower than diagonal blocks
-                        P[i, j] = np.random.uniform(inter_density/2, edge_density/2)
+                        P[i, j] = np.random.uniform(edge_density/4, edge_density/2)
                     
         else:
             # Random uniform probabilities
-            P = np.random.uniform(low=inter_density, high=edge_density, size=(K, K))
+            P = np.random.uniform(low=edge_density/2, high=edge_density, size=(K, K))
         
         # Add randomness if requested
         if randomness_factor > 0:
@@ -229,7 +265,7 @@ class GraphUniverse:
                 # If the average off-diagonal is higher than diagonal, swap them
                 if off_diag_avg > diag_avg:
                     diag_scale = edge_density / diag_avg
-                    off_diag_scale = inter_density / off_diag_avg
+                    off_diag_scale = (edge_density/2) / off_diag_avg
                     
                     # Apply scaling
                     for i in range(K):
@@ -753,6 +789,11 @@ class GraphSample:
             # Add node attributes including primary community labels
             self._add_node_attributes()
             
+            # Generate node labels
+            self.node_labels = np.zeros(self.n_nodes, dtype=int)
+            for i in range(self.n_nodes):
+                self.node_labels[i] = self.communities[np.argmax(self.membership_vectors[i])]
+            
         else:
             # If no components meet the size threshold, keep an empty graph
             self.graph = nx.Graph()
@@ -763,6 +804,7 @@ class GraphSample:
             self.features = None if universe.feature_dim > 0 else None
             self.node_map = {}
             self.reverse_node_map = {}
+            self.node_labels = np.zeros(0, dtype=int)
 
     def _add_node_attributes(self):
         """Add node attributes to the graph."""
@@ -969,50 +1011,61 @@ class GraphSample:
         indirect_influence: float = 0.1  # Add parameter here too
     ) -> sp.spmatrix:
         """
-        Generate graph edges using vectorized probability calculation.
-        Uses batching and pre-computation for speed.
+        Generate edges for the graph using the MMSB model.
+        
+        Args:
+            memberships: Node membership vectors
+            P_sub: Subset of probability matrix
+            degree_factors: Degree correction factors
+            noise: Amount of noise to add to edge probabilities
+            indirect_influence: Strength of indirect community influence
+            
+        Returns:
+            Sparse adjacency matrix
         """
-        n_nodes = memberships.shape[0]
-        rows, cols, data = [], [], []
+        n_nodes = len(memberships)
+        print(f"\nGenerating edges for {n_nodes} nodes")
+        print(f"Memberships shape: {memberships.shape}")
+        print(f"P_sub shape: {P_sub.shape}")
+        print(f"Degree factors shape: {degree_factors.shape}")
         
-        # Pre-compute matrices for indirect connections
-        precomputed = {}
+        # Initialize adjacency matrix
+        adj = sp.lil_matrix((n_nodes, n_nodes))
         
-        # Track statistics
-        total_pairs = 0
-        direct_connections = 0
-        indirect_connections = 0
-        
-        # Process in batches for better memory usage
-        batch_size = min(1000, n_nodes)
+        # Precompute community influence scores
+        community_influence = np.zeros(n_nodes)
         for i in range(n_nodes):
-            for j_start in range(i + 1, n_nodes, batch_size):
-                j_end = min(j_start + batch_size, n_nodes)
-                
-                for j in range(j_start, j_end):
-                    total_pairs += 1
-                    
-                    # Calculate edge probability
-                    edge_prob = self._calculate_edge_probability_vectorized(
-                        i, j, memberships, P_sub, degree_factors, noise, 
-                        indirect_influence, precomputed
-                    )
-                    
-                    # Sample edge
-                    if np.random.random() < edge_prob:
-                        rows.extend([i, j])
-                        cols.extend([j, i])
-                        data.extend([1, 1])
-                        
-                        # Track connection type
-                        direct_prob = memberships[i] @ P_sub @ memberships[j]
-                        if direct_prob > edge_prob / 2:
-                            direct_connections += 1
-                        else:
-                            indirect_connections += 1
+            community_influence[i] = np.sum(memberships[i] @ P_sub @ memberships.T)
         
-        # Create sparse adjacency matrix
-        adj = sp.csr_matrix((data, (rows, cols)), shape=(n_nodes, n_nodes))
+        # Generate edges
+        for i in range(n_nodes):
+            for j in range(i + 1, n_nodes):
+                # Calculate base probability
+                p_ij = self._calculate_edge_probability_vectorized(
+                    i, j, memberships, P_sub, degree_factors, noise, indirect_influence
+                )
+                
+                # Add indirect influence
+                if indirect_influence > 0:
+                    # Calculate indirect influence score
+                    indirect_score = (community_influence[i] + community_influence[j]) / (2 * n_nodes)
+                    p_ij = (1 - indirect_influence) * p_ij + indirect_influence * indirect_score
+                
+                # Add edge with probability p_ij
+                if np.random.random() < p_ij:
+                    adj[i, j] = 1
+                    adj[j, i] = 1
+        
+        # Convert to CSR format
+        adj = adj.tocsr()
+        
+        # Debug information
+        print(f"Generated graph with {adj.nnz} edges")
+        print(f"Graph density: {adj.nnz / (n_nodes * (n_nodes - 1)):.4f}")
+        print(f"Number of connected components: {nx.number_connected_components(nx.from_scipy_sparse_array(adj))}")
+        print(f"Average degree: {adj.sum() / n_nodes:.2f}")
+        print(f"Maximum degree: {adj.sum(axis=1).max():.2f}")
+        print(f"Minimum degree: {adj.sum(axis=1).min():.2f}")
         
         return adj
 
@@ -1176,8 +1229,7 @@ class MMSBBenchmark:
         block_structure: str = "hierarchical",
         overlap_structure: str = "modular",
         edge_density: float = 0.1,
-        inter_community_density: float = 0.01,
-        overlap_density: float = 0.2,
+        homophily: float = 0.8,  # Add homophily parameter
         randomness_factor: float = 0.0,
         seed: Optional[int] = None
     ):
@@ -1191,8 +1243,7 @@ class MMSBBenchmark:
             block_structure: Structure of the edge probability matrix
             overlap_structure: Structure of community overlaps
             edge_density: Edge density within communities
-            inter_community_density: Edge density between communities
-            overlap_density: Density of community overlaps
+            homophily: Controls the ratio between intra and inter-community probabilities (0=equal, 1=max homophily)
             randomness_factor: Amount of random variation in edge probabilities (0.0-1.0)
             seed: Random seed for reproducibility
         """
@@ -1206,7 +1257,7 @@ class MMSBBenchmark:
             feature_signal=feature_signal,  # Pass feature_signal
             block_structure=block_structure,
             edge_density=edge_density,
-            inter_community_density=inter_community_density,
+            homophily=homophily,  # Pass homophily
             randomness_factor=randomness_factor
         )
         

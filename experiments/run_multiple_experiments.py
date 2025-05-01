@@ -3,6 +3,7 @@ Run multiple MMSB Graph Learning Experiments with different parameters.
 
 This script runs a series of experiments using different parameter combinations
 to analyze the impact of various graph generation parameters on model performance.
+Includes hyperparameter optimization for each model.
 """
 
 import os
@@ -35,8 +36,7 @@ def parse_args():
                             'num_nodes',
                             'feature_dim',
                             'edge_density',
-                            'inter_community_density',
-                            'homophily',
+                            'homophily', 
                             'feature_signal',
                             'randomness_factor',
                             'overlap_density',
@@ -48,7 +48,7 @@ def parse_args():
                         help='Parameters to vary across experiments')
     
     # Model selection and training parameters
-    parser.add_argument('--gnn_types', type=str, nargs='+', default=['gcn'],#['gat', 'gcn', 'sage'],
+    parser.add_argument('--gnn_types', type=str, nargs='+', default=['gcn', 'sage'],#['gat', 'gcn', 'sage'],
                         choices=['gcn', 'gat', 'sage'],
                         help='Types of GNN models to run')
     parser.add_argument('--skip_gnn', action='store_true',
@@ -59,8 +59,16 @@ def parse_args():
                         help='Skip Random Forest model')
     parser.add_argument('--patience', type=int, default=100,
                         help='Patience for early stopping in neural models')
-    parser.add_argument('--epochs', type=int, default=400,
+    parser.add_argument('--epochs', type=int, default=300,
                         help='Maximum number of epochs for neural models')
+    
+    # Hyperparameter optimization parameters
+    parser.add_argument('--optimize_hyperparams', action='store_true',
+                        help='Enable hyperparameter optimization for each model')
+    parser.add_argument('--n_trials', type=int, default=20,
+                        help='Number of hyperparameter optimization trials')
+    parser.add_argument('--opt_timeout', type=int, default=300,
+                        help='Timeout in seconds for hyperparameter optimization')
     
     # Parameter ranges
     parser.add_argument('--num_communities_range', type=int, nargs=3, default=[10, 15, 5],
@@ -69,12 +77,10 @@ def parse_args():
                         help='Range for num_nodes (start, end, step)')
     parser.add_argument('--feature_dim_range', type=int, nargs=3, default=[32, 32, 0],
                         help='Range for feature_dim (start, end, step)')
-    parser.add_argument('--edge_density_range', type=float, nargs=3, default=[0.01, 0.21, 0.05],
-                        help='Range for edge_density (start, end, step)')
-    parser.add_argument('--inter_community_density_range', type=float, nargs=3, default=[0.01, 0.21, 0.05],
-                        help='Range for inter_community_density (start, end, step)')
+    parser.add_argument('--edge_density_range', type=float, nargs=3, default=[0.01, 0.7, 0.015],
+                        help='Range for overall edge density (start, end, step)')
     parser.add_argument('--homophily_range', type=float, nargs=3, default=[0.0, 1.0, 0.2],
-                        help='Range for homophily (start, end, step)')
+                        help='Range for homophily - controls intra/inter community ratio (0=equal, 1=max homophily)')
     parser.add_argument('--feature_signal_range', type=float, nargs=3, default=[0.00, 0.08, 0.02],
                         help='Range for feature_signal (start, end, step)')
     parser.add_argument('--randomness_factor_range', type=float, nargs=3, default=[0.0, 1.0, 0.25],
@@ -158,9 +164,8 @@ def run_experiments(args):
         'num_communities': args.num_communities_range,
         'num_nodes': args.num_nodes_range,
         'feature_dim': args.feature_dim_range,
-        'edge_density': args.edge_density_range,
-        'inter_community_density': args.inter_community_density_range,
-        'homophily': args.homophily_range,
+        'edge_density': args.edge_density_range,  # Now controls overall density
+        'homophily': args.homophily_range,       # Now controls intra/inter ratio
         'feature_signal': args.feature_signal_range,
         'randomness_factor': args.randomness_factor_range,
         'overlap_density': args.overlap_density_range,
@@ -204,6 +209,11 @@ def run_experiments(args):
             config.patience = args.patience
             config.epochs = args.epochs
             
+            # Set hyperparameter optimization parameters
+            config.optimize_hyperparams = args.optimize_hyperparams
+            config.n_trials = args.n_trials
+            config.opt_timeout = args.opt_timeout
+            
             # Set output directory
             config.output_dir = os.path.join(results_dir, f"combo_{i}_repeat_{repeat}")
             
@@ -229,6 +239,8 @@ def run_experiments(args):
                 'num_communities',
                 'num_nodes',
                 'feature_dim',
+                'edge_density',
+                'homophily',
                 'feature_signal',
                 'randomness_factor',
                 'min_connection_strength',
@@ -271,6 +283,17 @@ def run_experiments(args):
                     result[f"{model_name}_final_val_loss"] = history['val_loss'][-1]
                     result[f"{model_name}_best_val_acc"] = max(history['val_acc'])
                     result[f"{model_name}_epochs_trained"] = len(history['train_loss'])
+                
+                # Hyperparameter optimization results
+                if 'hyperopt_results' in model_result:
+                    hyperopt = model_result['hyperopt_results']
+                    result[f"{model_name}_best_val_score"] = hyperopt.get('best_value', 0)
+                    result[f"{model_name}_n_trials"] = hyperopt.get('n_trials', 0)
+                    
+                    # Store best hyperparameters
+                    best_params = hyperopt.get('best_params', {})
+                    for param_name, param_value in best_params.items():
+                        result[f"{model_name}_param_{param_name}"] = param_value
             
             all_results.append(result)
             
@@ -298,6 +321,11 @@ def run_experiments(args):
                     "epochs": args.epochs,
                     "patience": args.patience,
                     "n_repeats": args.n_repeats
+                },
+                "hyperparameter_optimization": {
+                    "enabled": args.optimize_hyperparams,
+                    "n_trials": args.n_trials,
+                    "timeout": args.opt_timeout
                 }
             }
             

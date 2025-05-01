@@ -30,85 +30,102 @@ import matplotlib
 
 def analyze_graph_parameters(
     graph: nx.Graph,
-    membership_vectors: Optional[np.ndarray] = None,
-    communities: Optional[List[int]] = None
+    membership_vectors: np.ndarray,
+    communities: List[int]
 ) -> Dict[str, float]:
     """
-    Analyze key parameters of a single graph.
+    Extract key parameters from a graph.
     
     Args:
-        graph: NetworkX graph to analyze
-        membership_vectors: Node-community membership vectors (if available)
-        communities: List of community IDs (if available)
+        graph: NetworkX graph
+        membership_vectors: Node-community membership vectors
+        communities: List of community indices
         
     Returns:
         Dictionary of graph parameters
     """
-    n_nodes = graph.number_of_nodes()
-    n_edges = graph.number_of_edges()
-    
     result = {}
     
     # Basic graph properties
+    n_nodes = graph.number_of_nodes()
+    n_edges = graph.number_of_edges()
     result["node_count"] = n_nodes
     result["edge_count"] = n_edges
+    result["density"] = nx.density(graph)
     result["avg_degree"] = 2 * n_edges / n_nodes if n_nodes > 0 else 0
     
-    # Average communities per node (if membership data available)
-    if membership_vectors is not None:
-        # Count memberships above threshold
-        threshold = 0.1
-        membership_counts = (membership_vectors > threshold).sum(axis=1)
-        result["avg_communities_per_node"] = membership_counts.mean()
-    else:
-        result["avg_communities_per_node"] = None
+    # Clustering and triangles
+    result["clustering_coefficient"] = nx.average_clustering(graph)
+    triangles = sum(nx.triangles(graph).values()) / 3  # Divide by 3 as each triangle is counted thrice
+    result["triangle_count"] = triangles
+    result["triangle_density"] = triangles / (n_nodes * (n_nodes-1) * (n_nodes-2) / 6) if n_nodes > 2 else 0
     
-    # Clustering coefficient
-    try:
-        clustering = nx.average_clustering(graph)
-        result["clustering_coefficient"] = clustering
-    except:
-        result["clustering_coefficient"] = None
+    # Homophily level (for now just using the primary community, using the 'primary_community' attribute)
+    total_edges = 0
+    same_community_edges = 0
+    for edge in graph.edges():
+        total_edges += 1
+        if graph.nodes[edge[0]].get('primary_community') == graph.nodes[edge[1]].get('primary_community'):
+            same_community_edges += 1
+    homophily = same_community_edges / total_edges if total_edges > 0 else 0
+    result["homophily"] = homophily
     
-    # Triangle count
-    try:
-        triangles = sum(nx.triangles(graph).values()) / 3  # Divide by 3 as each triangle is counted 3 times
-        result["triangle_count"] = triangles
-        result["triangle_density"] = triangles / (n_nodes * (n_nodes-1) * (n_nodes-2) / 6) if n_nodes > 2 else 0
-    except:
-        result["triangle_count"] = None
-        result["triangle_density"] = None
-    
-    # Homophily level
-    if membership_vectors is not None and communities is not None:
-        homophily = calculate_homophily(graph, membership_vectors, communities)
-        result["homophily"] = homophily
-    else:
-        result["homophily"] = None
-    
-    # Degree distribution power law exponent
-    degrees = [d for _, d in graph.degree()]
-    if len(set(degrees)) > 5:  # Need some variation to fit power law
-        try:
-            power_law_exp = fit_power_law(degrees)
-            result["power_law_exponent"] = power_law_exp
-        except:
+    # Power law exponent from degree distribution
+    degrees = [d for n, d in graph.degree()]
+    if degrees:
+        # Fit power law to degree distribution
+        degrees = np.array(degrees) + 1  # Add 1 to avoid log(0)
+        unique_degrees, counts = np.unique(degrees, return_counts=True)
+        if len(unique_degrees) > 1:
+            log_degrees = np.log(unique_degrees)
+            log_counts = np.log(counts)
+            slope, _, _, _, _ = stats.linregress(log_degrees, log_counts)
+            result["power_law_exponent"] = -slope
+        else:
             result["power_law_exponent"] = None
     else:
         result["power_law_exponent"] = None
     
-    # Graph density
-    result["density"] = nx.density(graph)
+    # Connected components
+    components = list(nx.connected_components(graph))
+    result["connected_components"] = len(components)
+    result["largest_component_size"] = len(max(components, key=len)) if components else 0
     
-    # Connectivity statistics
-    try:
-        components = list(nx.connected_components(graph))
-        result["connected_components"] = len(components)
-        largest_cc = max(components, key=len)
-        result["largest_component_size"] = len(largest_cc) / n_nodes  # As proportion
-    except:
-        result["connected_components"] = None
-        result["largest_component_size"] = None
+    # Community overlap
+    avg_communities = np.mean(np.sum(membership_vectors > 0.1, axis=1))  # Count memberships > 0.1
+    result["avg_communities_per_node"] = avg_communities
+    
+    # Edge density within and between communities
+    total_possible_edges = n_nodes * (n_nodes - 1) / 2
+    total_possible_intra = 0
+    total_possible_inter = 0
+    actual_intra = 0
+    actual_inter = 0
+    
+    # Get primary communities for all nodes
+    primary_communities = [graph.nodes[n].get('primary_community') for n in graph.nodes()]
+    
+    # Count possible and actual edges
+    for i in range(n_nodes):
+        for j in range(i+1, n_nodes):
+            if primary_communities[i] == primary_communities[j]:
+                total_possible_intra += 1
+                if graph.has_edge(i, j):
+                    actual_intra += 1
+            else:
+                total_possible_inter += 1
+                if graph.has_edge(i, j):
+                    actual_inter += 1
+    
+    # Calculate densities
+    result["intra_community_density"] = actual_intra / total_possible_intra if total_possible_intra > 0 else 0
+    result["inter_community_density"] = actual_inter / total_possible_inter if total_possible_inter > 0 else 0
+    
+    # Calculate empirical homophily as ratio between densities
+    if result["inter_community_density"] > 0:
+        result["empirical_homophily"] = (result["intra_community_density"] / result["inter_community_density"] - 1) / (result["intra_community_density"] / result["inter_community_density"] + 1)
+    else:
+        result["empirical_homophily"] = 1.0 if result["intra_community_density"] > 0 else 0.0
     
     return result
 

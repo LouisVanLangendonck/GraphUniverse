@@ -12,89 +12,75 @@ from torch_geometric.utils import from_networkx, to_undirected
 from typing import Dict, List, Optional, Tuple, Union, Any
 
 from mmsb.model import GraphSample
+from experiments.core.config import ExperimentConfig
 
 
 def prepare_data(
     graph_sample: GraphSample,
-    config: Any,
-    feature_type: str = "generated"
+    config: ExperimentConfig,
+    feature_type: str = "membership"
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, int]:
     """
     Prepare data for model training from a GraphSample.
     
     Args:
-        graph_sample: MMSB GraphSample
-        config: Configuration object with train/val/test ratios
-        feature_type: Type of features to use
+        graph_sample: The graph sample to prepare data from
+        config: Experiment configuration
+        feature_type: Type of features to use ("membership" or "random")
         
     Returns:
-        Tuple of (features, edge_index, labels, train_idx, val_idx, test_idx, num_classes)
+        Tuple containing:
+        - features: Node features
+        - edge_index: Edge indices
+        - labels: Node labels
+        - train_idx: Training node indices
+        - val_idx: Validation node indices
+        - test_idx: Test node indices
+        - num_classes: Number of classes
     """
-    # Convert graph to PyG format using networkx_to_pyg
-    if feature_type == "generated":
-        feature_key = "features"
-    elif feature_type == "membership":
-        feature_key = "memberships"
-    elif feature_type == "onehot":
-        feature_key = None  # Will use one-hot node IDs
-    else:
-        raise ValueError(f"Unknown feature type: {feature_type}")
+    # Debug information
+    print("\nDebugging graph structure:")
+    print(f"Number of nodes: {len(graph_sample.graph.nodes())}")
+    print(f"Number of edges: {len(graph_sample.graph.edges())}")
+    print(f"Graph is connected: {nx.is_connected(graph_sample.graph)}")
+    print(f"Graph has self loops: {len(list(nx.nodes_with_selfloops(graph_sample.graph)))}")
+    print(f"Graph is directed: {graph_sample.graph.is_directed()}")
+    print(f"Graph density: {nx.density(graph_sample.graph):.4f}")
+    print(f"Average degree: {sum(dict(graph_sample.graph.degree()).values()) / len(graph_sample.graph.nodes()):.2f}")
     
-    features, edge_index, labels = networkx_to_pyg(
-        graph_sample.graph,
-        label_key="primary_community"
-    )
+    # Convert graph to PyTorch Geometric format
+    try:
+        edges = list(graph_sample.graph.edges())
+        print(f"First few edges: {edges[:5]}")
+        edge_index = torch.tensor(edges, dtype=torch.long).t().contiguous()
+    except Exception as e:
+        print(f"Error converting edges to tensor: {e}")
+        print(f"Edge type: {type(graph_sample.graph.edges())}")
+        print(f"Edge content: {list(graph_sample.graph.edges())[:5]}")
+        raise
     
-    # Print initial label information
-    print("\nInitial Label Information:")
-    print(f"Original labels: {labels.tolist()}")
-    print(f"Unique labels: {torch.unique(labels).tolist()}")
-    print(f"Label range: [{labels.min().item()}, {labels.max().item()}]")
+    # Get features based on type
+    if feature_type == "membership":
+        features = torch.tensor(graph_sample.membership_vectors, dtype=torch.float)
+    else:  # random features
+        features = torch.randn((len(graph_sample.graph.nodes()), config.feature_dim))
     
-    # Get unique labels and remap to 0-based indices
-    unique_labels = torch.unique(labels)
-    label_map = {old.item(): new for new, old in enumerate(unique_labels)}
+    # Get labels from node attributes
+    labels = torch.tensor([graph_sample.graph.nodes[n]['primary_community'] for n in graph_sample.graph.nodes()], dtype=torch.long)
+    num_classes = len(torch.unique(labels))
     
-    # Print label mapping
-    print("\nLabel Mapping:")
-    for old, new in label_map.items():
-        print(f"  {old} -> {new}")
+    # Split data
+    n_nodes = len(graph_sample.graph.nodes())
+    indices = torch.randperm(n_nodes)
     
-    # Remap labels using the mapping
-    remapped_labels = torch.tensor([label_map[label.item()] for label in labels])
-    
-    # Get number of classes after remapping
-    num_classes = len(unique_labels)
-    
-    # Split indices
-    num_nodes = len(remapped_labels)
-    indices = torch.randperm(num_nodes)
-    
-    train_size = int(config.train_ratio * num_nodes)
-    val_size = int(config.val_ratio * num_nodes)
+    train_size = int(n_nodes * config.train_ratio)
+    val_size = int(n_nodes * config.val_ratio)
     
     train_idx = indices[:train_size]
     val_idx = indices[train_size:train_size + val_size]
     test_idx = indices[train_size + val_size:]
     
-    # Print diagnostic information
-    print("\nDiagnostic Information:")
-    print(f"Features shape: {features.shape}")
-    print(f"Labels shape: {remapped_labels.shape}")
-    print(f"Number of unique labels: {num_classes}")
-    print(f"Label range: [{remapped_labels.min().item()}, {remapped_labels.max().item()}]")
-    print(f"Train indices range: [{train_idx.min().item()}, {train_idx.max().item()}] (length: {len(train_idx)})")
-    print(f"Val indices range: [{val_idx.min().item()}, {val_idx.max().item()}] (length: {len(val_idx)})")
-    print(f"Test indices range: [{test_idx.min().item()}, {test_idx.max().item()}] (length: {len(test_idx)})")
-    
-    print("\nLabel distribution (after remapping):")
-    for i in range(num_classes):
-        train_count = (remapped_labels[train_idx] == i).sum().item()
-        val_count = (remapped_labels[val_idx] == i).sum().item()
-        test_count = (remapped_labels[test_idx] == i).sum().item()
-        print(f"Class {i}: Train={train_count}, Val={val_count}, Test={test_count}")
-    
-    return features, edge_index, remapped_labels, train_idx, val_idx, test_idx, num_classes
+    return features, edge_index, labels, train_idx, val_idx, test_idx, num_classes
 
 
 def networkx_to_pyg(
