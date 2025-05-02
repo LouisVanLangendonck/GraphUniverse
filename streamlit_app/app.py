@@ -17,6 +17,7 @@ import os
 import sys
 from typing import Dict, List, Optional, Tuple, Union
 from sklearn.decomposition import PCA
+from collections import Counter, defaultdict
 
 # Add parent directory to path to allow imports
 parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -25,6 +26,7 @@ if parent_dir not in sys.path:
 
 # Import MMSB modules
 from mmsb.model import GraphUniverse, GraphSample, MMSBBenchmark
+from mmsb.feature_regimes import FeatureRegimeGenerator, NeighborhoodFeatureAnalyzer, FeatureRegimeLabelGenerator, GenerativeRuleBasedLabeler
 from utils.visualizations import (
     plot_graph_communities, 
     plot_membership_matrix,
@@ -47,8 +49,6 @@ from utils.parameter_analysis import (
     analyze_community_connectivity,
     visualize_community_connectivity,
 )
-from utils.motif_analysis import MotifAnalyzer
-from motif_analysis_integration import add_motif_analysis_tab, add_motif_analysis_page
 from utils.motif_and_role_analysis import MotifRoleAnalyzer
 from motif_and_role_analysis_integration import add_motif_role_analysis_tab, add_motif_role_analysis_page
 
@@ -124,7 +124,7 @@ by sampling graphs from subsets of a larger universe.
 st.sidebar.title("Navigation")
 page = st.sidebar.radio(
     "Select a page",
-    ["Universe Creation", "Graph Sampling", "Benchmark Generation", "Community Analysis", "Feature Analysis", "Parameter Space Analysis", "Motif and Role Analysis"]
+    ["Universe Creation", "Graph Sampling", "Benchmark Generation", "Community Analysis", "Feature Analysis", "Parameter Space Analysis", "Motif and Role Analysis", "Neighborhood Analysis"]
 )
 
 # Universe Creation Page
@@ -168,18 +168,39 @@ if page == "Universe Creation":
             feature_dim = st.slider("Feature dimension", min_value=0, max_value=128, value=32, 
                                 help="Dimension of node features (0 for no features)")
             
-            # Only show feature signal control if features are enabled
+            # Only show feature parameters if features are enabled
             if feature_dim > 0:
-                feature_signal = st.slider(
-                    "Feature signal",
+                # Feature Regime Parameters
+                st.markdown("### Feature Regime Parameters")
+                intra_community_regime_similarity = st.slider(
+                    "Intra-community Regime Similarity",
                     min_value=0.0,
                     max_value=1.0,
-                    value=1.0,
-                    step=0.05,
-                    help="How strongly features correlate with community membership (0=random, 1=perfect)"
+                    value=0.8,
+                    step=0.1,
+                    help="How similar regimes within the same community should be (0=very different, 1=identical)"
+                )
+                
+                inter_community_regime_similarity = st.slider(
+                    "Inter-community Regime Similarity",
+                    min_value=0.0,
+                    max_value=1.0,
+                    value=0.2,
+                    step=0.1,
+                    help="How similar regimes between different communities should be (0=very different, 1=identical)"
+                )
+                
+                regimes_per_community = st.slider(
+                    "Regimes per Community",
+                    min_value=1,
+                    max_value=5,
+                    value=2,
+                    help="Number of feature regimes per community"
                 )
             else:
-                feature_signal = 1.0  # Default value
+                intra_community_regime_similarity = 0.8  # Default value
+                inter_community_regime_similarity = 0.2  # Default value
+                regimes_per_community = 2  # Default value
 
         overlap_structure = st.selectbox(
             "Overlap structure",
@@ -210,6 +231,9 @@ if page == "Universe Creation":
     overlap_density = st.slider("Community overlap density", min_value=0.0, max_value=0.5, value=0.2, 
                               step=0.01, help="Density of community overlaps")
     
+    # Add seed parameter
+    seed = st.number_input("Random Seed", value=42, help="Seed for reproducibility")
+
     # Generate universe button
     if st.button("Generate Universe"):
         with st.spinner("Generating universe..."):
@@ -217,12 +241,15 @@ if page == "Universe Creation":
             universe = GraphUniverse(
                 K=K,
                 feature_dim=feature_dim,
-                feature_signal=feature_signal,
+                intra_community_regime_similarity=intra_community_regime_similarity,
+                inter_community_regime_similarity=inter_community_regime_similarity,
                 block_structure=block_structure,
                 edge_density=edge_density,
                 homophily=homophily,
                 randomness_factor=randomness_factor,
-                mixed_membership=mixed_membership,  # Add the mixed membership flag
+                mixed_membership=mixed_membership,
+                regimes_per_community=regimes_per_community,
+                seed=seed
             )
             
             # Generate community co-membership matrix
@@ -444,6 +471,18 @@ elif page == "Graph Sampling":
         avg_memberships = st.slider("Average communities per node", min_value=1.0, max_value=5.0, value=1.5,
                                       step=0.1, help="Controls community overlap")
         
+        feature_regime_balance = st.slider(
+            "Feature Regime Balance",
+            min_value=0.0,
+            max_value=1.0,
+            value=0.5,
+            step=0.1,
+            help="How evenly regimes are distributed within communities (0=one regime dominates, 1=equal distribution)"
+        )
+        
+        # Add seed parameter
+        seed = st.number_input("Random Seed", value=42, help="Seed for reproducibility")
+
         # Generate graph button
         if st.button("Sample Graph"):
             with st.spinner("Sampling graph..."):
@@ -471,10 +510,12 @@ elif page == "Graph Sampling":
                     universe=universe,
                     communities=communities,
                     n_nodes=n_nodes,
+                    min_component_size=min_component_size,
                     degree_heterogeneity=degree_heterogeneity,
                     edge_noise=edge_noise,
-                    min_component_size=min_component_size,
-                    indirect_influence=indirect_influence
+                    indirect_influence=indirect_influence,
+                    feature_regime_balance=feature_regime_balance,
+                    seed=seed
                 )
                 
                 # Store in session state
@@ -795,6 +836,9 @@ elif page == "Benchmark Generation":
             help="Controls how challenging the transfer learning task is (0=easy, 1=hard)"
         )
 
+        # Add seed parameter
+        seed = st.number_input("Random Seed", value=42, help="Seed for reproducibility")
+
         if st.button("Generate Benchmark"):
             with st.spinner("Generating benchmark..."):
                 # Create a minimal benchmark instance
@@ -819,8 +863,9 @@ elif page == "Benchmark Generation":
                     edge_noise=0.0,
                     sampling_method="random",
                     min_connection_strength=min_connection_strength if connected_communities else 0.0,
-                    min_component_size=min_component_size,  # Add parameter
-                    indirect_influence=indirect_influence  # Add parameter
+                    min_component_size=min_component_size,
+                    indirect_influence=indirect_influence,
+                    seed=seed
                 )
                 
                 # Generate transfer graphs for each mode
@@ -843,8 +888,9 @@ elif page == "Benchmark Generation":
                         max_nodes=max_nodes,
                         degree_heterogeneity=0.5,
                         min_connection_strength=min_connection_strength if connected_communities else 0.0,
-                        min_component_size=min_component_size,  # Add parameter
-                        indirect_influence=indirect_influence  # Add parameter
+                        min_component_size=min_component_size,
+                        indirect_influence=indirect_influence,
+                        seed=seed + i if seed is not None else None  # Increment seed for each mode
                     )
                     
                     transfer_graphs.extend(mode_graphs)
@@ -2481,6 +2527,256 @@ elif page == "Parameter Space Analysis":
                 
                 fig = create_parameter_dashboard(df, name)
                 st.pyplot(fig)
+
+# Add motif analysis to the page options
+elif page == "Motif and Role Analysis":
+    add_motif_role_analysis_page()
+
+# Add new page section:
+elif page == "Neighborhood Analysis":
+    st.markdown('<div class="section-header">Neighborhood Feature Analysis & Label Generation</div>', unsafe_allow_html=True)
+    
+    if st.session_state.universe is None:
+        st.warning("Please generate a universe first in the 'Universe Creation' page.")
+    elif st.session_state.current_graph is None and not st.session_state.pretrain_graphs:
+        st.warning("Please generate a graph in the 'Graph Sampling' page or a benchmark in the 'Benchmark Generation' page.")
+    else:
+        st.markdown("""
+        <div class="info-box">
+        This page analyzes how feature regimes distribute in node neighborhoods and generates balanced labels based on these distributions.
+        The analysis helps understand:
+        - How feature regimes cluster in different parts of the graph
+        - What patterns emerge in k-hop neighborhoods
+        - How to create meaningful node classification tasks
+        </div>
+        """, unsafe_allow_html=True)
+        
+        # Select graph to analyze
+        graph_sources = []
+        if st.session_state.current_graph is not None:
+            graph_sources.append("Current Graph")
+        if st.session_state.pretrain_graphs:
+            graph_sources.append("Pretraining Graphs")
+        if st.session_state.transfer_graphs:
+            graph_sources.append("Transfer Graphs")
+            
+        graph_source = st.selectbox("Graph source", graph_sources)
+        
+        if graph_source == "Current Graph":
+            graph = st.session_state.current_graph
+        elif graph_source == "Pretraining Graphs":
+            graph_idx = st.slider("Select graph index", min_value=0, max_value=len(st.session_state.pretrain_graphs)-1, value=0)
+            graph = st.session_state.pretrain_graphs[graph_idx]
+        elif graph_source == "Transfer Graphs":
+            graph_idx = st.slider("Select graph index", min_value=0, max_value=len(st.session_state.transfer_graphs)-1, value=0)
+            graph = st.session_state.transfer_graphs[graph_idx]
+            
+        # Neighborhood Analysis Parameters
+        st.markdown('<div class="subsection-header">Neighborhood Analysis Parameters</div>', unsafe_allow_html=True)
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            n_labels = st.slider("Number of labels", min_value=2, max_value=10, value=4,
+                               help="Number of distinct classes to generate")
+        
+        # Add labeling method selection
+        labeling_method = st.radio(
+            "Labeling Method",
+            ["Clustering-based", "Rule-based"],
+            help="""
+            Clustering-based: Groups nodes based on similarity of neighborhood features
+            Rule-based: Generates explicit, transferable rules based on feature regime frequencies
+            """
+        )
+        
+        if labeling_method == "Clustering-based":
+            balance_tolerance = st.slider("Balance tolerance", min_value=0.0, max_value=0.5, value=0.1,
+                                        help="How much imbalance to allow between classes (0=perfectly balanced)")
+        else:
+            # Rule-based parameters
+            st.markdown("##### Rule Generation Parameters")
+            
+            # Let user define max hop range with reasonable limits
+            max_allowed_hops = 5  # Maximum allowed for computational reasons
+            
+            # Get graph diameter if available
+            if hasattr(graph, 'graph'):
+                try:
+                    # Sample a few nodes for efficiency in large graphs
+                    sample_size = min(100, graph.graph.number_of_nodes())
+                    sample_nodes = np.random.choice(list(graph.graph.nodes()), size=sample_size, replace=False)
+                    max_path = 0
+                    for u in sample_nodes:
+                        for v in sample_nodes:
+                            try:
+                                path_len = nx.shortest_path_length(graph.graph, u, v)
+                                max_path = max(max_path, path_len)
+                            except nx.NetworkXNoPath:
+                                continue
+                    suggested_max = min(max_path, max_allowed_hops)
+                except:
+                    suggested_max = 3  # Default if calculation fails
+            else:
+                suggested_max = 3
+            
+            # Let user choose max_hops with guidance
+            max_hops = st.slider(
+                "Maximum hop distance",
+                min_value=1,
+                max_value=max_allowed_hops,
+                value=min(suggested_max, 3),
+                help=f"Maximum number of hops to analyze. Suggested maximum based on graph structure: {suggested_max}"
+            )
+            
+            # Hop range selection
+            col1, col2 = st.columns(2)
+            with col1:
+                min_hop = st.slider("Minimum hop distance", min_value=1, max_value=max_hops, value=1,
+                                  help="Minimum hop distance to consider for rules")
+            with col2:
+                max_hop = st.slider("Maximum hop distance", min_value=min_hop, max_value=max_hops, value=max_hops,
+                                  help="Maximum hop distance to consider for rules")
+        
+        # Other rule parameters
+        col1, col2 = st.columns(2)
+        with col1:
+            min_support = st.slider("Minimum rule support", min_value=0.05, max_value=0.3, value=0.1,
+                                      help="Minimum fraction of nodes a rule should apply to")
+        with col2:
+            max_rules_per_label = st.slider("Max rules per label", min_value=1, max_value=5, value=3,
+                                              help="Maximum number of rules to generate per label")
+        
+        st.info(f"Note: Label {n_labels-1} will be reserved as the 'rest' class for nodes that don't match any rules.")
+
+        # Run Analysis button
+        if st.button("Run Neighborhood Analysis"):
+            with st.spinner("Analyzing neighborhoods and generating labels..."):
+                # Initialize neighborhood analyzer if not already done or if max_hops changed
+                if (graph.neighborhood_analyzer is None or 
+                    graph.neighborhood_analyzer.max_hops < max_hops):
+                    graph.neighborhood_analyzer = NeighborhoodFeatureAnalyzer(
+                        graph=graph.graph,
+                        node_regimes=graph.node_regimes,
+                        total_regimes=len(graph.communities) * graph.universe.regimes_per_community,
+                        max_hops=max_hops
+                    )
+                
+                # Get frequency vectors for visualization
+                freq_vectors = {}
+                for k in range(1, max_hops + 1):
+                    freq_vectors[k] = graph.neighborhood_analyzer.get_all_frequency_vectors(k)
+                
+                # Generate labels based on selected method
+                if labeling_method == "Clustering-based":
+                    label_generator = FeatureRegimeLabelGenerator(
+                        frequency_vectors=freq_vectors[1],  # Use 1-hop for initial labels
+                        n_labels=n_labels,
+                        balance_tolerance=balance_tolerance,
+                        seed=42
+                    )
+                    labels = label_generator.get_node_labels()
+                    rules = label_generator._extract_label_rules()
+                    applied_rules = None
+                else:
+                    rule_generator = GenerativeRuleBasedLabeler(
+                        n_labels=n_labels,
+                        min_support=min_support,
+                        max_rules_per_label=max_rules_per_label,
+                        min_hop=min_hop,
+                        max_hop=max_hop,
+                        seed=42
+                    )
+                    rules = rule_generator.generate_rules(freq_vectors)
+                    labels, applied_rules = rule_generator.apply_rules(freq_vectors)
+                
+                # Visualizations
+                st.markdown('<div class="subsection-header">Analysis Results</div>', unsafe_allow_html=True)
+                
+                # 1. Neighborhood Feature Distribution
+                st.markdown("#### Feature Regime Distribution by Hop Distance")
+                
+                # Only create tabs for the selected hop range
+                hop_range = list(range(min_hop, max_hop + 1))
+                tabs = st.tabs([f"{k}-hop" for k in hop_range])
+                
+                for k_idx, k in enumerate(hop_range):
+                    with tabs[k_idx]:
+                        fig, ax = plt.subplots(figsize=(10, 6))
+                        
+                        # Plot average frequency for each regime
+                        avg_freq = np.mean(freq_vectors[k], axis=0)
+                        ax.bar(range(len(avg_freq)), avg_freq)
+                        
+                        ax.set_xlabel("Feature Regime")
+                        ax.set_ylabel("Average Frequency")
+                        ax.set_title(f"Average Feature Regime Distribution in {k}-hop Neighborhoods")
+                        
+                        st.pyplot(fig)
+                
+                # 2. Label Distribution and Graph Visualization
+                st.markdown("#### Generated Label Distribution")
+                
+                fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 5))
+                
+                # Label counts
+                unique_labels, counts = np.unique(labels, return_counts=True)
+                ax1.bar(unique_labels, counts)
+                ax1.set_xlabel("Label")
+                ax1.set_ylabel("Count")
+                ax1.set_title("Label Distribution")
+                
+                # Graph visualization with labels
+                pos = nx.spring_layout(graph.graph)
+                nx.draw(graph.graph, pos, node_color=labels, cmap='tab20', 
+                       node_size=50, ax=ax2)
+                ax2.set_title("Graph Colored by Generated Labels")
+                
+                st.pyplot(fig)
+                
+                # 3. Rules
+                st.markdown("#### Generated Rules")
+                if labeling_method == "Clustering-based":
+                    for rule in rules:
+                        st.markdown(f"- {rule}")
+                else:
+                    # Unpack all 4 values from the rules
+                    for rule_fn, label, rule_str, hop in rules:
+                        st.markdown(f"- Label {label}: {rule_str}")
+                    
+                    # Show rule coverage statistics
+                    rule_coverage = Counter(r for r in applied_rules if r is not None)
+                    st.markdown("#### Rule Coverage Statistics")
+                    for rule, count in rule_coverage.items():
+                        st.markdown(f"- {rule}: Applied to {count} nodes ({count/len(labels):.1%})")
+                
+                # 4. Feature Analysis
+                st.markdown("#### Feature Analysis by Label")
+                
+                # Create PCA visualization of frequency vectors colored by label
+                pca = PCA(n_components=2)
+                freq_2d = pca.fit_transform(freq_vectors[1])
+                
+                fig, ax = plt.subplots(figsize=(10, 6))
+                scatter = ax.scatter(freq_2d[:, 0], freq_2d[:, 1], c=labels, 
+                                   cmap='tab20', alpha=0.6)
+                ax.set_xlabel("PCA 1")
+                ax.set_ylabel("PCA 2")
+                ax.set_title("Neighborhood Feature Vectors by Label")
+                plt.colorbar(scatter, label="Label")
+                
+                st.pyplot(fig)
+                
+                # Store results in graph object
+                graph.node_labels = labels
+                if labeling_method == "Clustering-based":
+                    graph.label_rules = rules
+                else:
+                    # Store rule strings with their associated labels and hops
+                    graph.label_rules = [f"Label {label} ({hop}-hop): {rule_str}" for rule_fn, label, rule_str, hop in rules]
+                    graph.applied_rules = applied_rules
+                
+                st.success("Analysis complete! Labels have been generated and stored in the graph object.")
 
 # Add footer
 st.markdown("""

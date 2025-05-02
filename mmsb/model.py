@@ -21,21 +21,13 @@ import networkx as nx
 import scipy.sparse as sp
 from typing import Dict, List, Optional, Tuple, Union, Callable, Any
 import pandas as pd
+from .feature_regimes import FeatureRegimeGenerator, NeighborhoodFeatureAnalyzer, FeatureRegimeLabelGenerator
 
 
 class GraphUniverse:
     """
-    Represents the core generative universe from which graph instances are sampled.
-    
-    Attributes:
-        K (int): Total number of community types in the universe
-        P (np.ndarray): K×K edge probability matrix between communities
-        feature_dim (int): Dimension of node features (if features are enabled)
-        feature_signal (float): How strongly features correlate with community membership (0=random, 1=perfect)
-        community_co_membership (np.ndarray): Probability of communities co-occurring (shape: K × K)
-        feature_subtypes (List[np.ndarray]): Subtype feature prototypes for each community (if enabled)
-        feature_similarity_matrix (np.ndarray): Controls feature similarity between communities
-        mixed_membership (bool): Whether to use mixed membership model (True) or standard SBM (False)
+    Represents a generative universe for graph instances sampled from a master stochastic block model.
+    Each instance is a subgraph of the universe, with its own community structure and features.
     """
     
     def __init__(
@@ -43,99 +35,85 @@ class GraphUniverse:
         K: int,
         P: Optional[np.ndarray] = None,
         feature_dim: int = 0,
-        feature_signal: float = 1.0,
+        intra_community_regime_similarity: float = 0.8,  # New parameter
+        inter_community_regime_similarity: float = 0.2,  # New parameter
         community_co_membership: Optional[np.ndarray] = None,
         block_structure: str = "assortative",
         edge_density: float = 0.1,
         homophily: float = 0.8,
         randomness_factor: float = 0.0,
-        feature_structure: str = "distinct",
-        feature_subtypes_per_community: int = 1,
-        feature_mixing_strength: float = 0.5,
-        feature_similarity_control: float = 0.7,
-        mixed_membership: bool = True,  # New parameter
+        mixed_membership: bool = True,
+        regimes_per_community: int = 2,
+        seed: Optional[int] = None
     ):
         """
-        Initialize the GraphUniverse.
+        Initialize the graph universe.
         
         Args:
-            K: Number of communities in the universe
-            P: Edge probability matrix (K × K). If None, generated based on block_structure
-            feature_dim: Dimension of node features. If 0, no features are generated
-            feature_signal: How strongly features correlate with community membership (0=random, 1=perfect)
-            community_co_membership: Probability matrix for community co-membership
-            block_structure: Structure of the probability matrix if P is None
-            edge_density: Overall target edge density
-            homophily: Controls ratio between intra/inter probabilities (0=equal, 1=maximum homophily)
-            randomness_factor: Amount of random variation to add to the probability matrix (0.0-1.0)
-            feature_structure: Structure for feature prototypes ("distinct", "correlated", "hierarchical", "random")
-            feature_subtypes_per_community: Number of feature subtypes within each community
-            feature_mixing_strength: How strongly features are mixed across communities (0=no mixing, 1=strong mixing)
-            feature_similarity_control: How similar/different features are between communities (0=very different, 1=very similar)
-            mixed_membership: Whether to use mixed membership model (True) or standard SBM (False)
+            K: Total number of community types
+            P: Optional edge probability matrix (K × K)
+            feature_dim: Dimension of node features
+            intra_community_regime_similarity: How similar regimes within same community should be (0-1)
+            inter_community_regime_similarity: How similar regimes between communities should be (0-1)
+            community_co_membership: Optional co-membership probability matrix (K × K)
+            block_structure: Type of block structure ("assortative", "disassortative", "core-periphery", "hierarchical")
+            edge_density: Overall edge density
+            homophily: Strength of within-community connections
+            randomness_factor: Amount of random noise in edge probabilities
+            mixed_membership: Whether nodes can belong to multiple communities
+            regimes_per_community: Number of feature regimes per community
+            seed: Random seed for reproducibility
         """
         self.K = K
-        self.mixed_membership = mixed_membership  # Store the flag
+        self.feature_dim = feature_dim
+        self.mixed_membership = mixed_membership
+        self.regimes_per_community = regimes_per_community
         
-        # Initialize probability matrix if not provided
-        if P is None:
+        # Set random seed if provided
+        if seed is not None:
+            np.random.seed(seed)
+        
+        # Generate or validate probability matrix
+        if P is not None:
+            if P.shape != (K, K):
+                raise ValueError(f"Probability matrix must be {K}×{K}")
+            self.P = P
+        else:
             self.P = self._generate_probability_matrix(
                 K, block_structure, edge_density, homophily, randomness_factor
             )
+        
+        # Generate or validate co-membership matrix
+        if community_co_membership is not None:
+            if community_co_membership.shape != (K, K):
+                raise ValueError(f"Co-membership matrix must be {K}×{K}")
+            self.community_co_membership = community_co_membership
         else:
-            assert P.shape == (K, K), f"P should be a {K}×{K} matrix"
-            self.P = P
-            
-        # Store parameters for reference
+            self.community_co_membership = self.generate_community_co_membership_matrix()
+        
+        # Initialize feature regime generator if features are enabled
+        if feature_dim > 0:
+            self.regime_generator = FeatureRegimeGenerator(
+                universe_K=K,
+                feature_dim=feature_dim,
+                regimes_per_community=regimes_per_community,
+                intra_community_regime_similarity=intra_community_regime_similarity,
+                inter_community_regime_similarity=inter_community_regime_similarity,
+                feature_variance=0.1,
+                seed=seed
+            )
+            self.regime_prototypes = self.regime_generator.regime_prototypes
+        else:
+            self.regime_generator = None
+            self.regime_prototypes = None
+        
         self.edge_density = edge_density
         self.homophily = homophily
         self.block_structure = block_structure
         
-        # Feature parameters
-        self.feature_dim = feature_dim
-        self.feature_signal = feature_signal
-        
-        # Generate base feature prototypes if features are enabled
-        if feature_dim > 0:
-            # Generate random vectors for each community
-            prototypes = np.random.normal(0, 1, size=(K, feature_dim))
-            
-            if feature_dim >= K:
-                # If we have enough dimensions, make them orthogonal using QR decomposition
-                q, _ = np.linalg.qr(prototypes.T)
-                self.feature_prototypes = q.T
-            else:
-                # If we don't have enough dimensions, just normalize the random vectors
-                norms = np.linalg.norm(prototypes, axis=1, keepdims=True)
-                self.feature_prototypes = prototypes / norms
-            
-            # Verify we have the right number of prototypes
-            assert self.feature_prototypes.shape[0] == K, f"Expected {K} prototypes, got {self.feature_prototypes.shape[0]}"
-        else:
-            self.feature_prototypes = None
-                
-        # Community co-membership probabilities
-        if community_co_membership is None:
-            self.community_co_membership = np.eye(K)  # Default: no overlap
-        else:
-            assert community_co_membership.shape == (K, K)
-            self.community_co_membership = community_co_membership
-            
         self.feature_variance = 0.1
         
-        # Feature generation parameters
-        self.feature_structure = feature_structure
-        self.feature_subtypes_per_community = feature_subtypes_per_community
-        self.feature_mixing_strength = feature_mixing_strength
-        self.feature_similarity_control = feature_similarity_control
-        
-        if feature_dim > 0:
-            # Generate feature similarity matrix
-            self.feature_similarity_matrix = self._generate_feature_similarity_matrix(
-                K, feature_mixing_strength, feature_structure
-            )
-        else:
-            self.feature_similarity_matrix = None
+        self.feature_similarity_matrix = None
 
     def _generate_probability_matrix(
         self, 
@@ -665,6 +643,8 @@ class GraphSample:
     This modified version implements:
     1. Filtering of components smaller than min_component_size
     2. All graph properties reflect the filtered state
+    3. Feature regime generation and analysis
+    4. Neighborhood feature analysis
     """
     
     def __init__(
@@ -676,14 +656,22 @@ class GraphSample:
         degree_heterogeneity: float = 0.5,
         edge_noise: float = 0.0,
         indirect_influence: float = 0.1,
-        feature_correlation_with_topology: float = 0.0,
-        feature_subtype_mixing: float = 0.5,
-        feature_noise_heterogeneity: float = 0.0,
-        feature_sparsity: float = 0.0,
+        feature_regime_balance: float = 0.5,  # Renamed from feature_subtype_mixing
         seed: Optional[int] = None
     ):
         """
         Initialize and generate a graph sample.
+        
+        Args:
+            universe: Parent universe
+            communities: List of community indices to include
+            n_nodes: Number of nodes
+            min_component_size: Minimum size of connected components to keep
+            degree_heterogeneity: Controls degree distribution (0=uniform, 1=heterogeneous)
+            edge_noise: Amount of random noise in edge probabilities
+            indirect_influence: How strongly co-memberships influence edge formation
+            feature_regime_balance: How evenly regimes are distributed within communities
+            seed: Random seed for reproducibility
         """
         self.universe = universe
         self.communities = sorted(communities)
@@ -691,10 +679,7 @@ class GraphSample:
         self.min_component_size = min_component_size
         
         # Store feature generation parameters
-        self.feature_correlation_with_topology = feature_correlation_with_topology
-        self.feature_subtype_mixing = feature_subtype_mixing
-        self.feature_noise_heterogeneity = feature_noise_heterogeneity
-        self.feature_sparsity = feature_sparsity
+        self.feature_regime_balance = feature_regime_balance
         
         # Set random seed if provided
         if seed is not None:
@@ -779,24 +764,44 @@ class GraphSample:
             
             # Generate features if enabled
             if universe.feature_dim > 0:
-                if hasattr(universe, 'feature_prototypes') and universe.feature_prototypes is not None:
-                    self.features = self._generate_features(
-                        self.membership_vectors,
-                        universe.feature_prototypes,
-                        universe.feature_signal
-                    )
-                else:
-                    self.features = None
+                # Assign nodes to feature regimes
+                primary_communities = np.argmax(self.membership_vectors, axis=1)
+                self.node_regimes = universe.regime_generator.assign_node_regimes(
+                    primary_communities,
+                    regime_balance=self.feature_regime_balance
+                )
+                
+                # Generate features based on regimes
+                self.features = universe.regime_generator.generate_node_features(
+                    self.node_regimes
+                )
+                
+                # Initialize neighborhood analyzer
+                self.neighborhood_analyzer = NeighborhoodFeatureAnalyzer(
+                    graph=self.graph,
+                    node_regimes=self.node_regimes,
+                    total_regimes=len(communities) * universe.regimes_per_community,
+                    max_hops=3
+                )
+                
+                # Generate balanced labels based on neighborhood features
+                self.label_generator = FeatureRegimeLabelGenerator(
+                    frequency_vectors=self.neighborhood_analyzer.get_all_frequency_vectors(1),
+                    n_labels=len(communities),
+                    balance_tolerance=0.1,
+                    seed=seed
+                )
+                
+                # Get node labels
+                self.node_labels = self.label_generator.get_node_labels()
             else:
                 self.features = None
+                self.node_regimes = None
+                self.neighborhood_analyzer = None
+                self.label_generator = None
                 
             # Add node attributes including primary community labels
             self._add_node_attributes()
-            
-            # Generate node labels
-            self.node_labels = np.zeros(self.n_nodes, dtype=int)
-            for i in range(self.n_nodes):
-                self.node_labels[i] = self.communities[np.argmax(self.membership_vectors[i])]
             
         else:
             # If no components meet the size threshold, keep an empty graph
@@ -809,6 +814,9 @@ class GraphSample:
             self.node_map = {}
             self.reverse_node_map = {}
             self.node_labels = np.zeros(0, dtype=int)
+            self.node_regimes = None
+            self.neighborhood_analyzer = None
+            self.label_generator = None
 
     def _add_node_attributes(self):
         """Add node attributes to the graph."""
@@ -828,6 +836,10 @@ class GraphSample:
             # Add features if available
             if self.features is not None:
                 node_attrs["features"] = self.features[i].tolist()
+                
+            # Add regime information if available
+            if self.node_regimes is not None:
+                node_attrs["feature_regime"] = int(self.node_regimes[i])
                 
             # Update node attributes
             nx.set_node_attributes(self.graph, {node: node_attrs})
@@ -1290,77 +1302,234 @@ class GraphSample:
             
         return G
 
+    def generate_feature_regimes(
+        self,
+        n_regimes: int,
+        regime_strength: Optional[float] = None,
+        regime_overlap: Optional[float] = None,
+        seed: Optional[int] = None
+    ) -> Dict[str, np.ndarray]:
+        """
+        Generate feature regimes for the graph.
+        
+        Args:
+            n_regimes: Number of feature regimes to generate
+            regime_strength: How strongly features correlate with regime membership (0=random, 1=perfect)
+            regime_overlap: How much overlap between regimes (0=no overlap, 1=complete overlap)
+            seed: Random seed for reproducibility
+            
+        Returns:
+            Dictionary containing:
+            - regime_assignments: Node-regime membership matrix
+            - regime_features: Feature prototypes for each regime
+            - regime_correlation: Correlation matrix between regimes
+        """
+        if seed is not None:
+            np.random.seed(seed)
+            
+        # Use instance parameters if not specified
+        regime_strength = regime_strength if regime_strength is not None else self.feature_regime_strength
+        regime_overlap = regime_overlap if regime_overlap is not None else self.feature_regime_overlap
+        
+        # Generate regime prototypes
+        feature_dim = self.features.shape[1]
+        regime_features = np.random.normal(0, 1, size=(n_regimes, feature_dim))
+        regime_features = regime_features / np.linalg.norm(regime_features, axis=1, keepdims=True)
+        
+        # Generate regime assignments
+        regime_assignments = np.random.dirichlet(
+            np.ones(n_regimes) * (1 - regime_overlap) + regime_overlap,
+            size=self.n_nodes
+        )
+        
+        # Generate regime correlation matrix
+        regime_correlation = np.eye(n_regimes) * (1 - regime_overlap) + regime_overlap
+        
+        return {
+            "regime_assignments": regime_assignments,
+            "regime_features": regime_features,
+            "regime_correlation": regime_correlation
+        }
+
+    def analyze_neighborhood_features(
+        self,
+        hop_distance: int = 1,
+        feature_aggregation: str = "mean",
+        include_self: bool = True
+    ) -> Dict[str, np.ndarray]:
+        """
+        Analyze feature regimes in k-hop neighborhoods.
+        
+        Args:
+            hop_distance: Number of hops to consider
+            feature_aggregation: How to aggregate features ("mean", "max", "min")
+            include_self: Whether to include the node itself in the analysis
+            
+        Returns:
+            Dictionary containing:
+            - frequency_vectors: Matrix of regime frequencies in neighborhoods
+            - feature_vectors: Matrix of aggregated feature vectors
+        """
+        if self.neighborhood_analyzer is None:
+            raise ValueError("Feature regimes not enabled for this graph")
+            
+        # Get frequency vectors
+        frequency_vectors = self.neighborhood_analyzer.get_all_frequency_vectors(hop_distance)
+        
+        # Get feature vectors
+        feature_vectors = np.zeros((self.n_nodes, self.universe.feature_dim))
+        
+        for node in range(self.n_nodes):
+            # Get k-hop neighbors
+            neighbors = self.neighborhood_analyzer.neighborhoods[hop_distance][node]
+            
+            if include_self:
+                neighbors = [node] + neighbors
+                
+            if not neighbors:
+                continue
+                
+            # Get features for neighbors
+            neighbor_features = self.features[neighbors]
+            
+            # Aggregate based on method
+            if feature_aggregation == "mean":
+                feature_vectors[node] = np.mean(neighbor_features, axis=0)
+            elif feature_aggregation == "max":
+                feature_vectors[node] = np.max(neighbor_features, axis=0)
+            elif feature_aggregation == "min":
+                feature_vectors[node] = np.min(neighbor_features, axis=0)
+            else:
+                raise ValueError(f"Unknown aggregation method: {feature_aggregation}")
+        
+        return {
+            "frequency_vectors": frequency_vectors,
+            "feature_vectors": feature_vectors
+        }
+    
+    def generate_balanced_labels(
+        self,
+        n_classes: int,
+        balance_ratio: float = 0.5,
+        feature_influence: float = 0.7,
+        seed: Optional[int] = None
+    ) -> np.ndarray:
+        """
+        Generate balanced node labels based on neighborhood feature regimes.
+        
+        Args:
+            n_classes: Number of label classes to generate
+            balance_ratio: Target balance ratio between classes
+            feature_influence: How much to weight feature information vs. topology
+            seed: Random seed
+            
+        Returns:
+            Array of node labels
+        """
+        if self.neighborhood_analyzer is None:
+            raise ValueError("Feature regimes not enabled for this graph")
+            
+        # Get frequency vectors
+        frequency_vectors = self.neighborhood_analyzer.get_all_frequency_vectors(1)
+        
+        # Create label generator
+        label_generator = FeatureRegimeLabelGenerator(
+            frequency_vectors=frequency_vectors,
+            n_labels=n_classes,
+            balance_tolerance=1.0 - balance_ratio,
+            seed=seed
+        )
+        
+        # Get labels
+        labels = label_generator.get_node_labels()
+        
+        # Update node attributes
+        for i, node in enumerate(self.graph.nodes()):
+            self.graph.nodes[node]["label"] = int(labels[i])
+        
+        return labels
+
 
 class MMSBBenchmark:
     """
-    Generates a benchmark of graph instances for pretraining and transfer learning.
-    
-    This modified version implements:
-    1. Better community connectivity assessment during sampling
-    2. Component filtering instead of forced connectivity
-    
-    Attributes:
-        universe (GraphUniverse): The graph universe from which instances are sampled
-        graphs (List[GraphSample]): Generated graph instances
+    Generates benchmarks of graph instances for pretraining and transfer learning.
+    Each benchmark consists of a set of graphs sampled from a common universe.
     """
     
     def __init__(
         self,
         K: int = 100,
         feature_dim: int = 64,
-        feature_signal: float = 1.0,  # Add feature_signal parameter
+        feature_signal: float = 1.0,
         block_structure: str = "hierarchical",
         overlap_structure: str = "modular",
         edge_density: float = 0.1,
-        homophily: float = 0.8,  # Add homophily parameter
+        homophily: float = 0.8,
         randomness_factor: float = 0.0,
+        feature_regime_strength: float = 0.8,  # New parameter
+        feature_regime_overlap: float = 0.2,   # New parameter
+        regimes_per_community: int = 2,        # New parameter
         seed: Optional[int] = None
     ):
         """
         Initialize the benchmark generator.
         
         Args:
-            K: Number of communities in the universe
-            feature_dim: Dimension of node features (0 for no features)
-            feature_signal: How strongly features correlate with community membership (0=random, 1=perfect)
-            block_structure: Structure of the edge probability matrix
-            overlap_structure: Structure of community overlaps
-            edge_density: Edge density within communities
-            homophily: Controls the ratio between intra and inter-community probabilities (0=equal, 1=max homophily)
-            randomness_factor: Amount of random variation in edge probabilities (0.0-1.0)
+            K: Total number of communities in the universe
+            feature_dim: Dimension of node features
+            feature_signal: Correlation strength of features with community membership
+            block_structure: Type of block structure ("assortative", "disassortative", "core-periphery", "hierarchical")
+            overlap_structure: Type of community overlap structure ("modular", "random", "hierarchical")
+            edge_density: Overall edge density
+            homophily: Strength of within-community connections
+            randomness_factor: Amount of random noise in edge probabilities
+            feature_regime_strength: How strongly features correlate with regimes
+            feature_regime_overlap: How much regimes overlap between communities
+            regimes_per_community: Number of feature regimes per community
             seed: Random seed for reproducibility
         """
-        if seed is not None:
-            np.random.seed(seed)
-            
-        # Initialize the graph universe
+        # Initialize the universe
         self.universe = GraphUniverse(
             K=K,
             feature_dim=feature_dim,
-            feature_signal=feature_signal,  # Pass feature_signal
+            feature_signal=feature_signal,
             block_structure=block_structure,
             edge_density=edge_density,
-            homophily=homophily,  # Pass homophily
-            randomness_factor=randomness_factor
+            homophily=homophily,
+            randomness_factor=randomness_factor,
+            feature_structure="distinct",
+            feature_subtypes_per_community=1,
+            feature_mixing_strength=0.5,
+            feature_similarity_control=0.7,
+            mixed_membership=True,
+            feature_regime_strength=feature_regime_strength,
+            feature_regime_overlap=feature_regime_overlap,
+            regimes_per_community=regimes_per_community,
+            seed=seed
         )
         
         # Generate community co-membership matrix
-        co_membership = self.universe.generate_community_co_membership_matrix(
-            overlap_density=overlap_density,
+        self.universe.community_co_membership = self.universe.generate_community_co_membership_matrix(
+            overlap_density=0.1,
             structure=overlap_structure
         )
-        self.universe.community_co_membership = co_membership
         
-        # Initialize empty list of graphs
-        self.graphs = []
-    
-    # Add the new community sampling method to the universe (monkey patching)
-    def add_connected_community_sampling_to_universe(self):
-        """Add the connected community sampling method to the universe object."""
-        import types
-        self.universe.sample_connected_community_subset = types.MethodType(
-            self.sample_connected_community_subset, self.universe
-        )
+        # Store parameters
+        self.K = K
+        self.feature_dim = feature_dim
+        self.feature_signal = feature_signal
+        self.block_structure = block_structure
+        self.overlap_structure = overlap_structure
+        self.edge_density = edge_density
+        self.homophily = homophily
+        self.randomness_factor = randomness_factor
+        self.feature_regime_strength = feature_regime_strength
+        self.feature_regime_overlap = feature_regime_overlap
+        self.regimes_per_community = regimes_per_community
+        self.seed = seed
+        
+        # Add connected community sampling to universe
+        self.add_connected_community_sampling_to_universe()
     
     def generate_pretraining_graphs(
         self,
@@ -1374,125 +1543,91 @@ class MMSBBenchmark:
         sampling_method: str = "random",
         similarity_bias: float = 0.0,
         min_connection_strength: float = 0.05,
-        min_component_size: int = 0,  # New parameter
-        indirect_influence: float = 0.1  # Add indirect_influence parameter
+        min_component_size: int = 0,
+        indirect_influence: float = 0.1,
+        feature_regime_strength: Optional[float] = None,  # New parameter
+        feature_regime_overlap: Optional[float] = None,   # New parameter
+        regimes_per_community: Optional[int] = None,      # New parameter
+        seed: Optional[int] = None
     ) -> List[GraphSample]:
         """
         Generate a set of graphs for pretraining.
         
         Args:
             n_graphs: Number of graphs to generate
-            min_communities: Minimum communities per graph
-            max_communities: Maximum communities per graph
-            min_nodes: Minimum nodes per graph
-            max_nodes: Maximum nodes per graph
-            degree_heterogeneity: Controls degree variability
-            edge_noise: Random noise added to edge probabilities
-            sampling_method: Method for sampling community subsets
-            similarity_bias: Bias towards similar or diverse communities
-            min_connection_strength: Minimum edge probability between communities
-            min_component_size: Minimum size for a component to be kept (0 keeps all components)
-            indirect_influence: How strongly co-memberships influence edge formation (0-1)
+            min_communities: Minimum number of communities per graph
+            max_communities: Maximum number of communities per graph
+            min_nodes: Minimum number of nodes per graph
+            max_nodes: Maximum number of nodes per graph
+            degree_heterogeneity: Controls degree distribution (0=uniform, 1=heterogeneous)
+            edge_noise: Amount of random noise in edge generation
+            sampling_method: Method for sampling communities ("random", "similar", "dissimilar")
+            similarity_bias: Bias toward similar/dissimilar communities
+            min_connection_strength: Minimum connection strength between communities
+            min_component_size: Minimum size of connected components to keep
+            indirect_influence: Strength of indirect influence in edge generation
+            feature_regime_strength: How strongly features correlate with regimes
+            feature_regime_overlap: How much regimes overlap between communities
+            regimes_per_community: Number of feature regimes per community
+            seed: Random seed for reproducibility
             
         Returns:
-            List of generated graph samples with components filtered by size
+            List of generated GraphSample instances
         """
-        # Add the connected community sampling method if needed
-        if not hasattr(self.universe, 'sample_connected_community_subset'):
-            self.add_connected_community_sampling_to_universe()
+        # Use universe parameters if not specified
+        if feature_regime_strength is None:
+            feature_regime_strength = self.feature_regime_strength
+        if feature_regime_overlap is None:
+            feature_regime_overlap = self.feature_regime_overlap
+        if regimes_per_community is None:
+            regimes_per_community = self.regimes_per_community
+            
+        # Set random seed if provided
+        if seed is not None:
+            np.random.seed(seed)
             
         graphs = []
-        failed_attempts = []
-        
         for i in range(n_graphs):
-            # Sample number of communities for this graph
+            # Sample number of communities
             n_communities = np.random.randint(min_communities, max_communities + 1)
             
-            # Sample subset of communities based on connection strength requirement
-            try:
-                if min_connection_strength > 0:
-                    communities = self.universe.sample_connected_community_subset(
-                        size=n_communities,
-                        method=sampling_method,
-                        similarity_bias=similarity_bias,
-                        min_connection_strength=min_connection_strength
-                    )
-                else:
-                    communities = self.universe.sample_community_subset(
-                        size=n_communities,
-                        method=sampling_method,
-                        similarity_bias=similarity_bias
-                    )
+            # Sample communities based on method
+            if sampling_method == "random":
+                communities = self.universe.sample_community_subset(
+                    n_communities,
+                    method="random",
+                    similarity_bias=similarity_bias
+                )
+            elif sampling_method == "connected":
+                communities = self.universe.sample_connected_community_subset(
+                    n_communities,
+                    method="random",
+                    similarity_bias=similarity_bias,
+                    min_connection_strength=min_connection_strength
+                )
+            else:
+                raise ValueError(f"Unknown sampling method: {sampling_method}")
                 
-                if communities is None:
-                    failed_attempts.append({
-                        "graph_num": i + 1,
-                        "error": "Community sampling returned None",
-                        "n_communities": n_communities,
-                        "sampling_method": sampling_method,
-                        "min_connection_strength": min_connection_strength
-                    })
-                    continue
-                    
-            except Exception as e:
-                failed_attempts.append({
-                    "graph_num": i + 1,
-                    "error": f"Community sampling failed: {str(e)}",
-                    "n_communities": n_communities,
-                    "sampling_method": sampling_method,
-                    "min_connection_strength": min_connection_strength
-                })
-                continue
-            
             # Sample number of nodes
             n_nodes = np.random.randint(min_nodes, max_nodes + 1)
             
-            # Generate graph with these communities
-            try:
-                graph = GraphSample(
-                    universe=self.universe,
-                    communities=communities,
-                    n_nodes=n_nodes,
-                    degree_heterogeneity=degree_heterogeneity,
-                    edge_noise=edge_noise,
-                    min_component_size=min_component_size,
-                    indirect_influence=indirect_influence,
-                    seed=None
-                )
-                
-                # Only add graphs that have nodes after filtering
-                if graph.n_nodes > 0:
-                    graphs.append(graph)
-                else:
-                    failed_attempts.append({
-                        "graph_num": i + 1,
-                        "error": "Graph had 0 nodes after filtering",
-                        "n_communities": len(communities),
-                        "original_nodes": n_nodes,
-                        "communities": communities
-                    })
-                    
-            except Exception as e:
-                failed_attempts.append({
-                    "graph_num": i + 1,
-                    "error": f"Graph creation failed: {str(e)}",
-                    "n_communities": len(communities),
-                    "n_nodes": n_nodes,
-                    "communities": communities
-                })
-        
-        # Only print debug information if there were failures
-        if failed_attempts:
-            print(f"\nFailed to generate {len(failed_attempts)} out of {n_graphs} graphs")
-            print("\nFailure details:")
-            for attempt in failed_attempts:
-                print(f"\nGraph {attempt['graph_num']}:")
-                for key, value in attempt.items():
-                    if key != 'graph_num':
-                        print(f"  {key}: {value}")
-        
+            # Generate graph
+            graph = GraphSample(
+                universe=self.universe,
+                communities=communities,
+                n_nodes=n_nodes,
+                min_component_size=min_component_size,
+                degree_heterogeneity=degree_heterogeneity,
+                edge_noise=edge_noise,
+                indirect_influence=indirect_influence,
+                feature_regime_balance=0.5,  # Renamed from feature_subtype_mixing
+                seed=seed + i if seed is not None else None
+            )
+            
+            graphs.append(graph)
+            
         return graphs
-
+    
     def generate_transfer_graphs(
         self,
         n_graphs: int,
@@ -1504,139 +1639,119 @@ class MMSBBenchmark:
         degree_heterogeneity: float = 0.5,
         edge_noise: float = 0.0,
         min_connection_strength: float = 0.05,
-        min_component_size: int = 0,  # New parameter
-        indirect_influence: float = 0.1  # Add indirect_influence parameter
+        min_component_size: int = 0,
+        indirect_influence: float = 0.1,
+        feature_regime_strength: Optional[float] = None,  # New parameter
+        feature_regime_overlap: Optional[float] = None,   # New parameter
+        regimes_per_community: Optional[int] = None,      # New parameter
+        seed: Optional[int] = None
     ) -> List[GraphSample]:
         """
-        Generate transfer learning graphs with controlled distributional shift.
+        Generate transfer learning graphs based on reference graphs.
         
         Args:
-            n_graphs: Number of transfer graphs to generate
-            reference_graphs: List of already generated "training" graphs
-            transfer_mode: Type of transfer ("new_combinations", "rare_communities", "novel_communities")
-            transfer_difficulty: Controls how challenging the transfer task is (0-1)
-            min_nodes: Minimum nodes per graph
-            max_nodes: Maximum nodes per graph
-            degree_heterogeneity: Controls degree variability
-            edge_noise: Random noise added to edge probabilities
-            min_connection_strength: Minimum edge probability between communities
-            min_component_size: Minimum size for a component to be kept (0 keeps all components)
-            indirect_influence: How strongly co-memberships influence edge formation (0-1)
+            n_graphs: Number of graphs to generate
+            reference_graphs: List of reference graphs to base transfer on
+            transfer_mode: Type of transfer ("new_combinations", "new_communities", "new_features")
+            transfer_difficulty: How different transfer graphs should be (0=easy, 1=hard)
+            min_nodes: Minimum number of nodes per graph
+            max_nodes: Maximum number of nodes per graph
+            degree_heterogeneity: Controls degree distribution (0=uniform, 1=heterogeneous)
+            edge_noise: Amount of random noise in edge generation
+            min_connection_strength: Minimum connection strength between communities
+            min_component_size: Minimum size of connected components to keep
+            indirect_influence: Strength of indirect influence in edge generation
+            feature_regime_strength: How strongly features correlate with regimes
+            feature_regime_overlap: How much regimes overlap between communities
+            regimes_per_community: Number of feature regimes per community
+            seed: Random seed for reproducibility
             
         Returns:
-            List of transfer graph samples with components filtered by size
+            List of generated GraphSample instances
         """
-        # Add the connected community sampling method if needed
-        if not hasattr(self.universe, 'sample_connected_community_subset'):
-            self.add_connected_community_sampling_to_universe()
+        # Use universe parameters if not specified
+        if feature_regime_strength is None:
+            feature_regime_strength = self.feature_regime_strength
+        if feature_regime_overlap is None:
+            feature_regime_overlap = self.feature_regime_overlap
+        if regimes_per_community is None:
+            regimes_per_community = self.regimes_per_community
             
-        # Analyze community distribution in reference graphs
-        community_counts = np.zeros(self.universe.K)
+        # Set random seed if provided
+        if seed is not None:
+            np.random.seed(seed)
+            
+        # Extract reference communities
+        reference_communities = set()
         for graph in reference_graphs:
-            for comm in graph.communities:
-                community_counts[comm] += 1
-                
-        # Normalize to get frequencies
-        if len(reference_graphs) > 0:
-            community_freq = community_counts / len(reference_graphs)
-        else:
-            community_freq = np.ones(self.universe.K) / self.universe.K
-            
-        transfer_graphs = []
+            reference_communities.update(graph.communities)
+        reference_communities = sorted(list(reference_communities))
         
-        while len(transfer_graphs) < n_graphs:
-            n_nodes = np.random.randint(min_nodes, max_nodes + 1)
-            
+        graphs = []
+        for i in range(n_graphs):
             if transfer_mode == "new_combinations":
-                # Generate graphs with new combinations of seen communities
-                # Select some common and some rare communities
-                n_communities = len(reference_graphs[0].communities) if reference_graphs else 10
+                # Sample new combinations of reference communities
+                n_communities = np.random.randint(
+                    max(2, int(len(reference_communities) * (1 - transfer_difficulty))),
+                    len(reference_communities) + 1
+                )
+                communities = np.random.choice(
+                    reference_communities,
+                    size=n_communities,
+                    replace=False
+                ).tolist()
                 
-                # Sort communities by frequency
-                sorted_communities = np.argsort(community_freq)
+            elif transfer_mode == "new_communities":
+                # Sample new communities not in reference set
+                available_communities = [c for c in range(self.K) if c not in reference_communities]
+                n_communities = np.random.randint(
+                    max(2, int(len(available_communities) * (1 - transfer_difficulty))),
+                    len(available_communities) + 1
+                )
+                communities = np.random.choice(
+                    available_communities,
+                    size=n_communities,
+                    replace=False
+                ).tolist()
                 
-                # Select a mix of common and rare communities
-                # Higher transfer_difficulty means more rare communities
-                common_ratio = 1.0 - transfer_difficulty
-                n_common = max(1, int(common_ratio * n_communities))
-                n_rare = n_communities - n_common
+            elif transfer_mode == "new_features":
+                # Use same communities but different feature regimes
+                n_communities = np.random.randint(
+                    max(2, int(len(reference_communities) * (1 - transfer_difficulty))),
+                    len(reference_communities) + 1
+                )
+                communities = np.random.choice(
+                    reference_communities,
+                    size=n_communities,
+                    replace=False
+                ).tolist()
                 
-                common_pool = sorted_communities[-int(self.universe.K * 0.3):]  # Top 30%
-                rare_pool = sorted_communities[:int(self.universe.K * 0.7)]     # Bottom 70%
-                
-                common_communities = np.random.choice(common_pool, size=n_common, replace=False)
-                rare_communities = np.random.choice(rare_pool, size=n_rare, replace=False)
-                
-                communities = np.concatenate([common_communities, rare_communities]).tolist()
-                
-            elif transfer_mode == "rare_communities":
-                # Focus on communities that were rare in training
-                n_communities = len(reference_graphs[0].communities) if reference_graphs else 10
-                
-                # Get the rarest communities
-                rarest_idx = np.argsort(community_freq)
-                num_rare = int(self.universe.K * transfer_difficulty)
-                rare_pool = rarest_idx[:num_rare]
-                
-                # Ensure we have enough communities to sample from
-                if len(rare_pool) < n_communities:
-                    remaining = np.setdiff1d(np.arange(self.universe.K), rare_pool)
-                    rare_pool = np.concatenate([rare_pool, remaining])
-                
-                communities = np.random.choice(rare_pool, size=min(n_communities, len(rare_pool)), replace=False).tolist()
-                
-            elif transfer_mode == "novel_communities":
-                # Include communities never or rarely seen during training
-                n_communities = len(reference_graphs[0].communities) if reference_graphs else 10
-                
-                # Sort communities by frequency
-                sorted_communities = np.argsort(community_freq)
-                
-                # Take some unseen/very rare communities
-                n_novel = max(1, int(transfer_difficulty * n_communities))
-                novel_communities = sorted_communities[:n_novel].tolist()
-                
-                # Take some familiar communities
-                n_familiar = n_communities - n_novel
-                familiar_pool = sorted_communities[n_novel:]
-                familiar_communities = np.random.choice(familiar_pool, size=min(n_familiar, len(familiar_pool)), replace=False).tolist()
-                
-                communities = novel_communities + familiar_communities
+                # Adjust feature regime parameters
+                feature_regime_strength = self.feature_regime_strength * (1 - transfer_difficulty)
+                feature_regime_overlap = self.feature_regime_overlap * (1 + transfer_difficulty)
                 
             else:
-                # Default to a random subset
-                n_communities = len(reference_graphs[0].communities) if reference_graphs else 10
-                communities = self.universe.sample_community_subset(
-                    size=n_communities,
-                    method="random"
-                )
+                raise ValueError(f"Unknown transfer mode: {transfer_mode}")
+                
+            # Sample number of nodes
+            n_nodes = np.random.randint(min_nodes, max_nodes + 1)
             
-            # Check and enhance connectivity if needed
-            if min_connection_strength > 0:
-                communities = self.universe.sample_connected_community_subset(
-                    size=len(communities),
-                    method="correlated",
-                    min_connection_strength=min_connection_strength,
-                    existing_communities=communities[:min(3, len(communities))]
-                )
-            
-            # Generate graph with these communities
+            # Generate graph
             graph = GraphSample(
                 universe=self.universe,
                 communities=communities,
                 n_nodes=n_nodes,
+                min_component_size=min_component_size,
                 degree_heterogeneity=degree_heterogeneity,
                 edge_noise=edge_noise,
-                min_component_size=min_component_size,  # Add parameter
-                indirect_influence=indirect_influence,  # Add indirect_influence parameter
-                seed=None
+                indirect_influence=indirect_influence,
+                feature_regime_balance=0.5,  # Renamed from feature_subtype_mixing
+                seed=seed + i if seed is not None else None
             )
             
-            # Only add graphs that have nodes after filtering
-            if graph.n_nodes > 0:
-                transfer_graphs.append(graph)
+            graphs.append(graph)
             
-        return transfer_graphs
+        return graphs
 
     def generate_node_features(
         self,
