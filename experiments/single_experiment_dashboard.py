@@ -58,18 +58,24 @@ def load_experiment_data(results_dir: str) -> tuple[pd.DataFrame, Dict[str, Any]
     
     return df, metadata
 
-def get_model_columns(df: pd.DataFrame) -> Dict[str, List[str]]:
+def get_model_columns(df: pd.DataFrame) -> tuple[Dict[str, List[str]], List[str]]:
     """Get columns grouped by model and metric type."""
     model_cols = {}
     metric_names = set()
     
     # Find all unique model prefixes and metric names
     for col in df.columns:
-        if any(col.startswith(f"{model}_") for model in ['GAT', 'GCN', 'SAGE', 'MLP', 'RandomForest']):
-            model_name, metric = col.split('_', 1)
-            if model_name not in model_cols:
-                model_cols[model_name] = []
-            model_cols[model_name].append(col)
+        # Check for task_model_metric pattern (e.g., community_GCN_accuracy)
+        parts = col.split('_')
+        if len(parts) >= 3 and parts[0] in ['community', 'regime', 'role']:
+            task = parts[0]
+            model_name = parts[1]
+            metric = '_'.join(parts[2:])  # Join remaining parts as metric name
+            
+            model_key = f"{task}_{model_name}"
+            if model_key not in model_cols:
+                model_cols[model_key] = []
+            model_cols[model_key].append(col)
             metric_names.add(metric)
     
     return model_cols, sorted(list(metric_names))
@@ -77,7 +83,7 @@ def get_model_columns(df: pd.DataFrame) -> Dict[str, List[str]]:
 def get_parameter_columns(df: pd.DataFrame) -> List[str]:
     """Get columns that represent experiment parameters."""
     # Parameters are columns that aren't model metrics or metadata
-    exclude_prefixes = ['GAT_', 'GCN_', 'SAGE_', 'MLP_', 'RandomForest_', 'experiment_', 'graph_']
+    exclude_prefixes = ['community_', 'regime_', 'role_', 'experiment_', 'graph_']
     return [col for col in df.columns if not any(col.startswith(prefix) for prefix in exclude_prefixes)]
 
 def create_scatter_plot(
@@ -228,6 +234,31 @@ with col3:
 
 # Get available columns for plotting
 model_cols, metric_names = get_model_columns(df)
+
+# Get available tasks
+available_tasks = sorted(list(set(col.split('_')[0] for col in df.columns 
+                              if any(col.startswith(f"{task}_") for task in ['community', 'regime', 'role']))))
+
+# Task Selection
+st.sidebar.markdown("### Task Selection")
+selected_task = st.sidebar.selectbox(
+    "Select Task",
+    available_tasks,
+    index=0 if 'community' in available_tasks else 0
+)
+
+# Filter model columns for selected task
+task_model_cols = {k: v for k, v in model_cols.items() if k.startswith(selected_task)}
+
+# Model Selection
+st.sidebar.markdown("### Model Selection")
+selected_models = st.sidebar.multiselect(
+    "Select Models to Compare",
+    list(task_model_cols.keys()),
+    default=list(task_model_cols.keys())[:2]
+)
+
+# Get parameter columns
 param_cols = get_parameter_columns(df)
 
 # Visualization Options
@@ -236,14 +267,6 @@ st.markdown('<div class="section-header">Visualization</div>', unsafe_allow_html
 viz_type = st.radio(
     "Visualization Type",
     ["2D Scatter Plot", "3D Scatter Plot"]
-)
-
-# Model Selection
-st.sidebar.markdown("### Model Selection")
-selected_models = st.sidebar.multiselect(
-    "Select Models to Compare",
-    list(model_cols.keys()),
-    default=list(model_cols.keys())[:2]
 )
 
 if viz_type == "2D Scatter Plot":

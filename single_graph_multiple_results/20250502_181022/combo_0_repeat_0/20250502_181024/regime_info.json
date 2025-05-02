@@ -1,0 +1,11 @@
+{
+  "rules": [
+    "(<function GenerativeRuleBasedLabeler.generate_rule.<locals>.<lambda> at 0x0000023AAB43D120>, 0, 'At 2-hop: Regime 0 < 0.22 AND 0.20 \u2264 Regime 1 \u2264 0.25 AND 0.16 \u2264 Regime 2 \u2264 0.20', 2)",
+    "(<function GenerativeRuleBasedLabeler.generate_rule.<locals>.<lambda> at 0x0000023AAB43CEA0>, 0, 'At 3-hop: Regime 4 > 0.19', 3)",
+    "(<function GenerativeRuleBasedLabeler.generate_rule.<locals>.<lambda> at 0x0000023AAB43CFE0>, 1, 'At 2-hop: Regime 4 > 1.0\u00d7Regime 2 AND Regime 1 > 0.5\u00d7Regime 3', 2)",
+    "(<function GenerativeRuleBasedLabeler.generate_rule.<locals>.<lambda> at 0x0000023AAB43D1C0>, 1, 'At 3-hop: Regime 1 > 0.24', 3)",
+    "(<function GenerativeRuleBasedLabeler.generate_rule.<locals>.<lambda> at 0x0000023AAB43D4E0>, 2, 'At 2-hop: Regime 4 < 0.24', 2)",
+    "(<function GenerativeRuleBasedLabeler.generate_rule.<locals>.<lambda> at 0x0000023AAB43D9E0>, 2, 'At 2-hop: Regime 0 < 0.20 AND Regime 1 > 0.5\u00d7Regime 2 AND Regime 2 > 0.5\u00d7Regime 4', 2)",
+    "(<function GenerativeRuleBasedLabeler.generate_rule.<locals>.<lambda> at 0x0000023AAB43DB20>, 3, 'At 3-hop: Regime 1 < 0.24', 3)"
+  ]
+}

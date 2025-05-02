@@ -13,6 +13,7 @@ import time
 import logging
 from typing import Dict, List, Optional, Tuple, Union, Any, Callable
 from sklearn.model_selection import train_test_split
+from torch_geometric.nn import GCNConv, GATConv, SAGEConv
 
 # Import for hyperparameter optimization
 import optuna
@@ -21,6 +22,7 @@ from optuna.samplers import TPESampler
 from optuna.pruners import MedianPruner
 
 from experiments.core.metrics import evaluate_node_classification
+from sklearn.metrics import accuracy_score, precision_recall_fscore_support
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -315,14 +317,29 @@ def train_gnn_model(
     if hasattr(model, 'output_dim') and model.output_dim != n_classes:
         if verbose:
             print(f"Adjusting model output dimension from {model.output_dim} to {n_classes}")
-        # Assuming last layer is Linear
-        old_linear = list(model.modules())[-1]
-        new_linear = nn.Linear(old_linear.in_features, n_classes, bias=old_linear.bias is not None)
-        # Replace the last layer
+        
+        # Get the last layer's input dimension
         if hasattr(model, 'convs'):
-            model.convs[-1] = new_linear
+            # For GNN models
+            old_conv = model.convs[-1]
+            if isinstance(old_conv, GCNConv):
+                in_dim = old_conv.in_channels
+            elif isinstance(old_conv, GATConv):
+                in_dim = old_conv.in_channels
+            elif isinstance(old_conv, SAGEConv):
+                in_dim = old_conv.in_channels
+            else:
+                in_dim = model.hidden_dim  # Fallback to hidden dimension
+                
+            # Create new output layer
+            model.convs[-1] = type(old_conv)(in_dim, n_classes)
+            model.output_dim = n_classes
         else:
-            model.lin = new_linear  # Adjust based on model architecture
+            # For MLP models
+            old_linear = model.layers[-1]
+            new_linear = nn.Linear(old_linear.in_features, n_classes, bias=old_linear.bias is not None)
+            model.layers[-1] = new_linear
+            
         model.output_dim = n_classes
     
     if verbose:

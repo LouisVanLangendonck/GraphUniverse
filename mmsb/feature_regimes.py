@@ -548,7 +548,7 @@ class GenerativeRuleBasedLabeler:
         if seed is not None:
             np.random.seed(seed)
     
-    def generate_rule(self, freq_vectors_by_hop: Dict[int, np.ndarray]) -> Tuple[Callable, str, int]:
+    def generate_rule(self, freq_vectors_by_hop: Dict[int, np.ndarray]) -> Tuple[Optional[Callable], Optional[str], Optional[int]]:
         """
         Generate a single rule.
         
@@ -556,139 +556,189 @@ class GenerativeRuleBasedLabeler:
             freq_vectors_by_hop: Dict mapping hop distance to frequency vectors
             
         Returns:
-            Tuple of (rule_function, rule_description, hop_distance)
+            Tuple of (rule_function, rule_description, hop_distance) or (None, None, None) if no valid rule found
         """
         # Pick random hop distance within specified range
         hop = np.random.randint(self.min_hop, self.max_hop + 1)
         freq_vectors = freq_vectors_by_hop[hop]
         
-        # Rest of the rule generation remains the same
-        n_conditions = np.random.randint(1, 4)
-        regimes = np.random.choice(freq_vectors.shape[1], size=n_conditions, replace=False)
+        # Get non-zero frequencies for each regime
+        regime_freqs = {}
+        for regime in range(freq_vectors.shape[1]):
+            freqs = freq_vectors[:, regime]
+            non_zero_freqs = freqs[freqs > 0.01]  # Consider frequencies above 1%
+            if len(non_zero_freqs) > 0:
+                regime_freqs[regime] = non_zero_freqs
+        
+        if not regime_freqs:
+            return None, None, None
+        
+        # Select regimes that have significant presence
+        valid_regimes = [r for r, f in regime_freqs.items() if len(f) >= int(freq_vectors.shape[0] * self.min_support)]
+        if not valid_regimes:
+            return None, None, None
+        
+        # Generate 1-2 conditions
+        n_conditions = np.random.randint(1, 3)
+        if len(valid_regimes) < n_conditions:
+            n_conditions = len(valid_regimes)
+        
+        selected_regimes = np.random.choice(valid_regimes, size=n_conditions, replace=False)
         
         conditions = []
         rule_str_parts = []
-        for regime in regimes:
-            freqs = freq_vectors[:, regime]
-            non_zero_freqs = freqs[freqs > 0]
-            
-            if len(non_zero_freqs) == 0:
-                continue
-                
-            condition_type = np.random.choice(['threshold', 'range', 'ratio'])
+        
+        for regime in selected_regimes:
+            freqs = regime_freqs[regime]
+            condition_type = np.random.choice(['threshold', 'range'])
             
             if condition_type == 'threshold':
-                threshold = np.random.choice(np.percentile(non_zero_freqs, [25, 50, 75]))
+                # Use more meaningful thresholds based on data distribution
+                threshold = np.percentile(freqs, np.random.choice([25, 50, 75]))
                 op = np.random.choice(['>', '<'])
-                conditions.append(lambda x, r=regime, t=threshold, o=op: 
-                                eval(f"x[r] {o} {t}"))
+                
+                # Create condition with proper closure
+                if op == '>':
+                    conditions.append(lambda x, r=regime, t=threshold: x[r] > t)
+                else:
+                    conditions.append(lambda x, r=regime, t=threshold: x[r] < t)
+                
                 rule_str_parts.append(f"Regime {regime} {op} {threshold:.2f}")
                 
             elif condition_type == 'range':
-                low = np.percentile(non_zero_freqs, 25)
-                high = np.percentile(non_zero_freqs, 75)
-                conditions.append(lambda x, r=regime, l=low, h=high: 
-                                l <= x[r] <= h)
-                rule_str_parts.append(f"{low:.2f} ≤ Regime {regime} ≤ {high:.2f}")
+                # Use interquartile range for more meaningful bounds
+                low = np.percentile(freqs, 25)
+                high = np.percentile(freqs, 75)
                 
-            elif condition_type == 'ratio':
-                other_regime = np.random.choice([r for r in range(freq_vectors.shape[1]) 
-                                               if r != regime])
-                ratio = np.random.choice([0.5, 1.0, 2.0])
-                conditions.append(lambda x, r1=regime, r2=other_regime, rat=ratio:
-                                x[r1] > rat * x[r2] if x[r2] > 0 else False)
-                rule_str_parts.append(f"Regime {regime} > {ratio}×Regime {other_regime}")
+                # Create condition with proper closure
+                conditions.append(lambda x, r=regime, l=low, h=high: l <= x[r] <= h)
+                rule_str_parts.append(f"{low:.2f} ≤ Regime {regime} ≤ {high:.2f}")
         
         if not conditions:
-            return self.generate_rule(freq_vectors_by_hop)
+            return None, None, None
         
+        # Combine conditions with AND
         rule_fn = lambda x: all(c(x) for c in conditions)
         rule_str = f"At {hop}-hop: " + " AND ".join(rule_str_parts)
         
         return rule_fn, rule_str, hop
-    
+
     def generate_rules(self, freq_vectors_by_hop: Dict[int, np.ndarray]) -> List[Tuple[Callable, int, str, int]]:
         """
-        Generate a set of rules and assign them to labels.
-        Makes sure rules have sufficient support and don't overlap too much.
-        Reserves last label for 'rest' class.
+        Generate rules for each label based on frequency vectors.
         
         Args:
-            freq_vectors_by_hop: Dict mapping hop distance to frequency vectors
+            freq_vectors_by_hop: Dict mapping hop distance (int) to frequency vectors
             
         Returns:
-            List of (rule_function, label, rule_description, hop_distance) tuples
+            List of tuples (rule_function, label, rule_description, hop_distance)
         """
-        rules = []
-        nodes_covered = set()
+        # Validate input
+        if not freq_vectors_by_hop:
+            raise ValueError("freq_vectors_by_hop cannot be empty")
+        
+        # Ensure all required hop distances are present
+        required_hops = set(range(self.min_hop, self.max_hop + 1))
+        available_hops = set(freq_vectors_by_hop.keys())
+        if not required_hops.issubset(available_hops):
+            raise ValueError(f"Missing frequency vectors for hop distances {required_hops - available_hops}")
+        
+        # Get dimensions from first frequency vector
         n_nodes = freq_vectors_by_hop[self.min_hop].shape[0]
-        max_attempts = 100
         
-        available_labels = list(range(self.n_labels - 1))
+        # Initialize rules list and tracking of covered nodes
+        rules = []
+        covered_nodes = np.zeros(n_nodes, dtype=bool)
         
-        for attempt in range(max_attempts):
-            if len(rules) >= len(available_labels) * self.max_rules_per_label:
-                break
-                
-            rule_fn, rule_str, hop = self.generate_rule(freq_vectors_by_hop)
+        # Generate rules for each label (except the last one which will be the "rest" class)
+        for label in range(self.n_labels - 1):
+            label_rules = []
+            max_attempts = 20  # Increased attempts for better rule generation
             
-            # Check which nodes this rule applies to
-            applicable_nodes = set()
-            for node in range(n_nodes):
-                if rule_fn(freq_vectors_by_hop[hop][node]):
-                    applicable_nodes.add(node)
+            while len(label_rules) < self.max_rules_per_label and max_attempts > 0:
+                rule_fn, rule_str, hop = self.generate_rule(freq_vectors_by_hop)
+                
+                if rule_fn is not None:
+                    # Apply rule to get nodes that match
+                    matching_nodes = np.array([rule_fn(freq_vectors_by_hop[hop][i]) 
+                                            for i in range(n_nodes)])
+                    
+                    # Only consider uncovered nodes for support calculation
+                    uncovered_matches = matching_nodes & ~covered_nodes
+                    support = np.mean(uncovered_matches)
+                    
+                    if support >= self.min_support:
+                        # Check overlap with existing rules for this label
+                        overlap = False
+                        for existing_rule, _, _ in label_rules:
+                            existing_matches = np.array([existing_rule(freq_vectors_by_hop[hop][i])
+                                                       for i in range(n_nodes)])
+                            if np.mean(matching_nodes & existing_matches) > 0.5 * support:
+                                overlap = True
+                                break
+                        
+                        if not overlap:
+                            label_rules.append((rule_fn, rule_str, hop))
+                            covered_nodes |= matching_nodes  # Mark these nodes as covered
+                            if len(label_rules) >= self.max_rules_per_label:
+                                break
+                
+                max_attempts -= 1
             
-            # Check support
-            support = len(applicable_nodes) / n_nodes
-            if support < self.min_support:
-                continue
-                
-            if applicable_nodes:
-                overlap = len(applicable_nodes & nodes_covered) / len(applicable_nodes)
-                if overlap > 0.5:
-                    continue
-                
-                label_counts = Counter(label for _, label, _, _ in rules)
-                label = min(available_labels, key=lambda l: label_counts[l])
-                
+            # Add rules for this label
+            for rule_fn, rule_str, hop in label_rules:
                 rules.append((rule_fn, label, rule_str, hop))
-                nodes_covered.update(applicable_nodes)
+            
+            # If no rules were generated for this label, try simpler rules
+            if not label_rules:
+                print(f"Warning: No rules generated for label {label}. Trying simpler rules...")
+                # Add a simple threshold-based rule
+                for hop in range(self.min_hop, self.max_hop + 1):
+                    freq_vectors = freq_vectors_by_hop[hop]
+                    for regime in range(freq_vectors.shape[1]):
+                        threshold = np.median(freq_vectors[:, regime])
+                        if threshold > 0:
+                            rule_fn = lambda x, r=regime, t=threshold: x[r] > t
+                            rule_str = f"At {hop}-hop: Regime {regime} > {threshold:.2f}"
+                            rules.append((rule_fn, label, rule_str, hop))
+                            break
+                    if len(rules) > 0 and rules[-1][1] == label:
+                        break
+        
+        # Ensure we have at least one rule
+        if not rules:
+            print("Warning: No rules generated. Adding default rule...")
+            # Add a simple default rule for label 0
+            hop = self.min_hop
+            rule_fn = lambda x: True  # Always matches
+            rule_str = "Default rule"
+            rules.append((rule_fn, 0, rule_str, hop))
         
         self.rules = rules
         return rules
-    
-    def apply_rules(self, freq_vectors_by_hop: Dict[int, np.ndarray]) -> Tuple[np.ndarray, List[str]]:
+
+    def apply_rules(self, freq_vectors_by_hop: Dict[int, np.ndarray]) -> Tuple[np.ndarray, np.ndarray]:
         """
-        Apply rules to generate labels for nodes.
-        If multiple rules apply, use the most specific one (most conditions).
-        If no rules apply, assign to the 'rest' label (n_labels - 1).
+        Apply rules to generate node labels.
         
         Args:
-            freq_vectors_by_hop: Dict mapping hop distance to frequency vectors
+            freq_vectors_by_hop: Dict mapping hop distance (int) to frequency vectors
             
         Returns:
-            Tuple of (node_labels, applied_rule_descriptions)
+            Tuple of (node_labels, applied_rules) where applied_rules[i] is the index
+            of the rule that generated the label for node i (or None if no rule matched)
         """
         n_nodes = freq_vectors_by_hop[self.min_hop].shape[0]
-        labels = np.full(n_nodes, -1)
-        applied_rules = [None] * n_nodes
+        labels = np.full(n_nodes, self.n_labels - 1)  # Initialize all nodes to "rest" class
+        applied_rules = np.full(n_nodes, None, dtype=object)
         
-        available_labels = list(range(self.n_labels - 1))
-        
-        for node in range(n_nodes):
-            matching_rules = []
-            
-            for rule_fn, label, rule_str, hop in self.rules:
-                if label in available_labels:
-                    if rule_fn(freq_vectors_by_hop[hop][node]):
-                        matching_rules.append((rule_str.count('AND'), label, rule_str))
-            
-            if matching_rules:
-                n_conditions, label, rule_str = max(matching_rules, key=lambda x: x[0])
-                labels[node] = label
-                applied_rules[node] = rule_str
-            else:
-                labels[node] = self.n_labels - 1
-                applied_rules[node] = "No rule matched - assigned to 'rest' class"
+        # Apply each rule in order
+        for rule_idx, (rule_fn, label, _, hop) in enumerate(self.rules):
+            # Only apply rule to unlabeled nodes
+            for i in range(n_nodes):
+                if labels[i] == self.n_labels - 1:  # Node still has "rest" class label
+                    if rule_fn(freq_vectors_by_hop[hop][i]):
+                        labels[i] = label
+                        applied_rules[i] = rule_idx
         
         return labels, applied_rules 

@@ -1,0 +1,82 @@
+{
+  "role_definitions": {
+    "0": {
+      "name": "Hub/Authority",
+      "description": "Role 0: 0.72\u00d72_star",
+      "top_motifs": [
+        [
+          "2_star",
+          0.7221860557243671
+        ]
+      ]
+    },
+    "1": {
+      "name": "Hub/Authority",
+      "description": "Role 1: 0.31\u00d72_star + 0.29\u00d7triangle",
+      "top_motifs": [
+        [
+          "2_star",
+          0.3114603559147411
+        ],
+        [
+          "triangle",
+          0.28702487801625115
+        ]
+      ]
+    },
+    "2": {
+      "name": "Hub/Authority",
+      "description": "Role 2: 142.29\u00d72_star + 6.37\u00d7triangle + 0.12\u00d7edge",
+      "top_motifs": [
+        [
+          "2_star",
+          142.28634492908645
+        ],
+        [
+          "triangle",
+          6.367574290437419
+        ],
+        [
+          "edge",
+          0.11698572536600148
+        ]
+      ]
+    },
+    "3": {
+      "name": "Role 3",
+      "description": "Role 3: 1.28\u00d7edge + 1.28\u00d7degree + 0.49\u00d72_star",
+      "top_motifs": [
+        [
+          "edge",
+          1.275660879947418
+        ],
+        [
+          "degree",
+          1.2756608799474178
+        ],
+        [
+          "2_star",
+          0.487243373722498
+        ]
+      ]
+    },
+    "4": {
+      "name": "Hub/Authority",
+      "description": "Role 4: 0.47\u00d72_star + 0.46\u00d7degree + 0.46\u00d7edge",
+      "top_motifs": [
+        [
+          "2_star",
+          0.4688733570321175
+        ],
+        [
+          "degree",
+          0.4606178051368098
+        ],
+        [
+          "edge",
+          0.46061780513680967
+        ]
+      ]
+    }
+  }
+}

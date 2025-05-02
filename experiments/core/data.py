@@ -13,13 +13,15 @@ from typing import Dict, List, Optional, Tuple, Union, Any
 
 from mmsb.model import GraphSample
 from experiments.core.config import ExperimentConfig
+from mmsb.feature_regimes import FeatureRegimeGenerator, NeighborhoodFeatureAnalyzer, GenerativeRuleBasedLabeler
+from utils.motif_and_role_analysis import MotifRoleAnalyzer
 
 
 def prepare_data(
     graph_sample: GraphSample,
     config: ExperimentConfig,
     feature_type: str = "membership"
-) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, int]:
+) -> Dict[str, Dict[str, Any]]:
     """
     Prepare data for model training from a GraphSample.
     
@@ -29,14 +31,20 @@ def prepare_data(
         feature_type: Type of features to use ("membership" or "random")
         
     Returns:
-        Tuple containing:
-        - features: Node features
-        - edge_index: Edge indices
-        - labels: Node labels
-        - train_idx: Training node indices
-        - val_idx: Validation node indices
-        - test_idx: Test node indices
-        - num_classes: Number of classes
+        Dictionary containing data for each task:
+        {
+            "community": {
+                "features": Node features,
+                "edge_index": Edge indices,
+                "labels": Node labels,
+                "train_idx": Training node indices,
+                "val_idx": Validation node indices,
+                "test_idx": Test node indices,
+                "num_classes": Number of classes
+            },
+            "regime": {...},
+            "role": {...}
+        }
     """
     # Debug information
     print("\nDebugging graph structure:")
@@ -65,10 +73,6 @@ def prepare_data(
     else:  # random features
         features = torch.randn((len(graph_sample.graph.nodes()), config.feature_dim))
     
-    # Get labels from node attributes
-    labels = torch.tensor([graph_sample.graph.nodes[n]['primary_community'] for n in graph_sample.graph.nodes()], dtype=torch.long)
-    num_classes = len(torch.unique(labels))
-    
     # Split data
     n_nodes = len(graph_sample.graph.nodes())
     indices = torch.randperm(n_nodes)
@@ -80,7 +84,113 @@ def prepare_data(
     val_idx = indices[train_size:train_size + val_size]
     test_idx = indices[train_size + val_size:]
     
-    return features, edge_index, labels, train_idx, val_idx, test_idx, num_classes
+    # Initialize results dictionary
+    task_data = {}
+    
+    # Prepare data for each task
+    for task in config.tasks:
+        if task == "community":
+            # Community prediction task (original task)
+            labels = torch.tensor([graph_sample.graph.nodes[n]['primary_community'] 
+                                 for n in graph_sample.graph.nodes()], dtype=torch.long)
+            num_classes = len(torch.unique(labels))
+            
+            task_data["community"] = {
+                "features": features,
+                "edge_index": edge_index,
+                "labels": labels,
+                "train_idx": train_idx,
+                "val_idx": val_idx,
+                "test_idx": test_idx,
+                "num_classes": num_classes
+            }
+            
+        elif task == "regime":
+            # Feature regime prediction task using rule-based generation
+            if not hasattr(graph_sample, 'neighborhood_analyzer'):
+                # Initialize neighborhood analyzer if not already done
+                graph_sample.neighborhood_analyzer = NeighborhoodFeatureAnalyzer(
+                    graph=graph_sample.graph,
+                    node_regimes=graph_sample.node_regimes,
+                    total_regimes=len(graph_sample.communities) * config.regimes_per_community,
+                    max_hops=config.regime_task_max_hop  # Use max_hop for analyzer initialization
+                )
+            
+            # Get frequency vectors for all hop distances in the specified range
+            freq_vectors_by_hop = {}
+            for k in range(config.regime_task_min_hop, config.regime_task_max_hop + 1):
+                freq_vectors_by_hop[k] = graph_sample.neighborhood_analyzer.get_all_frequency_vectors(k)
+            
+            # Generate rule-based labels
+            rule_generator = GenerativeRuleBasedLabeler(
+                n_labels=config.regime_task_n_labels,  # Use configured number of labels
+                min_support=config.regime_task_min_support,
+                max_rules_per_label=config.regime_task_max_rules_per_label,
+                min_hop=config.regime_task_min_hop,
+                max_hop=config.regime_task_max_hop,
+                seed=config.seed
+            )
+            
+            # Generate and apply rules
+            rules = rule_generator.generate_rules(freq_vectors_by_hop)
+            regime_labels, applied_rules = rule_generator.apply_rules(freq_vectors_by_hop)
+            
+            # Convert to tensor
+            regime_labels = torch.tensor(regime_labels, dtype=torch.long)
+            
+            task_data["regime"] = {
+                "features": features,
+                "edge_index": edge_index,
+                "labels": regime_labels,
+                "train_idx": train_idx,
+                "val_idx": val_idx,
+                "test_idx": test_idx,
+                "num_classes": config.regime_task_n_labels,  # Use configured number of labels
+                "rules": rules,  # Store rules for interpretation
+                "applied_rules": applied_rules,  # Store which rules were applied to each node
+                "freq_vectors_by_hop": freq_vectors_by_hop  # Store frequency vectors for analysis
+            }
+            
+        elif task == "role":
+            print("\nTraining models for role prediction task...")
+            
+            # Structural role prediction task
+            role_analyzer = MotifRoleAnalyzer(
+                graph_sample,
+                max_motif_size=config.role_task_max_motif_size,
+                n_roles=config.role_task_n_roles,
+                verbose=True
+            )
+            
+            # Get role labels (primary role for each node)
+            role_analyzer.discover_structural_roles()  # This computes the role membership matrix
+            role_labels = role_analyzer.get_primary_roles()  # Get primary role for each node
+            
+            # Print diagnostic information
+            print("\nDiagnostic Information:")
+            print(f"Features shape: {features.shape}")
+            print(f"Labels shape: {role_labels.shape}")
+            print(f"Number of unique labels: {len(np.unique(role_labels))}")
+            print(f"Label range: [{role_labels.min()}, {role_labels.max()}]")
+            print(f"Train indices range: [{train_idx.min()}, {train_idx.max()}] (length: {len(train_idx)})")
+            print(f"Val indices range: [{val_idx.min()}, {val_idx.max()}] (length: {len(val_idx)})")
+            print(f"Test indices range: [{test_idx.min()}, {test_idx.max()}] (length: {len(test_idx)})")
+            
+            # Convert to tensor
+            role_labels = torch.tensor(role_labels, dtype=torch.long)
+            
+            task_data["role"] = {
+                "features": features,
+                "edge_index": edge_index,
+                "labels": role_labels,
+                "train_idx": train_idx,
+                "val_idx": val_idx,
+                "test_idx": test_idx,
+                "num_classes": config.role_task_n_roles,
+                "role_analyzer": role_analyzer  # Store analyzer for interpretation
+            }
+    
+    return task_data
 
 
 def networkx_to_pyg(

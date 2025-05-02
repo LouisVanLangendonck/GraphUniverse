@@ -131,8 +131,11 @@ class Experiment:
                 block_structure=self.config.block_structure,
                 edge_density=self.config.edge_density,
                 homophily=self.config.homophily,
-                feature_signal=self.config.feature_signal,
-                randomness_factor=self.config.randomness_factor
+                randomness_factor=self.config.randomness_factor,
+                mixed_membership=self.config.mixed_membership,
+                regimes_per_community=self.config.regimes_per_community,
+                intra_community_regime_similarity=self.config.intra_community_regime_similarity,
+                inter_community_regime_similarity=self.config.inter_community_regime_similarity
             )
             
             # Generate graph sample
@@ -143,7 +146,8 @@ class Experiment:
                 min_component_size=self.config.min_component_size,
                 degree_heterogeneity=self.config.degree_heterogeneity,
                 edge_noise=self.config.edge_noise,
-                indirect_influence=self.config.indirect_influence
+                indirect_influence=self.config.indirect_influence,
+                feature_regime_balance=self.config.feature_regime_balance
             )
             
             # Calculate real graph properties
@@ -156,8 +160,8 @@ class Experiment:
             # Store real graph properties in the graph sample
             graph_sample.real_graph_properties = real_graph_properties
             
-            # Prepare data
-            features, edge_index, labels, train_idx, val_idx, test_idx, num_classes = prepare_data(
+            # Prepare data for all tasks
+            task_data = prepare_data(
                 graph_sample=graph_sample,
                 config=self.config,
                 feature_type=self.config.feature_type
@@ -166,14 +170,9 @@ class Experiment:
             # Store results
             self.results = {
                 "graph_sample": graph_sample,
-                "features": features,
-                "edge_index": edge_index,
-                "labels": labels,
-                "train_idx": train_idx,
-                "val_idx": val_idx,
-                "test_idx": test_idx,
-                "num_classes": num_classes,
-                "real_graph_properties": real_graph_properties
+                "task_data": task_data,
+                "real_graph_properties": real_graph_properties,
+                "model_results": {}
             }
             
             # Run models with hyperparameter optimization
@@ -188,107 +187,114 @@ class Experiment:
             raise
     
     def _run_models(self) -> None:
-        """Run all models for the experiment with hyperparameter optimization if enabled."""
+        """Run all models for each task with hyperparameter optimization if enabled."""
         try:
-            # Move data to device
+            # Move data to device for each task
             if self.device.type == "cuda":
-                self.results["features"] = self.results["features"].to(self.device)
-                self.results["edge_index"] = self.results["edge_index"].to(self.device)
-                self.results["labels"] = self.results["labels"].to(self.device)
-                self.results["train_idx"] = self.results["train_idx"].to(self.device)
-                self.results["val_idx"] = self.results["val_idx"].to(self.device)
-                self.results["test_idx"] = self.results["test_idx"].to(self.device)
+                for task_name, data in self.results["task_data"].items():
+                    data["features"] = data["features"].to(self.device)
+                    data["edge_index"] = data["edge_index"].to(self.device)
+                    data["labels"] = data["labels"].to(self.device)
+                    data["train_idx"] = data["train_idx"].to(self.device)
+                    data["val_idx"] = data["val_idx"].to(self.device)
+                    data["test_idx"] = data["test_idx"].to(self.device)
             
-            # Train models
+            # Train models for each task
             model_results = {}
             
-            if self.config.run_gnn:
-                for gnn_type in self.config.gnn_types:
-                    print(f"\nTraining {gnn_type.upper()} model...")
-                    # Placeholder for GNN model!
-                    model = GNNModel(
-                        input_dim=self.results["features"].shape[1],
+            for task_name, data in self.results["task_data"].items():
+                print(f"\nTraining models for {task_name} prediction task...")
+                task_results = {}
+                
+                if self.config.run_gnn:
+                    for gnn_type in self.config.gnn_types:
+                        print(f"\nTraining {gnn_type.upper()} model...")
+                        model = GNNModel(
+                            input_dim=data["features"].shape[1],
+                            hidden_dim=64,
+                            output_dim=data["num_classes"],
+                            gnn_type=gnn_type
+                        ).to(self.device)
+                        
+                        result = train_gnn_model(
+                            model, 
+                            data["features"], 
+                            data["edge_index"], 
+                            data["labels"],
+                            data["train_idx"], 
+                            data["val_idx"], 
+                            data["test_idx"],
+                            epochs=self.config.epochs,
+                            patience=self.config.patience,
+                            optimize=self.config.optimize_hyperparams,
+                            n_trials=self.config.n_trials,
+                            timeout=self.config.opt_timeout
+                        )
+                        task_results[f"{gnn_type.upper()}"] = result
+                        
+                        # Log hyperparameter optimization results if available
+                        if 'hyperopt_results' in result:
+                            print(f"Best hyperparameters for {gnn_type.upper()}: {result['hyperopt_results']['best_params']}")
+                            print(f"Best validation score: {result['hyperopt_results']['best_value']:.4f}")
+                
+                if self.config.run_mlp:
+                    print("\nTraining MLP model...")
+                    model = MLPModel(
+                        input_dim=data["features"].shape[1],
                         hidden_dim=64,
-                        output_dim=self.results["num_classes"],
-                        gnn_type=gnn_type
+                        output_dim=data["num_classes"],
+                        num_layers=2,
+                        dropout=0.5
                     ).to(self.device)
                     
-                    result = train_gnn_model(
+                    result = train_mlp_model(
                         model, 
-                        self.results["features"], 
-                        self.results["edge_index"], 
-                        self.results["labels"],
-                        self.results["train_idx"], 
-                        self.results["val_idx"], 
-                        self.results["test_idx"],
+                        data["features"], 
+                        data["labels"],
+                        data["train_idx"], 
+                        data["val_idx"], 
+                        data["test_idx"],
                         epochs=self.config.epochs,
                         patience=self.config.patience,
                         optimize=self.config.optimize_hyperparams,
                         n_trials=self.config.n_trials,
                         timeout=self.config.opt_timeout
                     )
-                    model_results[f"{gnn_type.upper()}"] = result
+                    task_results["MLP"] = result
                     
                     # Log hyperparameter optimization results if available
                     if 'hyperopt_results' in result:
-                        print(f"Best hyperparameters for {gnn_type.upper()}: {result['hyperopt_results']['best_params']}")
+                        print(f"Best hyperparameters for MLP: {result['hyperopt_results']['best_params']}")
                         print(f"Best validation score: {result['hyperopt_results']['best_value']:.4f}")
-            
-            if self.config.run_mlp:
-                print("\nTraining MLP model...")
-                model = MLPModel(
-                    input_dim=self.results["features"].shape[1],
-                    hidden_dim=64,
-                    output_dim=self.results["num_classes"],
-                    num_layers=2,
-                    dropout=0.5
-                ).to(self.device)
                 
-                result = train_mlp_model(
-                    model, 
-                    self.results["features"], 
-                    self.results["labels"],
-                    self.results["train_idx"], 
-                    self.results["val_idx"], 
-                    self.results["test_idx"],
-                    epochs=self.config.epochs,
-                    patience=self.config.patience,
-                    optimize=self.config.optimize_hyperparams,
-                    n_trials=self.config.n_trials,
-                    timeout=self.config.opt_timeout
-                )
-                model_results["MLP"] = result
+                if self.config.run_rf:
+                    print("\nTraining Random Forest model...")
+                    model = SklearnModel(
+                        input_dim=data["features"].shape[1],
+                        output_dim=data["num_classes"]
+                    )
+                    result = train_sklearn_model(
+                        model, 
+                        data["features"], 
+                        data["labels"],
+                        data["train_idx"], 
+                        data["val_idx"], 
+                        data["test_idx"],
+                        optimize=self.config.optimize_hyperparams,
+                        n_trials=self.config.n_trials,
+                        timeout=self.config.opt_timeout
+                    )
+                    task_results["RandomForest"] = result
+                    
+                    # Log hyperparameter optimization results if available
+                    if 'hyperopt_results' in result:
+                        print(f"Best hyperparameters for RandomForest: {result['hyperopt_results']['best_params']}")
+                        print(f"Best validation score: {result['hyperopt_results']['best_value']:.4f}")
                 
-                # Log hyperparameter optimization results if available
-                if 'hyperopt_results' in result:
-                    print(f"Best hyperparameters for MLP: {result['hyperopt_results']['best_params']}")
-                    print(f"Best validation score: {result['hyperopt_results']['best_value']:.4f}")
+                # Store results for this task
+                model_results[task_name] = task_results
             
-            if self.config.run_rf:
-                print("\nTraining Random Forest model...")
-                model = SklearnModel(
-                    input_dim=self.results["features"].shape[1],
-                    output_dim=self.results["num_classes"]
-                )
-                result = train_sklearn_model(
-                    model, 
-                    self.results["features"], 
-                    self.results["labels"],
-                    self.results["train_idx"], 
-                    self.results["val_idx"], 
-                    self.results["test_idx"],
-                    optimize=self.config.optimize_hyperparams,
-                    n_trials=self.config.n_trials,
-                    timeout=self.config.opt_timeout
-                )
-                model_results["RandomForest"] = result
-                
-                # Log hyperparameter optimization results if available
-                if 'hyperopt_results' in result:
-                    print(f"Best hyperparameters for RandomForest: {result['hyperopt_results']['best_params']}")
-                    print(f"Best validation score: {result['hyperopt_results']['best_value']:.4f}")
-            
-            # Store model results
+            # Store all model results
             self.results["model_results"] = model_results
             
         except Exception as e:
@@ -299,23 +305,26 @@ class Experiment:
         try:
             # Create a serializable version of model results
             serializable_results = {}
-            for model_name, result in self.results["model_results"].items():
-                serializable_model = {
-                    "test_acc": result.get("test_acc", 0),
-                    "train_time": result.get("train_time", 0),
-                    "metrics": result.get("metrics", {}),
-                    "history": result.get("history", {})
-                }
-                
-                # Add hyperparameter optimization results if available
-                if 'hyperopt_results' in result:
-                    serializable_model["hyperopt_results"] = {
-                        "best_params": result["hyperopt_results"].get("best_params", {}),
-                        "best_value": result["hyperopt_results"].get("best_value", 0.0),
-                        "n_trials": result["hyperopt_results"].get("n_trials", 0)
+            for task_name, task_results in self.results["model_results"].items():
+                serializable_task = {}
+                for model_name, result in task_results.items():
+                    serializable_model = {
+                        "test_acc": result.get("test_acc", 0),
+                        "train_time": result.get("train_time", 0),
+                        "metrics": result.get("metrics", {}),
+                        "history": result.get("history", {})
                     }
-                
-                serializable_results[model_name] = serializable_model
+                    
+                    # Add hyperparameter optimization results if available
+                    if 'hyperopt_results' in result:
+                        serializable_model["hyperopt_results"] = {
+                            "best_params": result["hyperopt_results"].get("best_params", {}),
+                            "best_value": result["hyperopt_results"].get("best_value", 0.0),
+                            "n_trials": result["hyperopt_results"].get("n_trials", 0)
+                        }
+                    
+                    serializable_task[model_name] = serializable_model
+                serializable_results[task_name] = serializable_task
             
             # Save model results
             model_results_path = os.path.join(self.output_dir, "model_results.json")
@@ -326,6 +335,22 @@ class Experiment:
             real_props_path = os.path.join(self.output_dir, "real_graph_properties.json")
             with open(real_props_path, 'w') as f:
                 json.dump(self.results["real_graph_properties"], f, indent=2)
+            
+            # Save task-specific information
+            for task_name, data in self.results["task_data"].items():
+                task_info = {}
+                
+                # Save task-specific metadata
+                if task_name == "regime" and "rules" in data:
+                    task_info["rules"] = [str(rule) for rule in data["rules"]]
+                elif task_name == "role" and "role_analyzer" in data:
+                    role_analyzer = data["role_analyzer"]
+                    task_info["role_definitions"] = role_analyzer.interpret_roles()
+                
+                if task_info:
+                    task_path = os.path.join(self.output_dir, f"{task_name}_info.json")
+                    with open(task_path, 'w') as f:
+                        json.dump(task_info, f, indent=2)
             
             # Save graph sample
             graph_sample_path = os.path.join(self.output_dir, "graph_sample.pkl")

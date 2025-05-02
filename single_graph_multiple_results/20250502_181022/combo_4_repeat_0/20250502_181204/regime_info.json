@@ -1,0 +1,14 @@
+{
+  "rules": [
+    "(<function GenerativeRuleBasedLabeler.generate_rule.<locals>.<lambda> at 0x0000023A99A6F920>, 0, 'At 3-hop: Regime 3 > 0.5\u00d7Regime 6', 3)",
+    "(<function GenerativeRuleBasedLabeler.generate_rule.<locals>.<lambda> at 0x0000023A999DFBA0>, 0, 'At 2-hop: Regime 1 < 0.12 AND Regime 9 < 0.12', 2)",
+    "(<function GenerativeRuleBasedLabeler.generate_rule.<locals>.<lambda> at 0x0000023A999FC680>, 0, 'At 2-hop: 0.08 \u2264 Regime 9 \u2264 0.14 AND Regime 10 < 0.10', 2)",
+    "(<function GenerativeRuleBasedLabeler.generate_rule.<locals>.<lambda> at 0x0000023AAB43CD60>, 1, 'At 3-hop: 0.06 \u2264 Regime 0 \u2264 0.10 AND 0.13 \u2264 Regime 2 \u2264 0.21', 3)",
+    "(<function GenerativeRuleBasedLabeler.generate_rule.<locals>.<lambda> at 0x0000023AD4504680>, 1, 'At 2-hop: Regime 1 > 0.12 AND 0.08 \u2264 Regime 9 \u2264 0.14 AND Regime 4 > 0.5\u00d7Regime 10', 2)",
+    "(<function GenerativeRuleBasedLabeler.generate_rule.<locals>.<lambda> at 0x0000023AD4504400>, 1, 'At 2-hop: 0.10 \u2264 Regime 7 \u2264 0.15 AND 0.03 \u2264 Regime 3 \u2264 0.05', 2)",
+    "(<function GenerativeRuleBasedLabeler.generate_rule.<locals>.<lambda> at 0x0000023AAB43C7C0>, 2, 'At 2-hop: Regime 7 < 0.15', 2)",
+    "(<function GenerativeRuleBasedLabeler.generate_rule.<locals>.<lambda> at 0x0000023AD45042C0>, 3, 'At 3-hop: 0.08 \u2264 Regime 8 \u2264 0.19 AND 0.03 \u2264 Regime 6 \u2264 0.06 AND 0.07 \u2264 Regime 4 \u2264 0.13', 3)",
+    "(<function GenerativeRuleBasedLabeler.generate_rule.<locals>.<lambda> at 0x0000023AD44899E0>, 3, 'At 2-hop: Regime 8 < 0.18 AND Regime 9 > 0.5\u00d7Regime 0 AND 0.02 \u2264 Regime 6 \u2264 0.03', 2)",
+    "(<function GenerativeRuleBasedLabeler.generate_rule.<locals>.<lambda> at 0x0000023AD4489260>, 3, 'At 3-hop: Regime 10 > 0.11', 3)"
+  ]
+}

@@ -1,0 +1,74 @@
+{
+  "role_definitions": {
+    "0": {
+      "name": "Hub/Authority",
+      "description": "Role 0: 1.02\u00d72_star",
+      "top_motifs": [
+        [
+          "2_star",
+          1.0197678248998776
+        ]
+      ]
+    },
+    "1": {
+      "name": "Hub/Authority",
+      "description": "Role 1: 0.32\u00d72_star + 0.23\u00d7triangle",
+      "top_motifs": [
+        [
+          "2_star",
+          0.31999826069553816
+        ],
+        [
+          "triangle",
+          0.22902368572269857
+        ]
+      ]
+    },
+    "2": {
+      "name": "Peripheral Hub",
+      "description": "Role 2: 1.01\u00d7degree + 1.01\u00d7edge",
+      "top_motifs": [
+        [
+          "degree",
+          1.0102149779187783
+        ],
+        [
+          "edge",
+          1.0075878030336665
+        ]
+      ]
+    },
+    "3": {
+      "name": "Hub/Authority",
+      "description": "Role 3: 2.68\u00d72_star + 0.30\u00d7triangle",
+      "top_motifs": [
+        [
+          "2_star",
+          2.6773398223983937
+        ],
+        [
+          "triangle",
+          0.30205075181838065
+        ]
+      ]
+    },
+    "4": {
+      "name": "Hub/Authority",
+      "description": "Role 4: 2.15\u00d72_star + 0.24\u00d7edge + 0.24\u00d7degree",
+      "top_motifs": [
+        [
+          "2_star",
+          2.1492563509536255
+        ],
+        [
+          "edge",
+          0.237736524995714
+        ],
+        [
+          "degree",
+          0.23662082048517835
+        ]
+      ]
+    }
+  }
+}

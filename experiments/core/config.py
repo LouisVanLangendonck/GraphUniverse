@@ -16,7 +16,6 @@ class ExperimentConfig:
     feature_dim: int = 32
     edge_density: float = 0.1  # Overall target edge density
     homophily: float = 0.8  # Controls ratio between intra/inter probabilities (0=equal, 1=max)
-    feature_signal: float = 0.5
     randomness_factor: float = 0.1
     overlap_density: float = 0.2
     min_connection_strength: float = 0.05
@@ -27,7 +26,23 @@ class ExperimentConfig:
     overlap_structure: str = "random"
     edge_noise: float = 0.0
     feature_type: str = "generated"
-    mixed_membership: bool = True
+    mixed_membership: bool = False  # Default to non-mixed membership
+    
+    # Feature regime parameters
+    regimes_per_community: int = 2
+    intra_community_regime_similarity: float = 0.2  # Default to low intra-community similarity
+    inter_community_regime_similarity: float = 0.9  # Default to high inter-community similarity
+    feature_regime_balance: float = 0.3  # Default to unbalanced regimes
+    
+    # Task parameters
+    tasks: List[str] = field(default_factory=lambda: ["community"])  # Default to just community task
+    regime_task_min_hop: int = 1
+    regime_task_max_hop: int = 3
+    regime_task_n_labels: int = 4
+    regime_task_min_support: float = 0.1
+    regime_task_max_rules_per_label: int = 3
+    role_task_max_motif_size: int = 3
+    role_task_n_roles: int = 5
     
     # Model parameters
     gnn_types: List[str] = field(default_factory=lambda: ['gat', 'gcn', 'sage'])

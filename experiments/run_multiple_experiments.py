@@ -30,21 +30,25 @@ def parse_args():
     parser = argparse.ArgumentParser(description='Run multiple MMSB Graph Learning Experiments')
     
     # Parameters to vary
-    parser.add_argument('--vary', type=str, nargs='+', default=['feature_signal', 'homophily'],
+    parser.add_argument('--vary', type=str, nargs='+', default=['homophily'],
                         choices=[
                             'num_communities',
                             'num_nodes',
                             'feature_dim',
                             'edge_density',
                             'homophily', 
-                            'feature_signal',
                             'randomness_factor',
                             'overlap_density',
                             'min_connection_strength',
                             'min_component_size',
                             'degree_heterogeneity',
                             'indirect_influence',
-                            'mixed_membership' 
+                            'mixed_membership',
+                            # Feature regime parameters
+                            'regimes_per_community',
+                            'intra_community_regime_similarity',
+                            'inter_community_regime_similarity',
+                            'feature_regime_balance'
                         ],
                         help='Parameters to vary across experiments')
     
@@ -53,10 +57,43 @@ def parse_args():
                         help='Enable mixed membership model')
     parser.add_argument('--no_mixed_membership', action='store_false', dest='mixed_membership',
                         help='Disable mixed membership model (use standard SBM)')
-    parser.set_defaults(mixed_membership=True)
+    parser.set_defaults(mixed_membership=False)
+    
+    # Task selection
+    parser.add_argument('--tasks', type=str, nargs='+', default=['regime'], #, 'regime', 'role'],
+                        choices=['community', 'regime', 'role'],
+                        help='Learning tasks to run')
+    
+    # Feature regime parameters
+    parser.add_argument('--regimes_per_community', type=int, default=4,
+                        help='Number of feature regimes per community')
+    parser.add_argument('--intra_community_regime_similarity', type=float, default=0.2,
+                        help='How similar regimes within same community should be (0-1)')
+    parser.add_argument('--inter_community_regime_similarity', type=float, default=0.9,
+                        help='How similar regimes between communities should be (0-1)')
+    parser.add_argument('--feature_regime_balance', type=float, default=0.3,
+                        help='How evenly regimes are distributed within communities (0-1)')
+    
+    # Feature regime task parameters
+    parser.add_argument('--regime_task_min_hop', type=int, default=2,
+                        help='Minimum hop distance for regime task neighborhood analysis')
+    parser.add_argument('--regime_task_max_hop', type=int, default=3,
+                        help='Maximum hop distance for regime task neighborhood analysis')
+    parser.add_argument('--regime_task_n_labels', type=int, default=5,
+                        help='Number of labels to generate for regime task')
+    parser.add_argument('--regime_task_min_support', type=float, default=0.1,
+                        help='Minimum support for regime task rules')
+    parser.add_argument('--regime_task_max_rules_per_label', type=int, default=3,
+                        help='Maximum number of rules per label for regime task')
+    
+    # Role task parameters
+    parser.add_argument('--role_task_max_motif_size', type=int, default=3,
+                        help='Maximum motif size for role analysis')
+    parser.add_argument('--role_task_n_roles', type=int, default=5,
+                        help='Number of structural roles to discover')
     
     # Model selection and training parameters
-    parser.add_argument('--gnn_types', type=str, nargs='+', default=['gcn', 'sage'],#['gat', 'gcn', 'sage'],
+    parser.add_argument('--gnn_types', type=str, nargs='+', default=['gcn'], #, 'sage'],
                         choices=['gcn', 'gat', 'sage'],
                         help='Types of GNN models to run')
     parser.add_argument('--skip_gnn', action='store_true',
@@ -73,7 +110,7 @@ def parse_args():
     # Hyperparameter optimization parameters
     parser.add_argument('--optimize_hyperparams', action='store_true',
                         help='Enable hyperparameter optimization for each model')
-    parser.add_argument('--n_trials', type=int, default=20,
+    parser.add_argument('--n_trials', type=int, default=15,
                         help='Number of hyperparameter optimization trials')
     parser.add_argument('--opt_timeout', type=int, default=300,
                         help='Timeout in seconds for hyperparameter optimization')
@@ -89,8 +126,6 @@ def parse_args():
                         help='Range for overall edge density (start, end, step)')
     parser.add_argument('--homophily_range', type=float, nargs=3, default=[0.0, 1.0, 0.1],
                         help='Range for homophily - controls intra/inter community ratio (0=equal, 1=max homophily)')
-    parser.add_argument('--feature_signal_range', type=float, nargs=3, default=[0.00, 0.08, 0.02],
-                        help='Range for feature_signal (start, end, step)')
     parser.add_argument('--randomness_factor_range', type=float, nargs=3, default=[0.0, 1.0, 0.25],
                         help='Range for randomness_factor (start, end, step)')
     parser.add_argument('--overlap_density_range', type=float, nargs=3, default=[0.0, 0.5, 0.25],
@@ -104,8 +139,18 @@ def parse_args():
     parser.add_argument('--indirect_influence_range', type=float, nargs=3, default=[0.0, 0.0, 0.0],
                         help='Range for indirect_influence (start, end, step)')
     
+    # Feature regime parameter ranges
+    parser.add_argument('--regimes_per_community_range', type=int, nargs=3, default=[1, 3, 1],
+                        help='Range for regimes_per_community (start, end, step)')
+    parser.add_argument('--intra_community_regime_similarity_range', type=float, nargs=3, default=[0.3, 1.0, 0.05],
+                        help='Range for intra_community_regime_similarity (start, end, step)')
+    parser.add_argument('--inter_community_regime_similarity_range', type=float, nargs=3, default=[0.85, 1.0, 0.05],
+                        help='Range for inter_community_regime_similarity (start, end, step)')
+    parser.add_argument('--feature_regime_balance_range', type=float, nargs=3, default=[0.1, 0.9, 0.2],
+                        help='Range for feature_regime_balance (start, end, step)')
+    
     # Experiment control
-    parser.add_argument('--n_repeats', type=int, default=2,
+    parser.add_argument('--n_repeats', type=int, default=1,
                         help='Number of times to repeat each parameter combination')
     parser.add_argument('--results_dir', type=str, default='single_graph_multiple_results',
                         help='Directory to save all experiment results')
@@ -177,13 +222,17 @@ def run_experiments(args):
         'feature_dim': args.feature_dim_range,
         'edge_density': args.edge_density_range,  # Now controls overall density
         'homophily': args.homophily_range,       # Now controls intra/inter ratio
-        'feature_signal': args.feature_signal_range,
         'randomness_factor': args.randomness_factor_range,
         'overlap_density': args.overlap_density_range,
         'min_connection_strength': args.min_connection_strength_range,
         'min_component_size': args.min_component_size_range,
         'degree_heterogeneity': args.degree_heterogeneity_range,
-        'indirect_influence': args.indirect_influence_range
+        'indirect_influence': args.indirect_influence_range,
+        # Feature regime parameters
+        'regimes_per_community': args.regimes_per_community_range,
+        'intra_community_regime_similarity': args.intra_community_regime_similarity_range,
+        'inter_community_regime_similarity': args.inter_community_regime_similarity_range,
+        'feature_regime_balance': args.feature_regime_balance_range
     }
     
     # Run experiments
@@ -211,6 +260,16 @@ def run_experiments(args):
                     else:
                         random_value = np.random.uniform(start, end)
                     setattr(config, param, random_value)
+            
+            # Set task parameters
+            config.tasks = args.tasks
+            config.regime_task_min_hop = args.regime_task_min_hop
+            config.regime_task_max_hop = args.regime_task_max_hop
+            config.regime_task_n_labels = args.regime_task_n_labels
+            config.regime_task_min_support = args.regime_task_min_support
+            config.regime_task_max_rules_per_label = args.regime_task_max_rules_per_label
+            config.role_task_max_motif_size = args.role_task_max_motif_size
+            config.role_task_n_roles = args.role_task_n_roles
             
             # Set model parameters
             config.gnn_types = args.gnn_types
@@ -252,11 +311,15 @@ def run_experiments(args):
                 'feature_dim',
                 'edge_density',
                 'homophily',
-                'feature_signal',
                 'randomness_factor',
                 'min_connection_strength',
                 'min_component_size',
-                'indirect_influence'
+                'indirect_influence',
+                # Feature regime parameters
+                'regimes_per_community',
+                'intra_community_regime_similarity',
+                'inter_community_regime_similarity',
+                'feature_regime_balance'
             ]
             
             for param in input_params:
@@ -274,37 +337,38 @@ def run_experiments(args):
                 for key, value in real_props.items():
                     result[key] = value
             
-            # Add model metrics
-            for model_name, model_result in results["model_results"].items():
-                # Basic metrics
-                result[f"{model_name}_accuracy"] = model_result.get('test_acc', 0)
-                result[f"{model_name}_train_time"] = model_result.get('train_time', 0)
-                
-                # Detailed metrics
-                metrics = model_result.get('metrics', {})
-                for metric_type in ['metrics_macro', 'metrics_micro', 'metrics_weighted']:
-                    if metric_type in metrics:
-                        for metric_name, metric_value in metrics[metric_type].items():
-                            result[f"{model_name}_{metric_type}_{metric_name}"] = metric_value
-                
-                # Training history
-                if 'history' in model_result:
-                    history = model_result['history']
-                    result[f"{model_name}_final_train_loss"] = history['train_loss'][-1]
-                    result[f"{model_name}_final_val_loss"] = history['val_loss'][-1]
-                    result[f"{model_name}_best_val_acc"] = max(history['val_acc'])
-                    result[f"{model_name}_epochs_trained"] = len(history['train_loss'])
-                
-                # Hyperparameter optimization results
-                if 'hyperopt_results' in model_result:
-                    hyperopt = model_result['hyperopt_results']
-                    result[f"{model_name}_best_val_score"] = hyperopt.get('best_value', 0)
-                    result[f"{model_name}_n_trials"] = hyperopt.get('n_trials', 0)
+            # Add model metrics for each task
+            for task_name, task_results in results["model_results"].items():
+                for model_name, model_result in task_results.items():
+                    # Basic metrics
+                    result[f"{task_name}_{model_name}_accuracy"] = model_result.get('test_acc', 0)
+                    result[f"{task_name}_{model_name}_train_time"] = model_result.get('train_time', 0)
                     
-                    # Store best hyperparameters
-                    best_params = hyperopt.get('best_params', {})
-                    for param_name, param_value in best_params.items():
-                        result[f"{model_name}_param_{param_name}"] = param_value
+                    # Detailed metrics
+                    metrics = model_result.get('metrics', {})
+                    for metric_type in ['metrics_macro', 'metrics_micro', 'metrics_weighted']:
+                        if metric_type in metrics:
+                            for metric_name, metric_value in metrics[metric_type].items():
+                                result[f"{task_name}_{model_name}_{metric_type}_{metric_name}"] = metric_value
+                    
+                    # Training history
+                    if 'history' in model_result:
+                        history = model_result['history']
+                        result[f"{task_name}_{model_name}_final_train_loss"] = history['train_loss'][-1]
+                        result[f"{task_name}_{model_name}_final_val_loss"] = history['val_loss'][-1]
+                        result[f"{task_name}_{model_name}_best_val_acc"] = max(history['val_acc'])
+                        result[f"{task_name}_{model_name}_epochs_trained"] = len(history['train_loss'])
+                    
+                    # Hyperparameter optimization results
+                    if 'hyperopt_results' in model_result:
+                        hyperopt = model_result['hyperopt_results']
+                        result[f"{task_name}_{model_name}_best_val_score"] = hyperopt.get('best_value', 0)
+                        result[f"{task_name}_{model_name}_n_trials"] = hyperopt.get('n_trials', 0)
+                        
+                        # Store best hyperparameters
+                        best_params = hyperopt.get('best_params', {})
+                        for param_name, param_value in best_params.items():
+                            result[f"{task_name}_{model_name}_param_{param_name}"] = param_value
             
             all_results.append(result)
             
@@ -323,6 +387,7 @@ def run_experiments(args):
                 "timestamp": timestamp,
                 "varied_parameters": args.vary,
                 "parameter_ranges": {k: v for k, v in all_param_ranges.items()},
+                "tasks": args.tasks,
                 "model_types": {
                     "gnn": args.gnn_types if args.run_gnn else [],
                     "mlp": not args.skip_mlp,
@@ -337,6 +402,19 @@ def run_experiments(args):
                     "enabled": args.optimize_hyperparams,
                     "n_trials": args.n_trials,
                     "timeout": args.opt_timeout
+                },
+                "task_params": {
+                    "regime": {
+                        "min_hop": args.regime_task_min_hop,
+                        "max_hop": args.regime_task_max_hop,
+                        "n_labels": args.regime_task_n_labels,
+                        "min_support": args.regime_task_min_support,
+                        "max_rules_per_label": args.regime_task_max_rules_per_label
+                    },
+                    "role": {
+                        "max_motif_size": args.role_task_max_motif_size,
+                        "n_roles": args.role_task_n_roles
+                    }
                 }
             }
             
