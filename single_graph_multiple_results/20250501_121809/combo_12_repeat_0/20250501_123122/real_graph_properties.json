@@ -1,0 +1,17 @@
+{
+  "node_count": 158,
+  "edge_count": 817,
+  "density": 0.06587116020317665,
+  "avg_degree": 10.341772151898734,
+  "clustering_coefficient": 0.06495671155897667,
+  "triangle_count": 190.0,
+  "triangle_density": 0.00029459373972798145,
+  "homophily": 0.27050183598531213,
+  "power_law_exponent": 1.001581006937834,
+  "connected_components": 1,
+  "largest_component_size": 158,
+  "avg_communities_per_node": 1.0,
+  "intra_community_density": 0.08342770856927142,
+  "inter_community_density": 0.06110313717449251,
+  "empirical_homophily": 0.1544623314137228
+}

@@ -35,6 +35,7 @@ class GraphUniverse:
         community_co_membership (np.ndarray): Probability of communities co-occurring (shape: K × K)
         feature_subtypes (List[np.ndarray]): Subtype feature prototypes for each community (if enabled)
         feature_similarity_matrix (np.ndarray): Controls feature similarity between communities
+        mixed_membership (bool): Whether to use mixed membership model (True) or standard SBM (False)
     """
     
     def __init__(
@@ -52,6 +53,7 @@ class GraphUniverse:
         feature_subtypes_per_community: int = 1,
         feature_mixing_strength: float = 0.5,
         feature_similarity_control: float = 0.7,
+        mixed_membership: bool = True,  # New parameter
     ):
         """
         Initialize the GraphUniverse.
@@ -70,8 +72,10 @@ class GraphUniverse:
             feature_subtypes_per_community: Number of feature subtypes within each community
             feature_mixing_strength: How strongly features are mixed across communities (0=no mixing, 1=strong mixing)
             feature_similarity_control: How similar/different features are between communities (0=very different, 1=very similar)
+            mixed_membership: Whether to use mixed membership model (True) or standard SBM (False)
         """
         self.K = K
+        self.mixed_membership = mixed_membership  # Store the flag
         
         # Initialize probability matrix if not provided
         if P is None:
@@ -855,6 +859,7 @@ class GraphSample:
     ) -> np.ndarray:
         """
         Generate memberships strictly respecting universe co-membership rules.
+        If mixed_membership is False, each node belongs to exactly one community.
         
         Args:
             n_nodes: Number of nodes
@@ -870,6 +875,12 @@ class GraphSample:
                   "Memberships are now generated based on universe co-membership rules.")
         
         membership = np.zeros((n_nodes, K_sub))
+        
+        if not self.universe.mixed_membership:
+            # Simple case: each node belongs to exactly one community
+            primary_communities = np.random.choice(K_sub, size=n_nodes)
+            membership[np.arange(n_nodes), primary_communities] = 1.0
+            return membership
         
         # Get the relevant submatrix of co-membership probabilities
         co_membership_sub = np.zeros((K_sub, K_sub))
@@ -944,6 +955,20 @@ class GraphSample:
         Args:
             indirect_influence: Controls how much indirect connections influence the final probability (0-1)
         """
+        # Fast path for non-mixed membership case
+        if not self.universe.mixed_membership:
+            # Get primary communities (indices where membership is 1)
+            comm_i = np.argmax(memberships[node_i])
+            comm_j = np.argmax(memberships[node_j])
+            # Direct probability from P matrix
+            edge_prob = P_sub[comm_i, comm_j]
+            # Apply degree correction
+            edge_prob *= degree_factors[node_i] * degree_factors[node_j]
+            # Add noise if specified
+            if noise > 0:
+                edge_prob *= (1 + np.random.uniform(-noise, noise))
+            return np.clip(edge_prob, 0, 1)
+            
         # Use pre-computed matrices if available
         if precomputed is None:
             precomputed = {}
@@ -951,49 +976,55 @@ class GraphSample:
         # Direct connections (fast matrix operation)
         direct_prob = memberships[node_i] @ P_sub @ memberships[node_j]
         
-        # Indirect connections through co-membership
-        if 'indirect_matrix' not in precomputed:
-            # Pre-compute the indirect connection matrix once
-            K = len(self.communities)
-            indirect_matrix = np.zeros((K, K))
-            
-            # Create masks for non-selected communities
-            mask = np.ones(self.universe.K, dtype=bool)
-            mask[self.communities] = False
-            
-            # Vectorized computation of indirect connections
-            for ci, comm_i in enumerate(self.communities):
-                for cj, comm_j in enumerate(self.communities):
-                    if ci != cj:  # Prevent self-reinforcement through co-membership
-                        # Get co-membership strengths for both communities
-                        co_mem_i = self.universe.community_co_membership[comm_i]
-                        co_mem_j = self.universe.community_co_membership[comm_j]
-                        
-                        # Only consider connections through non-selected communities
-                        valid_intermediates = mask & (co_mem_i > 0) & (co_mem_j > 0)
-                        
-                        if np.any(valid_intermediates):
-                            # Calculate indirect connection strength
-                            # Scale by the actual co-membership strengths
-                            intermediates = (
-                                co_mem_i[valid_intermediates] *
-                                co_mem_j[valid_intermediates] *
-                                self.universe.P[valid_intermediates, :][:, valid_intermediates]
-                            )
+        # Skip indirect connections if indirect_influence is 0
+        if indirect_influence <= 0:
+            edge_prob = direct_prob
+        else:
+            # Indirect connections through co-membership
+            if 'indirect_matrix' not in precomputed:
+                # Pre-compute the indirect connection matrix once
+                K = len(self.communities)
+                indirect_matrix = np.zeros((K, K))
+                
+                # Create masks for non-selected communities
+                mask = np.ones(self.universe.K, dtype=bool)
+                mask[self.communities] = False
+                
+                # Vectorized computation of indirect connections
+                for ci, comm_i in enumerate(self.communities):
+                    for cj, comm_j in enumerate(self.communities):
+                        if ci != cj:  # Prevent self-reinforcement through co-membership
+                            # Get co-membership strengths for both communities
+                            co_mem_i = self.universe.community_co_membership[comm_i]
+                            co_mem_j = self.universe.community_co_membership[comm_j]
                             
-                            # Take average of intermediate connections, weighted by co-membership strengths
-                            indirect_matrix[ci, cj] = np.mean(intermediates)
+                            # Only consider connections through non-selected communities
+                            valid_intermediates = mask & (co_mem_i > 0) & (co_mem_j > 0)
+                            
+                            if np.any(valid_intermediates):
+                                # Calculate indirect connection strength
+                                # Scale by the actual co-membership strengths
+                                intermediates = (
+                                    co_mem_i[valid_intermediates] *
+                                    co_mem_j[valid_intermediates] *
+                                    self.universe.P[valid_intermediates, :][:, valid_intermediates]
+                                )
+                                
+                                # Take average of intermediate connections, weighted by co-membership strengths
+                                indirect_matrix[ci, cj] = np.mean(intermediates)
+                
+                precomputed['indirect_matrix'] = indirect_matrix
             
-            precomputed['indirect_matrix'] = indirect_matrix
-        
-        # Use pre-computed indirect matrix (fast matrix operation)
-        indirect_prob = memberships[node_i] @ precomputed['indirect_matrix'] @ memberships[node_j]
-        
-        # Scale indirect probability by influence factor
-        indirect_prob *= indirect_influence
-        
-        # Combine probabilities and apply corrections
-        edge_prob = direct_prob + indirect_prob
+            # Use pre-computed indirect matrix (fast matrix operation)
+            indirect_prob = memberships[node_i] @ precomputed['indirect_matrix'] @ memberships[node_j]
+            
+            # Scale indirect probability by influence factor
+            indirect_prob *= indirect_influence
+            
+            # Combine probabilities
+            edge_prob = direct_prob + indirect_prob
+            
+        # Apply degree correction
         edge_prob *= degree_factors[node_i] * degree_factors[node_j]
         
         # Add noise if specified
@@ -1008,64 +1039,82 @@ class GraphSample:
         P_sub: np.ndarray,
         degree_factors: np.ndarray,
         noise: float = 0.0,
-        indirect_influence: float = 0.1  # Add parameter here too
+        indirect_influence: float = 0.1,  # Add parameter here too
+        min_edge_density: float = 0.01,  # Minimum acceptable edge density
+        max_retries: int = 3  # Maximum number of retries
     ) -> sp.spmatrix:
         """
-        Generate edges for the graph using the MMSB model.
+        Generate edges with minimum density guarantee.
         
         Args:
-            memberships: Node membership vectors
-            P_sub: Subset of probability matrix
-            degree_factors: Degree correction factors
-            noise: Amount of noise to add to edge probabilities
+            memberships: Node-community membership matrix
+            P_sub: Community-community probability matrix
+            degree_factors: Node degree factors
+            noise: Edge noise level
             indirect_influence: Strength of indirect community influence
+            min_edge_density: Minimum acceptable edge density
+            max_retries: Maximum number of retries if graph is too sparse
             
         Returns:
             Sparse adjacency matrix
         """
-        n_nodes = len(memberships)
-        print(f"\nGenerating edges for {n_nodes} nodes")
-        print(f"Memberships shape: {memberships.shape}")
-        print(f"P_sub shape: {P_sub.shape}")
-        print(f"Degree factors shape: {degree_factors.shape}")
+        n_nodes = memberships.shape[0]
         
-        # Initialize adjacency matrix
-        adj = sp.lil_matrix((n_nodes, n_nodes))
-        
-        # Precompute community influence scores
-        community_influence = np.zeros(n_nodes)
-        for i in range(n_nodes):
-            community_influence[i] = np.sum(memberships[i] @ P_sub @ memberships.T)
-        
-        # Generate edges
-        for i in range(n_nodes):
-            for j in range(i + 1, n_nodes):
-                # Calculate base probability
-                p_ij = self._calculate_edge_probability_vectorized(
-                    i, j, memberships, P_sub, degree_factors, noise, indirect_influence
-                )
+        for attempt in range(max_retries):
+            # Sparse matrix for efficient storage
+            rows, cols, data = [], [], []
+            
+            # For efficiency, precompute the membership edge probability tensor
+            MP = memberships @ P_sub  # n×k
+            
+            # Compute edge probabilities efficiently
+            for i in range(n_nodes):
+                # For each node i, compute probabilities to all nodes j
+                non_zero_i = np.nonzero(memberships[i])[0]
                 
-                # Add indirect influence
-                if indirect_influence > 0:
-                    # Calculate indirect influence score
-                    indirect_score = (community_influence[i] + community_influence[j]) / (2 * n_nodes)
-                    p_ij = (1 - indirect_influence) * p_ij + indirect_influence * indirect_score
-                
-                # Add edge with probability p_ij
-                if np.random.random() < p_ij:
-                    adj[i, j] = 1
-                    adj[j, i] = 1
-        
-        # Convert to CSR format
-        adj = adj.tocsr()
-        
-        # Debug information
-        print(f"Generated graph with {adj.nnz} edges")
-        print(f"Graph density: {adj.nnz / (n_nodes * (n_nodes - 1)):.4f}")
-        print(f"Number of connected components: {nx.number_connected_components(nx.from_scipy_sparse_array(adj))}")
-        print(f"Average degree: {adj.sum() / n_nodes:.2f}")
-        print(f"Maximum degree: {adj.sum(axis=1).max():.2f}")
-        print(f"Minimum degree: {adj.sum(axis=1).min():.2f}")
+                if len(non_zero_i) > 0:
+                    # This computes the sum over a,b efficiently for all j at once
+                    weighted_prob = (MP @ memberships.T)[i, :]
+                    
+                    # Apply degree correction
+                    edge_probs = degree_factors[i] * degree_factors * weighted_prob
+                    
+                    # Add noise if specified
+                    if noise > 0:
+                        edge_probs += np.random.uniform(-noise, noise, size=n_nodes) * edge_probs
+                        edge_probs = np.clip(edge_probs, 0, 1)
+                    
+                    # Sample edges (upper triangular part only to avoid duplicates)
+                    for j in range(i+1, n_nodes):
+                        if np.random.random() < edge_probs[j]:
+                            rows.append(i)
+                            cols.append(j)
+                            data.append(1)
+                            
+                            # Add the reverse edge for undirected graph
+                            rows.append(j)
+                            cols.append(i)
+                            data.append(1)
+            
+            # Create sparse adjacency matrix
+            adj = sp.csr_matrix((data, (rows, cols)), shape=(n_nodes, n_nodes))
+            
+            # Calculate actual edge density
+            actual_density = len(data) / (n_nodes * (n_nodes - 1))
+            
+            if actual_density >= min_edge_density:
+                return adj
+            
+            # If density is too low, increase edge probabilities
+            if attempt < max_retries - 1:
+                print(f"Attempt {attempt + 1}: Graph too sparse (density={actual_density:.4f}). Retrying with adjusted probabilities...")
+                # Increase edge probabilities by a factor
+                P_sub = P_sub * 2  # Double the connection probabilities
+                noise = noise * 0.5  # Reduce noise to maintain signal
+            else:
+                print(f"Warning: Could not achieve minimum edge density after {max_retries} attempts.")
+                print(f"Final density: {actual_density:.4f}")
+                return adj
         
         return adj
 
@@ -1074,60 +1123,94 @@ class GraphSample:
         memberships: np.ndarray,
         P_sub: np.ndarray,
         degree_factors: np.ndarray,
-        noise: float
+        noise: float,
+        max_retries: int = 3
     ) -> sp.spmatrix:
         """
-        Generate graph edges based on mixed-membership SBM with degree correction,
-        filtering out small connected components instead of forcing connectivity.
+        Generate edges with component filtering, ensuring at least one valid component.
         
         Args:
-            memberships: Node-community membership vectors (n_nodes × n_communities)
-            P_sub: Community edge probability submatrix
-            degree_factors: Degree correction factors for nodes
-            noise: Random noise level for edge probabilities
+            memberships: Node-community membership matrix
+            P_sub: Community-community probability matrix
+            degree_factors: Node degree factors
+            noise: Edge noise level
+            max_retries: Maximum number of retries if no valid components found
             
         Returns:
-            Sparse adjacency matrix with small components removed
+            Sparse adjacency matrix
         """
-        n_nodes = memberships.shape[0]
+        # First try: Use specified min_component_size
+        adj = self._generate_edges(memberships, P_sub, degree_factors, noise)
+        G = nx.from_scipy_sparse_array(adj)
         
-        # Sparse matrix for efficient storage
-        rows, cols, data = [], [], []
+        # Get all components
+        components = list(nx.connected_components(G))
+        component_sizes = [len(c) for c in components]
         
-        # For efficiency, precompute the membership edge probability tensor
-        MP = memberships @ P_sub  # n×k
+        # Check if any components meet the minimum size
+        valid_components = [c for c in components if len(c) >= self.min_component_size]
         
-        # Compute edge probabilities efficiently
-        for i in range(n_nodes):
-            # For each node i, compute probabilities to all nodes j
-            non_zero_i = np.nonzero(memberships[i])[0]
-            
-            if len(non_zero_i) > 0:
-                # This computes the sum over a,b efficiently for all j at once
-                weighted_prob = (MP @ memberships.T)[i, :]
+        if not valid_components:
+            # If no valid components, try keeping the largest component
+            largest_component = max(components, key=len)
+            if len(largest_component) >= 5:  # Minimum acceptable size
+                # Create new graph with only the largest component
+                G = G.subgraph(largest_component).copy()
+                # Update memberships and degree_factors
+                valid_nodes = sorted(largest_component)
+                memberships = memberships[valid_nodes]
+                degree_factors = degree_factors[valid_nodes]
+                # Generate new adjacency matrix
+                adj = self._generate_edges(memberships, P_sub, degree_factors, noise)
+            else:
+                # If largest component is too small, retry with lower min_component_size
+                for retry in range(max_retries):
+                    # Reduce min_component_size by half each time
+                    reduced_size = max(2, self.min_component_size // 2)
+                    print(f"Retry {retry + 1}: No valid components found. Trying with min_component_size={reduced_size}")
+                    
+                    # Generate new edges
+                    adj = self._generate_edges(memberships, P_sub, degree_factors, noise)
+                    G = nx.from_scipy_sparse_array(adj)
+                    
+                    # Get valid components with reduced size
+                    valid_components = [c for c in nx.connected_components(G) 
+                                      if len(c) >= reduced_size]
+                    
+                    if valid_components:
+                        # Keep all valid components
+                        valid_nodes = sorted(set().union(*valid_components))
+                        G = G.subgraph(valid_nodes).copy()
+                        # Update memberships and degree_factors
+                        memberships = memberships[valid_nodes]
+                        degree_factors = degree_factors[valid_nodes]
+                        # Generate final adjacency matrix
+                        adj = self._generate_edges(memberships, P_sub, degree_factors, noise)
+                        break
                 
-                # Apply degree correction
-                edge_probs = degree_factors[i] * degree_factors * weighted_prob
-                
-                # Add noise if specified
-                if noise > 0:
-                    edge_probs += np.random.uniform(-noise, noise, size=n_nodes) * edge_probs
-                    edge_probs = np.clip(edge_probs, 0, 1)
-                
-                # Sample edges (upper triangular part only to avoid duplicates)
-                for j in range(i+1, n_nodes):
-                    if np.random.random() < edge_probs[j]:
-                        rows.append(i)
-                        cols.append(j)
-                        data.append(1)
-                        
-                        # Add the reverse edge for undirected graph
-                        rows.append(j)
-                        cols.append(i)
-                        data.append(1)
+                if not valid_components:
+                    # If still no valid components after retries, keep largest component
+                    largest_component = max(nx.connected_components(G), key=len)
+                    G = G.subgraph(largest_component).copy()
+                    valid_nodes = sorted(largest_component)
+                    memberships = memberships[valid_nodes]
+                    degree_factors = degree_factors[valid_nodes]
+                    adj = self._generate_edges(memberships, P_sub, degree_factors, noise)
+        else:
+            # Keep all valid components
+            valid_nodes = sorted(set().union(*valid_components))
+            G = G.subgraph(valid_nodes).copy()
+            # Update memberships and degree_factors
+            memberships = memberships[valid_nodes]
+            degree_factors = degree_factors[valid_nodes]
+            # Generate final adjacency matrix
+            adj = self._generate_edges(memberships, P_sub, degree_factors, noise)
         
-        # Create sparse adjacency matrix
-        adj = sp.csr_matrix((data, (rows, cols)), shape=(n_nodes, n_nodes))
+        # Update the graph's node count
+        self.n_nodes = adj.shape[0]
+        
+        # Store the valid nodes for reference
+        self.valid_nodes = valid_nodes
         
         return adj
 

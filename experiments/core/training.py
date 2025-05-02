@@ -591,6 +591,50 @@ def train_mlp_model(
     """
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     
+    # Add diagnostic prints for shapes and indices
+    if verbose:
+        print("\nDiagnostic Information:")
+        print(f"Features shape: {features.shape}")
+        print(f"Labels shape: {labels.shape}")
+        print(f"Number of unique labels: {len(torch.unique(labels))}")
+        print(f"Label range: [{labels.min()}, {labels.max()}]")
+        print(f"Train indices range: [{train_idx.min()}, {train_idx.max()}] (length: {len(train_idx)})")
+        print(f"Val indices range: [{val_idx.min()}, {val_idx.max()}] (length: {len(val_idx)})")
+        print(f"Test indices range: [{test_idx.min()}, {test_idx.max()}] (length: {len(test_idx)})")
+    
+    # Create label remapping to handle missing classes
+    unique_labels = torch.unique(labels)
+    n_classes = len(unique_labels)
+    label_map = {int(old_label): new_label for new_label, old_label in enumerate(unique_labels)}
+    
+    if verbose:
+        print("\nLabel remapping:")
+        print(f"Original labels: {sorted(label_map.keys())}")
+        print(f"Remapped to: {sorted(label_map.values())}")
+    
+    # Remap labels to contiguous range
+    remapped_labels = torch.tensor([label_map[int(label)] for label in labels], device=labels.device)
+    
+    # Update model's output dimension if needed
+    if hasattr(model, 'output_dim') and model.output_dim != n_classes:
+        if verbose:
+            print(f"Adjusting model output dimension from {model.output_dim} to {n_classes}")
+        # Assuming last layer is Linear
+        old_linear = list(model.modules())[-1]
+        new_linear = nn.Linear(old_linear.in_features, n_classes, bias=old_linear.bias is not None)
+        # Replace the last layer
+        model.lin = new_linear  # Adjust based on model architecture
+        model.output_dim = n_classes
+    
+    if verbose:
+        # Print label distribution after remapping
+        print("\nLabel distribution (after remapping):")
+        for i in range(n_classes):
+            train_count = (remapped_labels[train_idx] == i).sum().item()
+            val_count = (remapped_labels[val_idx] == i).sum().item()
+            test_count = (remapped_labels[test_idx] == i).sum().item()
+            print(f"Class {i}: Train={train_count}, Val={val_count}, Test={test_count}")
+    
     # Hyperparameter optimization if requested
     hyperopt_results = None
     if optimize:
@@ -607,7 +651,7 @@ def train_mlp_model(
             model_creator=model_creator,
             features=features,
             edge_index=None,  # MLP doesn't use edge_index
-            labels=labels,
+            labels=remapped_labels,  # Use remapped labels
             train_idx=train_idx,
             val_idx=val_idx,
             test_idx=test_idx,
@@ -634,7 +678,7 @@ def train_mlp_model(
             model = MLPModel(
                 input_dim=features.shape[1],
                 hidden_dim=hidden_dim,
-                output_dim=len(torch.unique(labels)),
+                output_dim=n_classes,  # Use n_classes instead of len(torch.unique(labels))
                 num_layers=num_layers,
                 dropout=dropout
             )
@@ -647,7 +691,7 @@ def train_mlp_model(
     
     # Move data to device
     features = features.to(device)
-    labels = labels.to(device)
+    remapped_labels = remapped_labels.to(device)  # Use remapped labels
     train_idx = train_idx.to(device)
     val_idx = val_idx.to(device)
     test_idx = test_idx.to(device)
@@ -687,8 +731,8 @@ def train_mlp_model(
         # Forward pass
         out = model(features)
         
-        # Calculate loss
-        loss = criterion(out[train_idx], labels[train_idx])
+        # Calculate loss with remapped labels
+        loss = criterion(out[train_idx], remapped_labels[train_idx])
         
         # Backward pass and optimize
         loss.backward()
@@ -698,14 +742,14 @@ def train_mlp_model(
         model.eval()
         with torch.no_grad():
             train_out = model(features)
-            train_loss = criterion(train_out[train_idx], labels[train_idx]).item()
+            train_loss = criterion(train_out[train_idx], remapped_labels[train_idx]).item()
             train_pred = train_out[train_idx].argmax(dim=1)
-            train_acc = (train_pred == labels[train_idx]).float().mean().item()
+            train_acc = (train_pred == remapped_labels[train_idx]).float().mean().item()
             
             # Evaluate on validation set
-            val_loss = criterion(train_out[val_idx], labels[val_idx]).item()
+            val_loss = criterion(train_out[val_idx], remapped_labels[val_idx]).item()
             val_pred = train_out[val_idx].argmax(dim=1)
-            val_acc = (val_pred == labels[val_idx]).float().mean().item()
+            val_acc = (val_pred == remapped_labels[val_idx]).float().mean().item()
         
         # Record history
         history['train_loss'].append(train_loss)
@@ -743,16 +787,19 @@ def train_mlp_model(
     model.eval()
     with torch.no_grad():
         test_out = model(features)
-        test_loss = criterion(test_out[test_idx], labels[test_idx]).item()
+        test_loss = criterion(test_out[test_idx], remapped_labels[test_idx]).item()
         test_pred = test_out[test_idx].argmax(dim=1)
-        test_acc = (test_pred == labels[test_idx]).float().mean().item()
+        test_acc = (test_pred == remapped_labels[test_idx]).float().mean().item()
         
         # Calculate detailed metrics
-        y_true = labels[test_idx].cpu().numpy()
+        y_true = remapped_labels[test_idx].cpu().numpy()
         y_pred = test_pred.cpu().numpy()
         y_score = test_out[test_idx].softmax(dim=1).cpu().numpy()
         
         metrics = evaluate_node_classification(y_true, y_pred, y_score)
+        
+        # Add label mapping to metrics for reference
+        metrics['label_mapping'] = label_map
     
     # Combine results
     result = {
@@ -768,7 +815,8 @@ def train_mlp_model(
         'predictions': {
             'y_true': y_true,
             'y_pred': y_pred,
-            'y_score': y_score
+            'y_score': y_score,
+            'label_mapping': label_map
         }
     }
     

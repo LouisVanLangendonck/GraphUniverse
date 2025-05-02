@@ -43,9 +43,17 @@ def parse_args():
                             'min_connection_strength',
                             'min_component_size',
                             'degree_heterogeneity',
-                            'indirect_influence'
+                            'indirect_influence',
+                            'mixed_membership' 
                         ],
                         help='Parameters to vary across experiments')
+    
+    # Add mixed membership flag
+    parser.add_argument('--mixed_membership', action='store_true',
+                        help='Enable mixed membership model')
+    parser.add_argument('--no_mixed_membership', action='store_false', dest='mixed_membership',
+                        help='Disable mixed membership model (use standard SBM)')
+    parser.set_defaults(mixed_membership=True)
     
     # Model selection and training parameters
     parser.add_argument('--gnn_types', type=str, nargs='+', default=['gcn', 'sage'],#['gat', 'gcn', 'sage'],
@@ -71,15 +79,15 @@ def parse_args():
                         help='Timeout in seconds for hyperparameter optimization')
     
     # Parameter ranges
-    parser.add_argument('--num_communities_range', type=int, nargs=3, default=[10, 15, 5],
+    parser.add_argument('--num_communities_range', type=int, nargs=3, default=[5, 15, 5],
                         help='Range for num_communities (start, end, step)')
-    parser.add_argument('--num_nodes_range', type=int, nargs=3, default=[80, 180, 50],
+    parser.add_argument('--num_nodes_range', type=int, nargs=3, default=[60, 160, 50],
                         help='Range for num_nodes (start, end, step)')
     parser.add_argument('--feature_dim_range', type=int, nargs=3, default=[32, 32, 0],
                         help='Range for feature_dim (start, end, step)')
-    parser.add_argument('--edge_density_range', type=float, nargs=3, default=[0.01, 0.7, 0.015],
+    parser.add_argument('--edge_density_range', type=float, nargs=3, default=[0.02, 0.15, 0.015],
                         help='Range for overall edge density (start, end, step)')
-    parser.add_argument('--homophily_range', type=float, nargs=3, default=[0.0, 1.0, 0.2],
+    parser.add_argument('--homophily_range', type=float, nargs=3, default=[0.0, 1.0, 0.1],
                         help='Range for homophily - controls intra/inter community ratio (0=equal, 1=max homophily)')
     parser.add_argument('--feature_signal_range', type=float, nargs=3, default=[0.00, 0.08, 0.02],
                         help='Range for feature_signal (start, end, step)')
@@ -93,11 +101,11 @@ def parse_args():
                         help='Range for min_component_size (start, end, step)')
     parser.add_argument('--degree_heterogeneity_range', type=float, nargs=3, default=[0, 1, 0.2],
                         help='Range for degree_heterogeneity (start, end, step)')
-    parser.add_argument('--indirect_influence_range', type=float, nargs=3, default=[0.0, 0.5, 0.15],
+    parser.add_argument('--indirect_influence_range', type=float, nargs=3, default=[0.0, 0.0, 0.0],
                         help='Range for indirect_influence (start, end, step)')
     
     # Experiment control
-    parser.add_argument('--n_repeats', type=int, default=1,
+    parser.add_argument('--n_repeats', type=int, default=2,
                         help='Number of times to repeat each parameter combination')
     parser.add_argument('--results_dir', type=str, default='single_graph_multiple_results',
                         help='Directory to save all experiment results')
@@ -111,7 +119,7 @@ def parse_args():
     
     # Ensure GNN types are properly set
     if args.run_gnn and not args.gnn_types:
-        args.gnn_types = ['gat']  # Default to GAT if no types specified
+        args.gnn_types = ['gcn']  # Default to GCN if no types specified
     
     return args
 
@@ -128,6 +136,9 @@ def generate_parameter_combinations(args) -> List[Dict[str, Any]]:
             else:
                 values = np.arange(start, end + step/2, step).tolist()  # Add step/2 to include end value
             param_ranges[param] = values
+        elif param == 'mixed_membership':  # Special case for boolean parameter
+            # For now, only test non-mixed membership case!!
+            param_ranges[param] = [False] # [True, False]
     
     # Generate all combinations
     param_names = list(param_ranges.keys())

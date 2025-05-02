@@ -47,6 +47,10 @@ from utils.parameter_analysis import (
     analyze_community_connectivity,
     visualize_community_connectivity,
 )
+from utils.motif_analysis import MotifAnalyzer
+from motif_analysis_integration import add_motif_analysis_tab, add_motif_analysis_page
+from utils.motif_and_role_analysis import MotifRoleAnalyzer
+from motif_and_role_analysis_integration import add_motif_role_analysis_tab, add_motif_role_analysis_page
 
 # Set page config
 st.set_page_config(
@@ -120,7 +124,7 @@ by sampling graphs from subsets of a larger universe.
 st.sidebar.title("Navigation")
 page = st.sidebar.radio(
     "Select a page",
-    ["Universe Creation", "Graph Sampling", "Benchmark Generation", "Community Analysis", "Feature Analysis", "Parameter Space Analysis"]
+    ["Universe Creation", "Graph Sampling", "Benchmark Generation", "Community Analysis", "Feature Analysis", "Parameter Space Analysis", "Motif and Role Analysis"]
 )
 
 # Universe Creation Page
@@ -151,6 +155,11 @@ if page == "Universe Creation":
             "Block structure",
             ["assortative", "disassortative", "core-periphery", "hierarchical", "random_blocks"],
             help="Structure of the edge probability matrix"
+        )
+        mixed_membership = st.checkbox(
+            "Enable Mixed Membership",
+            value=True,
+            help="If enabled, nodes can belong to multiple communities. If disabled, each node belongs to exactly one community (standard SBM)."
         )
     
     with col2:
@@ -213,6 +222,7 @@ if page == "Universe Creation":
                 edge_density=edge_density,
                 homophily=homophily,
                 randomness_factor=randomness_factor,
+                mixed_membership=mixed_membership,  # Add the mixed membership flag
             )
             
             # Generate community co-membership matrix
@@ -687,6 +697,10 @@ elif page == "Graph Sampling":
                 figsize=(15, 12)
             )
             st.pyplot(fig)
+
+# Add motif analysis to the page options
+elif page == "Motif and Role Analysis":
+    add_motif_role_analysis_page()
 
 # Benchmark Generation Page
 elif page == "Benchmark Generation":

@@ -27,6 +27,7 @@ class ExperimentConfig:
     overlap_structure: str = "random"
     edge_noise: float = 0.0
     feature_type: str = "generated"
+    mixed_membership: bool = True
     
     # Model parameters
     gnn_types: List[str] = field(default_factory=lambda: ['gat', 'gcn', 'sage'])
