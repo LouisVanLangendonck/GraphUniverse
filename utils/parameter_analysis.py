@@ -805,6 +805,16 @@ def create_parameter_dashboard(
     Returns:
         Matplotlib figure
     """
+    # Check if we have any data
+    if df.empty:
+        # Create an empty figure with a message
+        fig = plt.figure(figsize=figsize)
+        plt.text(0.5, 0.5, 'No data available for visualization',
+                horizontalalignment='center',
+                verticalalignment='center',
+                transform=plt.gca().transAxes)
+        return fig
+    
     fig = plt.figure(figsize=figsize)
     
     # Define grid layout
@@ -824,6 +834,14 @@ def create_parameter_dashboard(
     # Filter to available parameters
     available_params = [p for p in key_params if p in df.columns]
     
+    # If no parameters are available, return empty figure
+    if not available_params:
+        plt.text(0.5, 0.5, 'No parameters available for visualization',
+                horizontalalignment='center',
+                verticalalignment='center',
+                transform=plt.gca().transAxes)
+        return fig
+    
     # Calculate statistics
     stats = compute_statistics(df)
     
@@ -836,23 +854,25 @@ def create_parameter_dashboard(
     for param in available_params:
         if param in stats:
             s = stats[param]
-            table_data.append([
-                param.replace('_', ' ').title(),
-                f"{s['mean']:.3f}",
-                f"{s['std']:.3f}",
-                f"{s['min']:.3f}",
-                f"{s['max']:.3f}"
-            ])
+            if s['mean'] is not None:  # Only add if we have valid statistics
+                table_data.append([
+                    param.replace('_', ' ').title(),
+                    f"{s['mean']:.3f}",
+                    f"{s['std']:.3f}",
+                    f"{s['min']:.3f}",
+                    f"{s['max']:.3f}"
+                ])
     
-    table = ax_stats.table(
-        cellText=table_data,
-        colLabels=['Parameter', 'Mean', 'Std', 'Min', 'Max'],
-        loc='center',
-        cellLoc='center'
-    )
-    table.auto_set_font_size(False)
-    table.set_fontsize(10)
-    table.scale(1, 1.5)
+    if table_data:  # Only create table if we have data
+        table = ax_stats.table(
+            cellText=table_data,
+            colLabels=['Parameter', 'Mean', 'Std', 'Min', 'Max'],
+            loc='center',
+            cellLoc='center'
+        )
+        table.auto_set_font_size(False)
+        table.set_fontsize(10)
+        table.scale(1, 1.5)
     ax_stats.set_title(f'Parameter Statistics for {family_name}', fontsize=14)
     
     # Key histograms
@@ -872,16 +892,17 @@ def create_parameter_dashboard(
             # Filter out NaN values
             values = df[param].dropna()
             
-            # Plot histogram
-            sns.histplot(values, bins=15, kde=True, ax=ax)
-            
-            # Add vertical line for mean
-            mean_val = values.mean()
-            ax.axvline(mean_val, color='r', linestyle='--')
-            
-            ax.set_xlabel(param.replace('_', ' ').title())
-            ax.set_ylabel('Frequency')
-            ax.set_title(f'{param.replace("_", " ").title()}')
+            if len(values) > 0:  # Only plot if we have valid values
+                # Plot histogram
+                sns.histplot(values, bins=15, kde=True, ax=ax)
+                
+                # Add vertical line for mean
+                mean_val = values.mean()
+                ax.axvline(mean_val, color='r', linestyle='--')
+                
+                ax.set_xlabel(param.replace('_', ' ').title())
+                ax.set_ylabel('Frequency')
+                ax.set_title(f'{param.replace("_", " ").title()}')
     
     # Scatter plots for interesting parameter relationships
     scatter_plots = [
@@ -910,14 +931,15 @@ def create_parameter_dashboard(
                 )
                 
                 # Add confidence ellipse
-                confidence_ellipse(
-                    valid_data[x_param].values,
-                    valid_data[y_param].values,
-                    ax, n_std=2.0,
-                    edgecolor='red', linestyle='--',
-                    alpha=0.2,
-                    facecolor='red'
-                )
+                if len(valid_data) > 2:  # Need at least 3 points for ellipse
+                    confidence_ellipse(
+                        valid_data[x_param].values,
+                        valid_data[y_param].values,
+                        ax, n_std=2.0,
+                        edgecolor='red', linestyle='--',
+                        alpha=0.2,
+                        facecolor='red'
+                    )
                 
                 # Compute correlation
                 correlation = valid_data[x_param].corr(valid_data[y_param])
@@ -935,7 +957,12 @@ def create_parameter_dashboard(
                 ax.set_ylabel(y_param.replace('_', ' ').title())
                 ax.set_title(f'{x_param.title()} vs {y_param.title()}')
     
-    fig.tight_layout()
+    try:
+        fig.tight_layout()
+    except ValueError:
+        # If tight_layout fails, we'll just continue without it
+        pass
+    
     fig.suptitle(f'Parameter Dashboard for {family_name}', fontsize=16, y=1.02)
     
     return fig

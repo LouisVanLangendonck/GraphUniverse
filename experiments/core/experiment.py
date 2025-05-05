@@ -125,6 +125,7 @@ class Experiment:
             
             # Generate graph
             print("\nStarting experiment...")
+            print("Initializing universe...")
             universe = GraphUniverse(
                 K=self.config.num_communities,
                 feature_dim=self.config.feature_dim,
@@ -138,6 +139,7 @@ class Experiment:
                 inter_community_regime_similarity=self.config.inter_community_regime_similarity
             )
             
+            print("Generating graph sample...")
             # Generate graph sample
             graph_sample = GraphSample(
                 universe=universe,
@@ -150,7 +152,13 @@ class Experiment:
                 feature_regime_balance=self.config.feature_regime_balance
             )
             
+            # Print timing information
+            print("\nGraph Generation Timing:")
+            for step, time_taken in graph_sample.timing_info.items():
+                print(f"  {step}: {time_taken:.3f}s")
+            
             # Calculate real graph properties
+            print("\nCalculating graph properties...")
             real_graph_properties = analyze_graph_parameters(
                 graph=graph_sample.graph,
                 membership_vectors=graph_sample.membership_vectors,
@@ -161,6 +169,7 @@ class Experiment:
             graph_sample.real_graph_properties = real_graph_properties
             
             # Prepare data for all tasks
+            print("\nPreparing data for tasks...")
             task_data = prepare_data(
                 graph_sample=graph_sample,
                 config=self.config,
@@ -172,18 +181,25 @@ class Experiment:
                 "graph_sample": graph_sample,
                 "task_data": task_data,
                 "real_graph_properties": real_graph_properties,
-                "model_results": {}
+                "model_results": {},
+                "timing_info": graph_sample.timing_info  # Store timing information
             }
             
             # Run models with hyperparameter optimization
+            print("\nRunning models...")
             self._run_models()
             
             # Save results
+            print("\nSaving results...")
             self._save_results()
             
             return self.results
             
         except Exception as e:
+            print(f"Error in experiment: {str(e)}")
+            print("Traceback:")
+            import traceback
+            traceback.print_exc()
             raise
     
     def _run_models(self) -> None:

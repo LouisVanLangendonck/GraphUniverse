@@ -34,7 +34,8 @@ if parent_dir not in sys.path:
     sys.path.append(parent_dir)
 
 # Import MMSB modules
-from mmsb.model import GraphUniverse, GraphSample, MMSBBenchmark
+from mmsb.model import GraphUniverse, GraphSample
+from mmsb.graph_family import GraphFamilyGenerator
 from utils.parameter_analysis import (
     analyze_graph_parameters,
     compute_statistics,

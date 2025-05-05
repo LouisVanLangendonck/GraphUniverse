@@ -63,60 +63,74 @@ class FeatureRegimeGenerator:
                 self.regime_map[regime_id] = (comm_id, regime_idx)
                 regime_id += 1
         
+        # Pre-compute base components for feature generation
+        self._precompute_feature_components()
+        
         # Generate regime prototypes
         self.regime_prototypes = self._generate_regime_prototypes()
+        
+        # Pre-compute feature distributions for each regime
+        self._precompute_feature_distributions()
+    
+    def _precompute_feature_components(self):
+        """Pre-compute base components for feature generation."""
+        # Generate global base (shared across all communities)
+        self.global_base = np.random.normal(0, 1, size=self.feature_dim)
+        self.global_base = self.global_base / np.linalg.norm(self.global_base)
+        
+        # Generate community bases
+        self.community_bases = np.random.normal(0, 1, size=(self.universe_K, self.feature_dim))
+        self.community_bases = self.community_bases / np.linalg.norm(self.community_bases, axis=1, keepdims=True)
+        
+        # Calculate weights for components
+        self.global_weight = self.inter_similarity
+        remaining_weight = 1.0 - self.global_weight
+        self.community_weight = remaining_weight * self.intra_similarity
+        self.unique_weight = remaining_weight * (1.0 - self.intra_similarity)
+    
+    def _precompute_feature_distributions(self):
+        """Pre-compute feature distributions for each regime."""
+        total_regimes = self.universe_K * self.regimes_per_community
+        
+        # Store mean vectors and covariance matrices for each regime
+        self.regime_distributions = {}
+        
+        for regime_id in range(total_regimes):
+            comm_id, regime_idx = self.regime_map[regime_id]
+            
+            # Get prototype for this regime
+            prototype = self.regime_prototypes[regime_id]
+            
+            # Create covariance matrix based on feature variance
+            # We use a diagonal covariance matrix for efficiency
+            covariance = np.eye(self.feature_dim) * self.feature_variance
+            
+            self.regime_distributions[regime_id] = {
+                'mean': prototype,
+                'covariance': covariance
+            }
     
     def _generate_regime_prototypes(self) -> np.ndarray:
         """
         Generate feature regimes with smooth control over similarities.
-        
-        Each regime's prototype is a weighted combination of:
-        1. Global component (shared across all communities)
-        2. Community component (shared within community)
-        3. Unique component (specific to regime)
-        
-        The weights are determined by inter_similarity and intra_similarity:
-        - High inter_similarity → strong global component
-        - High intra_similarity → strong community component
-        - Remaining weight goes to unique component
-        
-        Returns:
-            Array of regime prototypes (universe_K * regimes_per_community × feature_dim)
+        Uses pre-computed components for efficiency.
         """
         total_regimes = self.universe_K * self.regimes_per_community
         regime_prototypes = np.zeros((total_regimes, self.feature_dim))
         
-        # Generate normalized random vectors for each component
-        global_base = np.random.normal(0, 1, size=self.feature_dim)
-        global_base = global_base / np.linalg.norm(global_base)
-        
-        community_bases = np.random.normal(0, 1, size=(self.universe_K, self.feature_dim))
-        community_bases = community_bases / np.linalg.norm(community_bases, axis=1, keepdims=True)
-        
-        # Calculate weights for each component
-        # As inter_similarity increases, global weight increases
-        global_weight = self.inter_similarity
-        
-        # Remaining influence is split between community and unique components
-        # As intra_similarity increases, community weight increases relative to unique weight
-        remaining_weight = 1.0 - global_weight
-        community_weight = remaining_weight * self.intra_similarity
-        unique_weight = remaining_weight * (1.0 - self.intra_similarity)
-        
-        # Generate regimes
         regime_id = 0
         for comm_id in range(self.universe_K):
-            comm_base = community_bases[comm_id]
+            comm_base = self.community_bases[comm_id]
             
             for _ in range(self.regimes_per_community):
                 # Generate unique component for this regime
                 unique_base = np.random.normal(0, 1, size=self.feature_dim)
                 unique_base = unique_base / np.linalg.norm(unique_base)
                 
-                # Combine components with weights
-                prototype = (global_weight * global_base +
-                           community_weight * comm_base +
-                           unique_weight * unique_base)
+                # Combine components with pre-computed weights
+                prototype = (self.global_weight * self.global_base +
+                           self.community_weight * comm_base +
+                           self.unique_weight * unique_base)
                 
                 # Normalize the final prototype
                 prototype = prototype / np.linalg.norm(prototype)
@@ -131,6 +145,7 @@ class FeatureRegimeGenerator:
     ) -> np.ndarray:
         """
         Generate node features based on assigned regimes.
+        Uses pre-computed distributions for efficiency.
         
         Args:
             node_regimes: Array of regime IDs for each node
@@ -141,20 +156,31 @@ class FeatureRegimeGenerator:
         n_nodes = len(node_regimes)
         features = np.zeros((n_nodes, self.feature_dim))
         
-        for i in range(n_nodes):
-            regime_id = node_regimes[i]
-            prototype = self.regime_prototypes[regime_id]
+        # Generate features for all nodes of each regime at once for efficiency
+        for regime_id in np.unique(node_regimes):
+            # Get nodes with this regime
+            regime_mask = node_regimes == regime_id
+            n_regime_nodes = np.sum(regime_mask)
             
-            # Generate random noise
-            noise = np.random.normal(0, self.feature_variance, size=self.feature_dim)
-            noise = noise / np.linalg.norm(noise)
+            if n_regime_nodes == 0:
+                continue
             
-            # Combine prototype and noise
-            features[i] = prototype + self.feature_variance * noise
+            # Get pre-computed distribution for this regime
+            dist = self.regime_distributions[regime_id]
             
-            # Normalize
-            features[i] = features[i] / np.linalg.norm(features[i])
+            # Generate features from distribution
+            regime_features = np.random.multivariate_normal(
+                mean=dist['mean'],
+                cov=dist['covariance'],
+                size=n_regime_nodes
+            )
             
+            # Normalize features
+            regime_features = regime_features / np.linalg.norm(regime_features, axis=1, keepdims=True)
+            
+            # Assign to nodes with this regime
+            features[regime_mask] = regime_features
+        
         return features
     
     def assign_node_regimes(
@@ -196,13 +222,15 @@ class FeatureRegimeGenerator:
                 probs = np.random.dirichlet(np.ones(self.regimes_per_community) * alpha)
             
             # Assign regimes to nodes
-            for node_idx in comm_nodes:
-                # Sample regime for this node
-                regime_idx = np.random.choice(self.regimes_per_community, p=probs)
-                
-                # Convert to global regime ID
-                global_regime_id = comm_id * self.regimes_per_community + regime_idx
-                node_regimes[node_idx] = global_regime_id
+            regime_indices = np.random.choice(
+                self.regimes_per_community,
+                size=len(comm_nodes),
+                p=probs
+            )
+            
+            # Convert to global regime IDs
+            global_regime_ids = comm_id * self.regimes_per_community + regime_indices
+            node_regimes[comm_nodes] = global_regime_ids
         
         return node_regimes
 

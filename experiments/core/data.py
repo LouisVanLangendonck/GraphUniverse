@@ -31,20 +31,7 @@ def prepare_data(
         feature_type: Type of features to use ("membership" or "random")
         
     Returns:
-        Dictionary containing data for each task:
-        {
-            "community": {
-                "features": Node features,
-                "edge_index": Edge indices,
-                "labels": Node labels,
-                "train_idx": Training node indices,
-                "val_idx": Validation node indices,
-                "test_idx": Test node indices,
-                "num_classes": Number of classes
-            },
-            "regime": {...},
-            "role": {...}
-        }
+        Dictionary containing data for each task
     """
     # Debug information
     print("\nDebugging graph structure:")
@@ -107,14 +94,12 @@ def prepare_data(
             
         elif task == "regime":
             # Feature regime prediction task using rule-based generation
-            if not hasattr(graph_sample, 'neighborhood_analyzer'):
-                # Initialize neighborhood analyzer if not already done
-                graph_sample.neighborhood_analyzer = NeighborhoodFeatureAnalyzer(
-                    graph=graph_sample.graph,
-                    node_regimes=graph_sample.node_regimes,
-                    total_regimes=len(graph_sample.communities) * config.regimes_per_community,
-                    max_hops=config.regime_task_max_hop  # Use max_hop for analyzer initialization
-                )
+            print("\nPreparing regime task data...")
+            
+            # Compute neighborhood features if not already done
+            if graph_sample.neighborhood_analyzer is None:
+                print("Computing neighborhood features...")
+                graph_sample.compute_neighborhood_features(max_hops=config.regime_task_max_hop)
             
             # Get frequency vectors for all hop distances in the specified range
             freq_vectors_by_hop = {}
@@ -123,7 +108,7 @@ def prepare_data(
             
             # Generate rule-based labels
             rule_generator = GenerativeRuleBasedLabeler(
-                n_labels=config.regime_task_n_labels,  # Use configured number of labels
+                n_labels=config.regime_task_n_labels,
                 min_support=config.regime_task_min_support,
                 max_rules_per_label=config.regime_task_max_rules_per_label,
                 min_hop=config.regime_task_min_hop,
@@ -131,7 +116,7 @@ def prepare_data(
                 seed=config.seed
             )
             
-            # Generate and apply rules
+            print("Generating and applying rules...")
             rules = rule_generator.generate_rules(freq_vectors_by_hop)
             regime_labels, applied_rules = rule_generator.apply_rules(freq_vectors_by_hop)
             
@@ -145,38 +130,23 @@ def prepare_data(
                 "train_idx": train_idx,
                 "val_idx": val_idx,
                 "test_idx": test_idx,
-                "num_classes": config.regime_task_n_labels,  # Use configured number of labels
-                "rules": rules,  # Store rules for interpretation
-                "applied_rules": applied_rules,  # Store which rules were applied to each node
-                "freq_vectors_by_hop": freq_vectors_by_hop  # Store frequency vectors for analysis
+                "num_classes": config.regime_task_n_labels,
+                "rules": rules,
+                "applied_rules": applied_rules,
+                "freq_vectors_by_hop": freq_vectors_by_hop
             }
+            print("Regime task data preparation complete.")
             
         elif task == "role":
-            print("\nTraining models for role prediction task...")
-            
-            # Structural role prediction task
-            role_analyzer = MotifRoleAnalyzer(
-                graph_sample,
+            # Role prediction task using motif analysis
+            print("\nPreparing role task data...")
+            motif_analyzer = MotifRoleAnalyzer(
+                graph=graph_sample.graph,
                 max_motif_size=config.role_task_max_motif_size,
-                n_roles=config.role_task_n_roles,
-                verbose=True
+                n_roles=config.role_task_n_roles
             )
             
-            # Get role labels (primary role for each node)
-            role_analyzer.discover_structural_roles()  # This computes the role membership matrix
-            role_labels = role_analyzer.get_primary_roles()  # Get primary role for each node
-            
-            # Print diagnostic information
-            print("\nDiagnostic Information:")
-            print(f"Features shape: {features.shape}")
-            print(f"Labels shape: {role_labels.shape}")
-            print(f"Number of unique labels: {len(np.unique(role_labels))}")
-            print(f"Label range: [{role_labels.min()}, {role_labels.max()}]")
-            print(f"Train indices range: [{train_idx.min()}, {train_idx.max()}] (length: {len(train_idx)})")
-            print(f"Val indices range: [{val_idx.min()}, {val_idx.max()}] (length: {len(val_idx)})")
-            print(f"Test indices range: [{test_idx.min()}, {test_idx.max()}] (length: {len(test_idx)})")
-            
-            # Convert to tensor
+            role_labels = motif_analyzer.get_node_roles()
             role_labels = torch.tensor(role_labels, dtype=torch.long)
             
             task_data["role"] = {
@@ -187,8 +157,10 @@ def prepare_data(
                 "val_idx": val_idx,
                 "test_idx": test_idx,
                 "num_classes": config.role_task_n_roles,
-                "role_analyzer": role_analyzer  # Store analyzer for interpretation
+                "motif_counts": motif_analyzer.motif_counts,
+                "role_assignments": motif_analyzer.role_assignments
             }
+            print("Role task data preparation complete.")
     
     return task_data
 

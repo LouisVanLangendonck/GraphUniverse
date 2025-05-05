@@ -261,7 +261,7 @@ def plot_probability_matrix_comparison(
     return fig
 
 def plot_graph_communities(
-    graph: nx.Graph,
+    graph: Union[nx.Graph, 'GraphSample'],
     community_key: str = "primary_community",
     layout: str = "spring",
     node_size: float = 50,
@@ -280,7 +280,7 @@ def plot_graph_communities(
     Only shows components that meet the minimum size requirement.
     
     Args:
-        graph: NetworkX graph to plot
+        graph: NetworkX graph or GraphSample object to plot
         community_key: Node attribute key for community assignment
         layout: Graph layout algorithm ("spring", "kamada_kawai", "spectral", etc.)
         node_size: Size of nodes
@@ -297,6 +297,20 @@ def plot_graph_communities(
     Returns:
         Matplotlib figure
     """
+    # Handle GraphSample objects
+    if hasattr(graph, 'graph'):
+        # Get the NetworkX graph and membership information
+        nx_graph = graph.graph
+        membership_vectors = graph.membership_vectors
+        communities = graph.communities
+        
+        # Add primary community information to nodes
+        for i, node in enumerate(nx_graph.nodes()):
+            primary_comm = communities[np.argmax(membership_vectors[i])]
+            nx_graph.nodes[node][community_key] = primary_comm
+    else:
+        nx_graph = graph
+    
     # Create figure if not provided
     if ax is None:
         fig, ax = plt.subplots(figsize=figsize)
@@ -304,7 +318,7 @@ def plot_graph_communities(
         fig = ax.figure
     
     # Get components and filter by size
-    components = list(nx.connected_components(graph))
+    components = list(nx.connected_components(nx_graph))
     components.sort(key=len, reverse=True)
     kept_components = [c for c in components if len(c) >= min_component_size]
     
@@ -317,7 +331,7 @@ def plot_graph_communities(
     
     # Create subgraph of kept components
     kept_nodes = set().union(*kept_components)
-    kept_graph = graph.subgraph(kept_nodes).copy()
+    kept_graph = nx_graph.subgraph(kept_nodes).copy()
     
     # Get communities from kept graph
     communities = {}
