@@ -572,7 +572,6 @@ class GraphUniverse:
             existing_communities=existing_communities
         )
 
-
 class GraphSample:
     """
     Represents a single graph instance sampled from the GraphUniverse.

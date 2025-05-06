@@ -42,7 +42,6 @@ from utils.parameter_analysis import (
     plot_parameter_space,
     create_parameter_dashboard
 )
-from utils.sampler import GraphSampler
 
 
 def generate_diverse_graph_families(
@@ -77,37 +76,32 @@ def generate_diverse_graph_families(
         K = random.choice([10, 15, 20, 30])  # Reduced max K to avoid sampling issues
         
         # Generate edge densities first so we can use them to constrain connection strength
-        edge_density = random.uniform(0.03, 0.3)
-        inter_community_density = random.uniform(0.03, 0.3)
-        
-        # Connection strength should never exceed the minimum edge probability
-        max_connection_strength = min(edge_density, inter_community_density)
-        min_connection_strength = random.uniform(0.01, max_connection_strength)
+        edge_density = random.uniform(0.03, 0.15)
+        homophily = random.uniform(0.0, 1.0)
         
         new_variation = {
             # Universe parameters
             "K": K,
             "feature_dim": 32,
-            "feature_signal": 1.0,
-            "block_structure": random.choice(["assortative"]), #, "disassortative", "hierarchical", "core-periphery"]),
-            "overlap_structure": random.choice(["modular"]), #, "hierarchical", "hub-spoke"]),
+            "block_structure": "assortative",  # Only assortative structure supported
             "edge_density": edge_density,
-            "inter_community_density": inter_community_density,
-            "overlap_density": random.uniform(0.05, 0.4),
-            "randomness_factor": random.uniform(0.0, 0.7),
+            "homophily": homophily,
+            "randomness_factor": random.uniform(0.0, 0.9),
+            "regimes_per_community": 2,
+            "intra_community_regime_similarity": random.uniform(0.0, 1.0),
+            "inter_community_regime_similarity": random.uniform(0.0, 1.0),
             
             # Graph generation parameters
-            "min_communities_ratio": random.uniform(0.1, 0.3),  # Increased minimum ratio
-            "max_communities_ratio": random.uniform(0.2, 0.6),  # Adjusted maximum ratio
-            "min_nodes": random.randint(50, 100),
-            "max_nodes": random.randint(100, 200),
+            "min_communities_ratio": random.uniform(0.05, 0.15),  # Increased minimum ratio
+            "max_communities_ratio": random.uniform(0.15, 0.3),  # Adjusted maximum ratio
+            "min_nodes": random.randint(50, 120),
+            "max_nodes": random.randint(120, 200),
             "degree_heterogeneity": random.uniform(0.1, 0.9),
-            "edge_noise": random.uniform(0.0, 0.1),
-            "sampling_method": random.choice(["random"]), #, "similar", "diverse"]),
-            "similarity_bias": random.uniform(-0.5, 0.5),
-            "min_connection_strength": min_connection_strength,
-            "min_component_size": random.randint(3,7),
+            "edge_noise": random.uniform(0.0, 0.03),
+            "sampling_method": "random",
+            "min_component_size": random.randint(3, 7),
             "indirect_influence": random.uniform(0, 0.2),
+            "feature_regime_balance": random.uniform(0.3, 0.7),
             
             "name": f"random_variation_{len(family_variations)}"
         }
@@ -126,18 +120,20 @@ def generate_diverse_graph_families(
         family_params = base_params.copy() if base_params else {}
         family_params.update(variation)
         
-        # Create benchmark instance
+        # Create universe
         try:
-            benchmark = MMSBBenchmark(
+            universe = GraphUniverse(
                 K=family_params["K"],
-                feature_dim=family_params.get("feature_dim", 32),
-                feature_signal=family_params.get("feature_signal", 1.0),
+                feature_dim=family_params["feature_dim"],
                 block_structure=family_params["block_structure"],
-                overlap_structure=family_params["overlap_structure"],
                 edge_density=family_params["edge_density"],
-                inter_community_density=family_params["inter_community_density"],
-                overlap_density=family_params["overlap_density"],
-                randomness_factor=family_params["randomness_factor"]
+                homophily=family_params["homophily"],
+                randomness_factor=family_params["randomness_factor"],
+                mixed_membership=False,  # Disable mixed membership
+                regimes_per_community=family_params["regimes_per_community"],
+                intra_community_regime_similarity=family_params["intra_community_regime_similarity"],
+                inter_community_regime_similarity=family_params["inter_community_regime_similarity"],
+                seed=seed
             )
             
             # Calculate community ranges based on K
@@ -149,7 +145,11 @@ def generate_diverse_graph_families(
             
             # Generate graphs using pretraining method
             try:
-                graphs = benchmark.generate_pretraining_graphs(
+                # Initialize generator with universe
+                generator = GraphFamilyGenerator(universe=universe)
+                
+                # Generate graph family
+                graphs = generator.generate(
                     n_graphs=n_graphs_per_family,
                     min_communities=min_communities,
                     max_communities=max_communities,
@@ -158,10 +158,9 @@ def generate_diverse_graph_families(
                     degree_heterogeneity=family_params["degree_heterogeneity"],
                     edge_noise=family_params["edge_noise"],
                     sampling_method=family_params["sampling_method"],
-                    similarity_bias=family_params.get("similarity_bias", 0.0),
-                    min_connection_strength=family_params.get("min_connection_strength", 0.05),
-                    min_component_size=family_params.get("min_component_size", 0),
-                    indirect_influence=family_params.get("indirect_influence", 0.1),
+                    min_component_size=family_params["min_component_size"],
+                    feature_regime_balance=family_params["feature_regime_balance"],
+                    indirect_influence=family_params["indirect_influence"]
                 )
                 
                 if graphs is None or len(graphs) == 0:
@@ -505,15 +504,14 @@ def plot_parameter_space_coverage(
         for i, family_name in enumerate(family_points.keys()):
             family_colors[family_name] = cmap(i % cmap.N)
         
-        # Plot synthetic family points
+        # Plot synthetic family points with increased visibility
         for family_name, points in family_points.items():
             if points:
                 x_values, y_values = zip(*points)
                 ax.scatter(
                     x_values, y_values, 
-                    alpha=0.5,
-                    s=30,
-                    label=family_name,
+                    alpha=0.4,  # Increased alpha for better visibility
+                    s=30,  # Increased size for better visibility
                     color=family_colors[family_name]
                 )
                 
@@ -525,24 +523,26 @@ def plot_parameter_space_coverage(
                             ax, n_std=2.0,
                             edgecolor=family_colors[family_name],
                             linestyle='--',
-                            alpha=0.3,
+                            alpha=0.3,  # Increased alpha for better visibility
                             facecolor=family_colors[family_name]
                         )
                     except:
                         pass  # Skip if ellipse cannot be computed
         
-        # Plot real-world points (if available)
-        for dataset_name, points in real_world_points.items():
+        # Plot real-world points with softer appearance
+        markers = ['o', 's', '^', 'D', 'v']  # Different markers for real datasets
+        for i, (dataset_name, points) in enumerate(real_world_points.items()):
             if points:
                 x_values, y_values = zip(*points)
                 ax.scatter(
                     x_values, y_values,
-                    marker='X',
-                    s=100,
+                    marker=markers[i % len(markers)],
+                    s=80,  # Slightly smaller size
                     label=f"Real: {dataset_name}",
                     edgecolor='black',
-                    linewidth=1.5,
-                    zorder=100
+                    linewidth=1.0,  # Thinner edge
+                    zorder=100,  # Keep on top but less dominant
+                    alpha=0.6  # More transparent
                 )
         
         # Set labels and title
@@ -567,11 +567,9 @@ def plot_parameter_space_coverage(
             bbox=dict(boxstyle='round', facecolor='white', alpha=0.7)
         )
         
-        # Add legend
-        if len(family_points) + len(real_world_points) < 15:
-            ax.legend(loc='best')
-        else:
-            ax.legend(loc='best', fontsize=8)
+        # Only add legend for real-world datasets
+        if real_world_points:
+            ax.legend(loc='best', framealpha=0.8)
         
         figures[(param_x, param_y)] = fig
     
@@ -630,79 +628,181 @@ def confidence_ellipse(
     return ax.add_patch(ellipse)
 
 
-def load_real_world_datasets() -> Dict[str, pd.DataFrame]:
+def save_real_world_analysis_results(
+    real_world_dfs: Dict[str, pd.DataFrame],
+    output_dir: str = "parameter_coverage_results"
+) -> None:
     """
-    Load and analyze real-world datasets for comparison.
-    This is a placeholder function - implement with actual datasets.
+    Save real-world dataset analysis results to CSV files.
+    
+    Args:
+        real_world_dfs: Dictionary mapping dataset names to parameter DataFrames
+        output_dir: Directory to save results
+    """
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # Save each dataset's results
+    for dataset_name, df in real_world_dfs.items():
+        filename = os.path.join(output_dir, f"real_world_{dataset_name}_analysis.csv")
+        df.to_csv(filename, index=False)
+        
+    # Save a summary file with dataset metadata
+    summary = {
+        "dataset_name": [],
+        "num_graphs": [],
+        "parameters": [],
+        "date_analyzed": []
+    }
+    
+    for dataset_name, df in real_world_dfs.items():
+        summary["dataset_name"].append(dataset_name)
+        summary["num_graphs"].append(len(df))
+        summary["parameters"].append(",".join(df.columns))
+        summary["date_analyzed"].append(pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S"))
+    
+    summary_df = pd.DataFrame(summary)
+    summary_df.to_csv(os.path.join(output_dir, "real_world_datasets_summary.csv"), index=False)
+
+
+def load_cached_real_world_analysis(
+    dataset_names: List[str],
+    output_dir: str = "parameter_coverage_results"
+) -> Optional[Dict[str, pd.DataFrame]]:
+    """
+    Load cached real-world dataset analysis results if available.
+    
+    Args:
+        dataset_names: List of dataset names to load
+        output_dir: Directory containing cached results
+        
+    Returns:
+        Dictionary mapping dataset names to parameter DataFrames if all requested datasets are cached,
+        None otherwise
+    """
+    # Check if summary file exists
+    summary_file = os.path.join(output_dir, "real_world_datasets_summary.csv")
+    if not os.path.exists(summary_file):
+        return None
+    
+    # Load summary
+    summary_df = pd.read_csv(summary_file)
+    cached_datasets = set(summary_df["dataset_name"])
+    
+    # Check if all requested datasets are cached
+    if not all(name in cached_datasets for name in dataset_names):
+        return None
+    
+    # Load cached results
+    real_world_dfs = {}
+    for dataset_name in dataset_names:
+        filename = os.path.join(output_dir, f"real_world_{dataset_name}_analysis.csv")
+        if os.path.exists(filename):
+            df = pd.read_csv(filename)
+            real_world_dfs[dataset_name] = df
+    
+    return real_world_dfs if len(real_world_dfs) == len(dataset_names) else None
+
+
+def load_real_world_datasets(
+    output_dir: str = "parameter_coverage_results"
+) -> Dict[str, pd.DataFrame]:
+    """
+    Load and analyze real-world datasets from TUDataset.
+    First checks for cached results, only downloads and analyzes if necessary.
     
     Returns:
         Dictionary mapping dataset names to parameter DataFrames
     """
-    # Placeholder - replace with actual loading and analysis of real-world datasets
+    from torch_geometric.datasets import TUDataset
+    import networkx as nx
+    from torch_geometric.utils import to_networkx
+    
+    # Datasets to load
+    dataset_names = ['MUTAG', 'ENZYMES']  # ['MUTAG', 'PROTEINS', 'ENZYMES', 'NCI1', 'DD']
+    
+    # Try to load cached results first
+    cached_results = load_cached_real_world_analysis(dataset_names, output_dir)
+    if cached_results is not None:
+        print("\nLoaded cached real-world dataset analysis results")
+        return cached_results
+    
+    print("\nNo cached results found. Loading and analyzing TUDatasets...")
     real_world_dfs = {}
     
-    # Example: manually create some datapoints representing real-world datasets
-    # based on values from literature like GraphWorld paper
+    for name in tqdm(dataset_names):
+        try:
+            print(f"\nLoading {name} dataset...")
+            # Load dataset with node attributes and cleaned version
+            dataset = TUDataset(
+                root=f'./data/{name}',
+                name=name,
+                use_node_attr=True,  # Enable node attributes
+                cleaned=True  # Use non-isomorphic version
+            )
+            print(f'Dataset loaded: {len(dataset)} graphs')
+            
+            # Collect parameters for each graph
+            params_list = []
+            for i, data in enumerate(dataset):
+                try:
+                    # Convert to NetworkX graph
+                    G = to_networkx(data, to_undirected=True)
+                    
+                    # Calculate homophily based on graph labels
+                    homophily = None
+                    if hasattr(data, 'y') and data.y is not None:
+                        # Get graph label
+                        graph_label = data.y.item() if hasattr(data.y, 'item') else data.y
+                        print(f"  Graph {i} label: {graph_label}")
+                        
+                        # Calculate homophily based on graph label
+                        same_type_edges = 0
+                        total_edges = 0
+                        
+                        for u, v in G.edges():
+                            total_edges += 1
+                            # Both nodes belong to the same graph, so they share the graph label
+                            same_type_edges += 1
+                        
+                        if total_edges > 0:
+                            homophily = same_type_edges / total_edges
+                            print(f"  Graph {i} homophily: {homophily:.3f}")
+                    else:
+                        print(f"  WARNING: Graph {i} has no graph label (y) - homophily cannot be calculated")
+                    
+                    # Compute graph parameters
+                    params = {
+                        "homophily": homophily,
+                        "avg_degree": sum(dict(G.degree()).values()) / len(G),
+                        "clustering_coefficient": nx.average_clustering(G),
+                        "power_law_exponent": None,  # Would need degree distribution analysis
+                        "density": nx.density(G),
+                        "triangle_density": sum(nx.triangles(G).values()) / (3 * len(G)) if len(G) > 0 else 0,
+                        "node_count": len(G),
+                        "avg_communities_per_node": 1.0,  # Not applicable for these datasets
+                    }
+                    params_list.append(params)
+                except Exception as e:
+                    print(f"  ERROR processing graph {i}: {str(e)}")
+                    continue
+            
+            # Create DataFrame
+            df = pd.DataFrame(params_list)
+            real_world_dfs[name] = df
+            
+            # Print summary statistics
+            print(f"\n{name} parameter ranges:")
+            for col in df.columns:
+                if df[col].notna().any():
+                    print(f"  {col}: [{df[col].min():.3f}, {df[col].max():.3f}]")
+                    
+        except Exception as e:
+            print(f"ERROR loading {name}: {str(e)}")
+            continue
     
-    # Cora
-    cora_df = pd.DataFrame({
-        "homophily": [0.83],
-        "avg_degree": [4.0],
-        "clustering_coefficient": [0.24],
-        "power_law_exponent": [2.1],
-        "density": [0.002],
-        "triangle_density": [0.09],
-        "avg_communities_per_node": [1.0],
-    })
-    real_world_dfs["Cora"] = cora_df
-    
-    # Citeseer
-    citeseer_df = pd.DataFrame({
-        "homophily": [0.74],
-        "avg_degree": [2.8],
-        "clustering_coefficient": [0.18],
-        "power_law_exponent": [2.2],
-        "density": [0.001],
-        "triangle_density": [0.05],
-        "avg_communities_per_node": [1.0],
-    })
-    real_world_dfs["Citeseer"] = citeseer_df
-    
-    # PubMed
-    pubmed_df = pd.DataFrame({
-        "homophily": [0.79],
-        "avg_degree": [5.5],
-        "clustering_coefficient": [0.04],
-        "power_law_exponent": [2.3],
-        "density": [0.0003],
-        "triangle_density": [0.02],
-        "avg_communities_per_node": [1.0],
-    })
-    real_world_dfs["PubMed"] = pubmed_df
-    
-    # OGB-ArXiv
-    ogb_arxiv_df = pd.DataFrame({
-        "homophily": [0.65],
-        "avg_degree": [13.2],
-        "clustering_coefficient": [0.21],
-        "power_law_exponent": [2.4],
-        "density": [0.0001],
-        "triangle_density": [0.12],
-        "avg_communities_per_node": [1.0],
-    })
-    real_world_dfs["OGB-ArXiv"] = ogb_arxiv_df
-    
-    # OGB-Products
-    ogb_products_df = pd.DataFrame({
-        "homophily": [0.51],
-        "avg_degree": [20.9],
-        "clustering_coefficient": [0.37],
-        "power_law_exponent": [2.1],
-        "density": [0.00001],
-        "triangle_density": [0.18],
-        "avg_communities_per_node": [1.0],
-    })
-    real_world_dfs["OGB-Products"] = ogb_products_df
+    # Save results for future use
+    if real_world_dfs:
+        save_real_world_analysis_results(real_world_dfs, output_dir)
     
     return real_world_dfs
 
@@ -721,21 +821,6 @@ def create_summary_figures(
         output_dir: Directory to save figures
     """
     os.makedirs(output_dir, exist_ok=True)
-    
-    # Create and save parameter distribution plots
-    all_params = set()
-    for df in family_dfs.values():
-        all_params.update(df.columns)
-    
-    all_params = [p for p in all_params if p != "graph_id"]
-    
-    for param in all_params:
-        try:
-            fig = plot_parameter_distribution_by_family(family_dfs, param)
-            fig.savefig(os.path.join(output_dir, f"distribution_{param}.png"), dpi=300, bbox_inches='tight')
-            plt.close(fig)
-        except Exception as e:
-            print(f"Error plotting distribution for {param}: {e}")
     
     # Create and save parameter space coverage plots
     param_space_figs = plot_parameter_space_coverage(coverage_metrics)
@@ -935,8 +1020,9 @@ def plot_parameter_space_pca(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Analyze parameter space coverage of MMSB graph families")
-    parser.add_argument("--n_families", type=int, default=30, help="Number of graph families to generate")
+    parser.add_argument("--n_families", type=int, default=100, help="Number of graph families to generate")
     parser.add_argument("--n_graphs_per_family", type=int, default=20, help="Number of graphs per family")
+    parser.add_argument("--exclude_real_datasets", action="store_true", help="Exclude real-world datasets from TUDataset")
     args = parser.parse_args()
     
     # Create output directory
@@ -954,17 +1040,30 @@ if __name__ == "__main__":
     print("Analyzing parameter distributions...")
     family_dfs = analyze_families(families)
     
-    # Define parameter pairs
-    param_pairs = [
-        ("homophily", "avg_degree"),
-        ("clustering_coefficient", "avg_degree"),
-        ("power_law_exponent", "density"),
-        ("avg_communities_per_node", "homophily")
+    # Load real-world datasets by default unless explicitly excluded
+    real_world_dfs = None
+    if not args.exclude_real_datasets:
+        real_world_dfs = load_real_world_datasets()
+    
+    # Define parameters to analyze
+    params_to_analyze = [
+        "homophily",
+        "clustering_coefficient",
+        "avg_degree",
+        "density",
+        "triangle_density",
+        "node_count",
     ]
+    
+    # Generate all possible pairs of parameters
+    param_pairs = []
+    for i in range(len(params_to_analyze)):
+        for j in range(i + 1, len(params_to_analyze)):
+            param_pairs.append((params_to_analyze[i], params_to_analyze[j]))
     
     # Compute and visualize parameter space coverage
     print("Computing coverage metrics...")
-    coverage_metrics = compute_parameter_space_coverage(family_dfs, None, param_pairs)
+    coverage_metrics = compute_parameter_space_coverage(family_dfs, real_world_dfs, param_pairs)
     
     # Create summary figures
     print("Creating summary figures...")
