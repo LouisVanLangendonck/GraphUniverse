@@ -449,81 +449,81 @@ class GraphUniverse:
         else:
             raise ValueError(f"Unknown sampling method: {method}")
             
-    def generate_community_co_membership_matrix(
-        self, 
-        overlap_density: float = 0.1,
-        structure: str = "modular"
-    ) -> np.ndarray:
-        """
-        Generate a community co-membership matrix to model overlapping communities.
+    # def generate_community_co_membership_matrix(
+    #     self, 
+    #     overlap_density: float = 0.1,
+    #     structure: str = "modular"
+    # ) -> np.ndarray:
+    #     """
+    #     Generate a community co-membership matrix to model overlapping communities.
         
-        Args:
-            overlap_density: Overall density of overlaps between communities
-            structure: Structure of overlaps ("modular", "hierarchical", "hub-spoke")
+    #     Args:
+    #         overlap_density: Overall density of overlaps between communities
+    #         structure: Structure of overlaps ("modular", "hierarchical", "hub-spoke")
             
-        Returns:
-            K × K co-membership probability matrix
-        """
-        K = self.K
-        co_membership = np.eye(K)  # Diagonal is always 1 (self-membership)
+    #     Returns:
+    #         K × K co-membership probability matrix
+    #     """
+    #     K = self.K
+    #     co_membership = np.eye(K)  # Diagonal is always 1 (self-membership)
         
-        if structure == "modular":
-            # Create modules of overlapping communities
-            module_size = max(2, K // 5)  # Module size
-            for i in range(0, K, module_size):
-                module_end = min(i + module_size, K)
-                module_indices = np.arange(i, module_end)
+    #     if structure == "modular":
+    #         # Create modules of overlapping communities
+    #         module_size = max(2, K // 5)  # Module size
+    #         for i in range(0, K, module_size):
+    #             module_end = min(i + module_size, K)
+    #             module_indices = np.arange(i, module_end)
                 
-                # Communities within same module have higher overlap probability
-                for j in module_indices:
-                    for k in module_indices:
-                        if j != k:
-                            co_membership[j, k] = overlap_density
+    #             # Communities within same module have higher overlap probability
+    #             for j in module_indices:
+    #                 for k in module_indices:
+    #                     if j != k:
+    #                         co_membership[j, k] = overlap_density
                             
-        elif structure == "hierarchical":
-            # Hierarchical structure with stronger overlaps between related communities
-            levels = int(np.log2(K)) + 1
-            for i in range(K):
-                for j in range(i+1, K):
-                    # Compute overlap based on hierarchical distance
-                    bin_i, bin_j = bin(i)[2:].zfill(levels), bin(j)[2:].zfill(levels)
-                    common_prefix = 0
-                    for b_i, b_j in zip(bin_i, bin_j):
-                        if b_i == b_j:
-                            common_prefix += 1
-                        else:
-                            break
+    #     elif structure == "hierarchical":
+    #         # Hierarchical structure with stronger overlaps between related communities
+    #         levels = int(np.log2(K)) + 1
+    #         for i in range(K):
+    #             for j in range(i+1, K):
+    #                 # Compute overlap based on hierarchical distance
+    #                 bin_i, bin_j = bin(i)[2:].zfill(levels), bin(j)[2:].zfill(levels)
+    #                 common_prefix = 0
+    #                 for b_i, b_j in zip(bin_i, bin_j):
+    #                     if b_i == b_j:
+    #                         common_prefix += 1
+    #                     else:
+    #                         break
                     
-                    # Probability decreases with hierarchical distance
-                    hier_distance = levels - common_prefix
-                    overlap_prob = overlap_density * (0.5 ** (hier_distance - 1))
-                    co_membership[i, j] = co_membership[j, i] = overlap_prob
+    #                 # Probability decreases with hierarchical distance
+    #                 hier_distance = levels - common_prefix
+    #                 overlap_prob = overlap_density * (0.5 ** (hier_distance - 1))
+    #                 co_membership[i, j] = co_membership[j, i] = overlap_prob
                     
-        elif structure == "hub-spoke":
-            # Some communities are hubs that overlap with many others
-            num_hubs = max(1, K // 10)
-            hub_indices = np.random.choice(K, size=num_hubs, replace=False)
+    #     elif structure == "hub-spoke":
+    #         # Some communities are hubs that overlap with many others
+    #         num_hubs = max(1, K // 10)
+    #         hub_indices = np.random.choice(K, size=num_hubs, replace=False)
             
-            # Hub-spoke connections
-            for hub in hub_indices:
-                for i in range(K):
-                    if i != hub:
-                        co_membership[hub, i] = co_membership[i, hub] = overlap_density
+    #         # Hub-spoke connections
+    #         for hub in hub_indices:
+    #             for i in range(K):
+    #                 if i != hub:
+    #                     co_membership[hub, i] = co_membership[i, hub] = overlap_density
                         
-            # Hub-hub connections (stronger)
-            for i in hub_indices:
-                for j in hub_indices:
-                    if i != j:
-                        co_membership[i, j] = overlap_density * 2
+    #         # Hub-hub connections (stronger)
+    #         for i in hub_indices:
+    #             for j in hub_indices:
+    #                 if i != j:
+    #                     co_membership[i, j] = overlap_density * 2
                         
-        else:
-            # Random uniform co-membership
-            for i in range(K):
-                for j in range(i+1, K):
-                    p = np.random.uniform(0, overlap_density)
-                    co_membership[i, j] = co_membership[j, i] = p
+    #     else:
+    #         # Random uniform co-membership
+    #         for i in range(K):
+    #             for j in range(i+1, K):
+    #                 p = np.random.uniform(0, overlap_density)
+    #                 co_membership[i, j] = co_membership[j, i] = p
                     
-        return co_membership
+    #     return co_membership
 
     def sample_connected_community_subset(
         self,
@@ -918,6 +918,7 @@ class GraphSample:
     ) -> sp.spmatrix:
         """
         Generate edges with minimum density guarantee.
+        Uses vectorized operations for faster edge generation with community labels.
         
         Args:
             community_labels: Node community assignments (indices)
@@ -933,44 +934,41 @@ class GraphSample:
         n_nodes = len(community_labels)
         
         for attempt in range(max_retries):
-            # Sparse matrix for efficient storage
-            rows, cols, data = [], [], []
+            # Create node pairs using meshgrid
+            i_nodes, j_nodes = np.triu_indices(n_nodes, k=1)
             
-            # Compute edge probabilities efficiently
-            for i in range(n_nodes):
-                comm_i = community_labels[i]
-                
-                # For each node i, compute probabilities to all nodes j
-                for j in range(i+1, n_nodes):
-                    comm_j = community_labels[j]
-                    
-                    # Get probability from P matrix
-                    edge_prob = P_sub[comm_i, comm_j]
-                    
-                    # Apply degree correction
-                    edge_prob *= degree_factors[i] * degree_factors[j]
-                    
-                    # Add noise if specified
-                    if noise > 0:
-                        edge_prob *= (1 + np.random.uniform(-noise, noise))
-                        edge_prob = np.clip(edge_prob, 0, 1)
-                    
-                    # Sample edge
-                    if np.random.random() < edge_prob:
-                        rows.append(i)
-                        cols.append(j)
-                        data.append(1)
-                        
-                        # Add the reverse edge for undirected graph
-                        rows.append(j)
-                        cols.append(i)
-                        data.append(1)
+            # Get community pairs for all node pairs at once
+            comm_i = community_labels[i_nodes]
+            comm_j = community_labels[j_nodes]
+            
+            # Get base probabilities from P matrix
+            edge_probs = P_sub[comm_i, comm_j]
+            
+            # Apply degree correction
+            edge_probs *= degree_factors[i_nodes] * degree_factors[j_nodes]
+            
+            # Add noise if specified
+            if noise > 0:
+                edge_probs *= (1 + np.random.uniform(-noise, noise, size=len(edge_probs)))
+                edge_probs = np.clip(edge_probs, 0, 1)
+            
+            # Sample edges
+            edges = np.random.random(len(edge_probs)) < edge_probs
+            
+            # Get the edges that were sampled
+            rows = i_nodes[edges]
+            cols = j_nodes[edges]
+            
+            # Create data for both directions (undirected graph)
+            all_rows = np.concatenate([rows, cols])
+            all_cols = np.concatenate([cols, rows])
+            all_data = np.ones(len(all_rows))
             
             # Create sparse adjacency matrix
-            adj = sp.csr_matrix((data, (rows, cols)), shape=(n_nodes, n_nodes))
+            adj = sp.csr_matrix((all_data, (all_rows, all_cols)), shape=(n_nodes, n_nodes))
             
             # Calculate actual edge density
-            actual_density = len(data) / (n_nodes * (n_nodes - 1))
+            actual_density = len(all_rows) / (n_nodes * (n_nodes - 1))
             
             if actual_density >= min_edge_density:
                 return adj
@@ -978,7 +976,6 @@ class GraphSample:
             # If density is too low, increase edge probabilities
             if attempt < max_retries - 1:
                 print(f"Attempt {attempt + 1}: Graph too sparse (density={actual_density:.4f}). Retrying with adjusted probabilities...")
-                # Increase edge probabilities by a factor
                 P_sub = P_sub * 2  # Double the connection probabilities
                 noise = noise * 0.5  # Reduce noise to maintain signal
             else:

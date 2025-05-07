@@ -92,19 +92,21 @@ def generate_diverse_graph_families(
             "inter_community_regime_similarity": random.uniform(0.0, 1.0),
             
             # Graph generation parameters
-            "base_communities_ratio": random.uniform(0.02, 0.4),  # Base ratio of communities to sample (up to 40% of K)
-            "additional_communities_ratio": random.uniform(0.03, 0.5),  # Additional ratio on top of base (capped at 1.0 total)
-            "base_nodes": random.randint(20, 100),  # Base number of nodes
-            "additional_nodes": random.randint(20, 200),  # Additional nodes on top of base
+            "min_communities": random.randint(2, max(3, K // 5)),  # Between 2 and K/5 communities
+            "max_communities": random.randint(5, max(6, K // 2)),  # Between 5 and K/2 communities
+            "min_nodes": random.randint(20, 100),  # Base number of nodes
+            "max_nodes": random.randint(150, 300),  # Maximum number of nodes
             "degree_heterogeneity": random.uniform(0.0, 1.0),
             "edge_noise": random.uniform(0.0, 0.05),
-            "sampling_method": "random",
             "min_component_size": random.randint(2, 7),
-            "indirect_influence": random.uniform(0, 0.2),
-            "feature_regime_balance": random.uniform(0.3, 0.7),
             
             "name": f"random_variation_{len(family_variations)}"
         }
+        
+        # Ensure min_communities < max_communities
+        if new_variation["min_communities"] >= new_variation["max_communities"]:
+            new_variation["max_communities"] = new_variation["min_communities"] + random.randint(2, 5)
+        
         family_variations.append(new_variation)
     
     # Select the first n_families variations
@@ -115,13 +117,14 @@ def generate_diverse_graph_families(
     
     for variation in tqdm(family_variations):
         family_name = variation.pop("name")
+        graphs = None  # Initialize graphs as None
         
         # Create parameters for this family
         family_params = base_params.copy() if base_params else {}
         family_params.update(variation)
         
-        # Create universe
         try:
+            # Create universe
             universe = GraphUniverse(
                 K=family_params["K"],
                 feature_dim=family_params["feature_dim"],
@@ -129,68 +132,38 @@ def generate_diverse_graph_families(
                 edge_density=family_params["edge_density"],
                 homophily=family_params["homophily"],
                 randomness_factor=family_params["randomness_factor"],
-                mixed_membership=False,  # Disable mixed membership
                 regimes_per_community=family_params["regimes_per_community"],
                 intra_community_regime_similarity=family_params["intra_community_regime_similarity"],
                 inter_community_regime_similarity=family_params["inter_community_regime_similarity"],
                 seed=seed
             )
             
-            # Calculate community ranges based on K
-            base_communities = max(2, int(family_params["K"] * family_params["base_communities_ratio"]))
-            # Calculate max as base + additional ratio, capped at K
-            additional_ratio = family_params["additional_communities_ratio"]
-            max_communities = min(
-                family_params["K"],
-                max(base_communities + 1, int(family_params["K"] * (family_params["base_communities_ratio"] + additional_ratio)))
+            # Initialize generator with universe
+            generator = GraphFamilyGenerator(universe=universe)
+            
+            # Generate graph family
+            graphs = generator.generate(
+                n_graphs=n_graphs_per_family,
+                min_communities=family_params["min_communities"],
+                max_communities=family_params["max_communities"],
+                min_nodes=family_params["min_nodes"],
+                max_nodes=family_params["max_nodes"],
+                degree_heterogeneity=family_params["degree_heterogeneity"],
+                edge_noise=family_params["edge_noise"],
+                min_component_size=family_params["min_component_size"]
             )
             
-            # Calculate node ranges
-            min_nodes = family_params["base_nodes"]
-            max_nodes = min_nodes + family_params["additional_nodes"]
-            
-            # Only print parameters if generation fails
-            failure_occurred = False
-            
-            # Generate graphs using pretraining method
-            try:
-                # Initialize generator with universe
-                generator = GraphFamilyGenerator(universe=universe)
-                
-                # Generate graph family
-                graphs = generator.generate(
-                    n_graphs=n_graphs_per_family,
-                    min_communities=base_communities,
-                    max_communities=max_communities,
-                    min_nodes=min_nodes,
-                    max_nodes=max_nodes,
-                    degree_heterogeneity=family_params["degree_heterogeneity"],  # Controls power law exponent: 2 + 8*(1-heterogeneity)
-                    edge_noise=family_params["edge_noise"],
-                    sampling_method=family_params["sampling_method"],
-                    min_component_size=family_params["min_component_size"],
-                    feature_regime_balance=family_params["feature_regime_balance"],
-                    indirect_influence=family_params["indirect_influence"]
-                )
-                
-                if graphs is None or len(graphs) == 0:
-                    failure_occurred = True
-                else:
-                    families[family_name] = graphs
-                    
-            except Exception as e:
-                failure_occurred = True
-                
-            # If failure occurred, print the parameters and error details
-            if failure_occurred:
+            # Check if generation was successful
+            if graphs is not None and len(graphs) > 0:
+                families[family_name] = graphs
+            else:
                 print(f"\nFAILED family: {family_name}")
                 print("Parameters:")
                 for key, value in family_params.items():
                     print(f"  {key}: {value}")
-                print(f"  min_communities: {base_communities}")
-                print(f"  max_communities: {max_communities}")
                 if graphs is None:
                     print("Error: generate_pretraining_graphs returned None")
-                elif len(graphs) == 0:
+                else:
                     print("Error: generate_pretraining_graphs returned empty list")
                 
         except Exception as e:
@@ -225,10 +198,11 @@ def analyze_families(
             "clustering_coefficient",
             "node_count",
             "avg_degree",
-            "avg_communities_per_node",
             "density",
             "connected_components",
-            "largest_component_size"
+            "largest_component_size",
+            "intra_community_density",
+            "inter_community_density"
         ]
     
     family_dfs = {}
@@ -1083,7 +1057,7 @@ def plot_parameter_space_pca(
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Analyze parameter space coverage of MMSB graph families")
     parser.add_argument("--n_families", type=int, default=100, help="Number of graph families to generate")
-    parser.add_argument("--n_graphs_per_family", type=int, default=80, help="Number of graphs per family")
+    parser.add_argument("--n_graphs_per_family", type=int, default=100, help="Number of graphs per family")
     parser.add_argument("--exclude_real_datasets", action="store_true", help="Exclude real-world datasets from TUDataset")
     args = parser.parse_args()
     

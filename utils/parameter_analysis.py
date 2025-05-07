@@ -45,11 +45,6 @@ def analyze_graph_parameters(
     Returns:
         Dictionary of parameter values
     """
-    print("\nDEBUG: Starting analyze_graph_parameters")
-    print(f"Graph info: nodes={len(graph)}, edges={len(graph.edges())}")
-    print(f"Community labels shape: {community_labels.shape if community_labels is not None else None}")
-    print(f"Communities: {communities if communities is not None else None}")
-    
     result = {}
     
     # Basic graph properties
@@ -58,7 +53,6 @@ def analyze_graph_parameters(
     
     # Handle empty or invalid graphs
     if n_nodes == 0 or n_edges == 0:
-        print("DEBUG: Empty or invalid graph detected")
         return {
             "homophily": 0.0,
             "power_law_exponent": None,
@@ -80,18 +74,11 @@ def analyze_graph_parameters(
     degrees = [d for _, d in graph.degree()]
     result["avg_degree"] = sum(degrees) / n_nodes
     
-    print("\nDEBUG: Basic graph metrics calculated:")
-    print(f"Density: {result['density']}")
-    print(f"Average degree: {result['avg_degree']}")
-    
     # Calculate homophily
     try:
-        print("\nDEBUG: Calculating homophily...")
         homophily = calculate_homophily(graph, community_labels, communities)
         result["homophily"] = homophily
-        print(f"DEBUG: Homophily calculation successful: {homophily}")
     except Exception as e:
-        print(f"DEBUG: Error in homophily calculation: {str(e)}")
         result["homophily"] = 0.0
     
     # Clustering coefficient (handle case with no triangles)
@@ -123,36 +110,6 @@ def analyze_graph_parameters(
     except nx.NetworkXError:
         result["connected_components"] = 0
         result["largest_component_size"] = 0
-    
-    # Edge density within and between communities
-    try:
-        total_possible_edges = n_nodes * (n_nodes - 1) / 2
-        total_possible_intra = 0
-        total_possible_inter = 0
-        actual_intra = 0
-        actual_inter = 0
-        
-        # Create mapping from graph node labels to indices
-        node_to_idx = {node: i for i, node in enumerate(sorted(graph.nodes()))}
-        
-        # Count possible and actual edges
-        for i in range(n_nodes):
-            for j in range(i+1, n_nodes):
-                if community_labels[node_to_idx[i]] == community_labels[node_to_idx[j]]:
-                    total_possible_intra += 1
-                    if graph.has_edge(i, j):
-                        actual_intra += 1
-                else:
-                    total_possible_inter += 1
-                    if graph.has_edge(i, j):
-                        actual_inter += 1
-        
-        # Calculate densities
-        result["intra_community_density"] = actual_intra / total_possible_intra if total_possible_intra > 0 else 0.0
-        result["inter_community_density"] = actual_inter / total_possible_inter if total_possible_inter > 0 else 0.0
-    except (AttributeError, TypeError, ZeroDivisionError):
-        result["intra_community_density"] = 0.0
-        result["inter_community_density"] = 0.0
     
     return result
 
@@ -400,20 +357,12 @@ def calculate_homophily(
     Returns:
         Homophily score in [0, 1]
     """
-    print("\nDEBUG: Starting homophily calculation")
-    print(f"Graph nodes: {len(graph.nodes())}")
-    print(f"Graph edges: {len(graph.edges())}")
-    print(f"Community labels shape: {community_labels.shape if community_labels is not None else None}")
-    print(f"Number of communities: {len(communities) if communities is not None else None}")
-    
     if community_labels is None or len(community_labels) == 0:
-        print("DEBUG: No community labels provided")
         return 0.0
     
     try:
         # Create mapping from graph node labels to indices
         node_to_idx = {node: i for i, node in enumerate(sorted(graph.nodes()))}
-        print(f"DEBUG: Created node mapping for {len(node_to_idx)} nodes")
         
         # Count same-community and different-community edges
         same_community = 0
@@ -430,24 +379,17 @@ def calculate_homophily(
                     same_community += 1
                 else:
                     diff_community += 1
-            except Exception as e:
-                print(f"DEBUG: Error processing edge ({u}, {v}): {str(e)}")
+            except Exception:
                 continue
-        
-        print(f"DEBUG: Same community edges: {same_community}")
-        print(f"DEBUG: Different community edges: {diff_community}")
         
         # Calculate homophily
         total_edges = same_community + diff_community
         homophily = same_community / total_edges if total_edges > 0 else 0
         
-        print(f"DEBUG: Calculated homophily: {homophily}")
         return homophily
         
-    except Exception as e:
-        print(f"DEBUG: Error in main homophily calculation: {str(e)}")
+    except Exception:
         return 0.0
-
 
 def fit_power_law(degrees: List[int]) -> float:
     """
@@ -476,7 +418,6 @@ def fit_power_law(degrees: List[int]) -> float:
     alpha = params[0]
     
     return alpha
-
 
 def analyze_graph_family(graphs: List[Any], attribute_name: str = "graph") -> pd.DataFrame:
     """
@@ -561,7 +502,6 @@ def compute_statistics(df: pd.DataFrame) -> Dict[str, Dict[str, float]]:
     
     return stats
 
-
 def compare_graph_families(
     family_dfs: Dict[str, pd.DataFrame],
     params: Optional[List[str]] = None
@@ -608,7 +548,6 @@ def compare_graph_families(
     
     return comparison_df
 
-
 def plot_parameter_distribution(
     df: pd.DataFrame,
     parameter: str,
@@ -652,7 +591,6 @@ def plot_parameter_distribution(
     ax.legend()
     
     return fig
-
 
 def confidence_ellipse(
     x: np.ndarray,
@@ -737,7 +675,6 @@ def confidence_ellipse(
         return ax.add_patch(ellipse)
     except (ValueError, RuntimeWarning, ZeroDivisionError):
         return None
-
 
 def plot_parameter_scatter(
     df: pd.DataFrame,
@@ -828,7 +765,6 @@ def plot_parameter_scatter(
     
     return fig
 
-
 def plot_parameter_space(
     family_dfs: Dict[str, pd.DataFrame],
     x_param: str,
@@ -887,7 +823,6 @@ def plot_parameter_space(
     ax.legend()
     
     return fig
-
 
 def create_parameter_dashboard(
     df: pd.DataFrame,
@@ -1066,7 +1001,6 @@ def create_parameter_dashboard(
     fig.suptitle(f'Parameter Dashboard for {family_name}', fontsize=16, y=1.02)
     
     return fig
-
 
 def compare_parameter_distributions(
     family_dfs: Dict[str, pd.DataFrame],

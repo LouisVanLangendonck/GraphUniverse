@@ -183,103 +183,246 @@ def visualize_graph_generation_process(
     return fig
 
 def plot_graph_communities(
-    graph: Any,
+    graph: Union[nx.Graph, 'GraphSample'],
+    community_key: str = "community",
     layout: str = "spring",
-    figsize: Tuple[int, int] = (12, 8),
-    node_size: int = 100,
+    node_size: float = 50,
+    edge_width: float = 0.5,
+    edge_alpha: float = 0.2,
+    figsize: Tuple[int, int] = (10, 8),
     with_labels: bool = False,
+    cmap: str = "tab20",
     title: Optional[str] = None,
     ax: Optional[plt.Axes] = None,
     pos: Optional[Dict] = None,
-    edge_width: float = 1.0,
-    edge_alpha: float = 0.5,
-    colormap: str = "tab20"
+    min_component_size: int = 0  # New parameter
 ) -> plt.Figure:
     """
     Plot a graph with nodes colored by community.
+    Only shows components that meet the minimum size requirement.
     
     Args:
-        graph: NetworkX graph or GraphSample object
-        layout: Graph layout algorithm ("spring", "circular", "random", "shell")
-        figsize: Figure size
-        node_size: Size of nodes in visualization
-        with_labels: Whether to show node labels
-        title: Optional title for the plot
-        ax: Optional matplotlib axes to plot on
-        pos: Optional pre-computed node positions
+        graph: NetworkX graph or GraphSample object to plot
+        community_key: Node attribute key for community assignment
+        layout: Graph layout algorithm ("spring", "kamada_kawai", "spectral", etc.)
+        node_size: Size of nodes
         edge_width: Width of edges
-        edge_alpha: Transparency of edges
-        colormap: Matplotlib colormap name
+        edge_alpha: Edge transparency
+        figsize: Figure size
+        with_labels: Whether to show node labels
+        cmap: Colormap for communities
+        title: Plot title
+        ax: Matplotlib axis to plot on (if None, creates new)
+        pos: Pre-computed node positions (if None, computes based on layout)
+        min_component_size: Minimum size for a component to be kept
         
     Returns:
         Matplotlib figure
     """
-    # Get the NetworkX graph if we have a GraphSample object
+    # Handle GraphSample objects
     if hasattr(graph, 'graph'):
-        G = graph.graph
+        # Get the NetworkX graph and community information
+        nx_graph = graph.graph
         community_labels = graph.community_labels
         communities = graph.communities
+        
+        # Add community information to nodes
+        for i, node in enumerate(nx_graph.nodes()):
+            nx_graph.nodes[node][community_key] = communities[community_labels[i]]
     else:
-        G = graph
-        # Try to get community information from node attributes
-        community_labels = []
-        communities = set()
-        for node in G.nodes():
-            comm = G.nodes[node].get('community', 0)
-            community_labels.append(comm)
-            communities.add(comm)
-        community_labels = np.array(community_labels)
-        communities = sorted(list(communities))
+        nx_graph = graph
     
-    # Create figure if needed
+    # Create figure if not provided
     if ax is None:
         fig, ax = plt.subplots(figsize=figsize)
     else:
         fig = ax.figure
     
-    # Get node positions
+    # Get components and filter by size
+    components = list(nx.connected_components(nx_graph))
+    components.sort(key=len, reverse=True)
+    kept_components = [c for c in components if len(c) >= min_component_size]
+    
+    if not kept_components:
+        ax.text(0.5, 0.5, "No components above size threshold", 
+                horizontalalignment='center', verticalalignment='center',
+                transform=ax.transAxes, fontsize=14)
+        ax.axis('off')
+        return fig
+    
+    # Create subgraph of kept components
+    kept_nodes = set().union(*kept_components)
+    kept_graph = nx_graph.subgraph(kept_nodes).copy()
+    
+    # Get communities from kept graph
+    communities = {}
+    for node, attrs in kept_graph.nodes(data=True):
+        if community_key in attrs:
+            comm = attrs[community_key]
+            if comm not in communities:
+                communities[comm] = []
+            communities[comm].append(node)
+    
+    # If community information not found
+    if not communities:
+        communities = {0: list(kept_graph.nodes())}
+    
+    # Compute layout if not provided
     if pos is None:
         if layout == "spring":
-            pos = nx.spring_layout(G)
+            pos = nx.spring_layout(kept_graph, seed=42)
+        elif layout == "kamada_kawai":
+            pos = nx.kamada_kawai_layout(kept_graph)
+        elif layout == "spectral":
+            pos = nx.spectral_layout(kept_graph)
         elif layout == "circular":
-            pos = nx.circular_layout(G)
-        elif layout == "random":
-            pos = nx.random_layout(G)
-        elif layout == "shell":
-            pos = nx.shell_layout(G)
+            pos = nx.circular_layout(kept_graph)
         else:
-            raise ValueError(f"Unknown layout: {layout}")
+            # Default to spring
+            pos = nx.spring_layout(kept_graph, seed=42)
+    else:
+        # Filter pre-computed positions to only kept nodes
+        pos = {node: pos[node] for node in kept_graph.nodes()}
     
-    # Create color map
-    n_communities = len(communities)
-    cmap = plt.get_cmap(colormap)
-    colors = [cmap(i / max(n_communities - 1, 1)) for i in range(n_communities)]
+    # Create colormap
+    cmap_obj = plt.get_cmap(cmap)
     
-    # Create mapping from community ID to color index
-    comm_to_color = {comm: i for i, comm in enumerate(communities)}
+    # Draw edges first
+    nx.draw_networkx_edges(
+        kept_graph,
+        pos,
+        alpha=edge_alpha,
+        width=edge_width,
+        ax=ax
+    )
     
-    # Get node colors
-    node_colors = [colors[comm_to_color[communities[label]]] for label in community_labels]
+    # Draw nodes for each community
+    for i, (comm, nodes) in enumerate(communities.items()):
+        color = cmap_obj(i % cmap_obj.N)
+        nx.draw_networkx_nodes(
+            kept_graph,
+            pos,
+            nodelist=nodes,
+            node_color=[color] * len(nodes),
+            node_size=node_size,
+            alpha=0.8,
+            ax=ax
+        )
     
-    # Draw the graph
-    nx.draw_networkx_edges(G, pos, alpha=edge_alpha, width=edge_width, ax=ax)
-    nx.draw_networkx_nodes(G, pos, node_color=node_colors, node_size=node_size, ax=ax)
-    
+    # Add node labels if requested
     if with_labels:
-        nx.draw_networkx_labels(G, pos, ax=ax)
+        nx.draw_networkx_labels(
+            kept_graph,
+            pos,
+            font_size=8,
+            ax=ax
+        )
     
-    # Add legend
-    legend_elements = [plt.Line2D([0], [0], marker='o', color='w', 
-                                 markerfacecolor=colors[i], label=f'Community {comm}',
-                                 markersize=10)
-                      for i, comm in enumerate(communities)]
-    ax.legend(handles=legend_elements, loc='center left', bbox_to_anchor=(1, 0.5))
+    # Set title
+    if title:
+        if min_component_size > 0:
+            title = f"{title}\n(Components ≥ {min_component_size} nodes)"
+        ax.set_title(title)
+    elif min_component_size > 0:
+        ax.set_title(f"Graph Components ≥ {min_component_size} nodes")
     
+    # Turn off axis
+    ax.axis("off")
+    
+    # Add legend for communities
+    for i, comm in enumerate(sorted(communities.keys())):
+        color = cmap_obj(i % cmap_obj.N)
+        ax.scatter([], [], c=[color], label=f"Community {comm}")
+    
+    ax.legend(loc="best", title="Communities")
+    
+    return fig
+
+def plot_membership_matrix(
+    graph: Union[nx.Graph, 'GraphSample'],
+    figsize: Tuple[int, int] = (10, 8),
+    cmap: str = "viridis",
+    title: str = "Community Distribution",
+    ax: Optional[plt.Axes] = None
+) -> plt.Figure:
+    """
+    Plot a visualization of community distribution.
+    
+    Args:
+        graph: GraphSample object or NetworkX graph
+        figsize: Figure size
+        cmap: Colormap
+        title: Plot title
+        ax: Matplotlib axis to plot on (if None, creates new)
+        
+    Returns:
+        Matplotlib figure
+    """
+    # Create figure if not provided
+    if ax is None:
+        fig, ax = plt.subplots(figsize=figsize)
+    else:
+        fig = ax.figure
+
+    # Get community information
+    if hasattr(graph, 'graph'):
+        # GraphSample object
+        community_labels = graph.community_labels
+        communities = graph.communities
+    else:
+        # NetworkX graph
+        community_labels = []
+        communities = set()
+        for node in graph.nodes():
+            comm = graph.nodes[node].get('community', 0)
+            community_labels.append(comm)
+            communities.add(comm)
+        community_labels = np.array(community_labels)
+        communities = sorted(list(communities))
+
+    # Count nodes in each community
+    community_counts = {}
+    for comm in communities:
+        count = np.sum(community_labels == communities.index(comm))
+        community_counts[comm] = count
+
+    # Create bar plot
+    communities_list = sorted(community_counts.keys())
+    counts = [community_counts[comm] for comm in communities_list]
+    
+    bars = ax.bar(range(len(communities_list)), counts, alpha=0.7)
+    
+    # Add value labels on top of bars
+    for i, count in enumerate(counts):
+        ax.text(i, count, str(count), 
+                horizontalalignment='center',
+                verticalalignment='bottom')
+
+    # Customize plot
+    ax.set_xticks(range(len(communities_list)))
+    ax.set_xticklabels([f'C{c}' for c in communities_list])
+    ax.set_xlabel('Community')
+    ax.set_ylabel('Number of Nodes')
+    
+    # Add percentage labels
+    total_nodes = sum(counts)
+    percentages = [count/total_nodes * 100 for count in counts]
+    for i, (count, percentage) in enumerate(zip(counts, percentages)):
+        ax.text(i, count/2, f'{percentage:.1f}%', 
+                horizontalalignment='center',
+                verticalalignment='center',
+                color='white' if count > max(counts)/3 else 'black')
+
+    # Add total nodes info
+    ax.text(0.98, 0.98, f'Total Nodes: {total_nodes}',
+            transform=ax.transAxes,
+            horizontalalignment='right',
+            verticalalignment='top',
+            bbox=dict(facecolor='white', alpha=0.8, edgecolor='none'))
+
     if title:
         ax.set_title(title)
-    
-    ax.set_axis_off()
-    
+
     return fig
 
 def plot_community_matrix(
@@ -542,362 +685,6 @@ def plot_probability_matrix_comparison(
     # Set overall title
     fig.suptitle(title, fontsize=16)
     fig.tight_layout(rect=[0, 0, 1, 0.95])
-    
-    return fig
-
-def plot_graph_communities(
-    graph: Union[nx.Graph, 'GraphSample'],
-    community_key: str = "community",
-    layout: str = "spring",
-    node_size: float = 50,
-    edge_width: float = 0.5,
-    edge_alpha: float = 0.2,
-    figsize: Tuple[int, int] = (10, 8),
-    with_labels: bool = False,
-    cmap: str = "tab20",
-    title: Optional[str] = None,
-    ax: Optional[plt.Axes] = None,
-    pos: Optional[Dict] = None,
-    min_component_size: int = 0  # New parameter
-) -> plt.Figure:
-    """
-    Plot a graph with nodes colored by community.
-    Only shows components that meet the minimum size requirement.
-    
-    Args:
-        graph: NetworkX graph or GraphSample object to plot
-        community_key: Node attribute key for community assignment
-        layout: Graph layout algorithm ("spring", "kamada_kawai", "spectral", etc.)
-        node_size: Size of nodes
-        edge_width: Width of edges
-        edge_alpha: Edge transparency
-        figsize: Figure size
-        with_labels: Whether to show node labels
-        cmap: Colormap for communities
-        title: Plot title
-        ax: Matplotlib axis to plot on (if None, creates new)
-        pos: Pre-computed node positions (if None, computes based on layout)
-        min_component_size: Minimum size for a component to be kept
-        
-    Returns:
-        Matplotlib figure
-    """
-    # Handle GraphSample objects
-    if hasattr(graph, 'graph'):
-        # Get the NetworkX graph and community information
-        nx_graph = graph.graph
-        community_labels = graph.community_labels
-        communities = graph.communities
-        
-        # Add community information to nodes
-        for i, node in enumerate(nx_graph.nodes()):
-            nx_graph.nodes[node][community_key] = communities[community_labels[i]]
-    else:
-        nx_graph = graph
-    
-    # Create figure if not provided
-    if ax is None:
-        fig, ax = plt.subplots(figsize=figsize)
-    else:
-        fig = ax.figure
-    
-    # Get components and filter by size
-    components = list(nx.connected_components(nx_graph))
-    components.sort(key=len, reverse=True)
-    kept_components = [c for c in components if len(c) >= min_component_size]
-    
-    if not kept_components:
-        ax.text(0.5, 0.5, "No components above size threshold", 
-                horizontalalignment='center', verticalalignment='center',
-                transform=ax.transAxes, fontsize=14)
-        ax.axis('off')
-        return fig
-    
-    # Create subgraph of kept components
-    kept_nodes = set().union(*kept_components)
-    kept_graph = nx_graph.subgraph(kept_nodes).copy()
-    
-    # Get communities from kept graph
-    communities = {}
-    for node, attrs in kept_graph.nodes(data=True):
-        if community_key in attrs:
-            comm = attrs[community_key]
-            if comm not in communities:
-                communities[comm] = []
-            communities[comm].append(node)
-    
-    # If community information not found
-    if not communities:
-        communities = {0: list(kept_graph.nodes())}
-    
-    # Compute layout if not provided
-    if pos is None:
-        if layout == "spring":
-            pos = nx.spring_layout(kept_graph, seed=42)
-        elif layout == "kamada_kawai":
-            pos = nx.kamada_kawai_layout(kept_graph)
-        elif layout == "spectral":
-            pos = nx.spectral_layout(kept_graph)
-        elif layout == "circular":
-            pos = nx.circular_layout(kept_graph)
-        else:
-            # Default to spring
-            pos = nx.spring_layout(kept_graph, seed=42)
-    else:
-        # Filter pre-computed positions to only kept nodes
-        pos = {node: pos[node] for node in kept_graph.nodes()}
-    
-    # Create colormap
-    cmap_obj = plt.get_cmap(cmap)
-    
-    # Draw edges first
-    nx.draw_networkx_edges(
-        kept_graph,
-        pos,
-        alpha=edge_alpha,
-        width=edge_width,
-        ax=ax
-    )
-    
-    # Draw nodes for each community
-    for i, (comm, nodes) in enumerate(communities.items()):
-        color = cmap_obj(i % cmap_obj.N)
-        nx.draw_networkx_nodes(
-            kept_graph,
-            pos,
-            nodelist=nodes,
-            node_color=[color] * len(nodes),
-            node_size=node_size,
-            alpha=0.8,
-            ax=ax
-        )
-    
-    # Add node labels if requested
-    if with_labels:
-        nx.draw_networkx_labels(
-            kept_graph,
-            pos,
-            font_size=8,
-            ax=ax
-        )
-    
-    # Set title
-    if title:
-        if min_component_size > 0:
-            title = f"{title}\n(Components ≥ {min_component_size} nodes)"
-        ax.set_title(title)
-    elif min_component_size > 0:
-        ax.set_title(f"Graph Components ≥ {min_component_size} nodes")
-    
-    # Turn off axis
-    ax.axis("off")
-    
-    # Add legend for communities
-    for i, comm in enumerate(sorted(communities.keys())):
-        color = cmap_obj(i % cmap_obj.N)
-        ax.scatter([], [], c=[color], label=f"Community {comm}")
-    
-    ax.legend(loc="best", title="Communities")
-    
-    return fig
-
-def plot_membership_matrix(
-    graph: Union[nx.Graph, 'GraphSample'],
-    figsize: Tuple[int, int] = (10, 8),
-    cmap: str = "viridis",
-    title: str = "Community Distribution",
-    ax: Optional[plt.Axes] = None
-) -> plt.Figure:
-    """
-    Plot a visualization of community distribution.
-    
-    Args:
-        graph: GraphSample object or NetworkX graph
-        figsize: Figure size
-        cmap: Colormap
-        title: Plot title
-        ax: Matplotlib axis to plot on (if None, creates new)
-        
-    Returns:
-        Matplotlib figure
-    """
-    # Create figure if not provided
-    if ax is None:
-        fig, ax = plt.subplots(figsize=figsize)
-    else:
-        fig = ax.figure
-
-    # Get community information
-    if hasattr(graph, 'graph'):
-        # GraphSample object
-        community_labels = graph.community_labels
-        communities = graph.communities
-    else:
-        # NetworkX graph
-        community_labels = []
-        communities = set()
-        for node in graph.nodes():
-            comm = graph.nodes[node].get('community', 0)
-            community_labels.append(comm)
-            communities.add(comm)
-        community_labels = np.array(community_labels)
-        communities = sorted(list(communities))
-
-    # Count nodes in each community
-    community_counts = {}
-    for comm in communities:
-        count = np.sum(community_labels == communities.index(comm))
-        community_counts[comm] = count
-
-    # Create bar plot
-    communities_list = sorted(community_counts.keys())
-    counts = [community_counts[comm] for comm in communities_list]
-    
-    bars = ax.bar(range(len(communities_list)), counts, alpha=0.7)
-    
-    # Add value labels on top of bars
-    for i, count in enumerate(counts):
-        ax.text(i, count, str(count), 
-                horizontalalignment='center',
-                verticalalignment='bottom')
-
-    # Customize plot
-    ax.set_xticks(range(len(communities_list)))
-    ax.set_xticklabels([f'C{c}' for c in communities_list])
-    ax.set_xlabel('Community')
-    ax.set_ylabel('Number of Nodes')
-    
-    # Add percentage labels
-    total_nodes = sum(counts)
-    percentages = [count/total_nodes * 100 for count in counts]
-    for i, (count, percentage) in enumerate(zip(counts, percentages)):
-        ax.text(i, count/2, f'{percentage:.1f}%', 
-                horizontalalignment='center',
-                verticalalignment='center',
-                color='white' if count > max(counts)/3 else 'black')
-
-    # Add total nodes info
-    ax.text(0.98, 0.98, f'Total Nodes: {total_nodes}',
-            transform=ax.transAxes,
-            horizontalalignment='right',
-            verticalalignment='top',
-            bbox=dict(facecolor='white', alpha=0.8, edgecolor='none'))
-
-    if title:
-        ax.set_title(title)
-
-    return fig
-
-def plot_graph_with_overlapping_communities(
-    graph: nx.Graph,
-    membership_vectors: np.ndarray,
-    communities: List[int],
-    node_size: float = 100,
-    edge_width: float = 0.5,
-    edge_alpha: float = 0.2,
-    membership_threshold: float = 0.1,
-    figsize: Tuple[int, int] = (12, 10),
-    layout: str = "spring",
-    cmap: str = "tab20",
-    title: str = "Graph with Overlapping Communities",
-    ax: Optional[plt.Axes] = None
-) -> plt.Figure:
-    """
-    Plot a graph with pie chart nodes showing overlapping community membership.
-    
-    Args:
-        graph: NetworkX graph to plot
-        membership_vectors: Node-community membership matrix (n_nodes × n_communities)
-        communities: List of community IDs
-        node_size: Base size of nodes
-        edge_width: Width of edges
-        edge_alpha: Edge transparency
-        membership_threshold: Minimum membership weight to include
-        figsize: Figure size
-        layout: Graph layout algorithm
-        cmap: Colormap for communities
-        title: Plot title
-        ax: Matplotlib axis to plot on (if None, creates new)
-        
-    Returns:
-        Matplotlib figure
-    """
-    # Create figure if not provided
-    if ax is None:
-        fig, ax = plt.subplots(figsize=figsize)
-    else:
-        fig = ax.figure
-    
-    # Compute layout
-    if layout == "spring":
-        pos = nx.spring_layout(graph, seed=42)
-    elif layout == "kamada_kawai":
-        pos = nx.kamada_kawai_layout(graph)
-    elif layout == "spectral":
-        pos = nx.spectral_layout(graph)
-    else:
-        pos = nx.spring_layout(graph, seed=42)
-    
-    # Create colormap
-    cmap_obj = plt.get_cmap(cmap)
-    colors = [cmap_obj(i % cmap_obj.N) for i in range(len(communities))]
-    
-    # Draw edges
-    nx.draw_networkx_edges(
-        graph,
-        pos,
-        alpha=edge_alpha,
-        width=edge_width,
-        ax=ax
-    )
-    
-    # Draw nodes as pie charts
-    for i, node in enumerate(graph.nodes()):
-        # Get memberships above threshold
-        memberships = membership_vectors[i]
-        active_comms = [j for j, m in enumerate(memberships) if m > membership_threshold]
-        
-        if not active_comms:
-            # If no significant memberships, just draw a grey node
-            nx.draw_networkx_nodes(
-                graph,
-                pos,
-                nodelist=[node],
-                node_color='lightgrey',
-                node_size=node_size,
-                ax=ax
-            )
-        else:
-            # Get membership weights and colors for active communities
-            weights = [memberships[j] for j in active_comms]
-            node_colors = [colors[j] for j in active_comms]
-            
-            # Normalize weights
-            weights = np.array(weights) / np.sum(weights)
-            
-            # Draw pie chart at node position
-            x, y = pos[node]
-            size = node_size
-            center = (x, y)
-            
-            # Create a separate axis for the pie chart
-            radius = np.sqrt(size / np.pi) / 100
-            pie_ax = fig.add_axes([x - radius, y - radius, 2 * radius, 2 * radius], frameon=False)
-            pie_ax.pie(weights, colors=node_colors, center=center)
-            pie_ax.axis('equal')
-            pie_ax.set_xticks([])
-            pie_ax.set_yticks([])
-    
-    # Add legend for communities
-    for i, comm in enumerate(communities):
-        ax.scatter([], [], c=[colors[i]], label=f"Community {comm}")
-    
-    ax.legend(loc="best", title="Communities")
-    
-    # Set title and turn off axis
-    if title:
-        ax.set_title(title)
-    ax.axis("off")
     
     return fig
 

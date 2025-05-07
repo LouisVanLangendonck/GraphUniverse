@@ -377,94 +377,89 @@ def benchmark_stats_widget(pretrain_graphs: List[GraphSample], transfer_graphs: 
 
 def community_analysis_widget(graph: GraphSample, universe: GraphUniverse):
     """
-    Widget for community structure analysis.
+    Widget for analyzing community structure.
     
     Args:
-        graph: The graph sample to analyze
-        universe: The parent universe
+        graph: GraphSample object to analyze
+        universe: GraphUniverse object containing graph parameters
     """
-    st.markdown("### Community Structure Analysis")
+    st.markdown("## Community Analysis")
     
-    # Community statistics
-    col1, col2, col3 = st.columns(3)
-    
-    with col1:
-        n_communities = len(graph.communities)
-        st.metric("Number of Communities", n_communities)
-    
-    with col2:
-        avg_memberships = (graph.membership_vectors > 0.1).sum(axis=1).mean()
-        st.metric("Avg Communities per Node", f"{avg_memberships:.2f}")
-    
-    with col3:
-        # Calculate modularity
-        # Convert to community lists for modularity calculation
-        community_lists = []
-        for c_idx, c in enumerate(graph.communities):
-            # Get nodes with this community as primary
-            primary_nodes = [i for i in range(graph.n_nodes) 
-                          if np.argmax(graph.membership_vectors[i]) == c_idx]
-            community_lists.append(primary_nodes)
-        
-        try:
-            modularity = nx.algorithms.community.modularity(graph.graph, community_lists)
-            st.metric("Modularity", f"{modularity:.4f}")
-        except:
-            st.metric("Modularity", "N/A")
-    
-    # Analysis tabs
+    # Create tabs for different analysis views
     analysis_tabs = st.tabs([
-        "Membership Matrix", 
-        "Community Overlap", 
-        "Community Probabilities"
+        "Community Distribution",
+        "Community Structure",
+        "Community Metrics"
     ])
     
     with analysis_tabs[0]:
-        # Membership matrix visualization
-        st.pyplot(plot_membership_matrix(graph.membership_vectors, graph.communities))
+        # Plot community distribution
+        fig = plot_membership_matrix(graph)
+        st.pyplot(fig)
         
         st.markdown("""
-        The heatmap shows the strength of each node's membership in each community.
-        Brighter colors indicate stronger membership.
+        This visualization shows the distribution of nodes across communities.
+        The height of each bar represents the number of nodes in that community,
+        and the percentage labels show the relative size of each community.
         """)
     
     with analysis_tabs[1]:
-        # Community overlap distribution
-        membership_threshold = 0.1
-        binary_memberships = graph.membership_vectors > membership_threshold
-        
-        overlap_counts = binary_memberships.sum(axis=1)
-        unique_counts, count_frequencies = np.unique(overlap_counts, return_counts=True)
-        
-        # Plot histogram
-        fig, ax = plt.subplots(figsize=(8, 5))
-        ax.bar(unique_counts, count_frequencies, alpha=0.7, color="purple")
-        
-        ax.set_xlabel("Number of Communities per Node")
-        ax.set_ylabel("Count")
-        ax.set_title("Community Overlap Distribution")
-        
-        # Set x-ticks to integers
-        ax.set_xticks(unique_counts)
-        
+        # Plot graph with communities
+        fig = plot_graph_communities(graph)
         st.pyplot(fig)
         
-        # Create dataframe for display
-        overlap_df = pd.DataFrame({
-            "Number of Communities": unique_counts,
-            "Count of Nodes": count_frequencies,
-            "Percentage": count_frequencies / graph.n_nodes * 100
-        })
-        
-        st.table(overlap_df)
+        st.markdown("""
+        This visualization shows the network structure with nodes colored by community.
+        The layout is computed using a force-directed algorithm to show the community structure.
+        """)
     
     with analysis_tabs[2]:
-        # Community probability matrix
-        st.pyplot(plot_community_matrix(universe.P, graph.communities))
+        # Calculate and display community metrics
+        metrics = {}
+        
+        # Number of communities
+        metrics["Number of Communities"] = len(graph.communities)
+        
+        # Community sizes
+        community_sizes = []
+        for comm in graph.communities:
+            size = np.sum(graph.community_labels == graph.communities.index(comm))
+            community_sizes.append(size)
+        
+        metrics["Average Community Size"] = np.mean(community_sizes)
+        metrics["Min Community Size"] = np.min(community_sizes)
+        metrics["Max Community Size"] = np.max(community_sizes)
+        
+        # Modularity
+        try:
+            modularity = nx.community.modularity(
+                graph.graph,
+                [np.where(graph.community_labels == i)[0].tolist() for i in range(len(graph.communities))]
+            )
+            metrics["Modularity"] = modularity
+        except:
+            metrics["Modularity"] = "N/A"
+        
+        # Intra-community density
+        try:
+            intra_density = graph.extract_parameters()["intra_community_density"]
+            metrics["Intra-community Density"] = intra_density
+        except:
+            metrics["Intra-community Density"] = "N/A"
+        
+        # Display metrics
+        metrics_df = pd.DataFrame({
+            "Metric": list(metrics.keys()),
+            "Value": list(metrics.values())
+        })
+        st.dataframe(metrics_df)
         
         st.markdown("""
-        This matrix shows the edge probabilities between communities.
-        Higher values (brighter colors) indicate higher probability of connections.
+        These metrics provide insights into the community structure:
+        - **Number of Communities**: Total number of distinct communities
+        - **Community Sizes**: Statistics about the size distribution of communities
+        - **Modularity**: Measure of community structure strength (-1 to 1)
+        - **Intra-community Density**: Average edge density within communities
         """)
 
 
@@ -765,60 +760,77 @@ def save_benchmark_widget(benchmark, pretrain_graphs, transfer_graphs):
 
 def graph_comparison_widget(graphs: List[GraphSample], max_graphs: int = 4):
     """
-    Widget for comparing multiple graphs.
+    Widget for comparing multiple graphs side by side.
     
     Args:
-        graphs: List of graphs to compare
+        graphs: List of GraphSample objects to compare
         max_graphs: Maximum number of graphs to display
     """
-    st.markdown("### Graph Comparison")
-    
     if not graphs:
-        st.warning("No graphs available for comparison.")
+        st.warning("No graphs to compare")
         return
     
     # Select graphs to compare
-    n_graphs = min(len(graphs), max_graphs)
+    st.markdown("### Select Graphs to Compare")
     selected_indices = st.multiselect(
-        "Select graphs to compare",
-        options=list(range(len(graphs))),
-        default=list(range(min(n_graphs, len(graphs))))
+        "Choose graphs to compare (up to 4)",
+        options=range(len(graphs)),
+        default=list(range(min(max_graphs, len(graphs)))),
+        format_func=lambda x: f"Graph {x}"
     )
     
     if not selected_indices:
-        st.info("Please select at least one graph to display.")
+        st.warning("Please select at least one graph to compare")
         return
     
+    # Limit to max_graphs
+    selected_indices = selected_indices[:max_graphs]
     selected_graphs = [graphs[i] for i in selected_indices]
     
-    # Comparison metrics
-    metrics_df = pd.DataFrame({
-        "Graph": [f"Graph {i}" for i in selected_indices],
-        "Nodes": [g.n_nodes for g in selected_graphs],
-        "Edges": [g.graph.number_of_edges() for g in selected_graphs],
-        "Communities": [len(g.communities) for g in selected_graphs],
-        "Avg Degree": [2 * g.graph.number_of_edges() / g.n_nodes for g in selected_graphs],
-        "Avg Memberships": [(g.membership_vectors > 0.1).sum(axis=1).mean() for g in selected_graphs]
-    })
+    # Create figure with subplots
+    n_graphs = len(selected_graphs)
+    n_cols = min(2, n_graphs)
+    n_rows = (n_graphs + 1) // 2
     
-    st.table(metrics_df)
-    
-    # Visual comparison
-    n_cols = min(2, len(selected_graphs))
-    n_rows = (len(selected_graphs) + n_cols - 1) // n_cols
-    
-    fig, axes = plt.subplots(n_rows, n_cols, figsize=(5 * n_cols, 4 * n_rows))
-    
-    # Convert to array of axes even for a single plot
-    if n_rows * n_cols == 1:
-        axes = np.array([axes])
-    else:
-        axes = axes.flatten()
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(15, 5 * n_rows))
+    axes = axes.flatten()
     
     # Plot each graph
     for i, (graph, ax) in enumerate(zip(selected_graphs, axes)):
-        # Plot graph with communities
-        plot_graph_communities(graph.graph, ax=ax, title=f"Graph {selected_indices[i]}")
+        # Get community information
+        community_labels = graph.community_labels
+        communities = graph.communities
+        
+        # Create position layout
+        pos = nx.spring_layout(graph.graph, seed=42)
+        
+        # Draw edges
+        nx.draw_networkx_edges(
+            graph.graph,
+            pos,
+            alpha=0.2,
+            width=0.5,
+            ax=ax
+        )
+        
+        # Draw nodes for each community
+        for comm in sorted(set(communities)):
+            # Get nodes in this community
+            comm_nodes = [n for n, c in enumerate(community_labels) if communities[c] == comm]
+            
+            if comm_nodes:
+                nx.draw_networkx_nodes(
+                    graph.graph,
+                    pos,
+                    nodelist=comm_nodes,
+                    node_color=[f"C{comm}"] * len(comm_nodes),
+                    node_size=30,
+                    alpha=0.8,
+                    ax=ax
+                )
+        
+        ax.set_title(f"Graph {selected_indices[i]}")
+        ax.axis("off")
     
     # Hide unused axes
     for i in range(len(selected_graphs), len(axes)):
@@ -827,32 +839,34 @@ def graph_comparison_widget(graphs: List[GraphSample], max_graphs: int = 4):
     plt.tight_layout()
     st.pyplot(fig)
     
-    # Community overlap comparison
-    st.markdown("#### Community Overlap Comparison")
+    # Community distribution comparison
+    st.markdown("#### Community Distribution Comparison")
     
     fig, ax = plt.subplots(figsize=(10, 6))
     
     for i, graph in enumerate(selected_graphs):
-        # Count communities per node
-        membership_threshold = 0.1
-        binary_memberships = graph.membership_vectors > membership_threshold
-        overlap_counts = binary_memberships.sum(axis=1)
+        # Count nodes in each community
+        community_counts = {}
+        for comm in graph.communities:
+            count = np.sum(graph.community_labels == graph.communities.index(comm))
+            community_counts[comm] = count
         
         # Get distribution
-        unique_counts, count_frequencies = np.unique(overlap_counts, return_counts=True)
-        frequencies_norm = count_frequencies / graph.n_nodes
+        communities_list = sorted(community_counts.keys())
+        counts = [community_counts[comm] for comm in communities_list]
+        frequencies_norm = np.array(counts) / graph.n_nodes
         
         # Plot
-        ax.plot(unique_counts, frequencies_norm, marker='o', label=f"Graph {selected_indices[i]}")
+        ax.plot(communities_list, frequencies_norm, marker='o', label=f"Graph {selected_indices[i]}")
     
-    ax.set_xlabel("Number of Communities per Node")
-    ax.set_ylabel("Frequency")
-    ax.set_title("Community Overlap Comparison")
+    ax.set_xlabel("Community")
+    ax.set_ylabel("Fraction of Nodes")
+    ax.set_title("Community Distribution Comparison")
     ax.legend()
     
     # Set integer x-ticks
-    max_count = max(max((g.membership_vectors > 0.1).sum(axis=1)) for g in selected_graphs)
-    ax.set_xticks(range(int(max_count) + 1))
+    max_comm = max(max(g.communities) for g in selected_graphs)
+    ax.set_xticks(range(max_comm + 1))
     
     st.pyplot(fig)
 
