@@ -150,11 +150,6 @@ if page == "Universe Creation":
     with col1:
         K = st.slider("Number of communities", min_value=10, max_value=100, value=50)
         feature_dim = st.slider("Feature dimension", min_value=0, max_value=128, value=64)
-        mixed_membership = st.checkbox(
-            "Enable Mixed Membership",
-            value=False,
-            help="If enabled, nodes can belong to multiple communities. If disabled, each node belongs to exactly one community."
-        )
         
     with col2:
         edge_density = st.slider(
@@ -229,13 +224,11 @@ if page == "Universe Creation":
             universe = GraphUniverse(
                 K=K,
                 feature_dim=feature_dim,
-                block_structure="assortative",  # Only assortative structure supported
+                intra_community_regime_similarity=intra_community_regime_similarity,
+                inter_community_regime_similarity=inter_community_regime_similarity,
                 edge_density=edge_density,
                 homophily=homophily,
                 randomness_factor=randomness_factor,
-                mixed_membership=mixed_membership,
-                intra_community_regime_similarity=intra_community_regime_similarity,
-                inter_community_regime_similarity=inter_community_regime_similarity,
                 regimes_per_community=regimes_per_community,
                 seed=seed
             )
@@ -318,28 +311,6 @@ elif page == "Graph Sampling":
                 help="Amount of random noise in edge generation"
             )
         
-        # Only show mixed membership related parameters if mixed membership is enabled
-        if st.session_state.universe.mixed_membership:
-            indirect_influence = st.slider(
-                "Co-membership influence",
-                min_value=0.0,
-                max_value=0.5,
-                value=0.0,
-                step=0.05,
-                help="How strongly co-memberships influence edge formation (0=no effect, 0.5=strong effect)"
-            )
-            feature_regime_balance = st.slider(
-                "Feature Regime Balance",
-                min_value=0.0,
-                max_value=1.0,
-                value=0.5,
-                step=0.1,
-                help="How evenly regimes are distributed within communities (0=one regime dominates, 1=equal distribution)"
-            )
-        else:
-            indirect_influence = 0.0
-            feature_regime_balance = 0.5
-        
         # Add seed parameter
         seed = st.number_input("Random Seed", value=42, help="Seed for reproducibility")
         
@@ -358,8 +329,6 @@ elif page == "Graph Sampling":
                     n_nodes=n_nodes,
                     degree_heterogeneity=degree_heterogeneity,
                     edge_noise=edge_noise,
-                    indirect_influence=indirect_influence,
-                    feature_regime_balance=feature_regime_balance,
                     seed=seed
                 )
                 
@@ -382,11 +351,6 @@ elif page == "Graph Sampling":
                 # Plot degree distribution
                 fig = plot_degree_distribution(graph.graph)
                 st.pyplot(fig)
-                
-                # Show community overlap if mixed membership is enabled
-                if st.session_state.universe.mixed_membership:
-                    fig = plot_community_overlap_distribution(graph)
-                    st.pyplot(fig)
                 
                 # Show feature distributions if enabled
                 if graph.universe.feature_dim > 0:
@@ -454,10 +418,6 @@ elif page == "Parameter Space Analysis":
             "connected_components",
             "largest_component_size"
         ]
-        
-        # Add community overlap only if mixed membership is enabled
-        if st.session_state.universe is not None and st.session_state.universe.mixed_membership:
-            param_options.append("avg_communities_per_node")
         
         selected_params = st.multiselect(
             "Parameters to analyze",

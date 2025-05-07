@@ -57,7 +57,6 @@ class GraphFamilyGenerator:
                 edge_density=edge_density,
                 homophily=homophily,
                 randomness_factor=randomness_factor,
-                mixed_membership=True,
                 regimes_per_community=regimes_per_community,
                 intra_community_regime_similarity=intra_community_regime_similarity,
                 inter_community_regime_similarity=inter_community_regime_similarity,
@@ -81,7 +80,6 @@ class GraphFamilyGenerator:
         edge_noise: float = 0.0,
         sampling_method: str = "random",
         min_component_size: int = 0,
-        indirect_influence: float = 0.1,
         feature_regime_balance: float = 0.5,
         seed: Optional[int] = None
     ) -> List[GraphSample]:
@@ -98,7 +96,6 @@ class GraphFamilyGenerator:
             edge_noise: Random noise in edge probabilities
             sampling_method: How to sample communities ("random", "similar", "diverse", "correlated")
             min_component_size: Minimum size for connected components
-            indirect_influence: Strength of indirect community influence
             feature_regime_balance: How evenly feature regimes are distributed
             seed: Random seed for reproducibility
             
@@ -135,7 +132,6 @@ class GraphFamilyGenerator:
                 min_component_size=min_component_size,
                 degree_heterogeneity=degree_heterogeneity,
                 edge_noise=edge_noise,
-                indirect_influence=indirect_influence,
                 feature_regime_balance=feature_regime_balance,
                 seed=seed + i if seed is not None else None
             )

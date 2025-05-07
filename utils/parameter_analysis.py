@@ -11,7 +11,8 @@ The key parameters analyzed are:
 4. Triangle count
 5. Node count
 6. Average node degree
-7. Average communities per node
+7. Graph density
+8. Connected components
 """
 
 import numpy as np
@@ -30,7 +31,7 @@ import matplotlib
 
 def analyze_graph_parameters(
     graph: nx.Graph,
-    membership_vectors: np.ndarray,
+    community_labels: np.ndarray,
     communities: List[int]
 ) -> Dict[str, float]:
     """
@@ -38,7 +39,7 @@ def analyze_graph_parameters(
     
     Args:
         graph: NetworkX graph
-        membership_vectors: Node membership vectors
+        community_labels: Node community assignments (one-hot encoded)
         communities: List of community IDs
         
     Returns:
@@ -58,7 +59,6 @@ def analyze_graph_parameters(
             "clustering_coefficient": 0.0,
             "node_count": 0,
             "avg_degree": 0.0,
-            "avg_communities_per_node": 0.0,
             "density": 0.0,
             "connected_components": 0,
             "largest_component_size": 0,
@@ -76,8 +76,8 @@ def analyze_graph_parameters(
     
     # Calculate homophily
     try:
-        # Get primary community for each node
-        primary_communities = np.argmax(membership_vectors, axis=1)
+        # Get community for each node
+        node_communities = np.argmax(community_labels, axis=1)
         
         # Create mapping from graph node labels to indices
         node_to_idx = {node: i for i, node in enumerate(sorted(graph.nodes()))}
@@ -87,12 +87,12 @@ def analyze_graph_parameters(
         diff_community = 0
         
         for u, v in graph.edges():
-            # Map node labels to indices in membership vectors
+            # Map node labels to indices in community labels
             u_idx = node_to_idx[u]
             v_idx = node_to_idx[v]
             
-            # Compare primary communities
-            if primary_communities[u_idx] == primary_communities[v_idx]:
+            # Compare communities
+            if node_communities[u_idx] == node_communities[v_idx]:
                 same_community += 1
             else:
                 diff_community += 1
@@ -133,13 +133,6 @@ def analyze_graph_parameters(
         result["connected_components"] = 0
         result["largest_component_size"] = 0
     
-    # Community overlap
-    try:
-        avg_communities = np.mean(np.sum(membership_vectors > 0.1, axis=1))  # Count memberships > 0.1
-        result["avg_communities_per_node"] = avg_communities
-    except (AttributeError, TypeError):
-        result["avg_communities_per_node"] = 0.0
-    
     # Edge density within and between communities
     try:
         total_possible_edges = n_nodes * (n_nodes - 1) / 2
@@ -148,13 +141,13 @@ def analyze_graph_parameters(
         actual_intra = 0
         actual_inter = 0
         
-        # Get primary communities for all nodes
-        primary_communities = [graph.nodes[n].get('primary_community') for n in graph.nodes()]
+        # Get communities for all nodes
+        node_communities = np.argmax(community_labels, axis=1)
         
         # Count possible and actual edges
         for i in range(n_nodes):
             for j in range(i+1, n_nodes):
-                if primary_communities[i] == primary_communities[j]:
+                if node_communities[i] == node_communities[j]:
                     total_possible_intra += 1
                     if graph.has_edge(i, j):
                         actual_intra += 1
@@ -402,25 +395,25 @@ def visualize_community_connectivity(
 
 def calculate_homophily(
     graph: nx.Graph,
-    membership_vectors: np.ndarray,
+    community_labels: np.ndarray,
     communities: List[int]
 ) -> float:
     """
     Calculate homophily level of the graph.
     
     Homophily is measured as the ratio of edges between nodes in the same
-    primary community to total edges.
+    community to total edges.
     
     Args:
         graph: NetworkX graph
-        membership_vectors: Node-community membership vectors
+        community_labels: Node community assignments (one-hot encoded)
         communities: List of community IDs
         
     Returns:
         Homophily score in [0, 1]
     """
-    # Get primary community for each node
-    primary_communities = np.argmax(membership_vectors, axis=1)
+    # Get community for each node
+    node_communities = np.argmax(community_labels, axis=1)
     
     # Create mapping from graph node labels to indices
     node_to_idx = {node: i for i, node in enumerate(sorted(graph.nodes()))}
@@ -430,12 +423,12 @@ def calculate_homophily(
     diff_community = 0
     
     for u, v in graph.edges():
-        # Map node labels to indices in membership vectors
+        # Map node labels to indices in community labels
         u_idx = node_to_idx[u]
         v_idx = node_to_idx[v]
         
-        # Compare primary communities
-        if primary_communities[u_idx] == primary_communities[v_idx]:
+        # Compare communities
+        if node_communities[u_idx] == node_communities[v_idx]:
             same_community += 1
         else:
             diff_community += 1
@@ -494,19 +487,19 @@ def analyze_graph_family(graphs: List[Any], attribute_name: str = "graph") -> pd
         if attribute_name == "graph":
             if isinstance(graph_obj, nx.Graph):
                 graph = graph_obj
-                membership_vectors = None
+                community_labels = None
                 communities = None
             else:
                 graph = graph_obj.graph
-                membership_vectors = getattr(graph_obj, "membership_vectors", None)
+                community_labels = getattr(graph_obj, "community_labels", None)
                 communities = getattr(graph_obj, "communities", None)
         else:
             graph = getattr(graph_obj, attribute_name)
-            membership_vectors = getattr(graph_obj, "membership_vectors", None)
+            community_labels = getattr(graph_obj, "community_labels", None)
             communities = getattr(graph_obj, "communities", None)
         
         # Analyze parameters
-        params = analyze_graph_parameters(graph, membership_vectors, communities)
+        params = analyze_graph_parameters(graph, community_labels, communities)
         params["graph_id"] = i
         
         results.append(params)
@@ -870,8 +863,8 @@ def create_parameter_dashboard(
         'clustering_coefficient',
         'node_count',
         'avg_degree',
-        'avg_communities_per_node',
-        'density'
+        'density',
+        'connected_components'
     ]
     
     # Filter to available parameters
@@ -925,7 +918,7 @@ def create_parameter_dashboard(
         (1, 0, 'clustering_coefficient'),
         (1, 1, 'node_count'),
         (1, 2, 'avg_degree'),
-        (1, 3, 'avg_communities_per_node')
+        (1, 3, 'density')
     ]
     
     for row, col, param in histograms:
@@ -950,7 +943,7 @@ def create_parameter_dashboard(
     # Scatter plots for interesting parameter relationships
     scatter_plots = [
         (2, 0, 'homophily', 'clustering_coefficient'),
-        (2, 1, 'avg_communities_per_node', 'homophily'),
+        (2, 1, 'node_count', 'homophily'),
         (2, 2, 'avg_degree', 'power_law_exponent'),
         (2, 3, 'clustering_coefficient', 'node_count')
     ]

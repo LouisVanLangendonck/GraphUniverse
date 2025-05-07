@@ -1,5 +1,5 @@
 """
-Visualization utilities for MMSB graphs and communities.
+Visualization utilities for Stochastic Block Model graphs and communities.
 
 This module provides functions to visualize graphs with community structure,
 node embeddings, and other graph properties.
@@ -17,7 +17,7 @@ import seaborn as sns
 
 def visualize_graph_generation_process(
     graph: nx.Graph,
-    memberships: np.ndarray,
+    community_labels: np.ndarray,
     P_sub: np.ndarray,
     communities: List[int],
     enforce_connectivity: bool = True,
@@ -28,7 +28,7 @@ def visualize_graph_generation_process(
     
     Args:
         graph: The final NetworkX graph
-        memberships: Node-community membership vectors
+        community_labels: Node community assignments (one-hot encoded)
         P_sub: Community edge probability submatrix
         communities: Community IDs
         enforce_connectivity: Whether connectivity was enforced
@@ -51,16 +51,16 @@ def visualize_graph_generation_process(
     axs[0, 0].set_yticklabels([f"C{c}" for c in communities])
     axs[0, 0].set_title("Community Probability Matrix")
     
-    # Plot 2: Membership matrix
-    im2 = axs[0, 1].imshow(memberships, aspect="auto", cmap="viridis", vmin=0, vmax=1)
-    fig.colorbar(im2, ax=axs[0, 1], label="Membership Strength")
+    # Plot 2: Community assignments
+    im2 = axs[0, 1].imshow(community_labels, aspect="auto", cmap="viridis", vmin=0, vmax=1)
+    fig.colorbar(im2, ax=axs[0, 1], label="Community Assignment")
     
     # Set labels
     axs[0, 1].set_xlabel("Community Index")
     axs[0, 1].set_ylabel("Node Index")
-    axs[0, 1].set_title("Node-Community Membership Matrix")
+    axs[0, 1].set_title("Node-Community Assignments")
     
-    # Plot 3: Graph visualization (original MMSB model without connectivity enforcement)
+    # Plot 3: Graph visualization (original SBM model without connectivity enforcement)
     # This requires recomputing the graph without connectivity enforcement
     # Create a copy of the graph data
     n_nodes = graph.number_of_nodes()
@@ -69,12 +69,10 @@ def visualize_graph_generation_process(
     edge_probabilities = np.zeros((n_nodes, n_nodes))
     for i in range(n_nodes):
         for j in range(i+1, n_nodes):
-            prob = 0
-            for a in range(memberships.shape[1]):
-                for b in range(memberships.shape[1]):
-                    prob += memberships[i, a] * memberships[j, b] * P_sub[a, b]
-            edge_probabilities[i, j] = prob
-            edge_probabilities[j, i] = prob
+            ci = np.argmax(community_labels[i])
+            cj = np.argmax(community_labels[j])
+            edge_probabilities[i, j] = P_sub[ci, cj]
+            edge_probabilities[j, i] = P_sub[ci, cj]
     
     # Threshold at mean probability to create a "typical" graph
     mean_prob = edge_probabilities[np.triu_indices(n_nodes, 1)].mean()
@@ -89,13 +87,13 @@ def visualize_graph_generation_process(
     # Position nodes
     pos = nx.spring_layout(graph, seed=42)
     
-    # Get node colors by primary community
+    # Get node colors by community
     node_colors = []
     cmap = plt.get_cmap("tab20")
     
     for i in range(n_nodes):
-        primary_comm = np.argmax(memberships[i])
-        node_colors.append(cmap(primary_comm % cmap.N))
+        comm = np.argmax(community_labels[i])
+        node_colors.append(cmap(comm % cmap.N))
     
     # Draw the original model graph
     nx.draw_networkx_nodes(
@@ -179,8 +177,288 @@ def visualize_graph_generation_process(
     axs[1, 1].set_title(title)
     
     # Add overall title
-    fig.suptitle("MMSB Graph Generation Process", fontsize=16)
+    fig.suptitle("SBM Graph Generation Process", fontsize=16)
     fig.tight_layout(rect=[0, 0, 1, 0.96])  # Make room for suptitle
+    
+    return fig
+
+def plot_graph_communities(
+    graph: Union[nx.Graph, 'GraphSample'],
+    community_key: str = "community",
+    layout: str = "spring",
+    node_size: float = 50,
+    edge_width: float = 0.5,
+    edge_alpha: float = 0.2,
+    figsize: Tuple[int, int] = (10, 8),
+    with_labels: bool = False,
+    cmap: str = "tab20",
+    title: Optional[str] = None,
+    ax: Optional[plt.Axes] = None,
+    pos: Optional[Dict] = None,
+    min_component_size: int = 0
+) -> plt.Figure:
+    """
+    Plot a graph with nodes colored by their community assignments.
+    
+    Args:
+        graph: NetworkX graph or GraphSample object
+        community_key: Key for community attribute in node data
+        layout: Layout algorithm to use
+        node_size: Size of nodes
+        edge_width: Width of edges
+        edge_alpha: Alpha value for edges
+        figsize: Figure size
+        with_labels: Whether to show node labels
+        cmap: Colormap to use
+        title: Figure title
+        ax: Optional axes to plot on
+        pos: Optional node positions
+        min_component_size: Minimum size of components to include
+        
+    Returns:
+        Matplotlib figure
+    """
+    if ax is None:
+        fig, ax = plt.subplots(figsize=figsize)
+    else:
+        fig = ax.figure
+    
+    # Get graph and community assignments
+    if isinstance(graph, nx.Graph):
+        G = graph
+        community_labels = np.array([G.nodes[n].get(community_key) for n in G.nodes()])
+    else:
+        G = graph.graph
+        community_labels = np.argmax(graph.community_labels, axis=1)
+    
+    # Filter components if needed
+    if min_component_size > 0:
+        components = list(nx.connected_components(G))
+        large_components = [c for c in components if len(c) >= min_component_size]
+        if large_components:
+            G = G.subgraph(set().union(*large_components))
+            # Update community labels for remaining nodes
+            node_to_idx = {node: i for i, node in enumerate(sorted(G.nodes()))}
+            community_labels = np.array([community_labels[node_to_idx[n]] for n in G.nodes()])
+    
+    # Get node positions
+    if pos is None:
+        if layout == "spring":
+            pos = nx.spring_layout(G, seed=42)
+        elif layout == "circular":
+            pos = nx.circular_layout(G)
+        elif layout == "random":
+            pos = nx.random_layout(G, seed=42)
+        else:
+            pos = nx.spring_layout(G, seed=42)
+    
+    # Get node colors
+    cmap = plt.get_cmap(cmap)
+    node_colors = [cmap(c % cmap.N) for c in community_labels]
+    
+    # Draw the graph
+    nx.draw_networkx_nodes(
+        G,
+        pos,
+        ax=ax,
+        node_color=node_colors,
+        node_size=node_size,
+        alpha=0.8
+    )
+    
+    nx.draw_networkx_edges(
+        G,
+        pos,
+        ax=ax,
+        width=edge_width,
+        alpha=edge_alpha
+    )
+    
+    if with_labels:
+        nx.draw_networkx_labels(G, pos, ax=ax)
+    
+    ax.axis("off")
+    
+    if title:
+        ax.set_title(title)
+    
+    return fig
+
+def plot_community_matrix(
+    P: np.ndarray,
+    communities: List[int],
+    figsize: Tuple[int, int] = (10, 8),
+    cmap: str = "viridis",
+    title: str = "Community Probability Matrix",
+    ax: Optional[plt.Axes] = None
+) -> plt.Figure:
+    """
+    Plot the community probability matrix.
+    
+    Args:
+        P: Probability matrix
+        communities: List of community IDs
+        figsize: Figure size
+        cmap: Colormap to use
+        title: Figure title
+        ax: Optional axes to plot on
+        
+    Returns:
+        Matplotlib figure
+    """
+    if ax is None:
+        fig, ax = plt.subplots(figsize=figsize)
+    else:
+        fig = ax.figure
+    
+    im = ax.imshow(P, cmap=cmap, vmin=0, vmax=1)
+    fig.colorbar(im, ax=ax, label="Edge Probability")
+    
+    ax.set_xticks(np.arange(len(communities)))
+    ax.set_yticks(np.arange(len(communities)))
+    ax.set_xticklabels([f"C{c}" for c in communities], rotation=90)
+    ax.set_yticklabels([f"C{c}" for c in communities])
+    
+    if title:
+        ax.set_title(title)
+    
+    return fig
+
+def plot_degree_distribution(
+    graph: nx.Graph,
+    log_scale: bool = True,
+    figsize: Tuple[int, int] = (8, 6),
+    bins: int = 30,
+    color: str = "blue",
+    title: str = "Degree Distribution",
+    ax: Optional[plt.Axes] = None
+) -> plt.Figure:
+    """
+    Plot the degree distribution of a graph.
+    
+    Args:
+        graph: NetworkX graph
+        log_scale: Whether to use log scale
+        figsize: Figure size
+        bins: Number of histogram bins
+        color: Color for the histogram
+        title: Figure title
+        ax: Optional axes to plot on
+        
+    Returns:
+        Matplotlib figure
+    """
+    if ax is None:
+        fig, ax = plt.subplots(figsize=figsize)
+    else:
+        fig = ax.figure
+    
+    degrees = [d for _, d in graph.degree()]
+    
+    if log_scale:
+        ax.hist(degrees, bins=bins, color=color, alpha=0.7, log=True)
+        ax.set_xscale("log")
+    else:
+        ax.hist(degrees, bins=bins, color=color, alpha=0.7)
+    
+    ax.set_xlabel("Degree")
+    ax.set_ylabel("Count")
+    
+    if title:
+        ax.set_title(title)
+    
+    return fig
+
+def plot_community_size_distribution(
+    community_labels: np.ndarray,
+    log_scale: bool = True,
+    figsize: Tuple[int, int] = (8, 6),
+    bins: int = 20,
+    color: str = "green",
+    title: str = "Community Size Distribution",
+    ax: Optional[plt.Axes] = None
+) -> plt.Figure:
+    """
+    Plot the distribution of community sizes.
+    
+    Args:
+        community_labels: Node community assignments (one-hot encoded)
+        log_scale: Whether to use log scale
+        figsize: Figure size
+        bins: Number of histogram bins
+        color: Color for the histogram
+        title: Figure title
+        ax: Optional axes to plot on
+        
+    Returns:
+        Matplotlib figure
+    """
+    if ax is None:
+        fig, ax = plt.subplots(figsize=figsize)
+    else:
+        fig = ax.figure
+    
+    # Get community sizes
+    community_sizes = np.sum(community_labels, axis=0)
+    
+    if log_scale:
+        ax.hist(community_sizes, bins=bins, color=color, alpha=0.7, log=True)
+        ax.set_xscale("log")
+    else:
+        ax.hist(community_sizes, bins=bins, color=color, alpha=0.7)
+    
+    ax.set_xlabel("Community Size")
+    ax.set_ylabel("Count")
+    
+    if title:
+        ax.set_title(title)
+    
+    return fig
+
+def create_dashboard(
+    graph: nx.Graph,
+    community_labels: np.ndarray,
+    communities: List[int],
+    P: np.ndarray,
+    figsize: Tuple[int, int] = (18, 12)
+) -> plt.Figure:
+    """
+    Create a comprehensive dashboard of graph visualizations.
+    
+    Args:
+        graph: NetworkX graph
+        community_labels: Node community assignments (one-hot encoded)
+        communities: List of community IDs
+        P: Community probability matrix
+        figsize: Figure size
+        
+    Returns:
+        Matplotlib figure
+    """
+    fig = plt.figure(figsize=figsize)
+    
+    # Create grid layout
+    gs = fig.add_gridspec(3, 3)
+    
+    # Plot 1: Graph with communities
+    ax1 = fig.add_subplot(gs[0:2, 0:2])
+    plot_graph_communities(graph, community_labels=community_labels, ax=ax1)
+    
+    # Plot 2: Community probability matrix
+    ax2 = fig.add_subplot(gs[0, 2])
+    plot_community_matrix(P, communities, ax=ax2)
+    
+    # Plot 3: Degree distribution
+    ax3 = fig.add_subplot(gs[1, 2])
+    plot_degree_distribution(graph, ax=ax3)
+    
+    # Plot 4: Community size distribution
+    ax4 = fig.add_subplot(gs[2, 0])
+    plot_community_size_distribution(community_labels, ax=ax4)
+    
+    # Add overall title
+    fig.suptitle("Graph Analysis Dashboard", fontsize=16)
+    fig.tight_layout(rect=[0, 0, 1, 0.96])
     
     return fig
 
@@ -1040,68 +1318,6 @@ def plot_community_graph(
     return fig
 
 
-def plot_community_matrix(
-    universe_P: np.ndarray,
-    communities: List[int],
-    figsize: Tuple[int, int] = (10, 8),
-    cmap: str = "viridis",
-    title: str = "Community Probability Matrix",
-    ax: Optional[plt.Axes] = None
-) -> plt.Figure:
-    """
-    Plot a heatmap of the community probability matrix.
-    
-    Args:
-        universe_P: The full probability matrix from the universe
-        communities: List of community IDs to include
-        figsize: Figure size
-        cmap: Colormap
-        title: Plot title
-        ax: Matplotlib axis to plot on (if None, creates new)
-        
-    Returns:
-        Matplotlib figure
-    """
-    # Create figure if not provided
-    if ax is None:
-        fig, ax = plt.subplots(figsize=figsize)
-    else:
-        fig = ax.figure
-    
-    # Extract the submatrix for the selected communities
-    P_sub = np.zeros((len(communities), len(communities)))
-    for i, ci in enumerate(communities):
-        for j, cj in enumerate(communities):
-            P_sub[i, j] = universe_P[ci, cj]
-    
-    # Create heatmap
-    im = ax.imshow(P_sub, cmap=cmap, vmin=0, vmax=1)
-    
-    # Add colorbar
-    fig.colorbar(im, ax=ax, label="Edge Probability")
-    
-    # Add cell values
-    for i in range(len(communities)):
-        for j in range(len(communities)):
-            text = ax.text(j, i, f"{P_sub[i, j]:.2f}",
-                          ha="center", va="center", color="white" if P_sub[i, j] > 0.5 else "black")
-    
-    # Set labels
-    ax.set_xticks(np.arange(len(communities)))
-    ax.set_yticks(np.arange(len(communities)))
-    ax.set_xticklabels([f"C{c}" for c in communities])
-    ax.set_yticklabels([f"C{c}" for c in communities])
-    
-    # Set title
-    if title:
-        ax.set_title(title)
-    
-    # Rotate x labels for better readability
-    plt.setp(ax.get_xticklabels(), rotation=45, ha="right", rotation_mode="anchor")
-    
-    return fig
-
-
 def plot_node_embeddings(
     embeddings: np.ndarray,
     labels: Optional[np.ndarray] = None,
@@ -1295,60 +1511,40 @@ def plot_degree_distribution(
     
     Args:
         graph: NetworkX graph
-        log_scale: Whether to use log scales
+        log_scale: Whether to use log scale
         figsize: Figure size
         bins: Number of histogram bins
-        color: Bar color
-        title: Plot title
-        ax: Matplotlib axis to plot on (if None, creates new)
+        color: Color for the histogram
+        title: Figure title
+        ax: Optional axes to plot on
         
     Returns:
         Matplotlib figure
     """
-    # Create figure if not provided
     if ax is None:
         fig, ax = plt.subplots(figsize=figsize)
     else:
         fig = ax.figure
     
-    # Get degrees
     degrees = [d for _, d in graph.degree()]
     
-    # Plot histogram
-    ax.hist(degrees, bins=bins, color=color, alpha=0.7)
-    
-    # Set log scale if requested
     if log_scale:
-        ax.set_yscale('log')
-        if max(degrees) > 10:
-            ax.set_xscale('log')
+        ax.hist(degrees, bins=bins, color=color, alpha=0.7, log=True)
+        ax.set_xscale("log")
+    else:
+        ax.hist(degrees, bins=bins, color=color, alpha=0.7)
     
-    # Set labels and title
     ax.set_xlabel("Degree")
     ax.set_ylabel("Count")
     
     if title:
         ax.set_title(title)
     
-    # Add statistics
-    avg_degree = np.mean(degrees)
-    max_degree = np.max(degrees)
-    min_degree = np.min(degrees)
-    
-    stats_text = f"Avg: {avg_degree:.2f}\nMax: {max_degree}\nMin: {min_degree}"
-    ax.text(
-        0.95, 0.95, stats_text,
-        verticalalignment='top',
-        horizontalalignment='right',
-        transform=ax.transAxes,
-        bbox=dict(facecolor='white', alpha=0.8, boxstyle='round')
-    )
-    
     return fig
 
 
 def plot_community_size_distribution(
-    communities: List[List[int]],
+    community_labels: np.ndarray,
     log_scale: bool = True,
     figsize: Tuple[int, int] = (8, 6),
     bins: int = 20,
