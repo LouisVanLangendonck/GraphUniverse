@@ -73,10 +73,10 @@ def generate_diverse_graph_families(
     # Ensure we have at least n_families parameter sets
     while len(family_variations) < n_families:
         # Create random variations if needed
-        K = random.choice([10, 15, 20, 30])  # Reduced max K to avoid sampling issues
+        K = random.choice([10, 15, 20, 30, 40, 50])  # Reduced max K to avoid sampling issues
         
         # Generate edge densities first so we can use them to constrain connection strength
-        edge_density = random.uniform(0.03, 0.15)
+        edge_density = random.uniform(0.01, 0.2)
         homophily = random.uniform(0.0, 1.0)
         
         new_variation = {
@@ -86,20 +86,20 @@ def generate_diverse_graph_families(
             "block_structure": "assortative",  # Only assortative structure supported
             "edge_density": edge_density,
             "homophily": homophily,
-            "randomness_factor": random.uniform(0.0, 0.9),
+            "randomness_factor": random.uniform(0.0, 1.0),
             "regimes_per_community": 2,
             "intra_community_regime_similarity": random.uniform(0.0, 1.0),
             "inter_community_regime_similarity": random.uniform(0.0, 1.0),
             
             # Graph generation parameters
-            "min_communities_ratio": random.uniform(0.05, 0.15),  # Increased minimum ratio
-            "max_communities_ratio": random.uniform(0.15, 0.3),  # Adjusted maximum ratio
-            "min_nodes": random.randint(50, 120),
-            "max_nodes": random.randint(120, 200),
-            "degree_heterogeneity": random.uniform(0.1, 0.9),
-            "edge_noise": random.uniform(0.0, 0.03),
+            "base_communities_ratio": random.uniform(0.02, 0.4),  # Base ratio of communities to sample (up to 40% of K)
+            "additional_communities_ratio": random.uniform(0.03, 0.5),  # Additional ratio on top of base (capped at 1.0 total)
+            "base_nodes": random.randint(20, 100),  # Base number of nodes
+            "additional_nodes": random.randint(20, 200),  # Additional nodes on top of base
+            "degree_heterogeneity": random.uniform(0.0, 1.0),
+            "edge_noise": random.uniform(0.0, 0.05),
             "sampling_method": "random",
-            "min_component_size": random.randint(3, 7),
+            "min_component_size": random.randint(2, 7),
             "indirect_influence": random.uniform(0, 0.2),
             "feature_regime_balance": random.uniform(0.3, 0.7),
             
@@ -137,8 +137,17 @@ def generate_diverse_graph_families(
             )
             
             # Calculate community ranges based on K
-            min_communities = max(2, int(family_params["K"] * family_params["min_communities_ratio"]))
-            max_communities = max(min_communities + 1, int(family_params["K"] * family_params["max_communities_ratio"]))
+            base_communities = max(2, int(family_params["K"] * family_params["base_communities_ratio"]))
+            # Calculate max as base + additional ratio, capped at K
+            additional_ratio = family_params["additional_communities_ratio"]
+            max_communities = min(
+                family_params["K"],
+                max(base_communities + 1, int(family_params["K"] * (family_params["base_communities_ratio"] + additional_ratio)))
+            )
+            
+            # Calculate node ranges
+            min_nodes = family_params["base_nodes"]
+            max_nodes = min_nodes + family_params["additional_nodes"]
             
             # Only print parameters if generation fails
             failure_occurred = False
@@ -151,11 +160,11 @@ def generate_diverse_graph_families(
                 # Generate graph family
                 graphs = generator.generate(
                     n_graphs=n_graphs_per_family,
-                    min_communities=min_communities,
+                    min_communities=base_communities,
                     max_communities=max_communities,
-                    min_nodes=family_params["min_nodes"],
-                    max_nodes=family_params["max_nodes"],
-                    degree_heterogeneity=family_params["degree_heterogeneity"],
+                    min_nodes=min_nodes,
+                    max_nodes=max_nodes,
+                    degree_heterogeneity=family_params["degree_heterogeneity"],  # Controls power law exponent: 2 + 8*(1-heterogeneity)
                     edge_noise=family_params["edge_noise"],
                     sampling_method=family_params["sampling_method"],
                     min_component_size=family_params["min_component_size"],
@@ -177,7 +186,7 @@ def generate_diverse_graph_families(
                 print("Parameters:")
                 for key, value in family_params.items():
                     print(f"  {key}: {value}")
-                print(f"  min_communities: {min_communities}")
+                print(f"  min_communities: {base_communities}")
                 print(f"  max_communities: {max_communities}")
                 if graphs is None:
                     print("Error: generate_pretraining_graphs returned None")
@@ -214,7 +223,6 @@ def analyze_families(
             "homophily",
             "power_law_exponent",
             "clustering_coefficient",
-            "triangle_density",
             "node_count",
             "avg_degree",
             "avg_communities_per_node",
@@ -372,7 +380,6 @@ def compute_parameter_space_coverage(
             ("homophily", "clustering_coefficient"),
             ("avg_degree", "power_law_exponent"),
             ("avg_degree", "density"),
-            ("clustering_coefficient", "triangle_density"),
             ("power_law_exponent", "avg_communities_per_node")
         ]
     
@@ -713,62 +720,79 @@ def load_real_world_datasets(
     Returns:
         Dictionary mapping dataset names to parameter DataFrames
     """
-    from torch_geometric.datasets import TUDataset
+    from torch_geometric.datasets import PPI, Twitch, TUDataset
     import networkx as nx
     from torch_geometric.utils import to_networkx
     
-    # Datasets to load
-    dataset_names = ['MUTAG', 'ENZYMES']  # ['MUTAG', 'PROTEINS', 'ENZYMES', 'NCI1', 'DD']
+    # Configure which datasets to load
+    # Comment out datasets you don't want to include
+    node_classification_datasets = {
+        'PPI': {'class': PPI, 'args': {'root': './data/PPI', 'split': 'train'}},  # Will load all splits
+        'Twitch': {'class': Twitch, 'args': {'root': './data/Twitch', 'name': 'EN'}},
+    }
+    
+    graph_classification_datasets = {
+       'MUTAG': {'class': TUDataset, 'args': {'root': './data/MUTAG', 'name': 'MUTAG', 'use_node_attr': True, 'cleaned': True}},
+       'ENZYMES': {'class': TUDataset, 'args': {'root': './data/ENZYMES', 'name': 'ENZYMES', 'use_node_attr': True, 'cleaned': True}},
+       # 'PROTEINS': {'class': TUDataset, 'args': {'root': './data/PROTEINS', 'name': 'PROTEINS', 'use_node_attr': True, 'cleaned': True}},
+       # 'NCI1': {'class': TUDataset, 'args': {'root': './data/NCI1', 'name': 'NCI1', 'use_node_attr': True, 'cleaned': True}},
+       # 'DD': {'class': TUDataset, 'args': {'root': './data/DD', 'name': 'DD', 'use_node_attr': True, 'cleaned': True}},
+    }
+    
+    # Combine all dataset names for caching check
+    all_dataset_names = list(node_classification_datasets.keys()) + list(graph_classification_datasets.keys())
     
     # Try to load cached results first
-    cached_results = load_cached_real_world_analysis(dataset_names, output_dir)
+    cached_results = load_cached_real_world_analysis(all_dataset_names, output_dir)
     if cached_results is not None:
         print("\nLoaded cached real-world dataset analysis results")
         return cached_results
     
-    print("\nNo cached results found. Loading and analyzing TUDatasets...")
+    print("\nNo cached results found. Loading and analyzing datasets...")
     real_world_dfs = {}
     
-    for name in tqdm(dataset_names):
+    # Load node classification datasets
+    for name, config in node_classification_datasets.items():
         try:
             print(f"\nLoading {name} dataset...")
-            # Load dataset with node attributes and cleaned version
-            dataset = TUDataset(
-                root=f'./data/{name}',
-                name=name,
-                use_node_attr=True,  # Enable node attributes
-                cleaned=True  # Use non-isomorphic version
-            )
-            print(f'Dataset loaded: {len(dataset)} graphs')
+            
+            if name == 'PPI':
+                # Special handling for PPI which has train/val/test splits
+                train_dataset = PPI(root='./data/PPI', split='train')
+                val_dataset = PPI(root='./data/PPI', split='val')
+                test_dataset = PPI(root='./data/PPI', split='test')
+                all_graphs = train_dataset + val_dataset + test_dataset
+            else:
+                # Load other node classification datasets
+                dataset = config['class'](**config['args'])
+                all_graphs = [dataset[0]]  # Most node classification datasets have one large graph
+            
+            print(f'{name} dataset loaded: {len(all_graphs)} graphs')
             
             # Collect parameters for each graph
             params_list = []
-            for i, data in enumerate(dataset):
+            for i, data in enumerate(all_graphs):
                 try:
                     # Convert to NetworkX graph
                     G = to_networkx(data, to_undirected=True)
                     
-                    # Calculate homophily based on graph labels
-                    homophily = None
+                    # Calculate homophily based on node labels
                     if hasattr(data, 'y') and data.y is not None:
-                        # Get graph label
-                        graph_label = data.y.item() if hasattr(data.y, 'item') else data.y
-                        print(f"  Graph {i} label: {graph_label}")
+                        # Handle multi-label case (PPI) and single-label case
+                        node_labels = data.y.argmax(dim=1) if data.y.dim() > 1 else data.y
                         
-                        # Calculate homophily based on graph label
+                        # Calculate homophily
                         same_type_edges = 0
                         total_edges = 0
                         
                         for u, v in G.edges():
                             total_edges += 1
-                            # Both nodes belong to the same graph, so they share the graph label
-                            same_type_edges += 1
+                            if node_labels[u] == node_labels[v]:
+                                same_type_edges += 1
                         
-                        if total_edges > 0:
-                            homophily = same_type_edges / total_edges
-                            print(f"  Graph {i} homophily: {homophily:.3f}")
+                        homophily = same_type_edges / total_edges if total_edges > 0 else 0
                     else:
-                        print(f"  WARNING: Graph {i} has no graph label (y) - homophily cannot be calculated")
+                        homophily = None
                     
                     # Compute graph parameters
                     params = {
@@ -783,22 +807,59 @@ def load_real_world_datasets(
                     }
                     params_list.append(params)
                 except Exception as e:
-                    print(f"  ERROR processing graph {i}: {str(e)}")
+                    print(f"  ERROR processing {name} graph {i}: {str(e)}")
                     continue
             
             # Create DataFrame
             df = pd.DataFrame(params_list)
             real_world_dfs[name] = df
             
-            # Print summary statistics
-            print(f"\n{name} parameter ranges:")
-            for col in df.columns:
-                if df[col].notna().any():
-                    print(f"  {col}: [{df[col].min():.3f}, {df[col].max():.3f}]")
-                    
         except Exception as e:
             print(f"ERROR loading {name}: {str(e)}")
-            continue
+    
+    # Load graph classification datasets
+    for name, config in graph_classification_datasets.items():
+        try:
+            print(f"\nLoading {name} dataset...")
+            dataset = config['class'](**config['args'])
+            print(f'{name} dataset loaded: {len(dataset)} graphs')
+            
+            # Collect parameters for each graph
+            params_list = []
+            for i, data in enumerate(dataset):
+                try:
+                    # Convert to NetworkX graph
+                    G = to_networkx(data, to_undirected=True)
+                    
+                    # Compute graph parameters (no homophily for graph classification datasets)
+                    params = {
+                        "homophily": None,  # No node labels for homophily calculation
+                        "avg_degree": sum(dict(G.degree()).values()) / len(G),
+                        "clustering_coefficient": nx.average_clustering(G),
+                        "power_law_exponent": None,  # Would need degree distribution analysis
+                        "density": nx.density(G),
+                        "triangle_density": sum(nx.triangles(G).values()) / (3 * len(G)) if len(G) > 0 else 0,
+                        "node_count": len(G),
+                        "avg_communities_per_node": 1.0,  # Not applicable for these datasets
+                    }
+                    params_list.append(params)
+                except Exception as e:
+                    print(f"  ERROR processing {name} graph {i}: {str(e)}")
+                    continue
+            
+            # Create DataFrame
+            df = pd.DataFrame(params_list)
+            real_world_dfs[name] = df
+            
+        except Exception as e:
+            print(f"ERROR loading {name}: {str(e)}")
+    
+    # Print summary statistics for each dataset
+    for name, df in real_world_dfs.items():
+        print(f"\n{name} parameter ranges:")
+        for col in df.columns:
+            if df[col].notna().any():
+                print(f"  {col}: [{df[col].min():.3f}, {df[col].max():.3f}]")
     
     # Save results for future use
     if real_world_dfs:
@@ -1018,10 +1079,11 @@ def plot_parameter_space_pca(
     
     return fig
 
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Analyze parameter space coverage of MMSB graph families")
     parser.add_argument("--n_families", type=int, default=100, help="Number of graph families to generate")
-    parser.add_argument("--n_graphs_per_family", type=int, default=20, help="Number of graphs per family")
+    parser.add_argument("--n_graphs_per_family", type=int, default=80, help="Number of graphs per family")
     parser.add_argument("--exclude_real_datasets", action="store_true", help="Exclude real-world datasets from TUDataset")
     args = parser.parse_args()
     

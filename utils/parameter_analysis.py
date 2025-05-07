@@ -34,44 +34,82 @@ def analyze_graph_parameters(
     communities: List[int]
 ) -> Dict[str, float]:
     """
-    Extract key parameters from a graph.
+    Analyze graph parameters.
     
     Args:
         graph: NetworkX graph
-        membership_vectors: Node-community membership vectors
-        communities: List of community indices
+        membership_vectors: Node membership vectors
+        communities: List of community IDs
         
     Returns:
-        Dictionary of graph parameters
+        Dictionary of parameter values
     """
     result = {}
     
     # Basic graph properties
-    n_nodes = graph.number_of_nodes()
+    n_nodes = len(graph)
     n_edges = graph.number_of_edges()
-    result["node_count"] = n_nodes
-    result["edge_count"] = n_edges
+    
+    # Handle empty or invalid graphs
+    if n_nodes == 0 or n_edges == 0:
+        return {
+            "homophily": 0.0,
+            "power_law_exponent": None,
+            "clustering_coefficient": 0.0,
+            "node_count": 0,
+            "avg_degree": 0.0,
+            "avg_communities_per_node": 0.0,
+            "density": 0.0,
+            "connected_components": 0,
+            "largest_component_size": 0,
+            "intra_community_density": 0.0,
+            "inter_community_density": 0.0
+        }
+    
+    # Calculate density
     result["density"] = nx.density(graph)
-    result["avg_degree"] = 2 * n_edges / n_nodes if n_nodes > 0 else 0
+    result["node_count"] = n_nodes
     
-    # Clustering and triangles
-    result["clustering_coefficient"] = nx.average_clustering(graph)
-    triangles = sum(nx.triangles(graph).values()) / 3  # Divide by 3 as each triangle is counted thrice
-    result["triangle_count"] = triangles
-    result["triangle_density"] = triangles / (n_nodes * (n_nodes-1) * (n_nodes-2) / 6) if n_nodes > 2 else 0
+    # Average degree
+    degrees = [d for _, d in graph.degree()]
+    result["avg_degree"] = sum(degrees) / n_nodes
     
-    # Homophily level (for now just using the primary community, using the 'primary_community' attribute)
-    total_edges = 0
-    same_community_edges = 0
-    for edge in graph.edges():
-        total_edges += 1
-        if graph.nodes[edge[0]].get('primary_community') == graph.nodes[edge[1]].get('primary_community'):
-            same_community_edges += 1
-    homophily = same_community_edges / total_edges if total_edges > 0 else 0
-    result["homophily"] = homophily
+    # Calculate homophily
+    try:
+        # Get primary community for each node
+        primary_communities = np.argmax(membership_vectors, axis=1)
+        
+        # Create mapping from graph node labels to indices
+        node_to_idx = {node: i for i, node in enumerate(sorted(graph.nodes()))}
+        
+        # Count same-community and different-community edges
+        same_community = 0
+        diff_community = 0
+        
+        for u, v in graph.edges():
+            # Map node labels to indices in membership vectors
+            u_idx = node_to_idx[u]
+            v_idx = node_to_idx[v]
+            
+            # Compare primary communities
+            if primary_communities[u_idx] == primary_communities[v_idx]:
+                same_community += 1
+            else:
+                diff_community += 1
+        
+        # Calculate homophily
+        total_edges = same_community + diff_community
+        result["homophily"] = same_community / total_edges if total_edges > 0 else 0.0
+    except (AttributeError, TypeError, KeyError):
+        result["homophily"] = 0.0
     
-    # Power law exponent from degree distribution
-    degrees = [d for n, d in graph.degree()]
+    # Clustering coefficient (handle case with no triangles)
+    try:
+        result["clustering_coefficient"] = nx.average_clustering(graph)
+    except ZeroDivisionError:
+        result["clustering_coefficient"] = 0.0
+    
+    # Power law exponent
     if degrees:
         # Fit power law to degree distribution
         degrees = np.array(degrees) + 1  # Add 1 to avoid log(0)
@@ -87,45 +125,50 @@ def analyze_graph_parameters(
         result["power_law_exponent"] = None
     
     # Connected components
-    components = list(nx.connected_components(graph))
-    result["connected_components"] = len(components)
-    result["largest_component_size"] = len(max(components, key=len)) if components else 0
+    try:
+        components = list(nx.connected_components(graph))
+        result["connected_components"] = len(components)
+        result["largest_component_size"] = len(max(components, key=len)) if components else 0
+    except nx.NetworkXError:
+        result["connected_components"] = 0
+        result["largest_component_size"] = 0
     
     # Community overlap
-    avg_communities = np.mean(np.sum(membership_vectors > 0.1, axis=1))  # Count memberships > 0.1
-    result["avg_communities_per_node"] = avg_communities
+    try:
+        avg_communities = np.mean(np.sum(membership_vectors > 0.1, axis=1))  # Count memberships > 0.1
+        result["avg_communities_per_node"] = avg_communities
+    except (AttributeError, TypeError):
+        result["avg_communities_per_node"] = 0.0
     
     # Edge density within and between communities
-    total_possible_edges = n_nodes * (n_nodes - 1) / 2
-    total_possible_intra = 0
-    total_possible_inter = 0
-    actual_intra = 0
-    actual_inter = 0
-    
-    # Get primary communities for all nodes
-    primary_communities = [graph.nodes[n].get('primary_community') for n in graph.nodes()]
-    
-    # Count possible and actual edges
-    for i in range(n_nodes):
-        for j in range(i+1, n_nodes):
-            if primary_communities[i] == primary_communities[j]:
-                total_possible_intra += 1
-                if graph.has_edge(i, j):
-                    actual_intra += 1
-            else:
-                total_possible_inter += 1
-                if graph.has_edge(i, j):
-                    actual_inter += 1
-    
-    # Calculate densities
-    result["intra_community_density"] = actual_intra / total_possible_intra if total_possible_intra > 0 else 0
-    result["inter_community_density"] = actual_inter / total_possible_inter if total_possible_inter > 0 else 0
-    
-    # Calculate empirical homophily as ratio between densities
-    if result["inter_community_density"] > 0:
-        result["empirical_homophily"] = (result["intra_community_density"] / result["inter_community_density"] - 1) / (result["intra_community_density"] / result["inter_community_density"] + 1)
-    else:
-        result["empirical_homophily"] = 1.0 if result["intra_community_density"] > 0 else 0.0
+    try:
+        total_possible_edges = n_nodes * (n_nodes - 1) / 2
+        total_possible_intra = 0
+        total_possible_inter = 0
+        actual_intra = 0
+        actual_inter = 0
+        
+        # Get primary communities for all nodes
+        primary_communities = [graph.nodes[n].get('primary_community') for n in graph.nodes()]
+        
+        # Count possible and actual edges
+        for i in range(n_nodes):
+            for j in range(i+1, n_nodes):
+                if primary_communities[i] == primary_communities[j]:
+                    total_possible_intra += 1
+                    if graph.has_edge(i, j):
+                        actual_intra += 1
+                else:
+                    total_possible_inter += 1
+                    if graph.has_edge(i, j):
+                        actual_inter += 1
+        
+        # Calculate densities
+        result["intra_community_density"] = actual_intra / total_possible_intra if total_possible_intra > 0 else 0.0
+        result["inter_community_density"] = actual_inter / total_possible_inter if total_possible_inter > 0 else 0.0
+    except (AttributeError, TypeError, ZeroDivisionError):
+        result["intra_community_density"] = 0.0
+        result["inter_community_density"] = 0.0
     
     return result
 
@@ -825,7 +868,7 @@ def create_parameter_dashboard(
         'homophily',
         'power_law_exponent',
         'clustering_coefficient',
-        'triangle_density',
+        'node_count',
         'avg_degree',
         'avg_communities_per_node',
         'density'
@@ -880,7 +923,7 @@ def create_parameter_dashboard(
         (0, 2, 'homophily'),
         (0, 3, 'power_law_exponent'),
         (1, 0, 'clustering_coefficient'),
-        (1, 1, 'triangle_density'),
+        (1, 1, 'node_count'),
         (1, 2, 'avg_degree'),
         (1, 3, 'avg_communities_per_node')
     ]
@@ -909,7 +952,7 @@ def create_parameter_dashboard(
         (2, 0, 'homophily', 'clustering_coefficient'),
         (2, 1, 'avg_communities_per_node', 'homophily'),
         (2, 2, 'avg_degree', 'power_law_exponent'),
-        (2, 3, 'clustering_coefficient', 'triangle_density')
+        (2, 3, 'clustering_coefficient', 'node_count')
     ]
     
     for row, col, x_param, y_param in scatter_plots:

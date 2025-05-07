@@ -548,7 +548,8 @@ class GraphUniverse:
         method: str = "random",
         similarity_bias: float = 0.0,
         max_attempts: int = 10,
-        existing_communities: Optional[List[int]] = None
+        existing_communities: Optional[List[int]] = None,
+        seed: Optional[int] = None
     ) -> List[int]:
         """
         Sample a subset of communities that are well-connected to each other.
@@ -559,18 +560,98 @@ class GraphUniverse:
             similarity_bias: Controls bias towards similar communities (positive) or diverse (negative)
             max_attempts: Maximum number of attempts to find a connected subset
             existing_communities: Optional list of communities to condition on
+            seed: Random seed for reproducibility
             
         Returns:
             List of sampled community indices
         """
-        return sample_connected_community_subset(
-            P=self.P,
-            size=size,
-            method=method,
-            similarity_bias=similarity_bias,
-            max_attempts=max_attempts,
-            existing_communities=existing_communities
-        )
+        if seed is not None:
+            np.random.seed(seed)
+        
+        K = self.K
+        size = min(size, K)  # Ensure we don't sample more than available
+        
+        # Calculate average inter-community probability from probability matrix
+        off_diag_mask = ~np.eye(K, dtype=bool)
+        avg_inter_comm_prob = np.mean(self.P[off_diag_mask])
+        
+        # Track failures for debugging
+        failures = {
+            "no_strong_connections": [],
+            "insufficient_connections": 0,
+            "random_additions_needed": 0
+        }
+        
+        # If we have existing communities, use them as seeds
+        if existing_communities:
+            seeds = existing_communities
+            remaining_size = size - len(seeds)
+        else:
+            # Sample initial seed communities
+            n_seeds = size // 2
+            seeds = np.random.choice(K, size=n_seeds, replace=False).tolist()
+            remaining_size = size - n_seeds
+        
+        # Initialize result with seeds
+        result = set(seeds)
+        
+        # First round: find strongly connected partners for each seed
+        for seed in seeds:
+            # Find all communities with strong connections to this seed
+            strong_connections = [
+                j for j in range(K)
+                if j not in result and self.P[seed, j] >= avg_inter_comm_prob
+            ]
+            
+            if strong_connections:
+                # Randomly select one strongly connected community
+                partner = np.random.choice(strong_connections)
+                result.add(partner)
+                remaining_size -= 1
+            else:
+                failures["no_strong_connections"].append(seed)
+        
+        # Second round: if we still need more communities
+        if remaining_size > 0:
+            # Find communities with strong connections to any existing community
+            potential_additions = []
+            for j in range(K):
+                if j not in result:
+                    # Check connection strength to all existing communities
+                    max_connection = max(self.P[j, i] for i in result)
+                    if max_connection >= avg_inter_comm_prob:
+                        potential_additions.append(j)
+            
+            # If we found potential additions, randomly select from them
+            if potential_additions:
+                n_to_add = min(remaining_size, len(potential_additions))
+                additions = np.random.choice(potential_additions, size=n_to_add, replace=False)
+                result.update(additions)
+                remaining_size -= n_to_add
+            else:
+                failures["insufficient_connections"] = remaining_size
+        
+        # Final round: if we still need more communities, add random ones
+        if remaining_size > 0:
+            remaining = set(range(K)) - result
+            if remaining:
+                final_additions = np.random.choice(list(remaining), size=min(remaining_size, len(remaining)), replace=False)
+                result.update(final_additions)
+                failures["random_additions_needed"] = len(final_additions)
+        
+        # Only print debug information if there were issues
+        if failures["no_strong_connections"] or failures["insufficient_connections"] or failures["random_additions_needed"]:
+            print("\nCommunity sampling issues:")
+            if failures["no_strong_connections"]:
+                print(f"  Seeds with no strong connections: {failures['no_strong_connections']}")
+            if failures["insufficient_connections"]:
+                print(f"  Missing connections for {failures['insufficient_connections']} communities")
+            if failures["random_additions_needed"]:
+                print(f"  Had to add {failures['random_additions_needed']} random communities")
+            print(f"  Connection strength threshold (avg inter-comm prob): {avg_inter_comm_prob:.4f}")
+            print(f"  Final community set size: {len(result)}")
+        
+        return list(result)
 
 class GraphSample:
     """
@@ -1066,8 +1147,8 @@ class GraphSample:
         degree_factors: np.ndarray,
         noise: float = 0.0,
         indirect_influence: float = 0.1,  # Add parameter here too
-        min_edge_density: float = 0.01,  # Minimum acceptable edge density
-        max_retries: int = 3  # Maximum number of retries
+        min_edge_density: float = 0.005,  # Minimum acceptable edge density
+        max_retries: int = 5  # Maximum number of retries
     ) -> sp.spmatrix:
         """
         Generate edges with minimum density guarantee.
