@@ -645,6 +645,7 @@ class GraphSample:
     2. All graph properties reflect the filtered state
     3. Feature regime generation and analysis
     4. Neighborhood feature analysis
+    5. Optional configuration model-like edge generation with configurable degree distributions
     """
     
     def __init__(
@@ -656,10 +657,34 @@ class GraphSample:
         degree_heterogeneity: float = 0.5,
         edge_noise: float = 0.0,
         feature_regime_balance: float = 0.5,
+        target_homophily: Optional[float] = None,
+        target_density: Optional[float] = None,
+        use_configuration_model: bool = False,
+        degree_distribution: str = "power_law",
+        power_law_exponent: Optional[float] = None,
+        target_avg_degree: Optional[float] = None,
+        triangle_enhancement: float = 0.0,  # Added back with default value
         seed: Optional[int] = None
     ):
         """
         Initialize and generate a graph sample.
+        
+        Args:
+            universe: The graph universe to sample from
+            communities: List of community indices to include
+            n_nodes: Number of nodes in the graph
+            min_component_size: Minimum size for connected components
+            degree_heterogeneity: Controls degree variability (0=homogeneous, 1=highly skewed)
+            edge_noise: Random noise in edge probabilities
+            feature_regime_balance: How evenly feature regimes are distributed
+            target_homophily: Target homophily level (if None, use universe value)
+            target_density: Target edge density (if None, use universe value)
+            use_configuration_model: Whether to use configuration model-like edge generation
+            degree_distribution: Type of degree distribution ("power_law", "log_normal", "uniform")
+            power_law_exponent: Exponent for power law distribution (lower = more skewed)
+            target_avg_degree: Target average degree (if None, calculated from density)
+            triangle_enhancement: How much to enhance triangle formation (0-1)
+            seed: Random seed for reproducibility
         """
         # Dictionary to store timing information
         self.timing_info = {}
@@ -673,6 +698,17 @@ class GraphSample:
         # Store feature generation parameters
         self.feature_regime_balance = feature_regime_balance
         
+        # Store target parameters (use universe values if not specified)
+        self.target_homophily = target_homophily if target_homophily is not None else universe.homophily
+        self.target_density = target_density if target_density is not None else universe.edge_density
+        
+        # Store configuration model parameters
+        self.use_configuration_model = use_configuration_model
+        self.degree_distribution = degree_distribution
+        self.power_law_exponent = power_law_exponent
+        self.target_avg_degree = target_avg_degree
+        self.triangle_enhancement = triangle_enhancement  # Store triangle enhancement parameter
+        
         # Set random seed if provided
         if seed is not None:
             np.random.seed(seed)
@@ -681,16 +717,16 @@ class GraphSample:
         start = time.time()
         # Extract the submatrix of the probability matrix for these communities
         K_sub = len(communities)
-        P_sub = np.zeros((K_sub, K_sub))
+        self.P_sub = np.zeros((K_sub, K_sub))
         for i, ci in enumerate(communities):
             for j, cj in enumerate(communities):
-                P_sub[i, j] = universe.P[ci, cj]
+                self.P_sub[i, j] = universe.P[ci, cj]
 
         # Scale the probability matrix
-        P_sub = self._scale_probability_matrix(
-            P_sub, 
-            universe.edge_density,
-            universe.homophily
+        self.P_sub = self._scale_probability_matrix(
+            self.P_sub, 
+            self.target_density,
+            self.target_homophily
         )
         self.timing_info['probability_matrix'] = time.time() - start
         
@@ -701,17 +737,48 @@ class GraphSample:
         
         # Time: Generate degree factors
         start = time.time()
-        self.degree_factors = self._generate_degree_factors(n_nodes, degree_heterogeneity)
+        if self.use_configuration_model:
+            self.degree_factors = self._generate_degree_factors_configuration(
+                n_nodes,
+                None,  # degree_heterogeneity not used in configuration model
+                self.degree_distribution,
+                self.power_law_exponent,
+                self.target_avg_degree
+            )
+        else:
+            self.degree_factors = self._generate_degree_factors(n_nodes, degree_heterogeneity)
         self.timing_info['degree_factors'] = time.time() - start
         
         # Time: Generate edges
         start = time.time()
-        self.adjacency = self._generate_edges(
-            self.community_labels,  # Pass community labels directly
-            P_sub, 
-            self.degree_factors, 
-            edge_noise
-        )
+        if self.use_configuration_model:
+            # Use default values for deviation constraints if not set
+            max_mean_community_deviation = getattr(self, 'max_mean_community_deviation', 0.1)
+            max_max_community_deviation = getattr(self, 'max_max_community_deviation', 0.2)
+            max_parameter_search_attempts = getattr(self, 'max_parameter_search_attempts', 10)
+            parameter_search_range = getattr(self, 'parameter_search_range', 0.2)
+            min_edge_density = getattr(self, 'min_edge_density', 0.005)
+            max_retries = getattr(self, 'max_retries', 5)
+            
+            self.adjacency = self._generate_edges_configuration(
+                self.community_labels,
+                self.P_sub,
+                self.degree_factors,
+                edge_noise,
+                min_edge_density=min_edge_density,
+                max_retries=max_retries,
+                max_mean_community_deviation=max_mean_community_deviation,
+                max_max_community_deviation=max_max_community_deviation,
+                max_parameter_search_attempts=max_parameter_search_attempts,
+                parameter_search_range=parameter_search_range
+            )
+        else:
+            self.adjacency = self._generate_edges(
+                self.community_labels,
+                self.P_sub,
+                self.degree_factors,
+                edge_noise
+            )
         self.timing_info['edge_generation'] = time.time() - start
         
         # Time: Component filtering
@@ -988,8 +1055,8 @@ class GraphSample:
     def _scale_probability_matrix(
         self, 
         P_sub: np.ndarray, 
-        target_density: float, 
-        target_homophily: float
+        target_density: Optional[float] = None, 
+        target_homophily: Optional[float] = None
     ) -> np.ndarray:
         """
         Scale a probability matrix to achieve target density and homophily
@@ -997,6 +1064,10 @@ class GraphSample:
         """
         n = P_sub.shape[0]
         P_scaled = P_sub.copy()
+        
+        # Use instance target values if not specified
+        target_density = target_density if target_density is not None else self.target_density
+        target_homophily = target_homophily if target_homophily is not None else self.target_homophily
         
         # Create masks for diagonal and off-diagonal elements
         diagonal_mask = np.eye(n, dtype=bool)
@@ -1317,3 +1388,557 @@ class GraphSample:
             self.node_labels = self.label_generator.get_node_labels()
             if hasattr(self, 'timing_info'):
                 self.timing_info['label_generation'] = time.time() - start
+
+    def _generate_degree_factors_configuration(
+        self,
+        n_nodes: int,
+        heterogeneity: float,  # Keep parameter for compatibility but don't use it
+        distribution: str,
+        power_law_exponent: float,
+        target_avg_degree: Optional[float]
+    ) -> np.ndarray:
+        """
+        Generate degree factors for configuration model with specified distribution.
+        
+        Args:
+            n_nodes: Number of nodes
+            heterogeneity: Not used in configuration model (kept for compatibility)
+            distribution: Type of degree distribution ("power_law", "log_normal", "uniform")
+            power_law_exponent: Exponent for power law distribution
+            target_avg_degree: Target average degree (if None, calculated from density)
+            
+        Returns:
+            Array of degree factors
+        """
+        if target_avg_degree is None:
+            # Calculate from target density
+            target_avg_degree = self.target_density * (n_nodes - 1)
+        
+        if distribution == "power_law":
+            # Generate from power law distribution
+            # Use power_law_exponent directly without heterogeneity adjustment
+            factors = np.random.pareto(power_law_exponent - 1, size=n_nodes) + 1
+            
+        elif distribution == "log_normal":
+            # Generate from log-normal distribution
+            # Use fixed sigma for log-normal
+            sigma = 1.0
+            factors = np.random.lognormal(mean=0, sigma=sigma, size=n_nodes)
+            
+        elif distribution == "uniform":
+            # Generate from uniform distribution
+            # Use fixed range for uniform
+            min_factor = 0.5
+            max_factor = 1.5
+            factors = np.random.uniform(min_factor, max_factor, size=n_nodes)
+            
+        else:
+            raise ValueError(f"Unknown degree distribution: {distribution}")
+        
+        # Normalize to match target average degree
+        factors = factors / factors.mean() * target_avg_degree
+        
+        # Ensure minimum degree of 1
+        factors = np.maximum(factors, 1)
+        
+        return factors
+
+    def _generate_edges_configuration(
+        self,
+        community_labels: np.ndarray,
+        P_sub: np.ndarray,
+        degree_factors: np.ndarray,
+        noise: float = 0.0,
+        min_edge_density: float = 0.005,
+        max_retries: int = 5,
+        max_mean_community_deviation: float = 0.1,
+        max_max_community_deviation: float = 0.2,
+        max_parameter_search_attempts: int = 10,
+        parameter_search_range: float = 0.2
+    ) -> sp.spmatrix:
+        """
+        Generate edges using a configuration model-like approach while respecting community structure.
+        This method tries to match target degrees while maintaining community structure within specified deviation bounds.
+        Community structure is prioritized over degree matching.
+        
+        Args:
+            community_labels: Node community assignments (indices)
+            P_sub: Community-community probability matrix
+            degree_factors: Node degree factors
+            noise: Edge noise level
+            min_edge_density: Minimum acceptable edge density
+            max_retries: Maximum number of retries if graph is too sparse
+            max_mean_community_deviation: Maximum allowed mean deviation from community structure (0-1)
+            max_max_community_deviation: Maximum allowed maximum deviation from community structure (0-1)
+            max_parameter_search_attempts: Maximum number of parameter search attempts
+            parameter_search_range: How aggressively to search parameter space (0.05=small variations, 1.0=full random)
+            
+        Returns:
+            Sparse adjacency matrix
+        """
+        n_nodes = len(community_labels)
+        best_adj = None
+        best_deviation = float('inf')
+        best_mean_deviation = float('inf')
+        best_max_deviation = float('inf')
+        best_degree_params = None
+        best_degree_stats = None
+        
+        # Define parameter search ranges based on search_range
+        if self.degree_distribution == "power_law":
+            # Calculate ranges based on search_range
+            min_exponent = max(1.5, self.power_law_exponent - 2.0 * parameter_search_range)
+            max_exponent = min(3.0, self.power_law_exponent + 2.0 * parameter_search_range)
+            
+            min_target = max(2, self.target_avg_degree * (1 - parameter_search_range))
+            max_target = min(20, self.target_avg_degree * (1 + parameter_search_range))
+            
+            # Generate parameter combinations
+            if parameter_search_range >= 0.8:  # For very aggressive search
+                # Random sampling across the full range
+                exponents = np.random.uniform(min_exponent, max_exponent, max_parameter_search_attempts)
+                targets = np.random.uniform(min_target, max_target, max_parameter_search_attempts)
+            else:
+                # Linear spacing for more controlled search
+                exponents = np.linspace(min_exponent, max_exponent, max_parameter_search_attempts)
+                targets = np.linspace(min_target, max_target, max_parameter_search_attempts)
+        else:
+            # For other distributions, try different scaling factors
+            if parameter_search_range >= 0.8:  # For very aggressive search
+                scale_range = np.random.uniform(0.5, 2.0, max_parameter_search_attempts)
+            else:
+                scale_range = np.linspace(1 - parameter_search_range, 1 + parameter_search_range, max_parameter_search_attempts)
+        
+        # Try different parameter combinations
+        for attempt in range(max_parameter_search_attempts):
+            # Adjust degree factors based on attempt number
+            if self.degree_distribution == "power_law":
+                # Try different combinations of power law exponent and target average degree
+                current_exponent = exponents[attempt]
+                current_target = targets[attempt]
+                
+                # Generate new degree factors with current parameters
+                adjusted_factors = self._generate_degree_factors_configuration(
+                    n_nodes,
+                    None,  # degree_heterogeneity not used in configuration model
+                    self.degree_distribution,
+                    current_exponent,
+                    current_target
+                )
+                
+                # Store current parameters for logging
+                current_params = {
+                    'power_law_exponent': current_exponent,
+                    'target_avg_degree': current_target
+                }
+            else:
+                # For other distributions, try different scaling factors
+                scale = scale_range[attempt]
+                adjusted_factors = degree_factors * scale
+                current_params = {'scale_factor': scale}
+            
+            # Generate graph with current parameters
+            adj = self._generate_edges_configuration_single(
+                community_labels,
+                P_sub,
+                adjusted_factors,
+                noise,
+                min_edge_density,
+                max_retries
+            )
+            
+            if adj is None:
+                continue
+            
+            # Create temporary graph for community analysis
+            temp_graph = nx.from_scipy_sparse_array(adj)
+            
+            # Calculate both mean and maximum deviations
+            mean_deviation = self._calculate_community_deviation(
+                temp_graph,
+                community_labels,
+                P_sub
+            )
+            
+            max_deviation = self._calculate_max_community_deviation(
+                temp_graph,
+                community_labels,
+                P_sub
+            )
+            
+            # Check if this is the best attempt so far
+            # Weight community deviation more heavily than degree deviation
+            total_deviation = 3 * mean_deviation + max_deviation
+            
+            # Only update best if both deviation constraints are better or equal
+            if ((max_deviation < best_max_deviation or 
+                 (max_deviation == best_max_deviation and mean_deviation < best_mean_deviation)) and
+                max_deviation <= max_max_community_deviation and
+                mean_deviation <= max_mean_community_deviation):
+                best_adj = adj
+                best_deviation = total_deviation
+                best_mean_deviation = mean_deviation
+                best_max_deviation = max_deviation
+                best_degree_params = adjusted_factors.copy()
+                best_degree_stats = {
+                    'parameters': current_params,
+                    'mean_degree': np.mean(adjusted_factors),
+                    'std_degree': np.std(adjusted_factors),
+                    'min_degree': np.min(adjusted_factors),
+                    'max_degree': np.max(adjusted_factors)
+                }
+                
+                # If we're within acceptable bounds, we can stop
+                if (max_deviation <= max_max_community_deviation and 
+                    mean_deviation <= max_mean_community_deviation):
+                    print(f"\nFound solution with parameters:")
+                    print(f"  {current_params}")
+                    print(f"  Mean deviation: {mean_deviation:.4f}")
+                    print(f"  Max deviation: {max_deviation:.4f}")
+                    print(f"  Degree stats: mean={np.mean(adjusted_factors):.2f}, std={np.std(adjusted_factors):.2f}")
+                    return adj
+        
+        # If we get here, we couldn't find a solution within bounds
+        if best_adj is not None:
+            print(f"\nWarning: Could not find solution within specified deviation bounds.")
+            print(f"Best achieved: max_deviation={best_max_deviation:.4f}, "
+                  f"mean_deviation={best_mean_deviation:.4f}")
+            print(f"Best parameters found:")
+            print(f"  {best_degree_stats['parameters']}")
+            print(f"  Degree stats: mean={best_degree_stats['mean_degree']:.2f}, "
+                  f"std={best_degree_stats['std_degree']:.2f}, "
+                  f"min={best_degree_stats['min_degree']:.2f}, "
+                  f"max={best_degree_stats['max_degree']:.2f}")
+            
+            # If either deviation constraint is not met, raise an error
+            if best_max_deviation > max_max_community_deviation:
+                raise ValueError(f"Could not generate graph with maximum community deviation below {max_max_community_deviation}. "
+                               f"Best achieved: {best_max_deviation:.4f}")
+            if best_mean_deviation > max_mean_community_deviation:
+                raise ValueError(f"Could not generate graph with mean community deviation below {max_mean_community_deviation}. "
+                               f"Best achieved: {best_mean_deviation:.4f}")
+            
+            return best_adj
+        else:
+            raise ValueError("Could not generate graph with specified constraints")
+
+    def _calculate_community_deviation(
+        self,
+        graph: nx.Graph,
+        community_labels: np.ndarray,
+        P_sub: np.ndarray
+    ) -> float:
+        """
+        Calculate mean absolute deviation between actual and expected community connection patterns.
+        This represents the average deviation across all community pairs.
+        """
+        n_communities = len(self.communities)
+        actual_matrix = np.zeros((n_communities, n_communities))
+        community_sizes = np.zeros(n_communities, dtype=int)
+        
+        # Count nodes in each community
+        for label in community_labels:
+            community_sizes[label] += 1
+        
+        # Count edges between communities
+        for i, j in graph.edges():
+            comm_i = community_labels[i]
+            comm_j = community_labels[j]
+            actual_matrix[comm_i, comm_j] += 1
+            actual_matrix[comm_j, comm_i] += 1  # Undirected graph
+        
+        # Calculate actual probabilities
+        for i in range(n_communities):
+            for j in range(n_communities):
+                if i == j:
+                    # Within community: divide by n(n-1)/2
+                    n = community_sizes[i]
+                    if n > 1:
+                        actual_matrix[i, j] = actual_matrix[i, j] / (n * (n - 1))
+                else:
+                    # Between communities: divide by n1*n2
+                    actual_matrix[i, j] = actual_matrix[i, j] / (community_sizes[i] * community_sizes[j])
+        
+        # Calculate mean deviation
+        deviation_matrix = np.abs(actual_matrix - P_sub)
+        return np.mean(deviation_matrix)
+
+    def _calculate_max_community_deviation(
+        self,
+        graph: nx.Graph,
+        community_labels: np.ndarray,
+        P_sub: np.ndarray
+    ) -> float:
+        """
+        Calculate maximum absolute deviation between actual and expected community connection patterns.
+        This represents the worst-case deviation for any community pair.
+        """
+        n_communities = len(self.communities)
+        actual_matrix = np.zeros((n_communities, n_communities))
+        community_sizes = np.zeros(n_communities, dtype=int)
+        
+        # Count nodes in each community
+        for label in community_labels:
+            community_sizes[label] += 1
+        
+        # Count edges between communities
+        for i, j in graph.edges():
+            comm_i = community_labels[i]
+            comm_j = community_labels[j]
+            actual_matrix[comm_i, comm_j] += 1
+            actual_matrix[comm_j, comm_i] += 1  # Undirected graph
+        
+        # Calculate actual probabilities
+        for i in range(n_communities):
+            for j in range(n_communities):
+                if i == j:
+                    # Within community: divide by n(n-1)/2
+                    n = community_sizes[i]
+                    if n > 1:
+                        actual_matrix[i, j] = actual_matrix[i, j] / (n * (n - 1))
+                else:
+                    # Between communities: divide by n1*n2
+                    actual_matrix[i, j] = actual_matrix[i, j] / (community_sizes[i] * community_sizes[j])
+        
+        # Calculate maximum deviation
+        deviation_matrix = np.abs(actual_matrix - P_sub)
+        return np.max(deviation_matrix)
+
+    def _generate_edges_configuration_single(
+        self,
+        community_labels: np.ndarray,
+        P_sub: np.ndarray,
+        degree_factors: np.ndarray,
+        noise: float = 0.0,
+        min_edge_density: float = 0.005,
+        max_retries: int = 5
+    ) -> Optional[sp.spmatrix]:
+        """
+        Single attempt at generating edges using configuration model.
+        This is the core edge generation logic, separated from the parameter search.
+        Community structure is strictly maintained.
+        """
+        n_nodes = len(community_labels)
+        
+        # Calculate target degrees based on degree factors
+        target_degrees = np.round(degree_factors).astype(int)
+        
+        # Ensure even sum of degrees
+        if np.sum(target_degrees) % 2 == 1:
+            target_degrees[np.random.randint(0, n_nodes)] += 1
+        
+        # Initialize edge list and remaining degrees
+        edges = []
+        remaining_degrees = target_degrees.copy()
+        
+        # Calculate connection probabilities between all node pairs
+        conn_probs = np.zeros((n_nodes, n_nodes))
+        for i in range(n_nodes):
+            for j in range(i+1, n_nodes):
+                # Calculate community-based probability
+                comm_i = community_labels[i]
+                comm_j = community_labels[j]
+                prob = P_sub[comm_i, comm_j]
+                
+                # Add noise if specified
+                if noise > 0:
+                    prob *= (1 + np.random.uniform(-noise, noise))
+                    prob = np.clip(prob, 0, 1)
+                
+                conn_probs[i, j] = conn_probs[j, i] = prob
+        
+        # While there are nodes with remaining degree
+        while np.sum(remaining_degrees) > 1:
+            # Choose node with highest remaining degree
+            node_i = np.argmax(remaining_degrees)
+            
+            if remaining_degrees[node_i] == 0:
+                break
+            
+            # Calculate sampling probabilities for potential partners
+            # Only consider nodes with remaining degree
+            valid_partners = remaining_degrees > 0
+            valid_partners[node_i] = False  # No self-loops
+            
+            if not np.any(valid_partners):
+                break
+                
+            sampling_probs = conn_probs[node_i] * valid_partners
+            sampling_probs = sampling_probs / np.sum(sampling_probs)
+            
+            # Apply triangle enhancement if specified
+            if self.triangle_enhancement > 0 and edges:
+                triangle_boost = np.zeros(n_nodes)
+                for edge in edges:
+                    if edge[0] == node_i:
+                        for other_edge in edges:
+                            if other_edge[0] == edge[1]:
+                                triangle_boost[other_edge[1]] += self.triangle_enhancement
+                            elif other_edge[1] == edge[1]:
+                                triangle_boost[other_edge[0]] += self.triangle_enhancement
+                    elif edge[1] == node_i:
+                        for other_edge in edges:
+                            if other_edge[0] == edge[0]:
+                                triangle_boost[other_edge[1]] += self.triangle_enhancement
+                            elif other_edge[1] == edge[0]:
+                                triangle_boost[other_edge[0]] += self.triangle_enhancement
+                
+                sampling_probs *= (1 + triangle_boost)
+                sampling_probs = sampling_probs / np.sum(sampling_probs)
+            
+            # Sample partner node
+            node_j = np.random.choice(n_nodes, p=sampling_probs)
+            
+            # Add edge
+            edges.append((node_i, node_j))
+            
+            # Update remaining degrees
+            remaining_degrees[node_i] -= 1
+            remaining_degrees[node_j] -= 1
+        
+        # Create sparse adjacency matrix
+        if edges:
+            rows, cols = zip(*edges)
+            data = np.ones(len(edges))
+            adj = sp.csr_matrix((data, (rows, cols)), shape=(n_nodes, n_nodes))
+            
+            # Make symmetric (undirected graph)
+            adj = adj + adj.T
+            adj.data = np.ones_like(adj.data)  # Ensure no double edges
+            
+            # Calculate actual edge density
+            actual_density = adj.nnz / (n_nodes * (n_nodes - 1))
+            
+            # If density is too low, try again with adjusted probabilities
+            if actual_density < min_edge_density and max_retries > 0:
+                return self._generate_edges_configuration_single(
+                    community_labels,
+                    P_sub * 2,  # Double the connection probabilities
+                    degree_factors,
+                    noise * 0.5,  # Reduce noise to maintain signal
+                    min_edge_density,
+                    max_retries - 1
+                )
+            
+            return adj
+        
+        return None
+
+    def analyze_community_connections(self) -> Dict[str, Any]:
+        """
+        Analyze the actual community connection patterns in the generated graph
+        and compare them with the scaled probability matrix used for generation.
+        
+        Returns:
+            Dictionary containing:
+            - actual_matrix: Actual community-community connection probabilities
+            - expected_matrix: Expected probabilities from scaled matrix
+            - deviation_matrix: Absolute difference between actual and expected
+            - mean_deviation: Mean absolute deviation
+            - max_deviation: Maximum absolute deviation
+            - community_sizes: Number of nodes in each community
+            - connection_counts: Raw number of edges between communities
+            - degree_analysis: Dictionary containing degree distribution analysis
+        """
+        n_communities = len(self.communities)
+        
+        # Calculate actual connection probabilities
+        actual_matrix = np.zeros((n_communities, n_communities))
+        connection_counts = np.zeros((n_communities, n_communities), dtype=int)
+        community_sizes = np.zeros(n_communities, dtype=int)
+        
+        # Count nodes in each community
+        for label in self.community_labels:
+            community_sizes[label] += 1
+        
+        # Count edges between communities
+        for i, j in self.graph.edges():
+            comm_i = self.community_labels[i]
+            comm_j = self.community_labels[j]
+            connection_counts[comm_i, comm_j] += 1
+            connection_counts[comm_j, comm_i] += 1  # Undirected graph
+        
+        # Calculate actual probabilities
+        for i in range(n_communities):
+            for j in range(n_communities):
+                if i == j:
+                    # Within community: divide by n(n-1)/2
+                    n = community_sizes[i]
+                    if n > 1:
+                        actual_matrix[i, j] = connection_counts[i, j] / (n * (n - 1))
+                else:
+                    # Between communities: divide by n1*n2
+                    actual_matrix[i, j] = connection_counts[i, j] / (community_sizes[i] * community_sizes[j])
+        
+        # Calculate deviation
+        deviation_matrix = np.abs(actual_matrix - self.P_sub)
+        mean_deviation = np.mean(deviation_matrix)
+        max_deviation = np.max(deviation_matrix)
+        
+        # Analyze degree distribution
+        actual_degrees = np.array([d for n, d in self.graph.degree()])
+        
+        # Get the best found parameters from the parameter search
+        if hasattr(self, 'best_degree_stats'):
+            best_params = self.best_degree_stats['parameters']
+            target_degrees = np.round(self.best_degree_params).astype(int)
+            used_power_law_exponent = best_params.get('power_law_exponent', self.power_law_exponent)
+            used_target_avg_degree = best_params.get('target_avg_degree', self.target_avg_degree)
+            used_scale_factor = best_params.get('scale_factor', 1.0)
+        else:
+            # Fallback to original parameters if no search was performed
+            target_degrees = np.round(self.degree_factors).astype(int)
+            used_power_law_exponent = self.power_law_exponent
+            used_target_avg_degree = self.target_avg_degree
+            used_scale_factor = 1.0
+        
+        # Calculate degree statistics
+        degree_analysis = {
+            'actual_degrees': actual_degrees,
+            'target_degrees': target_degrees,
+            'mean_actual_degree': np.mean(actual_degrees),
+            'mean_target_degree': np.mean(target_degrees),
+            'std_actual_degree': np.std(actual_degrees),
+            'std_target_degree': np.std(target_degrees),
+            'degree_deviation': np.mean(np.abs(actual_degrees - target_degrees) / target_degrees),
+            'degree_correlation': np.corrcoef(actual_degrees, target_degrees)[0, 1],
+            'used_parameters': {
+                'power_law_exponent': used_power_law_exponent,
+                'target_avg_degree': used_target_avg_degree,
+                'scale_factor': used_scale_factor
+            }
+        }
+        
+        # Verify that max deviation is within constraints
+        if hasattr(self, 'max_max_community_deviation') and max_deviation > self.max_max_community_deviation:
+            print(f"Warning: Maximum community deviation ({max_deviation:.4f}) exceeds constraint ({self.max_max_community_deviation:.4f})")
+            # Try to regenerate the graph with stricter constraints
+            if hasattr(self, '_generate_edges_configuration'):
+                print("Attempting to regenerate graph with stricter constraints...")
+                self.adjacency = self._generate_edges_configuration(
+                    self.community_labels,
+                    self.P_sub,
+                    self.degree_factors,
+                    edge_noise=0.0,  # Use original parameters
+                    min_edge_density=0.005,
+                    max_retries=5,
+                    max_mean_community_deviation=self.max_mean_community_deviation,
+                    max_max_community_deviation=self.max_max_community_deviation,
+                    max_parameter_search_attempts=10,
+                    parameter_search_range=0.2
+                )
+                # Recreate the graph with new adjacency
+                self.graph = nx.from_scipy_sparse_array(self.adjacency)
+                # Recursively call analyze_community_connections to get updated analysis
+                return self.analyze_community_connections()
+        
+        return {
+            "actual_matrix": actual_matrix,
+            "expected_matrix": self.P_sub,
+            "deviation_matrix": deviation_matrix,
+            "mean_deviation": mean_deviation,
+            "max_deviation": max_deviation,
+            "community_sizes": community_sizes,
+            "connection_counts": connection_counts,
+            "degree_analysis": degree_analysis
+        }

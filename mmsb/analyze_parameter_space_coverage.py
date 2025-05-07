@@ -57,6 +57,8 @@ def generate_diverse_graph_families(
         n_families: Number of graph families to generate
         n_graphs_per_family: Number of graphs per family
         base_params: Base parameters for all families
+        homophily_range_range: Range of allowed homophily_range values (min, max)
+        density_range_range: Range of allowed density_range values (min, max)
         seed: Random seed
         
     Returns:
@@ -79,6 +81,14 @@ def generate_diverse_graph_families(
         edge_density = random.uniform(0.01, 0.2)
         homophily = random.uniform(0.0, 1.0)
         
+        # Sample range parameters from their allowed ranges
+        # Use beta distribution to favor smaller ranges (more concentrated families)
+        homophily_range_width = random.betavariate(1.5, 3.0) * 0.6  # Beta distribution favoring smaller values
+        homophily_range = (0.0, min(0.85, homophily_range_width))  # Cap at 0.8
+        
+        density_range_width = random.betavariate(1.5, 3.0) * 0.6  # Beta distribution for smaller ranges
+        density_range = (0.0, min(0.25, density_range_width))  # Cap at 0.2
+        
         new_variation = {
             # Universe parameters
             "K": K,
@@ -90,6 +100,10 @@ def generate_diverse_graph_families(
             "regimes_per_community": 2,
             "intra_community_regime_similarity": random.uniform(0.0, 1.0),
             "inter_community_regime_similarity": random.uniform(0.0, 1.0),
+            
+            # Range parameters for this family
+            "homophily_range": homophily_range,
+            "density_range": density_range,
             
             # Graph generation parameters
             "min_communities": random.randint(2, max(3, K // 5)),  # Between 2 and K/5 communities
@@ -138,8 +152,25 @@ def generate_diverse_graph_families(
                 seed=seed
             )
             
-            # Initialize generator with universe
-            generator = GraphFamilyGenerator(universe=universe)
+            print(f"\nDEBUG: Creating generator with parameters:")
+            print(f"  homophily_range: {family_params['homophily_range']}")
+            print(f"  density_range: {family_params['density_range']}")
+            
+            # Initialize generator with universe and range parameters
+            generator = GraphFamilyGenerator(
+                universe=universe,
+                homophily_range=family_params["homophily_range"],
+                density_range=family_params["density_range"]
+            )
+            
+            print(f"\nDEBUG: Generating graphs with parameters:")
+            print(f"  min_communities: {family_params['min_communities']}")
+            print(f"  max_communities: {family_params['max_communities']}")
+            print(f"  min_nodes: {family_params['min_nodes']}")
+            print(f"  max_nodes: {family_params['max_nodes']}")
+            print(f"  degree_heterogeneity: {family_params['degree_heterogeneity']}")
+            print(f"  edge_noise: {family_params['edge_noise']}")
+            print(f"  min_component_size: {family_params['min_component_size']}")
             
             # Generate graph family
             graphs = generator.generate(
@@ -234,6 +265,16 @@ def analyze_graph_family(graphs: List[GraphSample]) -> pd.DataFrame:
         # Extract parameters from graph
         params = graph.extract_parameters()
         params["graph_id"] = i
+        
+        # Add target parameters
+        params["target_homophily"] = graph.target_homophily
+        params["target_density"] = graph.target_density
+        
+        # Calculate actual vs target ratios
+        if params["homophily"] is not None:
+            params["homophily_ratio"] = params["homophily"] / params["target_homophily"]
+        if params["density"] is not None:
+            params["density_ratio"] = params["density"] / params["target_density"]
         
         results.append(params)
     
@@ -354,7 +395,12 @@ def compute_parameter_space_coverage(
             ("homophily", "clustering_coefficient"),
             ("avg_degree", "power_law_exponent"),
             ("avg_degree", "density"),
-            ("power_law_exponent", "avg_communities_per_node")
+            ("power_law_exponent", "avg_communities_per_node"),
+            # Add new parameter pairs for target parameters
+            ("target_homophily", "target_density"),
+            ("homophily_ratio", "density_ratio"),
+            ("target_homophily", "homophily"),
+            ("target_density", "density")
         ]
     
     coverage_metrics = {}
