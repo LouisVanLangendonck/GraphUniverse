@@ -345,7 +345,7 @@ elif page == "Graph Sampling":
                 st.pyplot(fig)
                 
                 # Plot membership matrix
-                fig = plot_membership_matrix(graph.membership_vectors)
+                fig = plot_membership_matrix(graph)
                 st.pyplot(fig)
                 
                 # Plot degree distribution
@@ -530,7 +530,7 @@ elif page == "Parameter Space Analysis":
             for name, df in family_dfs.items():
                 st.markdown(f"#### {name} Dashboard")
                 
-                fig = create_parameter_dashboard(df, name)
+                fig = create_parameter_dashboard(df)
                 st.pyplot(fig)
 
 # Motif and Role Analysis Page
@@ -863,3 +863,23 @@ st.markdown("""
 ---
 **MMSB Explorer** | Mixed-Membership Stochastic Block Model for Graph Transfer Learning
 """) 
+
+def create_graph_dashboard(graph):
+    # Create tabs for different visualizations
+    tab1, tab2, tab3, tab4 = st.tabs([
+        "Graph Visualization",
+        "Community Distribution",
+        "Parameter Analysis",
+        "Feature Analysis"
+    ])
+
+    with tab1:
+        st.subheader("Graph with Communities")
+        fig = plot_graph_communities(graph)
+        st.pyplot(fig)
+
+    with tab2:
+        st.subheader("Community Distribution")
+        # Pass the graph object directly
+        fig = plot_membership_matrix(graph)
+        st.pyplot(fig) 

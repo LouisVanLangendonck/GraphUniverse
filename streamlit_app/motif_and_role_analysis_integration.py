@@ -41,9 +41,9 @@ def add_motif_role_analysis_tab(graph_tabs):
         with col1:
             max_motif_size = st.slider(
                 "Maximum motif size", 
-                min_value=3, 
+                min_value=2, 
                 max_value=4, 
-                value=4,
+                value=3,
                 help="Largest motif pattern to analyze (higher values increase computation time)"
             )
             
@@ -390,9 +390,9 @@ def add_motif_role_analysis_page():
     with col1:
         max_motif_size = st.slider(
             "Maximum motif size",
-            min_value=3,
-            max_value=5,
-            value=4,
+            min_value=2,
+            max_value=4,
+            value=3,
             help="Largest motif pattern to analyze (higher values increase computation time)"
         )
         

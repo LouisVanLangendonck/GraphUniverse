@@ -39,12 +39,17 @@ def analyze_graph_parameters(
     
     Args:
         graph: NetworkX graph
-        community_labels: Node community assignments (one-hot encoded)
+        community_labels: Node community assignments (indices)
         communities: List of community IDs
         
     Returns:
         Dictionary of parameter values
     """
+    print("\nDEBUG: Starting analyze_graph_parameters")
+    print(f"Graph info: nodes={len(graph)}, edges={len(graph.edges())}")
+    print(f"Community labels shape: {community_labels.shape if community_labels is not None else None}")
+    print(f"Communities: {communities if communities is not None else None}")
+    
     result = {}
     
     # Basic graph properties
@@ -53,6 +58,7 @@ def analyze_graph_parameters(
     
     # Handle empty or invalid graphs
     if n_nodes == 0 or n_edges == 0:
+        print("DEBUG: Empty or invalid graph detected")
         return {
             "homophily": 0.0,
             "power_law_exponent": None,
@@ -74,33 +80,18 @@ def analyze_graph_parameters(
     degrees = [d for _, d in graph.degree()]
     result["avg_degree"] = sum(degrees) / n_nodes
     
+    print("\nDEBUG: Basic graph metrics calculated:")
+    print(f"Density: {result['density']}")
+    print(f"Average degree: {result['avg_degree']}")
+    
     # Calculate homophily
     try:
-        # Get community for each node
-        node_communities = np.argmax(community_labels, axis=1)
-        
-        # Create mapping from graph node labels to indices
-        node_to_idx = {node: i for i, node in enumerate(sorted(graph.nodes()))}
-        
-        # Count same-community and different-community edges
-        same_community = 0
-        diff_community = 0
-        
-        for u, v in graph.edges():
-            # Map node labels to indices in community labels
-            u_idx = node_to_idx[u]
-            v_idx = node_to_idx[v]
-            
-            # Compare communities
-            if node_communities[u_idx] == node_communities[v_idx]:
-                same_community += 1
-            else:
-                diff_community += 1
-        
-        # Calculate homophily
-        total_edges = same_community + diff_community
-        result["homophily"] = same_community / total_edges if total_edges > 0 else 0.0
-    except (AttributeError, TypeError, KeyError):
+        print("\nDEBUG: Calculating homophily...")
+        homophily = calculate_homophily(graph, community_labels, communities)
+        result["homophily"] = homophily
+        print(f"DEBUG: Homophily calculation successful: {homophily}")
+    except Exception as e:
+        print(f"DEBUG: Error in homophily calculation: {str(e)}")
         result["homophily"] = 0.0
     
     # Clustering coefficient (handle case with no triangles)
@@ -141,13 +132,13 @@ def analyze_graph_parameters(
         actual_intra = 0
         actual_inter = 0
         
-        # Get communities for all nodes
-        node_communities = np.argmax(community_labels, axis=1)
+        # Create mapping from graph node labels to indices
+        node_to_idx = {node: i for i, node in enumerate(sorted(graph.nodes()))}
         
         # Count possible and actual edges
         for i in range(n_nodes):
             for j in range(i+1, n_nodes):
-                if node_communities[i] == node_communities[j]:
+                if community_labels[node_to_idx[i]] == community_labels[node_to_idx[j]]:
                     total_possible_intra += 1
                     if graph.has_edge(i, j):
                         actual_intra += 1
@@ -401,43 +392,61 @@ def calculate_homophily(
     """
     Calculate homophily level of the graph.
     
-    Homophily is measured as the ratio of edges between nodes in the same
-    community to total edges.
-    
     Args:
         graph: NetworkX graph
-        community_labels: Node community assignments (one-hot encoded)
+        community_labels: Node community assignments (indices)
         communities: List of community IDs
         
     Returns:
         Homophily score in [0, 1]
     """
-    # Get community for each node
-    node_communities = np.argmax(community_labels, axis=1)
+    print("\nDEBUG: Starting homophily calculation")
+    print(f"Graph nodes: {len(graph.nodes())}")
+    print(f"Graph edges: {len(graph.edges())}")
+    print(f"Community labels shape: {community_labels.shape if community_labels is not None else None}")
+    print(f"Number of communities: {len(communities) if communities is not None else None}")
     
-    # Create mapping from graph node labels to indices
-    node_to_idx = {node: i for i, node in enumerate(sorted(graph.nodes()))}
+    if community_labels is None or len(community_labels) == 0:
+        print("DEBUG: No community labels provided")
+        return 0.0
     
-    # Count same-community and different-community edges
-    same_community = 0
-    diff_community = 0
-    
-    for u, v in graph.edges():
-        # Map node labels to indices in community labels
-        u_idx = node_to_idx[u]
-        v_idx = node_to_idx[v]
+    try:
+        # Create mapping from graph node labels to indices
+        node_to_idx = {node: i for i, node in enumerate(sorted(graph.nodes()))}
+        print(f"DEBUG: Created node mapping for {len(node_to_idx)} nodes")
         
-        # Compare communities
-        if node_communities[u_idx] == node_communities[v_idx]:
-            same_community += 1
-        else:
-            diff_community += 1
-    
-    # Calculate homophily
-    total_edges = same_community + diff_community
-    homophily = same_community / total_edges if total_edges > 0 else 0
-    
-    return homophily
+        # Count same-community and different-community edges
+        same_community = 0
+        diff_community = 0
+        
+        for u, v in graph.edges():
+            try:
+                # Map node labels to indices in community labels
+                u_idx = node_to_idx[u]
+                v_idx = node_to_idx[v]
+                
+                # Compare communities directly
+                if community_labels[u_idx] == community_labels[v_idx]:
+                    same_community += 1
+                else:
+                    diff_community += 1
+            except Exception as e:
+                print(f"DEBUG: Error processing edge ({u}, {v}): {str(e)}")
+                continue
+        
+        print(f"DEBUG: Same community edges: {same_community}")
+        print(f"DEBUG: Different community edges: {diff_community}")
+        
+        # Calculate homophily
+        total_edges = same_community + diff_community
+        homophily = same_community / total_edges if total_edges > 0 else 0
+        
+        print(f"DEBUG: Calculated homophily: {homophily}")
+        return homophily
+        
+    except Exception as e:
+        print(f"DEBUG: Error in main homophily calculation: {str(e)}")
+        return 0.0
 
 
 def fit_power_law(degrees: List[int]) -> float:
@@ -668,33 +677,66 @@ def confidence_ellipse(
     """
     if x.size != y.size:
         raise ValueError("x and y must be the same size")
-
-    cov = np.cov(x, y)
-    pearson = cov[0, 1]/np.sqrt(cov[0, 0] * cov[1, 1])
     
-    # Using a special case to obtain the eigenvalues of this
-    # two-dimensional dataset.
-    ell_radius_x = np.sqrt(1 + pearson)
-    ell_radius_y = np.sqrt(1 - pearson)
-    ellipse = Ellipse((0, 0), width=ell_radius_x * 2, height=ell_radius_y * 2,
-                      facecolor=facecolor, **kwargs)
+    # Check for valid data
+    if x.size < 2 or y.size < 2:
+        return None
+        
+    # Check for constant values
+    if np.all(x == x[0]) or np.all(y == y[0]):
+        return None
+        
+    # Remove any NaN or inf values
+    mask = ~(np.isnan(x) | np.isnan(y) | np.isinf(x) | np.isinf(y))
+    x = x[mask]
+    y = y[mask]
+    
+    if len(x) < 2:  # Need at least 2 points for covariance
+        return None
 
-    # Calculating the standard deviation of x from the sqrt of the variance and
-    # multiplying with the given number of standard deviations.
-    scale_x = np.sqrt(cov[0, 0]) * n_std
-    mean_x = np.mean(x)
+    try:
+        # Calculate means
+        mean_x = np.mean(x)
+        mean_y = np.mean(y)
+        
+        # Center the data
+        x_centered = x - mean_x
+        y_centered = y - mean_y
+        
+        # Calculate covariance matrix manually to avoid division warnings
+        n = len(x)
+        cov_xx = np.sum(x_centered * x_centered) / (n - 1)
+        cov_yy = np.sum(y_centered * y_centered) / (n - 1)
+        cov_xy = np.sum(x_centered * y_centered) / (n - 1)
+        
+        # Check for zero variance
+        if cov_xx == 0 or cov_yy == 0:
+            return None
+            
+        # Calculate correlation
+        pearson = cov_xy / np.sqrt(cov_xx * cov_yy)
+        
+        # Using a special case to obtain the eigenvalues of this
+        # two-dimensional dataset.
+        ell_radius_x = np.sqrt(1 + pearson)
+        ell_radius_y = np.sqrt(1 - pearson)
+        ellipse = Ellipse((0, 0), width=ell_radius_x * 2, height=ell_radius_y * 2,
+                          facecolor=facecolor, **kwargs)
 
-    # calculating the standard deviation of y ...
-    scale_y = np.sqrt(cov[1, 1]) * n_std
-    mean_y = np.mean(y)
+        # Calculating the standard deviation of x from the sqrt of the variance and
+        # multiplying with the given number of standard deviations.
+        scale_x = np.sqrt(cov_xx) * n_std
+        scale_y = np.sqrt(cov_yy) * n_std
 
-    transf = transforms.Affine2D() \
-        .rotate_deg(45) \
-        .scale(scale_x, scale_y) \
-        .translate(mean_x, mean_y)
+        transf = transforms.Affine2D() \
+            .rotate_deg(45) \
+            .scale(scale_x, scale_y) \
+            .translate(mean_x, mean_y)
 
-    ellipse.set_transform(transf + ax.transData)
-    return ax.add_patch(ellipse)
+        ellipse.set_transform(transf + ax.transData)
+        return ax.add_patch(ellipse)
+    except (ValueError, RuntimeWarning, ZeroDivisionError):
+        return None
 
 
 def plot_parameter_scatter(
@@ -721,46 +763,68 @@ def plot_parameter_scatter(
     """
     fig, ax = plt.subplots(figsize=figsize)
     
-    # Filter out rows with NaN in either parameter
-    valid_data = df.dropna(subset=[x_param, y_param])
+    # Filter out rows with NaN or inf in either parameter
+    valid_data = df.copy()
+    valid_data[x_param] = valid_data[x_param].replace([np.inf, -np.inf], np.nan)
+    valid_data[y_param] = valid_data[y_param].replace([np.inf, -np.inf], np.nan)
+    valid_data = valid_data.dropna(subset=[x_param, y_param])
     
-    # Scatter plot
-    scatter = ax.scatter(
-        valid_data[x_param],
-        valid_data[y_param],
-        alpha=0.7,
-        s=50,
-        edgecolor='k',
-        linewidth=0.5
-    )
+    # Debug logging
+    print(f"Total rows in DataFrame: {len(df)}")
+    print(f"Valid rows after dropping NaN and inf: {len(valid_data)}")
+    if len(valid_data) > 0:
+        print(f"X parameter range: {valid_data[x_param].min()} to {valid_data[x_param].max()}")
+        print(f"Y parameter range: {valid_data[y_param].min()} to {valid_data[y_param].max()}")
+        print(f"X parameter variance: {valid_data[x_param].var()}")
+        print(f"Y parameter variance: {valid_data[y_param].var()}")
     
-    # Add confidence ellipse
-    if add_ellipse and len(valid_data) > 2:
-        confidence_ellipse(
+    # Only proceed if we have valid data
+    if len(valid_data) > 0:
+        # Scatter plot
+        scatter = ax.scatter(
             valid_data[x_param],
             valid_data[y_param],
-            ax, n_std=2.0,
-            edgecolor='red', linestyle='--',
-            label='95% Confidence Region'
+            alpha=0.7,
+            s=50,
+            edgecolor='k',
+            linewidth=0.5
         )
-    
-    # Compute correlation
-    correlation = valid_data[x_param].corr(valid_data[y_param])
-    
-    # Add correlation text
-    ax.text(
-        0.05, 0.95, f'Correlation: {correlation:.2f}',
-        transform=ax.transAxes,
-        verticalalignment='top',
-        bbox=dict(boxstyle='round', facecolor='white', alpha=0.7)
-    )
-    
-    ax.set_xlabel(x_param.replace('_', ' ').title())
-    ax.set_ylabel(y_param.replace('_', ' ').title())
-    ax.set_title(f'{x_param.replace("_", " ").title()} vs {y_param.replace("_", " ").title()} for {family_name}')
-    
-    if add_ellipse:
-        ax.legend()
+        
+        # Add confidence ellipse only if we have enough points and non-zero variance
+        if add_ellipse and len(valid_data) > 2:
+            x_var = valid_data[x_param].var()
+            y_var = valid_data[y_param].var()
+            if x_var > 0 and y_var > 0:
+                ellipse = confidence_ellipse(
+                    valid_data[x_param].values,
+                    valid_data[y_param].values,
+                    ax, n_std=2.0,
+                    edgecolor='red', linestyle='--',
+                    label='95% Confidence Region'
+                )
+                if ellipse is not None:
+                    ax.legend()
+        
+        # Compute correlation
+        correlation = valid_data[x_param].corr(valid_data[y_param])
+        
+        # Add correlation text
+        ax.text(
+            0.05, 0.95, f'Correlation: {correlation:.2f}',
+            transform=ax.transAxes,
+            verticalalignment='top',
+            bbox=dict(boxstyle='round', facecolor='white', alpha=0.7)
+        )
+        
+        ax.set_xlabel(x_param.replace('_', ' ').title())
+        ax.set_ylabel(y_param.replace('_', ' ').title())
+        ax.set_title(f'{x_param.replace("_", " ").title()} vs {y_param.replace("_", " ").title()} for {family_name}')
+    else:
+        # If no valid data, display a message
+        ax.text(0.5, 0.5, 'No valid data available for visualization',
+                horizontalalignment='center',
+                verticalalignment='center',
+                transform=ax.transAxes)
     
     return fig
 
@@ -989,8 +1053,8 @@ def create_parameter_dashboard(
                     bbox=dict(boxstyle='round', facecolor='white', alpha=0.7)
                 )
                 
-                ax.set_xlabel(x_param.replace('_', ' ').title())
-                ax.set_ylabel(y_param.replace('_', ' ').title())
+                ax.set_xlabel(x_param.title())
+                ax.set_ylabel(y_param.title())
                 ax.set_title(f'{x_param.title()} vs {y_param.title()}')
     
     try:

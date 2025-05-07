@@ -57,13 +57,13 @@ class MotifRoleAnalyzer:
         self.graph_sample = graph_sample
         self.graph = graph_sample.graph
         self.communities = graph_sample.communities
-        self.membership_vectors = graph_sample.membership_vectors
+        self.community_labels = graph_sample.community_labels  # Now using community_labels
         self.max_motif_size = max_motif_size
         self.n_roles = n_roles
         self.normalize_features = normalize_features
         self.verbose = verbose
         
-        # Dictionary to store primary community for each node
+        # Dictionary to store community for each node
         self.node_communities = self._get_node_communities()
         
         # Motif set and definitions
@@ -77,16 +77,17 @@ class MotifRoleAnalyzer:
         
     def _get_node_communities(self) -> Dict[int, int]:
         """
-        Get the primary community for each node.
+        Get the community for each node.
         
         Returns:
             Dictionary mapping node index to community ID
         """
         node_communities = {}
         for i in range(self.graph_sample.n_nodes):
-            primary_comm_idx = np.argmax(self.membership_vectors[i])
-            primary_comm = self.communities[primary_comm_idx]
-            node_communities[i] = primary_comm
+            # Get community directly from labels
+            community_idx = self.community_labels[i]
+            community = self.communities[community_idx]
+            node_communities[i] = community
         
         return node_communities
     
@@ -858,14 +859,11 @@ class MotifRoleAnalyzer:
             bottom += counts
         
         ax.set_xlabel("Community")
-        ax.set_ylabel("Number of Nodes")
-        ax.set_title("Distribution of Structural Roles by Community")
+        ax.set_ylabel("Nodes")
+        ax.set_title("Roles by Community")
         ax.set_xticks(communities)
         ax.set_xticklabels([f"C{c}" for c in communities])
-        ax.legend()
-        
-        plt.tight_layout()
-        return fig
+        ax.legend(fontsize=8)
     
     def visualize_role_similarity(self) -> plt.Figure:
         """
@@ -983,7 +981,7 @@ class MotifRoleAnalyzer:
         if self.role_membership is None:
             self.discover_structural_roles()
         
-        # Create community membership matrix
+        # Create community membership matrix (one-hot encoding)
         communities = sorted(set(self.node_communities.values()))
         n_communities = len(communities)
         
@@ -1002,7 +1000,7 @@ class MotifRoleAnalyzer:
                 
                 # Compute correlation
                 corr = np.corrcoef(role_vector, comm_vector)[0, 1]
-                correlation[r, c] = corr
+                correlation[r, c] = corr if not np.isnan(corr) else 0
         
         # Get role interpretations
         role_interpretations = self.interpret_roles()
@@ -1167,7 +1165,7 @@ class MotifRoleAnalyzer:
                 communities, 
                 counts, 
                 bottom=bottom, 
-                label=role_interpretations[role]["name"].split()[0],
+                label=role_interpretations[role]["name"],
                 alpha=0.7
             )
             bottom += counts
@@ -1181,7 +1179,7 @@ class MotifRoleAnalyzer:
     
     def _plot_role_community_correlation(self, ax):
         """Plot role-community correlation on given axis."""
-        # Create community membership matrix
+        # Create community membership matrix (one-hot encoding)
         communities = sorted(set(self.node_communities.values()))
         n_communities = len(communities)
         
@@ -1200,11 +1198,11 @@ class MotifRoleAnalyzer:
                 
                 # Compute correlation
                 corr = np.corrcoef(role_vector, comm_vector)[0, 1]
-                correlation[r, c] = corr
+                correlation[r, c] = corr if not np.isnan(corr) else 0
         
         # Get role interpretations
         role_interpretations = self.interpret_roles()
-        role_names = [role_interpretations[i]["name"].split()[0] for i in range(self.n_roles)]
+        role_names = [role_interpretations[i]["name"] for i in range(self.n_roles)]
         
         # Plot heatmap
         im = ax.imshow(correlation, cmap="coolwarm", vmin=-1, vmax=1)

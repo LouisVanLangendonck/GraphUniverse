@@ -696,7 +696,7 @@ class GraphSample:
         
         # Time: Generate memberships
         start = time.time()
-        self.membership_vectors = self._generate_memberships(n_nodes, K_sub)
+        self.community_labels = self._generate_memberships(n_nodes, K_sub)  # Now returns 1D array
         self.timing_info['memberships'] = time.time() - start
         
         # Time: Generate degree factors
@@ -707,7 +707,7 @@ class GraphSample:
         # Time: Generate edges
         start = time.time()
         self.adjacency = self._generate_edges(
-            self.membership_vectors, 
+            self.community_labels,  # Pass community labels directly
             P_sub, 
             self.degree_factors, 
             edge_noise
@@ -737,7 +737,7 @@ class GraphSample:
                     self.deleted_components.append(comp)
                     # Track community distribution of deleted nodes
                     for node in comp:
-                        primary_comm = self.communities[np.argmax(self.membership_vectors[node])]
+                        primary_comm = self.communities[self.community_labels[node]]  # Use community labels directly
                         if primary_comm not in self.deleted_node_types:
                             self.deleted_node_types[primary_comm] = 0
                         self.deleted_node_types[primary_comm] += 1
@@ -767,8 +767,8 @@ class GraphSample:
             # Update node count
             self.n_nodes = self.graph.number_of_nodes()
             
-            # Update membership vectors and degree factors with new indices
-            self.membership_vectors = self.membership_vectors[kept_nodes]
+            # Update community labels and degree factors with new indices
+            self.community_labels = self.community_labels[kept_nodes]
             self.degree_factors = self.degree_factors[kept_nodes]
             
             # Update adjacency matrix
@@ -777,7 +777,7 @@ class GraphSample:
             # If no components meet the size threshold, keep an empty graph
             self.graph = nx.Graph()
             self.n_nodes = 0
-            self.membership_vectors = np.zeros((0, K_sub))
+            self.community_labels = np.array([], dtype=int)
             self.degree_factors = np.zeros(0)
             self.adjacency = sp.csr_matrix((0, 0))
             self.features = None if universe.feature_dim > 0 else None
@@ -792,10 +792,9 @@ class GraphSample:
         # Time: Feature generation
         start = time.time()
         if universe.feature_dim > 0:
-            # Assign nodes to feature regimes
-            primary_communities = np.argmax(self.membership_vectors, axis=1)
+            # Assign nodes to feature regimes using community labels directly
             self.node_regimes = universe.regime_generator.assign_node_regimes(
-                primary_communities,
+                self.community_labels,
                 regime_balance=self.feature_regime_balance
             )
             
@@ -827,16 +826,14 @@ class GraphSample:
     def _add_node_attributes(self):
         """Add node attributes to the graph."""
         for i, node in enumerate(self.graph.nodes()):
-            # Calculate primary community for this node
-            primary_comm = self.communities[np.argmax(self.membership_vectors[i])]
+            # Get community label directly
+            community_idx = self.community_labels[i]
+            primary_comm = self.communities[community_idx]
             
             # Create node attributes dictionary
             node_attrs = {
-                "memberships": {self.communities[j]: float(self.membership_vectors[i, j]) 
-                               for j in range(len(self.communities)) 
-                               if self.membership_vectors[i, j] > 0},
-                "degree_factor": float(self.degree_factors[i]),
-                "primary_community": int(primary_comm)  # Add primary community as integer
+                "community": int(primary_comm),  # Store the actual community ID
+                "degree_factor": float(self.degree_factors[i])
             }
             
             # Add features if available
@@ -862,7 +859,7 @@ class GraphSample:
         # Analyze parameters
         params = analyze_graph_parameters(
             self.graph,
-            self.membership_vectors,
+            self.community_labels,  # Pass community labels directly
             self.communities
         )
         
@@ -878,13 +875,10 @@ class GraphSample:
             K_sub: Number of communities in this subgraph
             
         Returns:
-            n_nodes × K_sub matrix of membership probabilities (one-hot encoded)
+            Array of community labels (indices)
         """
-        membership = np.zeros((n_nodes, K_sub))
-        # Assign each node to a random community
-        primary_communities = np.random.choice(K_sub, size=n_nodes)
-        membership[np.arange(n_nodes), primary_communities] = 1.0
-        return membership
+        # Directly assign each node to a random community
+        return np.random.choice(K_sub, size=n_nodes)
 
     def _generate_degree_factors(self, n_nodes: int, heterogeneity: float) -> np.ndarray:
         """
@@ -915,7 +909,7 @@ class GraphSample:
 
     def _generate_edges(
         self, 
-        memberships: np.ndarray,
+        community_labels: np.ndarray,
         P_sub: np.ndarray,
         degree_factors: np.ndarray,
         noise: float = 0.0,
@@ -926,7 +920,7 @@ class GraphSample:
         Generate edges with minimum density guarantee.
         
         Args:
-            memberships: Node-community membership matrix (one-hot encoded)
+            community_labels: Node community assignments (indices)
             P_sub: Community-community probability matrix
             degree_factors: Node degree factors
             noise: Edge noise level
@@ -936,22 +930,19 @@ class GraphSample:
         Returns:
             Sparse adjacency matrix
         """
-        n_nodes = memberships.shape[0]
+        n_nodes = len(community_labels)
         
         for attempt in range(max_retries):
             # Sparse matrix for efficient storage
             rows, cols, data = [], [], []
             
-            # Get community assignments
-            community_assignments = np.argmax(memberships, axis=1)
-            
             # Compute edge probabilities efficiently
             for i in range(n_nodes):
-                comm_i = community_assignments[i]
+                comm_i = community_labels[i]
                 
                 # For each node i, compute probabilities to all nodes j
                 for j in range(i+1, n_nodes):
-                    comm_j = community_assignments[j]
+                    comm_j = community_labels[j]
                     
                     # Get probability from P matrix
                     edge_prob = P_sub[comm_i, comm_j]
@@ -1124,15 +1115,9 @@ class GraphSample:
         # Add node attributes
         for i in range(self.n_nodes):
             node_attrs = {
-                "memberships": {self.communities[j]: float(self.membership_vectors[i, j]) 
-                               for j in range(len(self.communities)) 
-                               if self.membership_vectors[i, j] > 0},
+                "community": int(self.community_labels[i]),  # Store the actual community ID
                 "degree_factor": float(self.degree_factors[i])
             }
-            
-            # Add primary community label (for visualization and evaluation)
-            primary_comm = self.communities[np.argmax(self.membership_vectors[i])]
-            node_attrs["primary_community"] = int(primary_comm)
             
             # Add features if available
             if self.features is not None:

@@ -855,3 +855,24 @@ def graph_comparison_widget(graphs: List[GraphSample], max_graphs: int = 4):
     ax.set_xticks(range(int(max_count) + 1))
     
     st.pyplot(fig)
+
+
+def plot_graph_analysis(graph):
+    """Plot graph analysis visualizations."""
+    # Graph visualization
+    st.subheader("Graph Visualization")
+    st.pyplot(plot_graph_communities(graph))
+    
+    # Community distribution
+    st.subheader("Community Distribution")
+    st.pyplot(plot_membership_matrix(graph))  # Pass the graph object directly
+    
+    # Parameter analysis
+    st.subheader("Parameter Analysis")
+    params = graph.extract_parameters()
+    st.write(params)
+    
+    # Feature analysis if available
+    if hasattr(graph, 'features') and graph.features is not None:
+        st.subheader("Feature Analysis")
+        st.pyplot(plot_feature_heatmap(graph.features, graph.community_labels))
