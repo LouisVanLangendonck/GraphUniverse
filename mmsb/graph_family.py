@@ -26,23 +26,18 @@ class GraphFamilyGenerator:
         intra_community_regime_similarity: float = 0.8,
         inter_community_regime_similarity: float = 0.2,
         regimes_per_community: int = 2,
-        # New parameters for allowed deviations
-        homophily_range: float = 0.0,  # Allowed deviation from universe homophily
-        density_range: float = 0.0,    # Allowed deviation from universe density
-        # New parameters for configuration model
-        use_configuration_model: bool = False,
-        degree_distribution: str = "power_law",
-        power_law_exponent_min: float = 1.5,  # Minimum power law exponent
-        power_law_exponent_max: float = 3.0,  # Maximum power law exponent
-        target_avg_degree_min: float = 2.0,   # Minimum target average degree
-        target_avg_degree_max: float = 20.0,  # Maximum target average degree
-        # Deviation constraints from GraphSample
-        max_mean_community_deviation: float = 0.1,  # Maximum allowed mean deviation from community structure
-        max_max_community_deviation: float = 0.2,   # Maximum allowed maximum deviation from community structure
-        max_parameter_search_attempts: int = 10,    # Maximum number of parameter search attempts
-        parameter_search_range: float = 0.2,        # How aggressively to search parameter space
-        min_edge_density: float = 0.005,           # Minimum acceptable edge density
-        max_retries: int = 5,                      # Maximum number of retries if graph is too sparse
+        homophily_range: float = 0.0,
+        density_range: float = 0.0,
+        method_distribution: Optional[Dict[str, float]] = None,
+        standard_method_params: Optional[Dict[str, Any]] = None,
+        config_model_params: Optional[Dict[str, Any]] = None,
+        max_mean_community_deviation: float = None,
+        max_max_community_deviation: float = None,
+        max_parameter_search_attempts: int = None,
+        parameter_search_range: float = None,
+        min_edge_density: float = None,
+        max_retries: int = None,
+        triangle_enhancement: float = 0.0,
         seed: Optional[int] = None
     ):
         """
@@ -62,20 +57,41 @@ class GraphFamilyGenerator:
             regimes_per_community: Number of feature regimes per community
             homophily_range: Allowed deviation from universe homophily
             density_range: Allowed deviation from universe density
-            use_configuration_model: Whether to use configuration model-like edge generation
-            degree_distribution: Type of degree distribution ("power_law", "log_normal", "uniform")
-            power_law_exponent_min: Minimum power law exponent
-            power_law_exponent_max: Maximum power law exponent
-            target_avg_degree_min: Minimum target average degree
-            target_avg_degree_max: Maximum target average degree
+            method_distribution: Dictionary mapping method names to their probabilities
+                               e.g. {"standard": 0.5, "power_law": 0.3, "uniform": 0.2}
+            standard_method_params: Parameters for standard method generation
+            config_model_params: Parameters for configuration model generation
             max_mean_community_deviation: Maximum allowed mean deviation from community structure
             max_max_community_deviation: Maximum allowed maximum deviation from community structure
             max_parameter_search_attempts: Maximum number of parameter search attempts
             parameter_search_range: How aggressively to search parameter space
             min_edge_density: Minimum acceptable edge density
             max_retries: Maximum number of retries if graph is too sparse
+            triangle_enhancement: Triangle enhancement factor
             seed: Random seed for reproducibility
         """
+        # Store all parameters that need to be passed to GraphSample
+        self.max_mean_community_deviation = max_mean_community_deviation
+        self.max_max_community_deviation = max_max_community_deviation
+        self.max_parameter_search_attempts = max_parameter_search_attempts
+        self.parameter_search_range = parameter_search_range
+        self.min_edge_density = min_edge_density
+        self.max_retries = max_retries
+        self.triangle_enhancement = triangle_enhancement
+
+        # Validate required parameters
+        required_params = [
+            ('max_mean_community_deviation', max_mean_community_deviation),
+            ('max_max_community_deviation', max_max_community_deviation),
+            ('max_parameter_search_attempts', max_parameter_search_attempts),
+            ('parameter_search_range', parameter_search_range),
+            ('min_edge_density', min_edge_density),
+            ('max_retries', max_retries)
+        ]
+        missing_params = [name for name, value in required_params if value is None]
+        if missing_params:
+            raise ValueError(f"Missing required parameters from app.py: {', '.join(missing_params)}")
+
         # Create universe if not provided
         if universe is None:
             self.universe = GraphUniverse(
@@ -96,18 +112,41 @@ class GraphFamilyGenerator:
         # Store parameters
         self.homophily_range = homophily_range
         self.density_range = density_range
-        self.use_configuration_model = use_configuration_model
-        self.degree_distribution = degree_distribution
-        self.power_law_exponent_min = power_law_exponent_min
-        self.power_law_exponent_max = power_law_exponent_max
-        self.target_avg_degree_min = target_avg_degree_min
-        self.target_avg_degree_max = target_avg_degree_max
-        self.max_mean_community_deviation = max_mean_community_deviation
-        self.max_max_community_deviation = max_max_community_deviation
-        self.max_parameter_search_attempts = max_parameter_search_attempts
-        self.parameter_search_range = parameter_search_range
-        self.min_edge_density = min_edge_density
-        self.max_retries = max_retries
+        
+        # Set up method distribution
+        if method_distribution is None:
+            self.method_distribution = {"standard": 1.0}  # Default to standard method
+        else:
+            # Normalize probabilities
+            total = sum(method_distribution.values())
+            self.method_distribution = {k: v/total for k, v in method_distribution.items()}
+        
+        # Set up method parameters
+        self.standard_method_params = standard_method_params or {}
+        
+        # Set up configuration model parameters
+        if config_model_params is None:
+            config_model_params = {
+                "power_law": {
+                    "exponent_min": 1.5,
+                    "exponent_max": 3.0,
+                    "target_avg_degree_min": 2.0,
+                    "target_avg_degree_max": 20.0
+                },
+                "exponential": {
+                    "rate_min": 0.1,  # Lower rate = more spread out
+                    "rate_max": 1.0,  # Higher rate = more concentrated
+                    "target_avg_degree_min": 2.0,
+                    "target_avg_degree_max": 20.0
+                },
+                "uniform": {
+                    "min_factor": 0.5,
+                    "max_factor": 1.5,
+                    "target_avg_degree_min": 2.0,
+                    "target_avg_degree_max": 20.0
+                }
+            }
+        self.config_model_params = config_model_params
         
         # Set random seed if provided
         if seed is not None:
@@ -139,6 +178,57 @@ class GraphFamilyGenerator:
         target_density = np.random.uniform(density_min, density_max)
         
         return target_homophily, target_density
+
+    def _sample_generation_method(self) -> Tuple[str, Dict[str, Any]]:
+        """
+        Sample a generation method and its parameters based on the method distribution.
+        
+        Returns:
+            Tuple of (method_name, method_params)
+        """
+        # Sample method based on distribution
+        method = np.random.choice(
+            list(self.method_distribution.keys()),
+            p=list(self.method_distribution.values())
+        )
+        
+        if method == "standard":
+            return method, self.standard_method_params
+        
+        # For configuration model methods, sample parameters
+        if method in ["power_law", "exponential", "uniform"]:
+            params = self.config_model_params[method].copy()
+            
+            # Sample target average degree
+            params["target_avg_degree"] = np.random.uniform(
+                params["target_avg_degree_min"],
+                params["target_avg_degree_max"]
+            )
+            
+            # Sample distribution-specific parameters
+            if method == "power_law":
+                params["power_law_exponent"] = np.random.uniform(
+                    params["exponent_min"],
+                    params["exponent_max"]
+                )
+            elif method == "exponential":
+                params["rate"] = np.random.uniform(
+                    params["rate_min"],
+                    params["rate_max"]
+                )
+            elif method == "uniform":
+                params["min_factor"] = np.random.uniform(
+                    params["min_factor"],
+                    params["max_factor"]
+                )
+                params["max_factor"] = np.random.uniform(
+                    params["min_factor"],
+                    params["max_factor"]
+                )
+            
+            return method, params
+        
+        raise ValueError(f"Unknown generation method: {method}")
 
     def generate(
         self,
@@ -197,20 +287,10 @@ class GraphFamilyGenerator:
                 # Sample target parameters
                 target_homophily, target_density = self._sample_target_parameters()
                 
-                # Sample power law exponent and target average degree if using configuration model
-                power_law_exponent = None
-                target_avg_degree = None
-                if self.use_configuration_model:
-                    power_law_exponent = np.random.uniform(
-                        self.power_law_exponent_min,
-                        self.power_law_exponent_max
-                    )
-                    target_avg_degree = np.random.uniform(
-                        self.target_avg_degree_min,
-                        self.target_avg_degree_max
-                    )
+                # Sample generation method and its parameters
+                method, method_params = self._sample_generation_method()
                 
-                # Create graph sample
+                # Create graph sample with ALL required parameters
                 graph = GraphSample(
                     universe=self.universe,
                     communities=communities,
@@ -221,21 +301,20 @@ class GraphFamilyGenerator:
                     feature_regime_balance=feature_regime_balance,
                     target_homophily=target_homophily,
                     target_density=target_density,
-                    use_configuration_model=self.use_configuration_model,
-                    degree_distribution=self.degree_distribution,
-                    power_law_exponent=power_law_exponent,
-                    target_avg_degree=target_avg_degree,
+                    use_configuration_model=(method in ["power_law", "exponential", "uniform"]),
+                    degree_distribution=method if method in ["power_law", "exponential", "uniform"] else None,
+                    power_law_exponent=method_params.get("power_law_exponent"),
+                    target_avg_degree=method_params.get("target_avg_degree"),
+                    # Pass through all required parameters
+                    triangle_enhancement=self.triangle_enhancement,
+                    max_mean_community_deviation=self.max_mean_community_deviation,
+                    max_max_community_deviation=self.max_max_community_deviation,
+                    max_parameter_search_attempts=self.max_parameter_search_attempts,
+                    parameter_search_range=self.parameter_search_range,
+                    min_edge_density=self.min_edge_density,
+                    max_retries=self.max_retries,
                     seed=seed + len(graphs) if seed is not None else None
                 )
-                
-                # Store deviation constraints in the graph instance
-                if self.use_configuration_model:
-                    graph.max_mean_community_deviation = self.max_mean_community_deviation
-                    graph.max_max_community_deviation = self.max_max_community_deviation
-                    graph.max_parameter_search_attempts = self.max_parameter_search_attempts
-                    graph.parameter_search_range = self.parameter_search_range
-                    graph.min_edge_density = self.min_edge_density
-                    graph.max_retries = self.max_retries
                 
                 graphs.append(graph)
                 

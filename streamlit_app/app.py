@@ -119,6 +119,12 @@ if 'graph_family' not in st.session_state:
 if 'graph_families' not in st.session_state:
     st.session_state.graph_families = {}
 
+# Initialize session state for current family if not exists
+if 'current_family_graphs' not in st.session_state:
+    st.session_state.current_family_graphs = None
+if 'current_family_params' not in st.session_state:
+    st.session_state.current_family_params = None
+
 # Main header
 st.markdown('<div class="main-header">Mixed-Membership Stochastic Block Model Explorer</div>', unsafe_allow_html=True)
 
@@ -577,83 +583,48 @@ elif page == "Graph Sampling":
                     st.write("### Distribution Parameters Used")
                     col1, col2, col3 = st.columns(3)
                     with col1:
-                        st.metric("Power Law Exponent", f"{used_params['power_law_exponent']:.2f}")
+                        if "power_law_exponent" in used_params and used_params["power_law_exponent"] is not None:
+                            st.metric("Power Law Exponent", f"{used_params['power_law_exponent']:.2f}")
+                        elif "rate" in used_params and used_params["rate"] is not None:
+                            st.metric("Rate", f"{used_params['rate']:.2f}")
+                        elif "min_factor" in used_params and used_params["min_factor"] is not None:
+                            st.metric("Min Factor", f"{used_params['min_factor']:.2f}")
                     with col2:
-                        st.metric("Target Average Degree", f"{used_params['target_avg_degree']:.2f}")
+                        if "target_avg_degree" in used_params and used_params["target_avg_degree"] is not None:
+                            st.metric("Target Average Degree", f"{used_params['target_avg_degree']:.2f}")
                     with col3:
-                        if used_params['scale_factor'] != 1.0:
+                        if "scale_factor" in used_params and used_params["scale_factor"] is not None and used_params["scale_factor"] != 1.0:
                             st.metric("Scale Factor", f"{used_params['scale_factor']:.2f}")
                     
-                    # Create histogram of actual vs target degrees
-                    fig = go.Figure()
-                    
-                    # Calculate consistent bin edges for both distributions
-                    max_degree = max(
-                        max(degree_analysis["actual_degrees"]),
-                        max(degree_analysis["target_degrees"])
-                    )
-                    min_degree = min(
-                        min(degree_analysis["actual_degrees"]),
-                        min(degree_analysis["target_degrees"])
-                    )
-                    n_bins = 50  # Increased number of bins for finer granularity
-                    bin_edges = np.linspace(min_degree, max_degree, n_bins + 1)
-                    
-                    # Add actual degrees histogram
-                    fig.add_trace(go.Histogram(
-                        x=degree_analysis["actual_degrees"],
-                        name="Actual Degrees",
-                        opacity=0.7,
-                        histnorm='probability',
-                        marker_color='blue',
-                        xbins=dict(
-                            start=min_degree,
-                            end=max_degree,
-                            size=(max_degree - min_degree) / n_bins
-                        )
-                    ))
-                    
-                    # Add target degrees histogram
-                    fig.add_trace(go.Histogram(
-                        x=degree_analysis["target_degrees"],
-                        name="Target Degrees",
-                        opacity=0.7,
-                        histnorm='probability',
-                        marker_color='red',
-                        xbins=dict(
-                            start=min_degree,
-                            end=max_degree,
-                            size=(max_degree - min_degree) / n_bins
-                        )
-                    ))
-                    
-                    fig.update_layout(
-                        title="Degree Distribution Comparison",
-                        xaxis_title="Degree",
-                        yaxis_title="Probability",
-                        barmode='overlay',
-                        height=400
-                    )
-                    
-                    st.plotly_chart(fig, use_container_width=True)
-                    
-                    # Display degree statistics
+                    # Display degree statistics with null checks
                     col1, col2 = st.columns(2)
                     with col1:
-                        st.write("#### Actual Degree Statistics")
-                        st.write(f"Mean: {degree_analysis['mean_actual_degree']:.2f}")
-                        st.write(f"Std Dev: {degree_analysis['std_actual_degree']:.2f}")
+                        st.write("##### Actual Degree Statistics")
+                        mean_actual = degree_analysis.get('mean_actual_degree')
+                        std_actual = degree_analysis.get('std_actual_degree')
+                        if mean_actual is not None:
+                            st.write(f"Mean: {mean_actual:.2f}")
+                        if std_actual is not None:
+                            st.write(f"Std Dev: {std_actual:.2f}")
                     with col2:
-                        st.write("#### Target Degree Statistics")
-                        st.write(f"Mean: {degree_analysis['mean_target_degree']:.2f}")
-                        st.write(f"Std Dev: {degree_analysis['std_target_degree']:.2f}")
+                        st.write("##### Target Degree Statistics")
+                        mean_target = degree_analysis.get('mean_target_degree')
+                        std_target = degree_analysis.get('std_target_degree')
+                        if mean_target is not None:
+                            st.write(f"Mean: {mean_target:.2f}")
+                        if std_target is not None:
+                            st.write(f"Std Dev: {std_target:.2f}")
                     
-                    # Display degree deviation and correlation
+                    # Display degree deviation and correlation with null checks
                     col1, col2 = st.columns(2)
                     with col1:
-                        st.metric("Degree Deviation", f"{degree_analysis['degree_deviation']:.4f}")
+                        deviation = degree_analysis.get('degree_deviation')
+                        if deviation is not None:
+                            st.metric("Degree Deviation", f"{deviation:.4f}")
                     with col2:
-                        st.metric("Degree Correlation", f"{degree_analysis['degree_correlation']:.4f}")
+                        correlation = degree_analysis.get('degree_correlation')
+                        if correlation is not None:
+                            st.metric("Degree Correlation", f"{correlation:.4f}")
                     
                     # Create scatter plot of target vs actual degrees
                     fig = go.Figure()
@@ -713,7 +684,6 @@ elif page == "Graph Sampling":
                     
                     with col2:
                         # Show connection counts
-                        st.markdown("##### Connection Counts")
                         fig = plt.figure(figsize=(6, 5))
                         plt.imshow(connection_analysis["connection_counts"], cmap='Blues')
                         plt.colorbar(label='Number of Edges')
@@ -1171,130 +1141,160 @@ elif page == "Graph Family Generation":
     family_name = st.text_input("Family Name", value="Family 1", help="Name for this graph family")
     
     # Basic parameters
+    st.markdown('<div class="subsection-header">Basic Parameters</div>', unsafe_allow_html=True)
     col1, col2 = st.columns(2)
     with col1:
         n_graphs = st.slider("Number of graphs", 1, 100, 10)
-        min_nodes = st.slider("Minimum nodes", 10, 1000, 100)
-        max_nodes = st.slider("Maximum nodes", 10, 1000, 200)
-        min_communities = st.slider("Minimum communities", 2, 20, 3)
-        max_communities = st.slider("Maximum communities", 2, 20, 5)
-    
+        min_nodes = st.slider("Minimum nodes", 10, 1000, 30)
+        max_nodes = st.slider("Maximum nodes", 10, 1000, 150)
     with col2:
-        degree_heterogeneity = st.slider("Degree heterogeneity", 0.0, 1.0, 0.5)
-        edge_noise = st.slider("Edge noise", 0.0, 1.0, 0.0)
+        min_communities = st.slider("Minimum communities", 2, 20, 3)
+        max_communities = st.slider("Maximum communities", 2, 20, 7)
         sampling_method = st.selectbox(
             "Community sampling method",
-            ["random", "similar", "diverse", "correlated"]
+            ["random", "similar", "diverse", "correlated"],
+            help="Method for selecting community subsets"
         )
-        min_component_size = st.slider("Minimum component size", 0, 100, 0)
-        feature_regime_balance = st.slider("Feature regime balance", 0.0, 1.0, 0.5)
     
-    # Configuration model parameters
-    st.markdown('<div class="subsection-header">Configuration Model Parameters</div>', unsafe_allow_html=True)
-    use_configuration_model = st.checkbox("Use configuration model", value=False)
+    # Global generation parameters
+    st.markdown('<div class="subsection-header">Global Generation Parameters</div>', unsafe_allow_html=True)
+    st.markdown("These parameters apply to all generation methods:")
     
-    if use_configuration_model:
-        col3, col4 = st.columns(2)
-        
-        with col3:
-            degree_distribution = st.selectbox(
-                "Degree distribution",
-                ["power_law", "exponential", "uniform"],
-                help="Type of degree distribution to use"
-            )
-            
-            power_law_exponent_min = st.slider(
-                "Minimum power law exponent",
-                min_value=1.0,
-                max_value=4.0,
-                value=1.5,
-                step=0.1,
-                help="Minimum value for power law exponent"
-            )
-            
-            power_law_exponent_max = st.slider(
-                "Maximum power law exponent",
-                min_value=1.0,
-                max_value=4.0,
-                value=3.0,
-                step=0.1,
-                help="Maximum value for power law exponent"
-            )
-            
-            target_avg_degree_min = st.slider(
-                "Minimum target average degree",
-                min_value=1.0,
-                max_value=50.0,
-                value=2.0,
-                step=0.5,
-                help="Minimum target average degree"
-            )
-            
-            target_avg_degree_max = st.slider(
-                "Maximum target average degree",
-                min_value=1.0,
-                max_value=50.0,
-                value=20.0,
-                step=0.5,
-                help="Maximum target average degree"
-            )
-        
-        with col4:
-            max_mean_community_deviation = st.slider(
-                "Maximum mean community deviation",
-                min_value=0.0,
-                max_value=1.0,
-                value=0.1,
-                step=0.05,
-                help="Maximum allowed deviation in mean community size"
-            )
-            
-            max_max_community_deviation = st.slider(
-                "Maximum max community deviation",
-                min_value=0.0,
-                max_value=1.0,
-                value=0.2,
-                step=0.05,
-                help="Maximum allowed deviation in maximum community size"
-            )
-            
-            max_parameter_search_attempts = st.slider(
-                "Max parameter search attempts",
-                min_value=5,
-                max_value=50,
-                value=10,
-                step=5,
-                help="Maximum number of parameter combinations to try"
-            )
-            
-            parameter_search_range = st.slider(
-                "Parameter search range",
-                min_value=0.1,
-                max_value=1.0,
-                value=0.2,
-                step=0.1,
-                help="Range to search for parameter values"
-            )
-            
-            min_edge_density = st.slider(
-                "Minimum edge density",
-                min_value=0.001,
-                max_value=0.1,
-                value=0.005,
-                step=0.001,
-                help="Minimum allowed edge density"
-            )
-            
-            max_retries = st.slider(
-                "Maximum retries",
-                min_value=1,
-                max_value=10,
-                value=5,
-                help="Maximum number of retries for edge generation"
-            )
+    col1, col2 = st.columns(2)
+    with col1:
+        max_mean_community_deviation = st.slider(
+            "Max mean community deviation",
+            min_value=0.01,
+            max_value=0.5,
+            value=0.05,
+            help="Maximum allowed mean deviation from community structure"
+        )
+        max_max_community_deviation = st.slider(
+            "Max max community deviation",
+            min_value=0.01,
+            max_value=0.5,
+            value=0.10,
+            help="Maximum allowed maximum deviation from community structure"
+        )
+        parameter_search_range = st.slider(
+            "Parameter search range",
+            min_value=0.05,
+            max_value=1.0,
+            value=0.4,
+            help="How aggressively to search parameter space"
+        )
     
-    # Add seed parameter
-    seed = st.number_input("Random Seed", value=42, help="Seed for reproducibility")
+    with col2:
+        max_parameter_search_attempts = st.slider(
+            "Max parameter search attempts",
+            min_value=5,
+            max_value=50,
+            value=40,
+            help="Maximum number of parameter combinations to try"
+        )
+        min_edge_density = st.slider(
+            "Min edge density",
+            min_value=0.001,
+            max_value=0.1,
+            value=0.005,
+            help="Minimum acceptable edge density"
+        )
+        max_retries = st.slider(
+            "Max retries",
+            min_value=1,
+            max_value=20,
+            value=10,
+            help="Maximum number of retries for edge generation"
+        )
+    
+    min_component_size = st.slider(
+        "Minimum component size",
+        min_value=1,
+        max_value=50,
+        value=3,
+        help="Minimum size for connected components (all smaller components will be filtered out)"
+    )
+    
+    # Method distribution
+    st.markdown('<div class="subsection-header">Generation Method Distribution</div>', unsafe_allow_html=True)
+    st.markdown("Configure the probability of each generation method:")
+    
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        standard_prob = st.slider("Standard method", min_value=0.0, max_value=1.0, value=0.5)
+    with col2:
+        power_law_prob = st.slider("Power law", min_value=0.0, max_value=1.0, value=0.3)
+    with col3:
+        exponential_prob = st.slider("Exponential", min_value=0.0, max_value=1.0, value=0.1)
+    with col4:
+        uniform_prob = st.slider("Uniform", min_value=0.0, max_value=1.0, value=0.1)
+    
+    # Normalize probabilities
+    total_prob = standard_prob + power_law_prob + exponential_prob + uniform_prob
+    if total_prob > 0:
+        method_distribution = {
+            "standard": standard_prob / total_prob,
+            "power_law": power_law_prob / total_prob,
+            "exponential": exponential_prob / total_prob,
+            "uniform": uniform_prob / total_prob
+        }
+    else:
+        method_distribution = {"standard": 1.0}  # Default to standard if all probabilities are 0
+    
+    # Method-specific parameters
+    st.markdown('<div class="subsection-header">Method-Specific Parameters</div>', unsafe_allow_html=True)
+    
+    # Standard method parameters
+    st.markdown("#### Standard Method Parameters")
+    col1, col2 = st.columns(2)
+    with col1:
+        degree_heterogeneity = st.slider(
+            "Degree heterogeneity",
+            min_value=0.0,
+            max_value=1.0,
+            value=0.5,
+            help="How much node degrees should vary"
+        )
+    with col2:
+        edge_noise = st.slider(
+            "Edge noise",
+            min_value=0.0,
+            max_value=0.5,
+            value=0.0,
+            help="Amount of random noise in edge generation"
+        )
+    
+    # Power law parameters
+    st.markdown("#### Power Law Parameters")
+    col1, col2 = st.columns(2)
+    with col1:
+        power_law_exponent_min = st.slider("Min power law exponent", min_value=1.0, max_value=4.0, value=1.5)
+    with col2:
+        power_law_exponent_max = st.slider("Max power law exponent", min_value=1.0, max_value=4.0, value=3.0)
+    
+    # Exponential parameters
+    st.markdown("#### Exponential Parameters")
+    col1, col2 = st.columns(2)
+    with col1:
+        rate_min = st.slider("Min rate", min_value=0.1, max_value=2.0, value=0.1)
+    with col2:
+        rate_max = st.slider("Max rate", min_value=0.1, max_value=2.0, value=1.0)
+    
+    # Uniform parameters
+    st.markdown("#### Uniform Parameters")
+    col1, col2 = st.columns(2)
+    with col1:
+        min_factor = st.slider("Min factor", min_value=0.1, max_value=1.0, value=0.5)
+    with col2:
+        max_factor = st.slider("Max factor", min_value=1.0, max_value=2.0, value=1.5)
+    
+    # Common parameters for configuration models
+    st.markdown("#### Common Configuration Model Parameters")
+    col1, col2 = st.columns(2)
+    with col1:
+        target_avg_degree_min = st.slider("Min target average degree", min_value=1.0, max_value=50.0, value=2.0)
+    with col2:
+        target_avg_degree_max = st.slider("Max target average degree", min_value=1.0, max_value=50.0, value=5.0)
     
     # Generate button
     if st.button("Generate Graph Family"):
@@ -1304,27 +1304,46 @@ elif page == "Graph Family Generation":
         
         # Initialize generator
         generator = GraphFamilyGenerator(
-            K=100,
-            feature_dim=64,
+            K=st.session_state.universe.K,
+            feature_dim=st.session_state.universe.feature_dim,
             block_structure="assortative",
-            edge_density=0.1,
-            homophily=0.8,
-            randomness_factor=0.0,
-            intra_community_regime_similarity=0.8,
-            inter_community_regime_similarity=0.2,
-            regimes_per_community=2,
-            use_configuration_model=use_configuration_model,
-            degree_distribution=degree_distribution if use_configuration_model else "power_law",
-            power_law_exponent_min=power_law_exponent_min if use_configuration_model else 1.5,
-            power_law_exponent_max=power_law_exponent_max if use_configuration_model else 3.0,
-            target_avg_degree_min=target_avg_degree_min if use_configuration_model else 2.0,
-            target_avg_degree_max=target_avg_degree_max if use_configuration_model else 20.0,
-            max_mean_community_deviation=max_mean_community_deviation if use_configuration_model else 0.1,
-            max_max_community_deviation=max_max_community_deviation if use_configuration_model else 0.2,
-            max_parameter_search_attempts=max_parameter_search_attempts if use_configuration_model else 10,
-            parameter_search_range=parameter_search_range if use_configuration_model else 0.2,
-            min_edge_density=min_edge_density if use_configuration_model else 0.005,
-            max_retries=max_retries if use_configuration_model else 5
+            edge_density=st.session_state.universe.edge_density,
+            homophily=st.session_state.universe.homophily,
+            randomness_factor=st.session_state.universe.randomness_factor,
+            intra_community_regime_similarity=st.session_state.universe.intra_community_regime_similarity,
+            inter_community_regime_similarity=st.session_state.universe.inter_community_regime_similarity,
+            regimes_per_community=st.session_state.universe.regimes_per_community,
+            method_distribution=method_distribution,
+            standard_method_params={
+                "degree_heterogeneity": degree_heterogeneity,
+                "edge_noise": edge_noise
+            },
+            config_model_params={
+                "power_law": {
+                    "exponent_min": power_law_exponent_min,
+                    "exponent_max": power_law_exponent_max,
+                    "target_avg_degree_min": target_avg_degree_min,
+                    "target_avg_degree_max": target_avg_degree_max
+                },
+                "exponential": {
+                    "rate_min": rate_min,
+                    "rate_max": rate_max,
+                    "target_avg_degree_min": target_avg_degree_min,
+                    "target_avg_degree_max": target_avg_degree_max
+                },
+                "uniform": {
+                    "min_factor": min_factor,
+                    "max_factor": max_factor,
+                    "target_avg_degree_min": target_avg_degree_min,
+                    "target_avg_degree_max": target_avg_degree_max
+                }
+            },
+            max_mean_community_deviation=max_mean_community_deviation,
+            max_max_community_deviation=max_max_community_deviation,
+            max_parameter_search_attempts=max_parameter_search_attempts,
+            parameter_search_range=parameter_search_range,
+            min_edge_density=min_edge_density,
+            max_retries=max_retries
         )
         
         # Generate graphs with progress updates
@@ -1343,11 +1362,8 @@ elif page == "Graph Family Generation":
                     max_communities=max_communities,
                     min_nodes=min_nodes,
                     max_nodes=max_nodes,
-                    degree_heterogeneity=degree_heterogeneity,
-                    edge_noise=edge_noise,
                     sampling_method=sampling_method,
-                    min_component_size=min_component_size,
-                    feature_regime_balance=feature_regime_balance
+                    min_component_size=min_component_size
                 )
                 
                 if new_graphs:
@@ -1373,46 +1389,298 @@ elif page == "Graph Family Generation":
         
         # Store in session state
         if graph_family:
+            # Store in both places
             st.session_state.graph_families[family_name] = {
                 'graphs': graph_family,
                 'parameters': dict(parameter_samples)
             }
+            st.session_state.graph_family = graph_family  # For Parameter Space Analysis
+            
+            # Store current family for visualization
+            st.session_state.current_family_graphs = graph_family
+            st.session_state.current_family_params = dict(parameter_samples)
+            
             st.success(f"Successfully generated {len(graph_family)} graphs for family '{family_name}'!")
+    
+    # Display visualization if we have a current family
+    if st.session_state.current_family_graphs is not None:
+        # Display basic statistics
+        st.markdown('<div class="subsection-header">Graph Family Statistics</div>', unsafe_allow_html=True)
+        stats = {
+            "Number of graphs": len(st.session_state.current_family_graphs),
+            "Average nodes": np.mean([g.n_nodes for g in st.session_state.current_family_graphs]),
+            "Average edges": np.mean([g.graph.number_of_edges() for g in st.session_state.current_family_graphs]),
+            "Average density": np.mean([nx.density(g.graph) for g in st.session_state.current_family_graphs]),
+            "Average clustering": np.mean([nx.average_clustering(g.graph) for g in st.session_state.current_family_graphs])
+        }
+        
+        # Display statistics in a table
+        st.table(pd.DataFrame([stats]))
+        
+        # Create tabs for different visualizations
+        tab1, tab2, tab3, tab4 = st.tabs([
+            "Graph Visualization",
+            "Degree Distribution",
+            "Community Analysis",
+            "Community Deviation Analysis"
+        ])
+        
+        with tab1:
+            # Select a graph to visualize with a unique key
+            graph_idx = st.selectbox(
+                "Select graph to visualize",
+                range(len(st.session_state.current_family_graphs)),
+                key=f"family_viz_{family_name}"
+            )
+            graph = st.session_state.current_family_graphs[graph_idx]
             
-            # Display basic statistics
-            st.markdown('<div class="subsection-header">Graph Family Statistics</div>', unsafe_allow_html=True)
-            stats = {
-                "Number of graphs": len(graph_family),
-                "Average nodes": np.mean([g.n_nodes for g in graph_family]),
-                "Average edges": np.mean([g.graph.number_of_edges() for g in graph_family]),
-                "Average density": np.mean([nx.density(g.graph) for g in graph_family]),
-                "Average clustering": np.mean([nx.average_clustering(g.graph) for g in graph_family])
-            }
+            # Get generation method and parameters for title
+            generation_info = "Method: Unknown"
+            if hasattr(graph, 'generation_method'):
+                method = graph.generation_method
+                params = graph.generation_params
+                if method == "standard":
+                    generation_info = f"Method: Standard (heterogeneity={params.get('degree_heterogeneity', 'N/A'):.2f}, noise={params.get('edge_noise', 'N/A'):.2f})"
+                elif method == "power_law":
+                    generation_info = f"Method: Power Law (exponent={params.get('power_law_exponent', 'N/A'):.2f}, avg_degree={params.get('target_avg_degree', 'N/A'):.2f})"
+                elif method == "exponential":
+                    generation_info = f"Method: Exponential (rate={params.get('rate', 'N/A'):.2f}, avg_degree={params.get('target_avg_degree', 'N/A'):.2f})"
+                elif method == "uniform":
+                    generation_info = f"Method: Uniform (min={params.get('min_factor', 'N/A'):.2f}, max={params.get('max_factor', 'N/A'):.2f}, avg_degree={params.get('target_avg_degree', 'N/A'):.2f})"
             
-            # Display statistics in a table
-            st.table(pd.DataFrame([stats]))
+            st.markdown(f"#### Graph {graph_idx + 1}")
+            st.markdown(f"*{generation_info}*")
             
-            # Create tabs for different visualizations
-            tab1, tab2, tab3 = st.tabs(["Graph Visualization", "Degree Distribution", "Community Analysis"])
+            # Create visualization
+            fig = plot_graph_communities(graph)
+            st.pyplot(fig)
+        
+        with tab2:
+            # Select a graph for degree distribution with a unique key
+            graph_idx = st.selectbox(
+                "Select graph for degree distribution",
+                range(len(st.session_state.current_family_graphs)),
+                key=f"family_degree_{family_name}"
+            )
+            graph = st.session_state.current_family_graphs[graph_idx]
             
-            with tab1:
-                # Select a graph to visualize
-                graph_idx = st.selectbox("Select graph to visualize", range(len(graph_family)))
-                graph = graph_family[graph_idx]
+            # Get generation method and parameters for title
+            generation_info = "Method: Unknown"
+            if hasattr(graph, 'generation_method'):
+                method = graph.generation_method
+                params = graph.generation_params
+                if method == "standard":
+                    generation_info = f"Method: Standard (heterogeneity={params.get('degree_heterogeneity', 'N/A'):.2f}, noise={params.get('edge_noise', 'N/A'):.2f})"
+                elif method == "power_law":
+                    generation_info = f"Method: Power Law (exponent={params.get('power_law_exponent', 'N/A'):.2f}, avg_degree={params.get('target_avg_degree', 'N/A'):.2f})"
+                elif method == "exponential":
+                    generation_info = f"Method: Exponential (rate={params.get('rate', 'N/A'):.2f}, avg_degree={params.get('target_avg_degree', 'N/A'):.2f})"
+                elif method == "uniform":
+                    generation_info = f"Method: Uniform (min={params.get('min_factor', 'N/A'):.2f}, max={params.get('max_factor', 'N/A'):.2f}, avg_degree={params.get('target_avg_degree', 'N/A'):.2f})"
+            
+            st.markdown(f"#### Graph {graph_idx + 1}")
+            st.markdown(f"*{generation_info}*")
+            
+            # Create degree distribution plots
+            fig = plot_degree_distribution(graph.graph)
+            st.pyplot(fig)
+        
+        with tab3:
+            # Select a graph for community analysis with a unique key
+            graph_idx = st.selectbox(
+                "Select graph for community analysis",
+                range(len(st.session_state.current_family_graphs)),
+                key=f"family_community_{family_name}"
+            )
+            graph = st.session_state.current_family_graphs[graph_idx]
+            
+            # Get generation method and parameters for title
+            generation_info = "Method: Unknown"
+            if hasattr(graph, 'generation_method'):
+                method = graph.generation_method
+                params = graph.generation_params
+                if method == "standard":
+                    generation_info = f"Method: Standard (heterogeneity={params.get('degree_heterogeneity', 'N/A'):.2f}, noise={params.get('edge_noise', 'N/A'):.2f})"
+                elif method == "power_law":
+                    generation_info = f"Method: Power Law (exponent={params.get('power_law_exponent', 'N/A'):.2f}, avg_degree={params.get('target_avg_degree', 'N/A'):.2f})"
+                elif method == "exponential":
+                    generation_info = f"Method: Exponential (rate={params.get('rate', 'N/A'):.2f}, avg_degree={params.get('target_avg_degree', 'N/A'):.2f})"
+                elif method == "uniform":
+                    generation_info = f"Method: Uniform (min={params.get('min_factor', 'N/A'):.2f}, max={params.get('max_factor', 'N/A'):.2f}, avg_degree={params.get('target_avg_degree', 'N/A'):.2f})"
+            
+            st.markdown(f"#### Graph {graph_idx + 1}")
+            st.markdown(f"*{generation_info}*")
+            
+            # Create community analysis plots
+            fig = plot_membership_matrix(graph)
+            st.pyplot(fig)
+        
+        with tab4:
+            # Select a graph for deviation analysis with a unique key
+            graph_idx = st.selectbox(
+                "Select graph for deviation analysis",
+                range(len(st.session_state.current_family_graphs)),
+                key=f"family_deviation_{family_name}"
+            )
+            graph = st.session_state.current_family_graphs[graph_idx]
+            
+            # Get generation method and parameters for title
+            generation_info = "Method: Unknown"
+            if hasattr(graph, 'generation_method'):
+                method = graph.generation_method
+                params = graph.generation_params
+                if method == "standard":
+                    generation_info = f"Method: Standard (heterogeneity={params.get('degree_heterogeneity', 'N/A'):.2f}, noise={params.get('edge_noise', 'N/A'):.2f})"
+                elif method == "power_law":
+                    generation_info = f"Method: Power Law (exponent={params.get('power_law_exponent', 'N/A'):.2f}, avg_degree={params.get('target_avg_degree', 'N/A'):.2f})"
+                elif method == "exponential":
+                    generation_info = f"Method: Exponential (rate={params.get('rate', 'N/A'):.2f}, avg_degree={params.get('target_avg_degree', 'N/A'):.2f})"
+                elif method == "uniform":
+                    generation_info = f"Method: Uniform (min={params.get('min_factor', 'N/A'):.2f}, max={params.get('max_factor', 'N/A'):.2f}, avg_degree={params.get('target_avg_degree', 'N/A'):.2f})"
+            
+            st.markdown(f"#### Graph {graph_idx + 1}")
+            st.markdown(f"*{generation_info}*")
+            
+            # Analyze community connections
+            connection_analysis = graph.analyze_community_connections()
+            
+            # Create subtabs for different views
+            subtab1, subtab2, subtab3 = st.tabs([
+                "Connection Matrices",
+                "Deviation Analysis",
+                "Community Statistics"
+            ])
+            
+            with subtab1:
+                col1, col2 = st.columns(2)
                 
-                # Create visualization
-                fig = plot_graph_communities(graph)
-                st.pyplot(fig)
+                with col1:
+                    st.markdown("##### Expected Probabilities (Universe)")
+                    fig = plt.figure(figsize=(6, 5))
+                    plt.imshow(connection_analysis["expected_matrix"], cmap='viridis')
+                    plt.colorbar(label='Probability')
+                    plt.title('Expected Community Connections')
+                    plt.xlabel('Community')
+                    plt.ylabel('Community')
+                    st.pyplot(fig)
+                
+                with col2:
+                    st.markdown("##### Actual Probabilities (Graph)")
+                    fig = plt.figure(figsize=(6, 5))
+                    plt.imshow(connection_analysis["actual_matrix"], cmap='viridis')
+                    plt.colorbar(label='Probability')
+                    plt.title('Actual Community Connections')
+                    plt.xlabel('Community')
+                    plt.ylabel('Community')
+                    st.pyplot(fig)
             
-            with tab2:
-                # Create degree distribution plots
-                fig = plot_degree_distribution(graph_family[0].graph)
-                st.pyplot(fig)
+            with subtab2:
+                st.markdown("##### Deviation Analysis")
+                
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    # Plot deviation matrix
+                    fig = plt.figure(figsize=(6, 5))
+                    plt.imshow(connection_analysis["deviation_matrix"], cmap='Reds')
+                    plt.colorbar(label='Absolute Deviation')
+                    plt.title('Deviation from Expected Probabilities')
+                    plt.xlabel('Community')
+                    plt.ylabel('Community')
+                    st.pyplot(fig)
+                
+                with col2:
+                    # Show deviation statistics
+                    st.markdown("##### Deviation Statistics")
+                    st.metric("Mean Absolute Deviation", f"{connection_analysis['mean_deviation']:.4f}")
+                    st.metric("Maximum Absolute Deviation", f"{connection_analysis['max_deviation']:.4f}")
+                    
+                    # Show deviation distribution
+                    fig = plt.figure(figsize=(6, 4))
+                    plt.hist(connection_analysis["deviation_matrix"].flatten(), bins=20)
+                    plt.title('Distribution of Deviations')
+                    plt.xlabel('Absolute Deviation')
+                    plt.ylabel('Count')
+                    st.pyplot(fig)
+                
+                # Add degree distribution analysis if available
+                if "degree_analysis" in connection_analysis:
+                    st.markdown("##### Degree Distribution Analysis")
+                    degree_analysis = connection_analysis["degree_analysis"]
+                    used_params = degree_analysis["used_parameters"]
+                    
+                    # Display the actual parameters used
+                    st.write("##### Distribution Parameters Used")
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        if "power_law_exponent" in used_params and used_params["power_law_exponent"] is not None:
+                            st.metric("Power Law Exponent", f"{used_params['power_law_exponent']:.2f}")
+                        elif "rate" in used_params and used_params["rate"] is not None:
+                            st.metric("Rate", f"{used_params['rate']:.2f}")
+                        elif "min_factor" in used_params and used_params["min_factor"] is not None:
+                            st.metric("Min Factor", f"{used_params['min_factor']:.2f}")
+                    with col2:
+                        if "target_avg_degree" in used_params and used_params["target_avg_degree"] is not None:
+                            st.metric("Target Average Degree", f"{used_params['target_avg_degree']:.2f}")
+                    with col3:
+                        if "scale_factor" in used_params and used_params["scale_factor"] is not None and used_params["scale_factor"] != 1.0:
+                            st.metric("Scale Factor", f"{used_params['scale_factor']:.2f}")
+                    
+                    # Display degree statistics with null checks
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        st.write("##### Actual Degree Statistics")
+                        mean_actual = degree_analysis.get('mean_actual_degree')
+                        std_actual = degree_analysis.get('std_actual_degree')
+                        if mean_actual is not None:
+                            st.write(f"Mean: {mean_actual:.2f}")
+                        if std_actual is not None:
+                            st.write(f"Std Dev: {std_actual:.2f}")
+                    with col2:
+                        st.write("##### Target Degree Statistics")
+                        mean_target = degree_analysis.get('mean_target_degree')
+                        std_target = degree_analysis.get('std_target_degree')
+                        if mean_target is not None:
+                            st.write(f"Mean: {mean_target:.2f}")
+                        if std_target is not None:
+                            st.write(f"Std Dev: {std_target:.2f}")
+                    
+                    # Display degree deviation and correlation with null checks
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        deviation = degree_analysis.get('degree_deviation')
+                        if deviation is not None:
+                            st.metric("Degree Deviation", f"{deviation:.4f}")
+                    with col2:
+                        correlation = degree_analysis.get('degree_correlation')
+                        if correlation is not None:
+                            st.metric("Degree Correlation", f"{correlation:.4f}")
             
-            with tab3:
-                # Create community analysis plots
-                fig = plot_membership_matrix(graph_family[0])
-                st.pyplot(fig)
+            with subtab3:
+                st.markdown("##### Community Statistics")
+                
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    # Show community sizes
+                    st.markdown("##### Community Sizes")
+                    fig = plt.figure(figsize=(6, 4))
+                    plt.bar(range(len(connection_analysis["community_sizes"])), 
+                           connection_analysis["community_sizes"])
+                    plt.title('Number of Nodes per Community')
+                    plt.xlabel('Community')
+                    plt.ylabel('Number of Nodes')
+                    st.pyplot(fig)
+                
+                with col2:
+                    # Show connection counts
+                    fig = plt.figure(figsize=(6, 5))
+                    plt.imshow(connection_analysis["connection_counts"], cmap='Blues')
+                    plt.colorbar(label='Number of Edges')
+                    plt.title('Raw Edge Counts Between Communities')
+                    plt.xlabel('Community')
+                    plt.ylabel('Community')
+                    st.pyplot(fig)
 
 # Graph Family Analysis Page
 elif page == "Graph Family Analysis":
