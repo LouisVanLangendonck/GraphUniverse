@@ -254,11 +254,12 @@ class GraphUniverse:
         np.fill_diagonal(P, p)
         P[~np.eye(K, dtype=bool)] = q
         
-        # Add randomness if requested, but don't clip results
+        # Add randomness if requested, but only clip negative values to zero (do not clip to one)
         if randomness_factor > 0:
-            noise = np.random.uniform(-randomness_factor/2, randomness_factor/2, size=(K, K))
-            P = P * (1 + noise)
-            # Only clipping values at 0.0 (no negative values)
+            min_val = min(p, q)
+            noise = np.random.normal(0, randomness_factor * min_val, size=(K, K))
+            P = P + noise
+            # Only clip negative values to zero
             P[P < 0.0] = 0.0
 
         return P
@@ -674,7 +675,8 @@ class GraphSample:
         min_edge_density: float,
         max_retries: int,
         seed: Optional[int] = None,  # Keep this one as it's optional
-        exact_filtered_graph: Optional[Dict[str, Any]] = None  # Keep this one as it's optional
+        exact_filtered_graph: Optional[Dict[str, Any]] = None,  # Keep this one as it's optional
+        config_model_params: Optional[dict] = None  # NEW: method-specific config params
     ):
         """
         Initialize and generate a graph sample.
@@ -688,6 +690,7 @@ class GraphSample:
         self.parameter_search_range = parameter_search_range
         self.min_edge_density = min_edge_density
         self.max_retries = max_retries
+        self.config_model_params = config_model_params if config_model_params is not None else {}
         
         # If we have an exact filtered graph, use it directly
         if exact_filtered_graph is not None:
@@ -1450,49 +1453,30 @@ class GraphSample:
     ) -> np.ndarray:
         """
         Generate degree factors for configuration model with specified distribution.
-        
-        Args:
-            n_nodes: Number of nodes
-            heterogeneity: Not used in configuration model (kept for compatibility)
-            distribution: Type of degree distribution ("power_law", "exponential", "uniform")
-            power_law_exponent: Exponent for power law distribution
-            target_avg_degree: Target average degree (if None, calculated from density)
-            
-        Returns:
-            Array of degree factors
         """
         if target_avg_degree is None:
             # Calculate from target density
             target_avg_degree = self.target_density * (n_nodes - 1)
-        
         if distribution == "power_law":
             # Generate from power law distribution
             # Use power_law_exponent directly without heterogeneity adjustment
-            factors = np.random.pareto(power_law_exponent - 1, size=n_nodes) + 1
-            
+            exponent = self.config_model_params.get('power_law_exponent', power_law_exponent)
+            factors = np.random.pareto(exponent - 1, size=n_nodes) + 1
         elif distribution == "exponential":
             # Generate from exponential distribution
-            # The rate parameter controls the shape of the distribution
-            # Lower rate = more spread out, higher rate = more concentrated
-            rate = getattr(self, 'rate', 0.5)  # Default rate if not set
+            rate = self.config_model_params.get('rate', 0.5)
             factors = np.random.exponential(1/rate, size=n_nodes) + 1  # Add 1 to ensure minimum degree of 1
-            
         elif distribution == "uniform":
             # Generate from uniform distribution
-            # Use fixed range for uniform
-            min_factor = 0.5
-            max_factor = 1.5
+            min_factor = self.config_model_params.get('min_factor', 0.5)
+            max_factor = self.config_model_params.get('max_factor', 1.5)
             factors = np.random.uniform(min_factor, max_factor, size=n_nodes)
-            
         else:
             raise ValueError(f"Unknown degree distribution: {distribution}")
-        
         # Normalize to match target average degree
         factors = factors / factors.mean() * target_avg_degree
-        
         # Ensure minimum degree of 1
         factors = np.maximum(factors, 1)
-        
         return factors
 
     def _generate_edges_configuration(
@@ -1705,7 +1689,13 @@ class GraphSample:
                 break
                 
             sampling_probs = conn_probs[node_i] * valid_partners
-            sampling_probs = sampling_probs / np.sum(sampling_probs)
+            total_prob = np.sum(sampling_probs)
+            if total_prob == 0:
+                # Fallback: choose a valid partner uniformly at random
+                sampling_probs = valid_partners.astype(float)
+                sampling_probs = sampling_probs / np.sum(sampling_probs)
+            else:
+                sampling_probs = sampling_probs / total_prob
             
             # Apply triangle enhancement if specified
             if self.triangle_enhancement > 0 and edges:

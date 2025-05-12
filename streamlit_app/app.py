@@ -190,7 +190,7 @@ if page == "Universe Creation":
             max_value=1.0,
             value=0.5,
             step=0.05,
-            help="Amount of random noise in edge probabilities"
+            help="Controls the amount of Gaussian noise added to the universe's strength matrix. Noise has standard deviation = randomness_factor × min(p, q), where p and q are the within- and between-community strengths. At 1.0, noise can set some strengths to zero and can be large compared to the original values. Only negative values are clipped to zero; values above 1 are allowed and will be scaled/clipped later in graph instances."
         )
     
     # Feature parameters if features are enabled
@@ -294,11 +294,9 @@ elif page == "Graph Sampling":
         </div>
         """, unsafe_allow_html=True)
         
-        # Sampling parameters
-        st.markdown('<div class="subsection-header">Sampling Parameters</div>', unsafe_allow_html=True)
-        
+        # Universal parameters
+        st.markdown('<div class="subsection-header">Universal Parameters</div>', unsafe_allow_html=True)
         col1, col2 = st.columns(2)
-        
         with col1:
             n_nodes = st.slider("Number of nodes", min_value=30, max_value=300, value=80)
             num_communities = st.slider(
@@ -308,61 +306,107 @@ elif page == "Graph Sampling":
                 value=5,
                 help="Number of communities to include in the graph"
             )
-            
-        with col2:
-            degree_heterogeneity = st.slider(
-                "Degree heterogeneity",
-                min_value=0.0,
-                max_value=1.0,
-                value=0.5,
-                step=0.1,
-                help="How much node degrees should vary"
+            min_component_size = st.slider(
+                "Minimum component size",
+                min_value=1,
+                max_value=50,
+                value=3,
+                help="Minimum size for connected components (all smaller components will be filtered out)"
             )
-            edge_noise = st.slider(
-                "Edge noise",
-                min_value=0.0,
+            sampling_method = st.selectbox(
+                "Community sampling method",
+                ["random", "similar", "diverse", "correlated"],
+                help="Method for selecting community subsets"
+            )
+        with col2:
+            max_mean_community_deviation = st.slider(
+                "Max mean community deviation",
+                min_value=0.01,
                 max_value=0.5,
-                value=0.0,
-                step=0.05,
-                help="Amount of random noise in edge generation"
+                value=0.1,
+                help="Maximum allowed mean deviation from community structure"
+            )
+            max_max_community_deviation = st.slider(
+                "Max max community deviation",
+                min_value=0.01,
+                max_value=0.5,
+                value=0.2,
+                help="Maximum allowed maximum deviation from community structure"
+            )
+            parameter_search_range = st.slider(
+                "Parameter search range",
+                min_value=0.05,
+                max_value=1.0,
+                value=0.2,
+                help="How aggressively to search parameter space"
+            )
+            max_parameter_search_attempts = st.slider(
+                "Max parameter search attempts",
+                min_value=5,
+                max_value=50,
+                value=10,
+                help="Maximum number of parameter combinations to try"
+            )
+            min_edge_density = st.slider(
+                "Min edge density",
+                min_value=0.001,
+                max_value=0.1,
+                value=0.005,
+                help="Minimum acceptable edge density"
+            )
+            max_retries = st.slider(
+                "Max retries",
+                min_value=1,
+                max_value=20,
+                value=5,
+                help="Maximum number of retries for edge generation"
             )
         
-        # Add configuration model options
+        # Edge generation method
         st.markdown('<div class="subsection-header">Edge Generation Method</div>', unsafe_allow_html=True)
-        use_configuration_model = st.checkbox(
-            "Use Configuration Model",
-            value=False,
-            help="""Use configuration model-like edge generation that tries to match target degrees while maintaining community structure.
-            This can be useful when you want more control over the degree distribution while still preserving community structure."""
+        method = st.selectbox(
+            "Edge generation method",
+            ["Standard", "Power Law", "Exponential", "Uniform"],
+            help="Choose the method for edge generation."
         )
         
-        if use_configuration_model:
-            st.markdown('<div class="subsection-header">Configuration Model Parameters</div>', unsafe_allow_html=True)
-            
+        # Method-specific parameters
+        method_params = {}
+        if method == "Standard":
+            st.markdown('<div class="subsection-header">Standard Method Parameters</div>', unsafe_allow_html=True)
             col1, col2 = st.columns(2)
-            
             with col1:
-                degree_distribution = st.selectbox(
-                    "Degree Distribution",
-                    ["power_law", "log_normal", "uniform"],
-                    help="""Type of degree distribution to generate:
-                    - Power Law: Scale-free networks with hub nodes
-                    - Log Normal: More balanced social network-like degrees
-                    - Uniform: Consistent degree distribution"""
+                degree_heterogeneity = st.slider(
+                    "Degree heterogeneity",
+                    min_value=0.0,
+                    max_value=1.0,
+                    value=0.5,
+                    help="How much node degrees should vary"
                 )
-                
-                if degree_distribution == "power_law":
-                    power_law_exponent = st.slider(
-                        "Power Law Exponent",
-                        min_value=1.5,
-                        max_value=3.0,
-                        value=2.1,
-                        step=0.1,
-                        help="Lower values create more skewed distributions with stronger hubs"
-                    )
-                else:
-                    power_law_exponent = 2.1  # Default value
-                
+            with col2:
+                edge_noise = st.slider(
+                    "Edge noise",
+                    min_value=0.0,
+                    max_value=0.5,
+                    value=0.0,
+                    help="Amount of random noise in edge generation"
+                )
+            method_params = {
+                'degree_heterogeneity': degree_heterogeneity,
+                'edge_noise': edge_noise
+            }
+        elif method == "Power Law":
+            st.markdown('<div class="subsection-header">Power Law Parameters</div>', unsafe_allow_html=True)
+            col1, col2 = st.columns(2)
+            with col1:
+                power_law_exponent = st.slider(
+                    "Power Law Exponent",
+                    min_value=1.5,
+                    max_value=3.0,
+                    value=2.1,
+                    step=0.1,
+                    help="Lower values create more skewed distributions with stronger hubs"
+                )
                 target_avg_degree = st.number_input(
                     "Target Average Degree",
                     min_value=1,
@@ -370,57 +414,95 @@ elif page == "Graph Sampling":
                     value=4,
                     help="Target average degree for the graph. If None, calculated from density."
                 )
-            
             with col2:
                 triangle_enhancement = st.slider(
                     "Triangle Enhancement",
                     min_value=0.0,
                     max_value=1.0,
                     value=0.0,
-                    step=0.1,
                     help="How much to enhance triangle formation (higher values increase clustering)"
                 )
-                
-                # Add deviation parameters
-                st.markdown("##### Deviation Constraints")
-                max_mean_community_deviation = st.slider(
-                    "Max Mean Community Deviation",
-                    min_value=0.01,
-                    max_value=0.5,
-                    value=0.1,
-                    step=0.01,
-                    help="Maximum allowed mean deviation from community structure (0-1)"
+            method_params = {
+                'degree_heterogeneity': 0.0,  # Not used
+                'edge_noise': 0.0,  # Not used
+                'power_law_exponent': power_law_exponent,
+                'target_avg_degree': target_avg_degree,
+                'triangle_enhancement': triangle_enhancement
+            }
+        elif method == "Exponential":
+            st.markdown('<div class="subsection-header">Exponential Parameters</div>', unsafe_allow_html=True)
+            col1, col2 = st.columns(2)
+            with col1:
+                rate = st.slider(
+                    "Rate",
+                    min_value=0.1,
+                    max_value=2.0,
+                    value=0.5,
+                    help="Rate parameter for the exponential degree distribution"
                 )
-                
-                max_max_community_deviation = st.slider(
-                    "Max Maximum Community Deviation",
-                    min_value=0.01,
-                    max_value=0.5,
-                    value=0.2,
-                    step=0.01,
-                    help="Maximum allowed maximum deviation from community structure (0-1)"
-                )
-                
-                parameter_search_range = st.slider(
-                    "Parameter Search Range",
-                    min_value=0.05,
-                    max_value=1.0,
-                    value=0.2,
-                    step=0.05,
-                    help="""How aggressively to search the parameter space:
-                    - 0.05: Small variations around target parameters
-                    - 0.2: Moderate exploration (default)
-                    - 1.0: Full random search across parameter space"""
-                )
-                
-                max_parameter_search_attempts = st.slider(
-                    "Max Parameter Search Attempts",
-                    min_value=5,
+                target_avg_degree = st.number_input(
+                    "Target Average Degree",
+                    min_value=1,
                     max_value=50,
-                    value=10,
-                    step=5,
-                    help="Maximum number of parameter combinations to try"
+                    value=4,
+                    help="Target average degree for the graph. If None, calculated from density."
                 )
+            with col2:
+                triangle_enhancement = st.slider(
+                    "Triangle Enhancement",
+                    min_value=0.0,
+                    max_value=1.0,
+                    value=0.0,
+                    help="How much to enhance triangle formation (higher values increase clustering)"
+                )
+            method_params = {
+                'degree_heterogeneity': 0.0,  # Not used
+                'edge_noise': 0.0,  # Not used
+                'rate': rate,
+                'target_avg_degree': target_avg_degree,
+                'triangle_enhancement': triangle_enhancement
+            }
+        elif method == "Uniform":
+            st.markdown('<div class="subsection-header">Uniform Parameters</div>', unsafe_allow_html=True)
+            col1, col2 = st.columns(2)
+            with col1:
+                min_factor = st.slider(
+                    "Min factor",
+                    min_value=0.1,
+                    max_value=1.0,
+                    value=0.5,
+                    help="Minimum factor for uniform degree distribution"
+                )
+                max_factor = st.slider(
+                    "Max factor",
+                    min_value=1.0,
+                    max_value=2.0,
+                    value=1.5,
+                    help="Maximum factor for uniform degree distribution"
+                )
+                target_avg_degree = st.number_input(
+                    "Target Average Degree",
+                    min_value=1,
+                    max_value=50,
+                    value=4,
+                    help="Target average degree for the graph. If None, calculated from density."
+                )
+            with col2:
+                triangle_enhancement = st.slider(
+                    "Triangle Enhancement",
+                    min_value=0.0,
+                    max_value=1.0,
+                    value=0.0,
+                    help="How much to enhance triangle formation (higher values increase clustering)"
+                )
+            method_params = {
+                'degree_heterogeneity': 0.0,  # Not used
+                'edge_noise': 0.0,  # Not used
+                'min_factor': min_factor,
+                'max_factor': max_factor,
+                'target_avg_degree': target_avg_degree,
+                'triangle_enhancement': triangle_enhancement
+            }
         
         # Add seed parameter
         seed = st.number_input("Random Seed", value=42, help="Seed for reproducibility")
@@ -428,63 +510,53 @@ elif page == "Graph Sampling":
         if st.button("Generate Graph"):
             with st.spinner("Sampling graph..."):
                 # Sample communities
-                communities = st.session_state.universe.sample_community_subset(
+                communities = st.session_state.universe.sample_connected_community_subset(
                     size=num_communities,
-                    method="random"
+                    method=sampling_method
                 )
-                
-                # Create graph with appropriate parameters
-                if use_configuration_model:
-                    graph = GraphSample(
-                        universe=st.session_state.universe,
-                        communities=communities,
-                        n_nodes=n_nodes,
-                        degree_heterogeneity=degree_heterogeneity,
-                        edge_noise=edge_noise,
-                        use_configuration_model=True,
-                        degree_distribution=degree_distribution,
-                        power_law_exponent=power_law_exponent,
-                        target_avg_degree=target_avg_degree,
-                        triangle_enhancement=triangle_enhancement,
-                        seed=seed
-                    )
-                    
-                    # Store deviation constraints in the graph object
-                    graph.max_mean_community_deviation = max_mean_community_deviation
-                    graph.max_max_community_deviation = max_max_community_deviation
-                    
-                    # Generate edges with deviation constraints
-                    graph.adjacency = graph._generate_edges_configuration(
-                        graph.community_labels,
-                        graph.P_sub,
-                        graph.degree_factors,
-                        edge_noise,
-                        min_edge_density=0.005,
-                        max_retries=5,
-                        max_mean_community_deviation=max_mean_community_deviation,
-                        max_max_community_deviation=max_max_community_deviation,
-                        max_parameter_search_attempts=max_parameter_search_attempts,
-                        parameter_search_range=parameter_search_range
-                    )
-                    
-                    # Recreate the graph with the new adjacency
-                    graph.graph = nx.from_scipy_sparse_array(graph.adjacency)
-                else:
-                    graph = GraphSample(
-                        universe=st.session_state.universe,
-                        communities=communities,
-                        n_nodes=n_nodes,
-                        degree_heterogeneity=degree_heterogeneity,
-                        edge_noise=edge_noise,
-                        use_configuration_model=False,
-                        seed=seed
-                    )
-                
-                # Store in session state
+                # Build config_model_params for method-specific parameters
+                config_model_params = {}
+                if method == "Power Law":
+                    config_model_params['power_law_exponent'] = method_params.get('power_law_exponent')
+                if method == "Exponential":
+                    config_model_params['rate'] = method_params.get('rate')
+                if method == "Uniform":
+                    config_model_params['min_factor'] = method_params.get('min_factor')
+                    config_model_params['max_factor'] = method_params.get('max_factor')
+                # Set up universal parameters for GraphSample
+                universal_params = dict(
+                    universe=st.session_state.universe,
+                    communities=communities,
+                    n_nodes=n_nodes,
+                    min_component_size=min_component_size,
+                    degree_heterogeneity=method_params.get('degree_heterogeneity', 0.0),
+                    edge_noise=method_params.get('edge_noise', 0.0),
+                    feature_regime_balance=0.5,  # Default, can be exposed if needed
+                    target_homophily=None,  # Use universe default
+                    target_density=None,    # Use universe default
+                    use_configuration_model=(method != "Standard"),
+                    degree_distribution=(
+                        "power_law" if method == "Power Law"
+                        else "exponential" if method == "Exponential"
+                        else "uniform" if method == "Uniform"
+                        else None
+                    ),
+                    power_law_exponent=method_params.get('power_law_exponent'),
+                    target_avg_degree=method_params.get('target_avg_degree'),
+                    triangle_enhancement=method_params.get('triangle_enhancement', 0.0),
+                    max_mean_community_deviation=max_mean_community_deviation,
+                    max_max_community_deviation=max_max_community_deviation,
+                    max_parameter_search_attempts=max_parameter_search_attempts,
+                    parameter_search_range=parameter_search_range,
+                    min_edge_density=min_edge_density,
+                    max_retries=max_retries,
+                    seed=seed,
+                    config_model_params=config_model_params
+                )
+                # Create the graph sample
+                graph = GraphSample(**universal_params)
                 st.session_state.current_graph = graph
-                
                 st.success("Graph generated successfully!")
-                
                 # Show graph properties
                 st.markdown('<div class="subsection-header">Graph Properties</div>', unsafe_allow_html=True)
                 
@@ -507,7 +579,7 @@ elif page == "Graph Sampling":
                 connection_analysis = graph.analyze_community_connections()
                 
                 # Verify that the deviations are within constraints
-                if use_configuration_model:
+                if method != "Standard":
                     if connection_analysis['mean_deviation'] > max_mean_community_deviation:
                         st.error(f"Mean deviation ({connection_analysis['mean_deviation']:.4f}) exceeds constraint ({max_mean_community_deviation:.4f})")
                     if connection_analysis['max_deviation'] > max_max_community_deviation:
@@ -625,46 +697,6 @@ elif page == "Graph Sampling":
                         correlation = degree_analysis.get('degree_correlation')
                         if correlation is not None:
                             st.metric("Degree Correlation", f"{correlation:.4f}")
-                    
-                    # Create scatter plot of target vs actual degrees
-                    fig = go.Figure()
-                    
-                    fig.add_trace(go.Scatter(
-                        x=degree_analysis["target_degrees"],
-                        y=degree_analysis["actual_degrees"],
-                        mode='markers',
-                        name='Node Degrees',
-                        marker=dict(
-                            size=8,
-                            color='blue',
-                            opacity=0.6
-                        )
-                    ))
-                    
-                    # Add perfect correlation line
-                    max_degree = max(
-                        max(degree_analysis["target_degrees"]),
-                        max(degree_analysis["actual_degrees"])
-                    )
-                    fig.add_trace(go.Scatter(
-                        x=[0, max_degree],
-                        y=[0, max_degree],
-                        mode='lines',
-                        name='Perfect Match',
-                        line=dict(
-                            color='red',
-                            dash='dash'
-                        )
-                    ))
-                    
-                    fig.update_layout(
-                        title="Target vs Actual Degrees",
-                        xaxis_title="Target Degree",
-                        yaxis_title="Actual Degree",
-                        height=400
-                    )
-                    
-                    st.plotly_chart(fig, use_container_width=True)
                 
                 with tab3:
                     st.markdown("#### Community Statistics")

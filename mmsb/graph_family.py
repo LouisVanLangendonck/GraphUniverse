@@ -191,44 +191,21 @@ class GraphFamilyGenerator:
             list(self.method_distribution.keys()),
             p=list(self.method_distribution.values())
         )
-        
         if method == "standard":
             return method, self.standard_method_params
-        
-        # For configuration model methods, sample parameters
-        if method in ["power_law", "exponential", "uniform"]:
-            params = self.config_model_params[method].copy()
-            
-            # Sample target average degree
-            params["target_avg_degree"] = np.random.uniform(
-                params["target_avg_degree_min"],
-                params["target_avg_degree_max"]
-            )
-            
-            # Sample distribution-specific parameters
-            if method == "power_law":
-                params["power_law_exponent"] = np.random.uniform(
-                    params["exponent_min"],
-                    params["exponent_max"]
-                )
-            elif method == "exponential":
-                params["rate"] = np.random.uniform(
-                    params["rate_min"],
-                    params["rate_max"]
-                )
-            elif method == "uniform":
-                params["min_factor"] = np.random.uniform(
-                    params["min_factor"],
-                    params["max_factor"]
-                )
-                params["max_factor"] = np.random.uniform(
-                    params["min_factor"],
-                    params["max_factor"]
-                )
-            
-            return method, params
-        
-        raise ValueError(f"Unknown generation method: {method}")
+        # For configuration model methods, always sample from the full global range
+        params = self.config_model_params[method].copy() if method in self.config_model_params else {}
+        if method == "power_law":
+            params["power_law_exponent"] = np.random.uniform(0.5, 4.0)
+            params["target_avg_degree"] = np.random.uniform(1.0, 20.0)
+        elif method == "exponential":
+            params["rate"] = np.random.uniform(0.05, 2.0)
+            params["target_avg_degree"] = np.random.uniform(1.0, 20.0)
+        elif method == "uniform":
+            params["min_factor"] = np.random.uniform(0.1, 1.0)
+            params["max_factor"] = np.random.uniform(params["min_factor"], 2.0)
+            params["target_avg_degree"] = np.random.uniform(1.0, 20.0)
+        return method, params
 
     def generate(
         self,
@@ -243,89 +220,75 @@ class GraphFamilyGenerator:
         min_component_size: int = 0,
         feature_regime_balance: float = 0.5,
         seed: Optional[int] = None
-    ) -> List[GraphSample]:
+    ) -> list:
         """
         Generate a family of graphs.
-        
-        Args:
-            n_graphs: Number of graphs to generate
-            min_communities: Minimum number of communities per graph
-            max_communities: Maximum number of communities per graph
-            min_nodes: Minimum number of nodes per graph
-            max_nodes: Maximum number of nodes per graph
-            degree_heterogeneity: Controls degree variability (0=homogeneous, 1=highly skewed)
-            edge_noise: Random noise in edge probabilities
-            sampling_method: Method for sampling communities ("random", "similar", "diverse", "correlated")
-            min_component_size: Minimum size for connected components
-            feature_regime_balance: How evenly feature regimes are distributed
-            seed: Random seed for reproducibility
-            
-        Returns:
-            List of generated GraphSample instances
+        Returns a list of (graph, n_attempts) tuples.
         """
         if seed is not None:
             np.random.seed(seed)
-            
-        graphs = []
+        results = []
         attempts = 0
-        max_attempts = n_graphs * 3  # Allow up to 3x the target number of attempts
-        
-        while len(graphs) < n_graphs and attempts < max_attempts:
-            try:
-                # Sample number of communities
-                n_communities = np.random.randint(min_communities, max_communities + 1)
-                
-                # Sample communities
-                communities = self.universe.sample_connected_community_subset(
-                    size=n_communities,
-                    method=sampling_method
-                )
-                
-                # Sample number of nodes
-                n_nodes = np.random.randint(min_nodes, max_nodes + 1)
-                
-                # Sample target parameters
-                target_homophily, target_density = self._sample_target_parameters()
-                
-                # Sample generation method and its parameters
-                method, method_params = self._sample_generation_method()
-                
-                # Create graph sample with ALL required parameters
-                graph = GraphSample(
-                    universe=self.universe,
-                    communities=communities,
-                    n_nodes=n_nodes,
-                    min_component_size=min_component_size,
-                    degree_heterogeneity=degree_heterogeneity,
-                    edge_noise=edge_noise,
-                    feature_regime_balance=feature_regime_balance,
-                    target_homophily=target_homophily,
-                    target_density=target_density,
-                    use_configuration_model=(method in ["power_law", "exponential", "uniform"]),
-                    degree_distribution=method if method in ["power_law", "exponential", "uniform"] else None,
-                    power_law_exponent=method_params.get("power_law_exponent"),
-                    target_avg_degree=method_params.get("target_avg_degree"),
-                    # Pass through all required parameters
-                    triangle_enhancement=self.triangle_enhancement,
-                    max_mean_community_deviation=self.max_mean_community_deviation,
-                    max_max_community_deviation=self.max_max_community_deviation,
-                    max_parameter_search_attempts=self.max_parameter_search_attempts,
-                    parameter_search_range=self.parameter_search_range,
-                    min_edge_density=self.min_edge_density,
-                    max_retries=self.max_retries,
-                    seed=seed + len(graphs) if seed is not None else None
-                )
-                
-                graphs.append(graph)
-                
-            except ValueError as e:
-                print(f"Warning: Failed to generate graph {len(graphs) + 1}: {str(e)}")
-                attempts += 1
-                continue
-            
+        max_attempts = n_graphs * 3
+        while len(results) < n_graphs and attempts < max_attempts:
+            n_attempts_for_this_graph = 0
+            while n_attempts_for_this_graph < 10:  # up to 10 tries per graph
+                try:
+                    # Sample number of communities
+                    n_communities = np.random.randint(min_communities, max_communities + 1)
+                    # Sample communities
+                    communities = self.universe.sample_connected_community_subset(
+                        size=n_communities,
+                        method=sampling_method
+                    )
+                    # Sample number of nodes
+                    n_nodes = np.random.randint(min_nodes, max_nodes + 1)
+                    # Sample target parameters
+                    target_homophily, target_density = self._sample_target_parameters()
+                    # Sample generation method and its parameters
+                    method, method_params = self._sample_generation_method()
+                    # Create graph sample with ALL required parameters
+                    graph = GraphSample(
+                        universe=self.universe,
+                        communities=communities,
+                        n_nodes=n_nodes,
+                        min_component_size=min_component_size,
+                        degree_heterogeneity=degree_heterogeneity,
+                        edge_noise=edge_noise,
+                        feature_regime_balance=feature_regime_balance,
+                        target_homophily=target_homophily,
+                        target_density=target_density,
+                        use_configuration_model=(method in ["power_law", "exponential", "uniform"]),
+                        degree_distribution=method if method in ["power_law", "exponential", "uniform"] else None,
+                        power_law_exponent=method_params.get("power_law_exponent"),
+                        target_avg_degree=method_params.get("target_avg_degree"),
+                        triangle_enhancement=self.triangle_enhancement,
+                        max_mean_community_deviation=self.max_mean_community_deviation,
+                        max_max_community_deviation=self.max_max_community_deviation,
+                        max_parameter_search_attempts=self.max_parameter_search_attempts,
+                        parameter_search_range=self.parameter_search_range,
+                        min_edge_density=self.min_edge_density,
+                        max_retries=self.max_retries,
+                        seed=seed + len(results) if seed is not None else None,
+                        config_model_params=method_params if method in ["power_law", "exponential", "uniform"] else None
+                    )
+                    # If this is the first graph and it took more than 1 attempt, skip family immediately
+                    if len(results) == 0 and n_attempts_for_this_graph > 0:
+                        print(f"    Very first graph required a second attempt. Skipping family immediately.")
+                        return []
+                    results.append((graph, n_attempts_for_this_graph + 1))
+                    break
+                except ValueError as e:
+                    n_attempts_for_this_graph += 1
+                    attempts += 1
+                    # If this is the first graph and we're about to try the second attempt, skip family
+                    if len(results) == 0 and n_attempts_for_this_graph == 1:
+                        print(f"    Very first graph failed on first attempt. Skipping family immediately.")
+                        return []
+                    if n_attempts_for_this_graph >= 10:
+                        print(f"Warning: Failed to generate graph {len(results) + 1} after 10 attempts: {str(e)}")
+                        break
             attempts += 1
-        
-        if len(graphs) < n_graphs:
-            print(f"Warning: Could only generate {len(graphs)} out of {n_graphs} graphs after {attempts} attempts")
-        
-        return graphs 
+        if len(results) < n_graphs:
+            print(f"Warning: Could only generate {len(results)} out of {n_graphs} graphs after {attempts} attempts")
+        return results 
