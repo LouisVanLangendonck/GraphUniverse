@@ -6,6 +6,8 @@ import numpy as np
 from typing import Dict, List, Optional, Tuple, Union, Any
 import pandas as pd
 from mmsb.model import GraphUniverse, GraphSample
+from tqdm import tqdm
+import time
 
 class GraphFamilyGenerator:
     """
@@ -219,7 +221,9 @@ class GraphFamilyGenerator:
         sampling_method: str = "random",
         min_component_size: int = 0,
         feature_regime_balance: float = 0.5,
-        seed: Optional[int] = None
+        seed: Optional[int] = None,
+        show_progress: bool = False,
+        show_timing: bool = False
     ) -> list:
         """
         Generate a family of graphs.
@@ -230,23 +234,37 @@ class GraphFamilyGenerator:
         results = []
         attempts = 0
         max_attempts = n_graphs * 3
-        while len(results) < n_graphs and attempts < max_attempts:
+        iterator = range(n_graphs)
+        if show_progress:
+            iterator = tqdm(iterator, desc='Generating graphs in family', leave=False)
+        # Timing accumulators
+        timings = {k: [] for k in [
+            'community_sampling', 'node_sampling', 'target_param_sampling',
+            'method_sampling', 'graph_construction', 'total']}
+        for _ in iterator:
+            t0 = time.time()
             n_attempts_for_this_graph = 0
             while n_attempts_for_this_graph < 10:  # up to 10 tries per graph
                 try:
+                    t1 = time.time()
                     # Sample number of communities
                     n_communities = np.random.randint(min_communities, max_communities + 1)
                     # Sample communities
+                    t2 = time.time()
                     communities = self.universe.sample_connected_community_subset(
                         size=n_communities,
                         method=sampling_method
                     )
+                    t3 = time.time()
                     # Sample number of nodes
                     n_nodes = np.random.randint(min_nodes, max_nodes + 1)
+                    t4 = time.time()
                     # Sample target parameters
                     target_homophily, target_density = self._sample_target_parameters()
+                    t5 = time.time()
                     # Sample generation method and its parameters
                     method, method_params = self._sample_generation_method()
+                    t6 = time.time()
                     # Create graph sample with ALL required parameters
                     graph = GraphSample(
                         universe=self.universe,
@@ -272,23 +290,30 @@ class GraphFamilyGenerator:
                         seed=seed + len(results) if seed is not None else None,
                         config_model_params=method_params if method in ["power_law", "exponential", "uniform"] else None
                     )
-                    # If this is the first graph and it took more than 1 attempt, skip family immediately
-                    if len(results) == 0 and n_attempts_for_this_graph > 0:
-                        print(f"    Very first graph required a second attempt. Skipping family immediately.")
-                        return []
+                    t7 = time.time()
+                    timings['community_sampling'].append(t2-t1)
+                    timings['node_sampling'].append(t4-t3)
+                    timings['target_param_sampling'].append(t5-t4)
+                    timings['method_sampling'].append(t6-t5)
+                    timings['graph_construction'].append(t7-t6)
+                    timings['total'].append(t7-t0)
                     results.append((graph, n_attempts_for_this_graph + 1))
                     break
                 except ValueError as e:
                     n_attempts_for_this_graph += 1
                     attempts += 1
-                    # If this is the first graph and we're about to try the second attempt, skip family
-                    if len(results) == 0 and n_attempts_for_this_graph == 1:
-                        print(f"    Very first graph failed on first attempt. Skipping family immediately.")
-                        return []
                     if n_attempts_for_this_graph >= 10:
                         print(f"Warning: Failed to generate graph {len(results) + 1} after 10 attempts: {str(e)}")
                         break
             attempts += 1
         if len(results) < n_graphs:
             print(f"Warning: Could only generate {len(results)} out of {n_graphs} graphs after {attempts} attempts")
+        # Print timing summary if requested
+        if show_progress or show_timing:
+            import numpy as np
+            print("Timing summary for this family:")
+            for k in ['community_sampling', 'node_sampling', 'target_param_sampling', 'method_sampling', 'graph_construction', 'total']:
+                arr = np.array(timings[k])
+                if len(arr) > 0:
+                    print(f"  {k:25s}: mean={arr.mean()*1000:.1f}ms, std={arr.std()*1000:.1f}ms")
         return results 

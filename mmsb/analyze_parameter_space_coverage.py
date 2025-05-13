@@ -27,6 +27,7 @@ import pickle
 import random
 from collections import defaultdict
 import matplotlib
+import concurrent.futures
 
 # Add parent directory to path to allow imports
 parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -44,11 +45,64 @@ from utils.parameter_analysis import (
 )
 
 
+def _generate_family(family_name, family_params, n_graphs_per_family):
+    from mmsb.graph_family import GraphFamilyGenerator  # Needed for multiprocessing
+    try:
+        generator = GraphFamilyGenerator(
+            K=family_params["K"],
+            feature_dim=family_params["feature_dim"],
+            block_structure=family_params["block_structure"],
+            edge_density=family_params["edge_density"],
+            homophily=family_params["homophily"],
+            randomness_factor=family_params["randomness_factor"],
+            intra_community_regime_similarity=family_params["intra_community_regime_similarity"],
+            inter_community_regime_similarity=family_params["inter_community_regime_similarity"],
+            regimes_per_community=family_params["regimes_per_community"],
+            homophily_range=family_params["homophily_range"],
+            density_range=family_params["density_range"],
+            method_distribution=family_params["method_distribution"],
+            standard_method_params=family_params["standard_method_params"],
+            config_model_params=family_params["config_model_params"],
+            max_mean_community_deviation=family_params["max_mean_community_deviation"],
+            max_max_community_deviation=family_params["max_max_community_deviation"],
+            max_parameter_search_attempts=family_params["max_parameter_search_attempts"],
+            parameter_search_range=family_params["parameter_search_range"],
+            min_edge_density=family_params["min_edge_density"],
+            max_retries=family_params["max_retries"],
+            triangle_enhancement=family_params["triangle_enhancement"],
+            seed=family_params["seed"]
+        )
+        graphs = generator.generate(
+            n_graphs=n_graphs_per_family,
+            min_communities=family_params["min_communities"],
+            max_communities=family_params["max_communities"],
+            min_nodes=family_params["min_nodes"],
+            max_nodes=family_params["max_nodes"],
+            degree_heterogeneity=family_params["degree_heterogeneity"],
+            edge_noise=family_params["edge_noise"],
+            sampling_method=family_params["sampling_method"],
+            min_component_size=family_params["min_component_size"],
+            feature_regime_balance=family_params["feature_regime_balance"],
+            seed=family_params["seed"],
+            show_progress=False
+        )
+        if graphs and len(graphs) > 0:
+            if isinstance(graphs[0], tuple) and len(graphs[0]) == 2:
+                graphs = [g[0] for g in graphs]
+            return (family_name, {'graphs': graphs, 'parameters': family_params.copy()})
+        else:
+            return (family_name, None)
+    except Exception as e:
+        print(f"FAILED family: {family_name} with error: {e}")
+        return (family_name, None)
+
+
 def generate_diverse_graph_families(
     n_families: int = 10,
     n_graphs_per_family: int = 20,
     base_params: Optional[Dict] = None,
-    seed: int = 42
+    seed: int = 42,
+    parallel: bool = False
 ) -> Dict[str, Dict[str, Any]]:
     """
     Generate diverse families of graphs by varying key parameters.
@@ -101,34 +155,34 @@ def generate_diverse_graph_families(
         K = np.random.randint(10, 50)
         feature_dim = np.random.choice([0, 16, 32, 64, 128])
         block_structure = "assortative"  # Only supported for now
-        edge_density = np.random.uniform(0.01, 0.25)
+        edge_density = np.random.uniform(0.01, 0.2)
         homophily = np.random.uniform(0.0, 1.0)
         randomness_factor = np.random.uniform(0.0, 1.0)
         intra_community_regime_similarity = np.random.uniform(0.0, 1.0)
         inter_community_regime_similarity = np.random.uniform(0.0, 1.0)
-        regimes_per_community = np.random.randint(1, 6)
+        regimes_per_community = np.random.randint(1, 2)
         homophily_range = np.random.uniform(0.0, 0.35)
         density_range = np.random.uniform(0.0, 0.2)
         method_distribution = random_method_distribution()
         standard_method_params = random_standard_method_params()
         config_model_params = random_config_model_params()
-        max_mean_community_deviation = np.random.uniform(0.06, 0.10)
-        max_max_community_deviation = np.random.uniform(0.11, 0.17)
-        max_parameter_search_attempts = np.random.randint(20, 51)
+        max_mean_community_deviation = np.random.uniform(0.07, 0.14)
+        max_max_community_deviation = np.random.uniform(0.12, 0.20)
+        max_parameter_search_attempts = np.random.randint(10, 15)
         parameter_search_range = np.random.uniform(0.9, 1.0)
         min_edge_density = np.random.uniform(0.005, 0.05)
-        max_retries = np.random.randint(3, 5)
+        max_retries = np.random.randint(2, 5)
         triangle_enhancement = np.random.uniform(0.0, 0.0)
         seed_family = np.random.randint(0, 100000)
         # Instance-level parameters
-        min_communities = np.random.randint(2, max(3, K // 5))
+        min_communities = np.random.randint(3, max(4, K // 5))
         max_communities = np.random.randint(min_communities + 1, max(8, K // 2))
         min_nodes = np.random.randint(40, 100)
         max_nodes = np.random.randint(min_nodes + 1, 200)
         degree_heterogeneity = np.random.uniform(0.0, 1.0)
         edge_noise = np.random.uniform(0.0, 0.5)
-        sampling_method = np.random.choice(["random", "similar", "diverse", "correlated"])
-        min_component_size = np.random.randint(3, 10)
+        sampling_method = np.random.choice(["random"]), #, "similar", "diverse", "correlated"])
+        min_component_size = np.random.randint(2, 3)
         feature_regime_balance = np.random.uniform(0.0, 1.0)
         # Only restriction: K > min_nodes/2
         if K > min_nodes / 2:
@@ -171,124 +225,34 @@ def generate_diverse_graph_families(
         })
     family_variations = family_variations[:n_families]
     families = {}
-    max_failed_graphs_in_first_n = 3  # User-definable threshold
-    n_check = 10  # Number of first graphs to check
-    for variation in tqdm(family_variations):
-        family_name = variation.pop("name")
-        graphs = None
-        family_params = base_params.copy() if base_params else {}
-        family_params.update(variation)
-        try:
-            generator = GraphFamilyGenerator(
-                K=family_params["K"],
-                feature_dim=family_params["feature_dim"],
-                block_structure=family_params["block_structure"],
-                edge_density=family_params["edge_density"],
-                homophily=family_params["homophily"],
-                randomness_factor=family_params["randomness_factor"],
-                intra_community_regime_similarity=family_params["intra_community_regime_similarity"],
-                inter_community_regime_similarity=family_params["inter_community_regime_similarity"],
-                regimes_per_community=family_params["regimes_per_community"],
-                homophily_range=family_params["homophily_range"],
-                density_range=family_params["density_range"],
-                method_distribution=family_params["method_distribution"],
-                standard_method_params=family_params["standard_method_params"],
-                config_model_params=family_params["config_model_params"],
-                max_mean_community_deviation=family_params["max_mean_community_deviation"],
-                max_max_community_deviation=family_params["max_max_community_deviation"],
-                max_parameter_search_attempts=family_params["max_parameter_search_attempts"],
-                parameter_search_range=family_params["parameter_search_range"],
-                min_edge_density=family_params["min_edge_density"],
-                max_retries=family_params["max_retries"],
-                triangle_enhancement=family_params["triangle_enhancement"],
-                seed=family_params["seed"]
-            )
-            print(f"Generating {n_graphs_per_family} graphs for family {family_name}...")
-            generated_graphs = []
-            attempts = 0
-            max_attempts = n_graphs_per_family * 3
-            failed_graphs = 0
-            failed_graphs_first_n = 0
-            skip_family = False
-            for graph_idx in range(n_graphs_per_family):
-                print(f"  Attempting graph {graph_idx+1}/{n_graphs_per_family} (attempt {attempts+1})...")
-                try:
-                    single_graphs = generator.generate(
-                        n_graphs=1,
-                        min_communities=family_params["min_communities"],
-                        max_communities=family_params["max_communities"],
-                        min_nodes=family_params["min_nodes"],
-                        max_nodes=family_params["max_nodes"],
-                        degree_heterogeneity=family_params["degree_heterogeneity"],
-                        edge_noise=family_params["edge_noise"],
-                        sampling_method=family_params["sampling_method"],
-                        min_component_size=family_params["min_component_size"],
-                        feature_regime_balance=family_params["feature_regime_balance"],
-                        seed=family_params["seed"]
-                    )
-                    if single_graphs and len(single_graphs) > 0:
-                        graph, n_attempts = single_graphs[0]
-                        # If the very first graph takes more than 1 attempt, skip the family immediately
-                        if graph_idx == 0 and n_attempts > 1:
-                            print(f"    Very first graph took {n_attempts} attempts (>1) for family {family_name}. Skipping this family.")
-                            generated_graphs = []
-                            skip_family = True
-                            break
-                        generated_graphs.append(graph)
-                        print(f"    Success: generated graph {len(generated_graphs)}/{n_graphs_per_family} (attempts: {n_attempts})")
-                        if n_attempts > 1:
-                            failed_graphs += 1
-                            if graph_idx < n_check:
-                                failed_graphs_first_n += 1
-                                if n_attempts > max_failed_graphs_in_first_n:
-                                    print(f"    Single graph took {n_attempts} attempts (>{max_failed_graphs_in_first_n}) in first {n_check} for family {family_name}. Skipping this family.")
-                                    generated_graphs = []
-                                    skip_family = True
-                                    break
-                    else:
-                        print(f"    Failed to generate graph {len(generated_graphs)+1}")
-                        failed_graphs += 1
-                        if graph_idx < n_check:
-                            failed_graphs_first_n += 1
-                            print(f"    Failed to generate a graph at all in first {n_check} for family {family_name}. Skipping this family.")
-                            generated_graphs = []
-                            skip_family = True
-                            break
-                except Exception as e:
-                    print(f"    Exception: {e}")
-                    failed_graphs += 1
-                    if graph_idx < n_check:
-                        failed_graphs_first_n += 1
-                attempts += 1
-                # Early stopping: as soon as threshold is reached, stop immediately
-                if failed_graphs_first_n >= max_failed_graphs_in_first_n:
-                    print(f"    Too many failed graphs ({failed_graphs_first_n}) in first {n_check} for family {family_name}. Skipping this family.")
-                    generated_graphs = []
-                    skip_family = True
-                    break
-            if skip_family or not generated_graphs:
-                continue
-            graphs = generated_graphs
-            if graphs is not None and len(graphs) > 0:
-                families[family_name] = {
-                    'graphs': graphs,
-                    'parameters': family_params.copy()
-                }
-            else:
-                print(f"\nFAILED family: {family_name}")
-                print("Parameters:")
-                for key, value in family_params.items():
-                    print(f"  {key}: {value}")
-                if graphs is None:
-                    print("Error: generate_pretraining_graphs returned None")
-                else:
-                    print("Error: generate_pretraining_graphs returned empty list")
-        except Exception as e:
-            print(f"\nFAILED family: {family_name}")
-            print("Parameters:")
-            for key, value in family_params.items():
-                print(f"  {key}: {value}")
-            print(f"Error: {str(e.__class__.__name__)}: {str(e)}")
+
+    if parallel:
+        print(f"Generating {n_families} graph families in parallel...")
+        with concurrent.futures.ProcessPoolExecutor() as executor:
+            futures = []
+            for variation in family_variations:
+                family_name = variation.pop("name")
+                family_params = base_params.copy() if base_params else {}
+                family_params.update(variation)
+                futures.append(executor.submit(_generate_family, family_name, family_params, n_graphs_per_family))
+            completed = 0
+            total = len(futures)
+            for future in concurrent.futures.as_completed(futures):
+                family_name, result = future.result()
+                if result is not None:
+                    families[family_name] = result
+                completed += 1
+                if completed % 5 == 0 or completed == total:
+                    print(f"  Progress: {completed}/{total} families completed.")
+    else:
+        for variation in tqdm(family_variations):
+            family_name = variation.pop("name")
+            family_params = base_params.copy() if base_params else {}
+            family_params.update(variation)
+            result = _generate_family(family_name, family_params, n_graphs_per_family)
+            if result[1] is not None:
+                families[result[0]] = result[1]
+
     print(f"\nSuccessfully generated {len(families)} out of {n_families} families")
     return families
 
