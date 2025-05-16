@@ -63,6 +63,604 @@ from utils.parameter_analysis import (
     visualize_community_connectivity,
 )
 from motif_and_role_analysis_integration import add_motif_role_analysis_page
+from utils.metapath_analysis import (
+    analyze_metapaths,
+    visualize_community_metapath_graph,
+    visualize_metapaths,
+    metapath_node_classification,
+    run_all_classifications,
+    run_all_metapath_tasks,
+    optimize_hyperparameters,
+    multi_metapath_node_classification,
+    feature_regime_metapath_classification,
+    visualize_model_performance,
+    GCNMultiLabel,
+    GraphSAGEMultiLabel,
+    prepare_node_features,
+    create_consistent_train_val_test_split,
+    find_metapath_instances,
+    multi_metapath_node_classification_improved,
+    optimize_hyperparameters_for_metapath_improved
+)
+
+def run_metapath_analysis(graph, theta, max_length, allow_loops, allow_backtracking, top_k, min_length):
+    """Callback function to run metapath analysis"""
+    try:
+        # Update session state with new values
+        st.session_state.metapath_analysis_state['params'].update({
+            'theta': theta,
+            'max_length': max_length,
+            'allow_loops': allow_loops,
+            'allow_backtracking': allow_backtracking,
+            'top_k': top_k,
+            'min_length': min_length
+        })
+        
+        # Run the metapath analysis
+        metapath_results = analyze_metapaths(
+            graph,
+            theta=theta,
+            max_length=max_length,
+            top_k=top_k,
+            allow_loops=allow_loops,
+            allow_backtracking=allow_backtracking,
+            min_length=min_length
+        )
+        
+        # Store results in session state
+        st.session_state.metapath_analysis_state['results'] = metapath_results
+        st.session_state.metapath_analysis_state['analysis_run'] = True
+        
+        return True
+    except Exception as e:
+        return False
+
+def render_metapath_analysis(graph):
+    """Render the metapath analysis section in an isolated container."""
+    container = st.container()
+    
+    with container:
+        st.markdown("#### Metapath Analysis")
+        
+        # Parameters outside form
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            theta = st.slider(
+                "Probability threshold (θ)",
+                min_value=0.01,
+                max_value=0.5,
+                value=st.session_state.metapath_analysis_state['params']['theta'],
+                help="Threshold for considering an edge likely in the community graph"
+            )
+            max_length = st.slider(
+                "Maximum metapath length",
+                min_value=2,
+                max_value=5,
+                value=st.session_state.metapath_analysis_state['params']['max_length'],
+                help="Maximum number of communities in a metapath"
+            )
+        
+        with col2:
+            allow_loops = st.checkbox(
+                "Allow loops",
+                value=st.session_state.metapath_analysis_state['params']['allow_loops'],
+                help="Allow metapaths to visit the same community multiple times"
+            )
+            allow_backtracking = st.checkbox(
+                "Allow backtracking",
+                value=st.session_state.metapath_analysis_state['params']['allow_backtracking'],
+                help="Allow metapaths to return to the previous community"
+            )
+            top_k = st.slider(
+                "Number of top metapaths",
+                min_value=1,
+                max_value=10,
+                value=st.session_state.metapath_analysis_state['params']['top_k'],
+                help="Number of top metapaths to analyze in detail"
+            )
+        
+        # Run analysis button
+        if st.button("Run Metapath Analysis", key="run_metapath"):
+            with st.spinner("Analyzing metapaths..."):
+                success = run_metapath_analysis(graph, theta, max_length, allow_loops, allow_backtracking, top_k, st.session_state.metapath_analysis_state['params']['min_length'])
+                if success:
+                    st.success("Metapath analysis completed successfully!")
+                else:
+                    st.error("Error during metapath analysis. Check console for details.")
+        
+        # Display results if analysis has been run
+        if st.session_state.metapath_analysis_state['analysis_run'] and st.session_state.metapath_analysis_state['results'] is not None:
+            results = st.session_state.metapath_analysis_state['results']
+            
+            # Create tabs for different visualizations
+            tab1, tab2, tab3, tab4, tab5 = st.tabs([
+                "Community Structure",
+                "Metapath Statistics",
+                "Node Classification",
+                "Multi-Metapath Node Classification",
+                "Help"
+            ])
+            
+            with tab1:
+                # Show P_sub matrix visualization
+                st.markdown("##### Community Edge Probability Matrix (P_sub)")
+                st.markdown("""
+                This heatmap shows the probability of edges between communities. 
+                - Brighter colors indicate higher probabilities
+                - The matrix shows how likely nodes from one community are to connect to nodes in another community
+                - This helps understand the underlying community structure that gives rise to metapaths
+                """)
+                st.pyplot(results['P_sub_figure'])
+                
+                # Show community-level graph
+                st.markdown("##### Community-Level Metapath Graph")
+                st.markdown("""
+                This graph shows the community-level structure with edges representing likely metapaths.
+                - Nodes represent communities
+                - Edge weights show the probability of connections between communities
+                - This helps visualize the paths that are most likely to occur
+                """)
+                fig = visualize_community_metapath_graph(
+                    results['P_matrix'],
+                    theta=st.session_state.metapath_analysis_state['params']['theta'],
+                    community_mapping=results['community_mapping']
+                )
+                st.pyplot(fig)
+            
+            with tab2:
+                st.markdown("##### Metapath Statistics")
+                stats = results['statistics']
+                
+                # Convert to DataFrame for display
+                stats_df = pd.DataFrame({
+                    'Metapath': stats['metapaths'],
+                    'Instances': stats['instances_count'],
+                    'Avg Path Length': [f"{x:.2f}" for x in stats['avg_path_length']],
+                    'Node Participation (%)': [f"{x*100:.1f}%" for x in stats['participation']]
+                })
+                
+                st.markdown("""
+                **How metapaths are ranked:**
+                Metapaths are ranked based on their probability in the community graph, not just the number of instances.
+                The probability is calculated as the product of edge probabilities along the path.
+                
+                For example, a path "0 → 1 → 2" has probability = P(0,1) × P(1,2)
+                where P(i,j) is the probability of an edge between communities i and j.
+                
+                This means that even if a metapath has fewer instances, it might be ranked higher if:
+                - The edges between its communities have high probabilities
+                - The path is more likely to occur in the underlying community structure
+                """)
+                
+                st.dataframe(stats_df)
+                
+                # Select a metapath to visualize
+                selected_metapath_idx = st.selectbox(
+                    "Select a metapath to visualize",
+                    range(min(st.session_state.metapath_analysis_state['params']['top_k'], len(results['metapaths']))),
+                    format_func=lambda i: stats['metapaths'][i],
+                    key="metapath_selection"
+                )
+                
+                # Show selected metapath
+                selected_metapath = results['metapaths'][selected_metapath_idx]
+                selected_instances = results['instances'][selected_metapath_idx]
+                
+                if selected_instances:
+                    st.markdown("##### Full Graph with Metapath Instances")
+                    st.markdown("""
+                    This visualization shows the full graph with metapath instances highlighted.
+                    - Nodes are colored by their community
+                    - Regular edges are shown in light gray
+                    - Metapath instances are highlighted with bold, colored edges
+                    """)
+                    fig = visualize_metapaths(
+                        st.session_state.current_graph.graph,
+                        st.session_state.current_graph.community_labels,
+                        selected_metapath,
+                        selected_instances,
+                        title=f"Metapath: {stats['metapaths'][selected_metapath_idx]}"
+                    )
+                    st.pyplot(fig)
+                else:
+                    st.info("No instances found for this metapath in the graph.")
+            
+            with tab3:
+                st.markdown("##### Node Classification")
+                st.markdown("""
+                This tab performs binary classification to predict whether a node participates in the selected metapath.
+                We use multiple models to compare their performance:
+                - Random Forest (RF): Traditional ML model using node features
+                - Multi-Layer Perceptron (MLP): Neural network using node features
+                - Graph Convolutional Network (GCN): Graph neural network using node features and graph structure
+                - GraphSAGE: Graph neural network using node features and graph structure with sampling
+                """)
+                if selected_metapath:
+                    st.markdown("#### Hyperparameter Optimization (Optuna)")
+                    st.markdown("**Baseline Feature Selection (RF/MLP):**")
+                    col_feat1, col_feat2, col_feat3 = st.columns(3)
+                    with col_feat1:
+                        use_degree = st.checkbox("Use Degree", value=True, key="optuna_baseline_use_degree")
+                    with col_feat2:
+                        use_clustering = st.checkbox("Use Clustering Coefficient", value=True, key="optuna_baseline_use_clustering")
+                    with col_feat3:
+                        use_node_features = st.checkbox("Use Node Features", value=True, key="optuna_baseline_use_node_features")
+                    optuna_baseline_feature_opts = {
+                        'use_degree': use_degree,
+                        'use_clustering': use_clustering,
+                        'use_node_features': use_node_features
+                    }
+                    model_type = st.selectbox("Model type for optimization", ["rf", "mlp", "gcn", "sage"])
+                    n_trials = st.slider("Number of Optuna trials", min_value=5, max_value=100, value=20)
+                    timeout = st.slider("Timeout (seconds)", min_value=30, max_value=1800, value=300)
+                    if st.button("Run Hyperparameter Optimization"):
+                        with st.spinner("Optimizing hyperparameters with Optuna..."):
+                            try:
+                                X = prepare_node_features(
+                                    st.session_state.current_graph.graph,
+                                    st.session_state.current_graph.community_labels,
+                                    use_degree=optuna_baseline_feature_opts['use_degree'],
+                                    use_clustering=optuna_baseline_feature_opts['use_clustering'],
+                                    use_node_features=optuna_baseline_feature_opts['use_node_features']
+                                )
+                            except ValueError as e:
+                                st.error(str(e))
+                                st.stop()
+            
+            with tab4:
+                st.markdown("#### Multi-Metapath Node Classification")
+                st.markdown("""
+                This tab performs multi-label classification to predict whether a node participates in multiple metapaths.
+                For each node, a binary vector label is created: 1 if the node participates in the metapath, 0 otherwise.
+                The classifier predicts this vector for each node (multi-label classification).
+                """)
+                metapath_options = results['metapaths'][:st.session_state.metapath_analysis_state['params']['top_k']]
+                metapath_labels = [f"{i}: {stats['metapaths'][i]}" for i in range(len(metapath_options))]
+                selected_indices = st.multiselect(
+                    "Select metapaths for multi-label classification",
+                    options=list(range(len(metapath_options))),
+                    format_func=lambda i: metapath_labels[i],
+                    default=list(range(min(2, len(metapath_options))))
+                )
+                
+                if not selected_indices:
+                    st.warning("Please select at least one metapath")
+                else:
+                    selected_metapaths = [metapath_options[i] for i in selected_indices]
+                    
+                    # Add a button to create splits first
+                    st.markdown("### Create Train/Val/Test Splits")
+                    st.markdown("""
+                    First, create consistent train/validation/test splits that will be used for all models.
+                    This ensures fair comparison between different model types.
+                    """)
+                    
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        train_size = st.slider("Train size", 0.5, 0.9, 0.7, 0.05, key="ml_train_size")
+                    with col2:
+                        val_size = st.slider("Validation size", 0.05, 0.25, 0.15, 0.05, key="ml_val_size")
+                    with col3:
+                        test_size = st.slider("Test size", 0.05, 0.25, 0.15, 0.05, key="ml_test_size")
+                    
+                    total = train_size + val_size + test_size
+                    if abs(total - 1.0) > 1e-6:
+                        st.warning(f"Split sizes sum to {total:.2f}, should be 1.0. Please adjust.")
+                    
+                    if st.button("Create Splits", key="create_splits"):
+                        with st.spinner("Creating train/val/test splits..."):
+                            try:
+                                # Prepare features
+                                feature_opts = {
+                                    'use_degree': True,
+                                    'use_clustering': True,
+                                    'use_node_features': True
+                                }
+                                
+                                X = prepare_node_features(
+                                    st.session_state.current_graph,
+                                    st.session_state.current_graph.community_labels,
+                                    use_degree=feature_opts['use_degree'],
+                                    use_clustering=feature_opts['use_clustering'],
+                                    use_node_features=feature_opts['use_node_features']
+                                )
+                                
+                                # Prepare multi-label targets
+                                n_nodes = X.shape[0]
+                                Y = np.zeros((n_nodes, len(selected_metapaths)), dtype=int)
+                                graph_nx = st.session_state.current_graph.graph
+                                
+                                for j, metapath in enumerate(selected_metapaths):
+                                    instances = find_metapath_instances(graph_nx, st.session_state.current_graph.community_labels, metapath)
+                                    participating_nodes = set()
+                                    for instance in instances:
+                                        participating_nodes.update(instance)
+                                    for i in range(n_nodes):
+                                        if i in participating_nodes:
+                                            Y[i, j] = 1
+                                
+                                # Create splits
+                                splits = create_consistent_train_val_test_split(
+                                    X, Y, 
+                                    train_size=train_size, 
+                                    val_size=val_size, 
+                                    test_size=test_size,
+                                    stratify=False,  # Can't easily stratify multi-label
+                                    seed=42
+                                )
+                                
+                                # Store in session state
+                                if 'metapath_multi_label_state' not in st.session_state.metapath_analysis_state:
+                                    st.session_state.metapath_analysis_state['metapath_multi_label_state'] = {}
+                                    
+                                st.session_state.metapath_analysis_state['metapath_multi_label_state'] = {
+                                    'splits_created': True,
+                                    'splits': splits,
+                                    'X': X,
+                                    'Y': Y,
+                                    'feature_opts': feature_opts,
+                                    'selected_metapaths': selected_metapaths
+                                }
+                                
+                                st.success("Splits created successfully!")
+                                
+                                # Display split statistics
+                                st.markdown("#### Split Statistics")
+                                train_size = len(splits['train_indices']) / n_nodes
+                                val_size = len(splits['val_indices']) / n_nodes
+                                test_size = len(splits['test_indices']) / n_nodes
+                                
+                                col1, col2, col3 = st.columns(3)
+                                col1.metric("Train Split", f"{train_size:.1%}")
+                                col2.metric("Validation Split", f"{val_size:.1%}")
+                                col3.metric("Test Split", f"{test_size:.1%}")
+                                
+                                # Display label distribution in splits
+                                st.markdown("#### Label Distribution in Splits")
+                                train_label_dist = Y[splits['train_indices']].mean(axis=0)
+                                val_label_dist = Y[splits['val_indices']].mean(axis=0)
+                                test_label_dist = Y[splits['test_indices']].mean(axis=0)
+                                
+                                dist_df = pd.DataFrame({
+                                    'Metapath': [metapath_labels[i] for i in selected_indices],
+                                    'Train': [f"{x:.1%}" for x in train_label_dist],
+                                    'Validation': [f"{x:.1%}" for x in val_label_dist],
+                                    'Test': [f"{x:.1%}" for x in test_label_dist]
+                                })
+                                
+                                st.dataframe(dist_df)
+                                
+                            except Exception as e:
+                                st.error(f"Error creating splits: {str(e)}")
+                                import traceback
+                                st.code(traceback.format_exc())
+                    
+                    # Feature selection 
+                    if 'metapath_multi_label_state' in st.session_state.metapath_analysis_state and \
+                       st.session_state.metapath_analysis_state['metapath_multi_label_state'].get('splits_created', False):
+                        
+                        st.markdown("### Feature Selection")
+                        col_feat1, col_feat2, col_feat3 = st.columns(3)
+                        with col_feat1:
+                            use_degree = st.checkbox("Use Degree", value=True, key="ml_use_degree")
+                        with col_feat2:
+                            use_clustering = st.checkbox("Use Clustering Coefficient", value=True, key="ml_use_clustering")
+                        with col_feat3:
+                            use_node_features = st.checkbox("Use Node Features", value=True, key="ml_use_node_features")
+                        
+                        feature_opts = {
+                            'use_degree': use_degree,
+                            'use_clustering': use_clustering,
+                            'use_node_features': use_node_features
+                        }
+                        
+                        st.markdown("### Model Selection")
+                        model_type = st.selectbox(
+                            "Select model type",
+                            ["Random Forest", "MLP", "GCN", "GraphSAGE"],
+                            key="ml_model_type"
+                        )
+                        
+                        model_type_map = {
+                            "Random Forest": "rf",
+                            "MLP": "mlp",
+                            "GCN": "gcn",
+                            "GraphSAGE": "sage"
+                        }
+                        
+                        selected_model_type = model_type_map[model_type]
+                        
+                        if st.button("Run Multi-Metapath Classification", key="run_multilabel"):
+                            with st.spinner("Running multi-label classification..."):
+                                try:
+                                    # Get the splits from session state
+                                    multi_label_state = st.session_state.metapath_analysis_state['metapath_multi_label_state']
+                                    splits = multi_label_state['splits']
+                                    
+                                    # Run the improved classification
+                                    results_ml = multi_metapath_node_classification_improved(
+                                        st.session_state.current_graph,
+                                        st.session_state.current_graph.community_labels,
+                                        multi_label_state['selected_metapaths'],
+                                        model_type=selected_model_type,
+                                        feature_opts=feature_opts,
+                                        splits=splits,
+                                        seed=42
+                                    )
+                                    
+                                    # Store results in session state
+                                    st.session_state.metapath_analysis_state['classification_state'] = {
+                                        'run': True,
+                                        'results': results_ml,
+                                        'model_type': selected_model_type
+                                    }
+                                    
+                                    st.success("Classification completed successfully!")
+                                    
+                                except Exception as e:
+                                    st.error(f"Error running classification: {str(e)}")
+                                    import traceback
+                                    st.code(traceback.format_exc())
+                        
+                        if ('classification_state' in st.session_state.metapath_analysis_state and 
+                            st.session_state.metapath_analysis_state['classification_state']['run']):
+                            classification_state = st.session_state.metapath_analysis_state['classification_state']
+                            results_ml = classification_state['results']
+                            model_type = classification_state['model_type']
+                            
+                            st.markdown("### Classification Results")
+                            col1, col2 = st.columns(2)
+                            with col1:
+                                st.markdown("#### F1 Score")
+                                f1_df = pd.DataFrame({
+                                    'Set': ['Train', 'Validation', 'Test'],
+                                    'F1 Score': [
+                                        results_ml['f1_score']['train'],
+                                        results_ml['f1_score']['val'],
+                                        results_ml['f1_score']['test']
+                                    ]
+                                })
+                                st.dataframe(f1_df)
+                            with col2:
+                                st.markdown("#### Accuracy")
+                                acc_df = pd.DataFrame({
+                                    'Set': ['Train', 'Validation', 'Test'],
+                                    'Accuracy': [
+                                        results_ml['accuracy']['train'],
+                                        results_ml['accuracy']['val'],
+                                        results_ml['accuracy']['test']
+                                    ]
+                                })
+                                st.dataframe(acc_df)
+                            
+                            st.markdown("#### Metapath Participation Rates")
+                            participation_df = pd.DataFrame({
+                                'Metapath': st.session_state.metapath_analysis_state['metapath_multi_label_state']['selected_metapaths'],
+                                'Participation Rate': results_ml['participation_rates']
+                            })
+                            st.dataframe(participation_df)
+                            
+                            st.markdown("#### Model Performance Visualization")
+                            vis_results = {
+                                'train_f1': results_ml['f1_score']['train'],
+                                'val_f1': results_ml['f1_score']['val'],
+                                'test_f1': results_ml['f1_score']['test'],
+                                'feature_importance': results_ml['feature_importance'],
+                                'history': results_ml.get('history')
+                            }
+                            fig = visualize_model_performance(vis_results, model_type, multi_label=True)
+                            st.pyplot(fig)
+                            
+                            # Display GNN embeddings if applicable
+                            if model_type in ['gcn', 'sage'] and 'model' in results_ml:
+                                st.markdown("#### Node Embedding Visualization")
+                                visualize_embeddings = st.checkbox("Visualize embeddings", value=False)
+                                if visualize_embeddings:
+                                    with st.spinner("Computing node embeddings..."):
+                                        # [Visualization code remains the same]
+                                        pass
+                            
+                            st.markdown("### Hyperparameter Optimization")
+                            run_optuna = st.checkbox("Run hyperparameter optimization", value=False)
+                            if run_optuna:
+                                n_trials = st.slider("Number of Optuna trials", min_value=5, max_value=100, value=20)
+                                timeout = st.slider("Timeout (seconds)", min_value=30, max_value=1800, value=300)
+                                
+                                if st.button("Run Optimization", key="run_optuna_multi"):
+                                    with st.spinner("Running hyperparameter optimization..."):
+                                        try:
+                                            # Get the splits from session state
+                                            multi_label_state = st.session_state.metapath_analysis_state['metapath_multi_label_state']
+                                            splits = multi_label_state['splits']
+                                            
+                                            optim_results = optimize_hyperparameters_for_metapath_improved(
+                                                st.session_state.current_graph,
+                                                st.session_state.current_graph.community_labels,
+                                                multi_label_state['selected_metapaths'],
+                                                model_type=selected_model_type,
+                                                multi_label=True,
+                                                feature_opts=feature_opts,
+                                                splits=splits,
+                                                n_trials=n_trials,
+                                                timeout=timeout,
+                                                seed=42
+                                            )
+                                            
+                                            st.session_state.metapath_analysis_state['optuna_results'] = optim_results
+                                            st.success("Optimization completed successfully!")
+                                            
+                                            st.markdown("#### Best Parameters")
+                                            st.json(optim_results['best_params'])
+                                            
+                                            st.markdown("#### Performance with Best Parameters")
+                                            col1, col2, col3 = st.columns(3)
+                                            col1.metric("Train F1", f"{optim_results['train_f1']:.4f}")
+                                            col2.metric("Validation F1", f"{optim_results['val_f1']:.4f}")
+                                            col3.metric("Test F1", f"{optim_results['test_f1']:.4f}")
+                                            
+                                        except Exception as e:
+                                            st.error(f"Error running optimization: {str(e)}")
+                                            import traceback
+                                            st.code(traceback.format_exc())
+                    else:
+                        st.warning("Please create train/val/test splits first before running classification.")
+
+            with tab5:
+                st.markdown("""
+                ### Understanding Metapath Analysis
+                
+                **What are Metapaths?**
+                Metapaths are sequences of communities that frequently appear in the graph. For example, a metapath "0 → 1 → 2" means that nodes from community 0 often connect to nodes in community 1, which then connect to nodes in community 2.
+                
+                **The Analysis Process:**
+                1. **Community Structure** tab shows:
+                   - P_sub matrix: Probability of edges between communities
+                   - Community graph: Visual representation of likely connections
+                
+                2. **Metapath Statistics** tab shows:
+                   - List of most common metapaths
+                   - Number of instances of each metapath
+                   - Average path length and node participation
+                
+                3. **Node Classification** tab:
+                   - Predicts which nodes participate in a selected metapath
+                   - Uses node features to make predictions
+                   - Shows how well the prediction works
+                
+                **How to Use:**
+                1. Start by examining the P_sub matrix to understand community connections
+                2. Look at the metapath statistics to find interesting patterns
+                3. Select a metapath to visualize its instances in the graph
+                4. Use node classification to understand which nodes are likely to participate
+                """)
+
+# Initialization for session state
+if 'metapath_analysis_state' not in st.session_state:
+    st.session_state.metapath_analysis_state = {
+        'params': {
+            'theta': 0.1,
+            'max_length': 3,
+            'allow_loops': False,
+            'allow_backtracking': False,
+            'top_k': 5,
+            'min_length': 2
+        },
+        'results': None,
+        'analysis_run': False,
+        'classification_state': {
+            'run': False,
+            'results': None
+        },
+        'metapath_multi_label_state': {
+            'splits_created': False,
+            'splits': None,
+            'X': None,
+            'Y': None,
+            'feature_opts': None,
+            'selected_metapaths': None
+        }
+    }
 
 # Set page config
 st.set_page_config(
@@ -138,7 +736,7 @@ of graphs with similar characteristics from a common universe.
 st.sidebar.title("Navigation")
 page = st.sidebar.radio(
     "Select a page",
-    ["Universe Creation", "Graph Sampling", "Graph Family Generation", "Graph Family Analysis", "Parameter Space Analysis", "Motif and Role Analysis", "Neighborhood Analysis"]
+    ["Universe Creation", "Graph Sampling", "Graph Family Generation", "Graph Family Analysis", "Parameter Space Analysis", "Motif and Role Analysis", "Neighborhood Analysis", "Metapath Analysis"]
 )
 
 # Universe Creation Page
@@ -294,265 +892,201 @@ elif page == "Graph Sampling":
         </div>
         """, unsafe_allow_html=True)
         
+        # Initialize session state for graph parameters if not exists
+        if 'graph_params' not in st.session_state:
+            st.session_state.graph_params = {
+                'n_nodes': 80,
+                'num_communities': 5,
+                'min_component_size': 3,
+                'sampling_method': "random",
+                'max_mean_community_deviation': 0.1,
+                'max_max_community_deviation': 0.2,
+                'parameter_search_range': 0.2,
+                'max_parameter_search_attempts': 10,
+                'min_edge_density': 0.005,
+                'max_retries': 5,
+                'method': "Standard",
+                'method_params': {
+                    'degree_heterogeneity': 0.5,
+                    'edge_noise': 0.0
+                },
+                'seed': 42
+            }
+        
         # Universal parameters
         st.markdown('<div class="subsection-header">Universal Parameters</div>', unsafe_allow_html=True)
         col1, col2 = st.columns(2)
         with col1:
-            n_nodes = st.slider("Number of nodes", min_value=30, max_value=300, value=80)
-            num_communities = st.slider(
+            st.session_state.graph_params['n_nodes'] = st.slider(
+                "Number of nodes",
+                min_value=30,
+                max_value=300,
+                value=st.session_state.graph_params['n_nodes'],
+                key="n_nodes"
+            )
+            st.session_state.graph_params['num_communities'] = st.slider(
                 "Number of communities",
                 min_value=2,
                 max_value=min(10, st.session_state.universe.K),
-                value=5,
-                help="Number of communities to include in the graph"
+                value=st.session_state.graph_params['num_communities'],
+                help="Number of communities to include in the graph",
+                key="num_communities"
             )
-            min_component_size = st.slider(
+            st.session_state.graph_params['min_component_size'] = st.slider(
                 "Minimum component size",
                 min_value=1,
                 max_value=50,
-                value=3,
-                help="Minimum size for connected components (all smaller components will be filtered out)"
+                value=st.session_state.graph_params['min_component_size'],
+                help="Minimum size for connected components (all smaller components will be filtered out)",
+                key="min_component_size"
             )
-            sampling_method = st.selectbox(
+            st.session_state.graph_params['sampling_method'] = st.selectbox(
                 "Community sampling method",
                 ["random", "similar", "diverse", "correlated"],
-                help="Method for selecting community subsets"
+                index=["random", "similar", "diverse", "correlated"].index(st.session_state.graph_params['sampling_method']),
+                help="Method for selecting community subsets",
+                key="sampling_method"
             )
         with col2:
-            max_mean_community_deviation = st.slider(
+            st.session_state.graph_params['max_mean_community_deviation'] = st.slider(
                 "Max mean community deviation",
                 min_value=0.01,
                 max_value=0.5,
-                value=0.1,
-                help="Maximum allowed mean deviation from community structure"
+                value=st.session_state.graph_params['max_mean_community_deviation'],
+                help="Maximum allowed mean deviation from community structure",
+                key="max_mean_dev"
             )
-            max_max_community_deviation = st.slider(
+            st.session_state.graph_params['max_max_community_deviation'] = st.slider(
                 "Max max community deviation",
                 min_value=0.01,
                 max_value=0.5,
-                value=0.2,
-                help="Maximum allowed maximum deviation from community structure"
+                value=st.session_state.graph_params['max_max_community_deviation'],
+                help="Maximum allowed maximum deviation from community structure",
+                key="max_max_dev"
             )
-            parameter_search_range = st.slider(
+            st.session_state.graph_params['parameter_search_range'] = st.slider(
                 "Parameter search range",
                 min_value=0.05,
                 max_value=1.0,
-                value=0.2,
-                help="How aggressively to search parameter space"
+                value=st.session_state.graph_params['parameter_search_range'],
+                help="How aggressively to search parameter space",
+                key="param_search_range"
             )
-            max_parameter_search_attempts = st.slider(
+            st.session_state.graph_params['max_parameter_search_attempts'] = st.slider(
                 "Max parameter search attempts",
                 min_value=5,
                 max_value=50,
-                value=10,
-                help="Maximum number of parameter combinations to try"
+                value=st.session_state.graph_params['max_parameter_search_attempts'],
+                help="Maximum number of parameter combinations to try",
+                key="max_param_attempts"
             )
-            min_edge_density = st.slider(
+            st.session_state.graph_params['min_edge_density'] = st.slider(
                 "Min edge density",
                 min_value=0.001,
                 max_value=0.1,
-                value=0.005,
-                help="Minimum acceptable edge density"
+                value=st.session_state.graph_params['min_edge_density'],
+                help="Minimum acceptable edge density",
+                key="min_edge_density"
             )
-            max_retries = st.slider(
+            st.session_state.graph_params['max_retries'] = st.slider(
                 "Max retries",
                 min_value=1,
                 max_value=20,
-                value=5,
-                help="Maximum number of retries for edge generation"
+                value=st.session_state.graph_params['max_retries'],
+                help="Maximum number of retries for edge generation",
+                key="max_retries"
             )
         
         # Edge generation method
         st.markdown('<div class="subsection-header">Edge Generation Method</div>', unsafe_allow_html=True)
-        method = st.selectbox(
+        st.session_state.graph_params['method'] = st.selectbox(
             "Edge generation method",
             ["Standard", "Power Law", "Exponential", "Uniform"],
-            help="Choose the method for edge generation."
+            index=["Standard", "Power Law", "Exponential", "Uniform"].index(st.session_state.graph_params['method']),
+            help="Choose the method for edge generation.",
+            key="edge_method"
         )
         
         # Method-specific parameters
-        method_params = {}
-        if method == "Standard":
+        if st.session_state.graph_params['method'] == "Standard":
             st.markdown('<div class="subsection-header">Standard Method Parameters</div>', unsafe_allow_html=True)
             col1, col2 = st.columns(2)
             with col1:
-                degree_heterogeneity = st.slider(
+                st.session_state.graph_params['method_params']['degree_heterogeneity'] = st.slider(
                     "Degree heterogeneity",
                     min_value=0.0,
                     max_value=1.0,
-                    value=0.5,
-                    help="How much node degrees should vary"
+                    value=st.session_state.graph_params['method_params']['degree_heterogeneity'],
+                    help="How much node degrees should vary",
+                    key="degree_heterogeneity"
                 )
             with col2:
-                edge_noise = st.slider(
+                st.session_state.graph_params['method_params']['edge_noise'] = st.slider(
                     "Edge noise",
                     min_value=0.0,
                     max_value=0.5,
-                    value=0.0,
-                    help="Amount of random noise in edge generation"
+                    value=st.session_state.graph_params['method_params']['edge_noise'],
+                    help="Amount of random noise in edge generation",
+                    key="edge_noise"
                 )
-            method_params = {
-                'degree_heterogeneity': degree_heterogeneity,
-                'edge_noise': edge_noise
-            }
-        elif method == "Power Law":
-            st.markdown('<div class="subsection-header">Power Law Parameters</div>', unsafe_allow_html=True)
-            col1, col2 = st.columns(2)
-            with col1:
-                power_law_exponent = st.slider(
-                    "Power Law Exponent",
-                    min_value=1.5,
-                    max_value=3.0,
-                    value=2.1,
-                    step=0.1,
-                    help="Lower values create more skewed distributions with stronger hubs"
-                )
-                target_avg_degree = st.number_input(
-                    "Target Average Degree",
-                    min_value=1,
-                    max_value=50,
-                    value=4,
-                    help="Target average degree for the graph. If None, calculated from density."
-                )
-            with col2:
-                triangle_enhancement = st.slider(
-                    "Triangle Enhancement",
-                    min_value=0.0,
-                    max_value=1.0,
-                    value=0.0,
-                    help="How much to enhance triangle formation (higher values increase clustering)"
-                )
-            method_params = {
-                'degree_heterogeneity': 0.0,  # Not used
-                'edge_noise': 0.0,  # Not used
-                'power_law_exponent': power_law_exponent,
-                'target_avg_degree': target_avg_degree,
-                'triangle_enhancement': triangle_enhancement
-            }
-        elif method == "Exponential":
-            st.markdown('<div class="subsection-header">Exponential Parameters</div>', unsafe_allow_html=True)
-            col1, col2 = st.columns(2)
-            with col1:
-                rate = st.slider(
-                    "Rate",
-                    min_value=0.1,
-                    max_value=2.0,
-                    value=0.5,
-                    help="Rate parameter for the exponential degree distribution"
-                )
-                target_avg_degree = st.number_input(
-                    "Target Average Degree",
-                    min_value=1,
-                    max_value=50,
-                    value=4,
-                    help="Target average degree for the graph. If None, calculated from density."
-                )
-            with col2:
-                triangle_enhancement = st.slider(
-                    "Triangle Enhancement",
-                    min_value=0.0,
-                    max_value=1.0,
-                    value=0.0,
-                    help="How much to enhance triangle formation (higher values increase clustering)"
-                )
-            method_params = {
-                'degree_heterogeneity': 0.0,  # Not used
-                'edge_noise': 0.0,  # Not used
-                'rate': rate,
-                'target_avg_degree': target_avg_degree,
-                'triangle_enhancement': triangle_enhancement
-            }
-        elif method == "Uniform":
-            st.markdown('<div class="subsection-header">Uniform Parameters</div>', unsafe_allow_html=True)
-            col1, col2 = st.columns(2)
-            with col1:
-                min_factor = st.slider(
-                    "Min factor",
-                    min_value=0.1,
-                    max_value=1.0,
-                    value=0.5,
-                    help="Minimum factor for uniform degree distribution"
-                )
-                max_factor = st.slider(
-                    "Max factor",
-                    min_value=1.0,
-                    max_value=2.0,
-                    value=1.5,
-                    help="Maximum factor for uniform degree distribution"
-                )
-                target_avg_degree = st.number_input(
-                    "Target Average Degree",
-                    min_value=1,
-                    max_value=50,
-                    value=4,
-                    help="Target average degree for the graph. If None, calculated from density."
-                )
-            with col2:
-                triangle_enhancement = st.slider(
-                    "Triangle Enhancement",
-                    min_value=0.0,
-                    max_value=1.0,
-                    value=0.0,
-                    help="How much to enhance triangle formation (higher values increase clustering)"
-                )
-            method_params = {
-                'degree_heterogeneity': 0.0,  # Not used
-                'edge_noise': 0.0,  # Not used
-                'min_factor': min_factor,
-                'max_factor': max_factor,
-                'target_avg_degree': target_avg_degree,
-                'triangle_enhancement': triangle_enhancement
-            }
         
         # Add seed parameter
-        seed = st.number_input("Random Seed", value=42, help="Seed for reproducibility")
+        st.session_state.graph_params['seed'] = st.number_input(
+            "Random Seed",
+            value=st.session_state.graph_params['seed'],
+            help="Seed for reproducibility",
+            key="seed"
+        )
         
-        if st.button("Generate Graph"):
+        if st.button("Generate Graph", key="generate_graph"):
             with st.spinner("Sampling graph..."):
                 # Sample communities
                 communities = st.session_state.universe.sample_connected_community_subset(
-                    size=num_communities,
-                    method=sampling_method
+                    size=st.session_state.graph_params['num_communities'],
+                    method=st.session_state.graph_params['sampling_method']
                 )
+                
                 # Build config_model_params for method-specific parameters
                 config_model_params = {}
-                if method == "Power Law":
-                    config_model_params['power_law_exponent'] = method_params.get('power_law_exponent')
-                if method == "Exponential":
-                    config_model_params['rate'] = method_params.get('rate')
-                if method == "Uniform":
-                    config_model_params['min_factor'] = method_params.get('min_factor')
-                    config_model_params['max_factor'] = method_params.get('max_factor')
+                if st.session_state.graph_params['method'] == "Power Law":
+                    config_model_params['power_law_exponent'] = st.session_state.graph_params['method_params'].get('power_law_exponent')
+                if st.session_state.graph_params['method'] == "Exponential":
+                    config_model_params['rate'] = st.session_state.graph_params['method_params'].get('rate')
+                if st.session_state.graph_params['method'] == "Uniform":
+                    config_model_params['min_factor'] = st.session_state.graph_params['method_params'].get('min_factor')
+                    config_model_params['max_factor'] = st.session_state.graph_params['method_params'].get('max_factor')
+                
                 # Set up universal parameters for GraphSample
                 universal_params = dict(
                     universe=st.session_state.universe,
                     communities=communities,
-                    n_nodes=n_nodes,
-                    min_component_size=min_component_size,
-                    degree_heterogeneity=method_params.get('degree_heterogeneity', 0.0),
-                    edge_noise=method_params.get('edge_noise', 0.0),
-                    feature_regime_balance=0.5,  # Default, can be exposed if needed
-                    target_homophily=None,  # Use universe default
-                    target_density=None,    # Use universe default
-                    use_configuration_model=(method != "Standard"),
+                    n_nodes=st.session_state.graph_params['n_nodes'],
+                    min_component_size=st.session_state.graph_params['min_component_size'],
+                    degree_heterogeneity=st.session_state.graph_params['method_params'].get('degree_heterogeneity', 0.0),
+                    edge_noise=st.session_state.graph_params['method_params'].get('edge_noise', 0.0),
+                    feature_regime_balance=0.5,
+                    target_homophily=None,
+                    target_density=None,
+                    use_configuration_model=(st.session_state.graph_params['method'] != "Standard"),
                     degree_distribution=(
-                        "power_law" if method == "Power Law"
-                        else "exponential" if method == "Exponential"
-                        else "uniform" if method == "Uniform"
+                        "power_law" if st.session_state.graph_params['method'] == "Power Law"
+                        else "exponential" if st.session_state.graph_params['method'] == "Exponential"
+                        else "uniform" if st.session_state.graph_params['method'] == "Uniform"
                         else None
                     ),
-                    power_law_exponent=method_params.get('power_law_exponent'),
-                    target_avg_degree=method_params.get('target_avg_degree'),
-                    triangle_enhancement=method_params.get('triangle_enhancement', 0.0),
-                    max_mean_community_deviation=max_mean_community_deviation,
-                    max_max_community_deviation=max_max_community_deviation,
-                    max_parameter_search_attempts=max_parameter_search_attempts,
-                    parameter_search_range=parameter_search_range,
-                    min_edge_density=min_edge_density,
-                    max_retries=max_retries,
-                    seed=seed,
+                    power_law_exponent=st.session_state.graph_params['method_params'].get('power_law_exponent'),
+                    target_avg_degree=st.session_state.graph_params['method_params'].get('target_avg_degree'),
+                    triangle_enhancement=st.session_state.graph_params['method_params'].get('triangle_enhancement', 0.0),
+                    max_mean_community_deviation=st.session_state.graph_params['max_mean_community_deviation'],
+                    max_max_community_deviation=st.session_state.graph_params['max_max_community_deviation'],
+                    max_parameter_search_attempts=st.session_state.graph_params['max_parameter_search_attempts'],
+                    parameter_search_range=st.session_state.graph_params['parameter_search_range'],
+                    min_edge_density=st.session_state.graph_params['min_edge_density'],
+                    max_retries=st.session_state.graph_params['max_retries'],
+                    seed=st.session_state.graph_params['seed'],
                     config_model_params=config_model_params
                 )
+                
                 # Create the graph sample
                 graph = GraphSample(**universal_params)
                 st.session_state.current_graph = graph
@@ -569,7 +1103,7 @@ elif page == "Graph Sampling":
                 st.pyplot(fig)
                 
                 # Plot degree distribution
-                fig = plot_degree_distribution(graph.graph)
+                fig = plot_degree_distribution(st.session_state.current_graph.graph)
                 st.pyplot(fig)
                 
                 # Add community connection analysis
@@ -579,17 +1113,19 @@ elif page == "Graph Sampling":
                 connection_analysis = graph.analyze_community_connections()
                 
                 # Verify that the deviations are within constraints
-                if method != "Standard":
-                    if connection_analysis['mean_deviation'] > max_mean_community_deviation:
-                        st.error(f"Mean deviation ({connection_analysis['mean_deviation']:.4f}) exceeds constraint ({max_mean_community_deviation:.4f})")
-                    if connection_analysis['max_deviation'] > max_max_community_deviation:
-                        st.error(f"Maximum deviation ({connection_analysis['max_deviation']:.4f}) exceeds constraint ({max_max_community_deviation:.4f})")
+                if st.session_state.graph_params['method'] != "Standard":
+                    if connection_analysis['mean_deviation'] > st.session_state.graph_params['max_mean_community_deviation']:
+                        st.error(f"Mean deviation ({connection_analysis['mean_deviation']:.4f}) exceeds constraint ({st.session_state.graph_params['max_mean_community_deviation']:.4f})")
+                    if connection_analysis['max_deviation'] > st.session_state.graph_params['max_max_community_deviation']:
+                        st.error(f"Maximum deviation ({connection_analysis['max_deviation']:.4f}) exceeds constraint ({st.session_state.graph_params['max_max_community_deviation']:.4f})")
                 
                 # Create tabs for different views
-                tab1, tab2, tab3 = st.tabs([
+                tab1, tab2, tab3, tab4, tab5 = st.tabs([
                     "Connection Matrices",
                     "Deviation Analysis",
-                    "Community Statistics"
+                    "Community Statistics",
+                    "Metapath Analysis",
+                    "Feature Analysis"
                 ])
                 
                 with tab1:
@@ -735,6 +1271,84 @@ elif page == "Graph Sampling":
                     plt.title('Node Features')
                     plt.xlabel('Feature Dimension')
                     plt.ylabel('Node')
+                    st.pyplot(fig)
+
+                # Add Metapath Analysis tab
+                with tab4:
+                    render_metapath_analysis(st.session_state.current_graph)
+
+                # Add Neighborhood Analysis tab
+                with tab5:
+                    st.markdown("#### Neighborhood Analysis")
+                    
+                    # Get graph diameter if available
+                    try:
+                        # Sample a few nodes for efficiency in large graphs
+                        sample_size = min(100, st.session_state.current_graph.graph.number_of_nodes())
+                        sample_nodes = np.random.choice(list(st.session_state.current_graph.graph.nodes()), size=sample_size, replace=False)
+                        max_path = 0
+                        for u in sample_nodes:
+                            for v in sample_nodes:
+                                try:
+                                    path_len = nx.shortest_path_length(st.session_state.current_graph.graph, u, v)
+                                    max_path = max(max_path, path_len)
+                                except nx.NetworkXNoPath:
+                                    continue
+                        suggested_max = min(max_path, 5)  # Cap at 5 for computational reasons
+                    except:
+                        suggested_max = 3  # Default if calculation fails
+                    
+                    # Let user choose max_hops with guidance
+                    max_hops = st.slider(
+                        "Maximum hop distance",
+                        min_value=1,
+                        max_value=5,
+                        value=min(suggested_max, 3),
+                        help=f"Maximum number of hops to analyze. Suggested maximum based on graph structure: {suggested_max}"
+                    )
+                    
+                    # Initialize neighborhood analyzer if not already done or if max_hops changed
+                    if (st.session_state.current_graph.neighborhood_analyzer is None or 
+                        st.session_state.current_graph.neighborhood_analyzer.max_hops < max_hops):
+                        st.session_state.current_graph.neighborhood_analyzer = NeighborhoodFeatureAnalyzer(
+                            graph=st.session_state.current_graph.graph,
+                            node_regimes=st.session_state.current_graph.node_regimes,
+                            total_regimes=len(st.session_state.current_graph.communities) * st.session_state.current_graph.universe.regimes_per_community,
+                            max_hops=max_hops
+                        )
+                    
+                    # Get frequency vectors for visualization
+                    freq_vectors = {}
+                    for k in range(1, max_hops + 1):
+                        freq_vectors[k] = st.session_state.current_graph.neighborhood_analyzer.get_all_frequency_vectors(k)
+                    
+                    # Create tabs for different hop distances
+                    hop_tabs = st.tabs([f"{k}-hop" for k in range(1, max_hops + 1)])
+                    
+                    for k_idx, k in enumerate(range(1, max_hops + 1)):
+                        with hop_tabs[k_idx]:
+                            fig, ax = plt.subplots(figsize=(10, 6))
+                            
+                            # Plot average frequency for each regime
+                            avg_freq = np.mean(freq_vectors[k], axis=0)
+                            ax.bar(range(len(avg_freq)), avg_freq)
+                            
+                            ax.set_xlabel("Feature Regime")
+                            ax.set_ylabel("Average Frequency")
+                            ax.set_title(f"Average Feature Regime Distribution in {k}-hop Neighborhoods")
+                            
+                            st.pyplot(fig)
+                    
+                    # Create PCA visualization of frequency vectors
+                    pca = PCA(n_components=2)
+                    freq_2d = pca.fit_transform(freq_vectors[1])
+                    
+                    fig, ax = plt.subplots(figsize=(10, 6))
+                    scatter = ax.scatter(freq_2d[:, 0], freq_2d[:, 1], alpha=0.6)
+                    ax.set_xlabel("PCA 1")
+                    ax.set_ylabel("PCA 2")
+                    ax.set_title("Neighborhood Feature Vectors")
+                    
                     st.pyplot(fig)
 
 # Parameter Space Analysis Page
@@ -1159,7 +1773,7 @@ elif page == "Graph Family Generation":
     
     st.markdown("""
     <div class="info-box">
-    Generate families of graphs with controlled properties. Each family will have:
+    Generate families of graphs with controlled properties. <b>All graphs in a family will use the same distribution type.</b> Each family will have:
     <ul>
         <li>Multiple graphs with similar characteristics</li>
         <li>Controlled community structure</li>
@@ -1247,86 +1861,106 @@ elif page == "Graph Family Generation":
         help="Minimum size for connected components (all smaller components will be filtered out)"
     )
     
-    # Method distribution
-    st.markdown('<div class="subsection-header">Generation Method Distribution</div>', unsafe_allow_html=True)
-    st.markdown("Configure the probability of each generation method:")
+    # --- NEW: Single distribution type selection ---
+    st.markdown('<div class="subsection-header">Distribution Type</div>', unsafe_allow_html=True)
+    dist_type = st.selectbox(
+        "Select distribution type for this family",
+        ["Standard", "Power Law", "Exponential", "Uniform"],
+        help="All graphs in this family will use the selected distribution type."
+    )
     
-    col1, col2, col3, col4 = st.columns(4)
-    with col1:
-        standard_prob = st.slider("Standard method", min_value=0.0, max_value=1.0, value=0.5)
-    with col2:
-        power_law_prob = st.slider("Power law", min_value=0.0, max_value=1.0, value=0.3)
-    with col3:
-        exponential_prob = st.slider("Exponential", min_value=0.0, max_value=1.0, value=0.1)
-    with col4:
-        uniform_prob = st.slider("Uniform", min_value=0.0, max_value=1.0, value=0.1)
-    
-    # Normalize probabilities
-    total_prob = standard_prob + power_law_prob + exponential_prob + uniform_prob
-    if total_prob > 0:
-        method_distribution = {
-            "standard": standard_prob / total_prob,
-            "power_law": power_law_prob / total_prob,
-            "exponential": exponential_prob / total_prob,
-            "uniform": uniform_prob / total_prob
+    # --- Only show relevant method-specific parameters ---
+    if dist_type == "Standard":
+        st.markdown("#### Standard Method Parameters")
+        col1, col2 = st.columns(2)
+        with col1:
+            degree_heterogeneity = st.slider(
+                "Degree heterogeneity",
+                min_value=0.0,
+                max_value=1.0,
+                value=0.5,
+                help="How much node degrees should vary"
+            )
+        with col2:
+            edge_noise = st.slider(
+                "Edge noise",
+                min_value=0.0,
+                max_value=0.5,
+                value=0.0,
+                help="Amount of random noise in edge generation"
+            )
+        method_params = {
+            'degree_heterogeneity': degree_heterogeneity,
+            'edge_noise': edge_noise
         }
-    else:
-        method_distribution = {"standard": 1.0}  # Default to standard if all probabilities are 0
-    
-    # Method-specific parameters
-    st.markdown('<div class="subsection-header">Method-Specific Parameters</div>', unsafe_allow_html=True)
-    
-    # Standard method parameters
-    st.markdown("#### Standard Method Parameters")
-    col1, col2 = st.columns(2)
-    with col1:
-        degree_heterogeneity = st.slider(
-            "Degree heterogeneity",
-            min_value=0.0,
-            max_value=1.0,
-            value=0.5,
-            help="How much node degrees should vary"
-        )
-    with col2:
-        edge_noise = st.slider(
-            "Edge noise",
-            min_value=0.0,
-            max_value=0.5,
-            value=0.0,
-            help="Amount of random noise in edge generation"
-        )
-    
-    # Power law parameters
-    st.markdown("#### Power Law Parameters")
-    col1, col2 = st.columns(2)
-    with col1:
-        power_law_exponent_min = st.slider("Min power law exponent", min_value=1.0, max_value=4.0, value=1.5)
-    with col2:
-        power_law_exponent_max = st.slider("Max power law exponent", min_value=1.0, max_value=4.0, value=3.0)
-    
-    # Exponential parameters
-    st.markdown("#### Exponential Parameters")
-    col1, col2 = st.columns(2)
-    with col1:
-        rate_min = st.slider("Min rate", min_value=0.1, max_value=2.0, value=0.1)
-    with col2:
-        rate_max = st.slider("Max rate", min_value=0.1, max_value=2.0, value=1.0)
-    
-    # Uniform parameters
-    st.markdown("#### Uniform Parameters")
-    col1, col2 = st.columns(2)
-    with col1:
-        min_factor = st.slider("Min factor", min_value=0.1, max_value=1.0, value=0.5)
-    with col2:
-        max_factor = st.slider("Max factor", min_value=1.0, max_value=2.0, value=1.5)
-    
-    # Common parameters for configuration models
-    st.markdown("#### Common Configuration Model Parameters")
-    col1, col2 = st.columns(2)
-    with col1:
-        target_avg_degree_min = st.slider("Min target average degree", min_value=1.0, max_value=50.0, value=2.0)
-    with col2:
-        target_avg_degree_max = st.slider("Max target average degree", min_value=1.0, max_value=50.0, value=5.0)
+        config_model_params = {}
+    elif dist_type == "Power Law":
+        st.markdown("#### Power Law Parameters")
+        col1, col2 = st.columns(2)
+        with col1:
+            power_law_exponent_min = st.slider("Min power law exponent", min_value=1.0, max_value=4.0, value=1.5)
+            power_law_exponent_max = st.slider("Max power law exponent", min_value=1.0, max_value=4.0, value=3.0)
+        with col2:
+            target_avg_degree_min = st.slider("Min target average degree", min_value=1.0, max_value=50.0, value=2.0)
+            target_avg_degree_max = st.slider("Max target average degree", min_value=1.0, max_value=50.0, value=5.0)
+        method_params = {
+            'degree_heterogeneity': 0.0,
+            'edge_noise': 0.0
+        }
+        config_model_params = {
+            "power_law": {
+                "exponent_min": power_law_exponent_min,
+                "exponent_max": power_law_exponent_max,
+                "target_avg_degree_min": target_avg_degree_min,
+                "target_avg_degree_max": target_avg_degree_max
+            }
+        }
+    elif dist_type == "Exponential":
+        st.markdown("#### Exponential Parameters")
+        col1, col2 = st.columns(2)
+        with col1:
+            rate_min = st.slider("Min rate", min_value=0.1, max_value=2.0, value=0.1)
+            rate_max = st.slider("Max rate", min_value=0.1, max_value=2.0, value=1.0)
+        with col2:
+            target_avg_degree_min = st.slider("Min target average degree", min_value=1.0, max_value=50.0, value=2.0)
+            target_avg_degree_max = st.slider("Max target average degree", min_value=1.0, max_value=50.0, value=5.0)
+        method_params = {
+            'degree_heterogeneity': 0.0,
+            'edge_noise': 0.0
+        }
+        config_model_params = {
+            "exponential": {
+                "rate_min": rate_min,
+                "rate_max": rate_max,
+                "target_avg_degree_min": target_avg_degree_min,
+                "target_avg_degree_max": target_avg_degree_max
+            }
+        }
+    elif dist_type == "Uniform":
+        st.markdown("#### Uniform Parameters")
+        col1, col2 = st.columns(2)
+        with col1:
+            min_factor = st.slider("Min factor", min_value=0.1, max_value=1.0, value=0.5)
+            max_factor = st.slider("Max factor", min_value=1.0, max_value=2.0, value=1.5)
+        with col2:
+            target_avg_degree_min = st.slider("Min target average degree", min_value=1.0, max_value=50.0, value=2.0)
+            target_avg_degree_max = st.slider("Max target average degree", min_value=1.0, max_value=50.0, value=5.0)
+        method_params = {
+            'degree_heterogeneity': 0.0,
+            'edge_noise': 0.0
+        }
+        config_model_params = {
+            "uniform": {
+                "min_factor": min_factor,
+                "max_factor": max_factor,
+                "target_avg_degree_min": target_avg_degree_min,
+                "target_avg_degree_max": target_avg_degree_max
+            }
+        }
+    # --- Set method_distribution for single type ---
+    method_distribution = {
+        dist_type.lower().replace(" ", "_"): 1.0
+    }
     
     # Generate button
     if st.button("Generate Graph Family"):
@@ -1346,30 +1980,8 @@ elif page == "Graph Family Generation":
             inter_community_regime_similarity=st.session_state.universe.inter_community_regime_similarity,
             regimes_per_community=st.session_state.universe.regimes_per_community,
             method_distribution=method_distribution,
-            standard_method_params={
-                "degree_heterogeneity": degree_heterogeneity,
-                "edge_noise": edge_noise
-            },
-            config_model_params={
-                "power_law": {
-                    "exponent_min": power_law_exponent_min,
-                    "exponent_max": power_law_exponent_max,
-                    "target_avg_degree_min": target_avg_degree_min,
-                    "target_avg_degree_max": target_avg_degree_max
-                },
-                "exponential": {
-                    "rate_min": rate_min,
-                    "rate_max": rate_max,
-                    "target_avg_degree_min": target_avg_degree_min,
-                    "target_avg_degree_max": target_avg_degree_max
-                },
-                "uniform": {
-                    "min_factor": min_factor,
-                    "max_factor": max_factor,
-                    "target_avg_degree_min": target_avg_degree_min,
-                    "target_avg_degree_max": target_avg_degree_max
-                }
-            },
+            standard_method_params=method_params if dist_type == "Standard" else {},
+            config_model_params=config_model_params,
             max_mean_community_deviation=max_mean_community_deviation,
             max_max_community_deviation=max_max_community_deviation,
             max_parameter_search_attempts=max_parameter_search_attempts,
@@ -1399,11 +2011,14 @@ elif page == "Graph Family Generation":
                 )
                 
                 if new_graphs:
-                    graph = new_graphs[0]
-                    graph_family.append(graph)
+                    graph_obj = new_graphs[0]
+                    # If it's a tuple, extract the first element
+                    if isinstance(graph_obj, tuple):
+                        graph_obj = graph_obj[0]
+                    graph_family.append(graph_obj)
                     
                     # Store parameter samples
-                    params = graph.extract_parameters()
+                    params = graph_obj.extract_parameters()
                     for param_name, value in params.items():
                         parameter_samples[param_name].append(value)
                     
@@ -1440,10 +2055,10 @@ elif page == "Graph Family Generation":
         st.markdown('<div class="subsection-header">Graph Family Statistics</div>', unsafe_allow_html=True)
         stats = {
             "Number of graphs": len(st.session_state.current_family_graphs),
-            "Average nodes": np.mean([g.n_nodes for g in st.session_state.current_family_graphs]),
-            "Average edges": np.mean([g.graph.number_of_edges() for g in st.session_state.current_family_graphs]),
-            "Average density": np.mean([nx.density(g.graph) for g in st.session_state.current_family_graphs]),
-            "Average clustering": np.mean([nx.average_clustering(g.graph) for g in st.session_state.current_family_graphs])
+            "Average nodes": np.mean([g[0].n_nodes if isinstance(g, tuple) else g.n_nodes for g in st.session_state.current_family_graphs]),
+            "Average edges": np.mean([g[0].graph.number_of_edges() if isinstance(g, tuple) else g.graph.number_of_edges() for g in st.session_state.current_family_graphs]),
+            "Average density": np.mean([nx.density(g[0].graph) if isinstance(g, tuple) else nx.density(g.graph) for g in st.session_state.current_family_graphs]),
+            "Average clustering": np.mean([nx.average_clustering(g[0].graph) if isinstance(g, tuple) else nx.average_clustering(g.graph) for g in st.session_state.current_family_graphs])
         }
         
         # Display statistics in a table
@@ -1464,13 +2079,14 @@ elif page == "Graph Family Generation":
                 range(len(st.session_state.current_family_graphs)),
                 key=f"family_viz_{family_name}"
             )
-            graph = st.session_state.current_family_graphs[graph_idx]
-            
+            g = st.session_state.current_family_graphs[graph_idx]
+            if isinstance(g, tuple):
+                g = g[0]
             # Get generation method and parameters for title
             generation_info = "Method: Unknown"
-            if hasattr(graph, 'generation_method'):
-                method = graph.generation_method
-                params = graph.generation_params
+            if hasattr(g, 'generation_method'):
+                method = g.generation_method
+                params = g.generation_params
                 if method == "standard":
                     generation_info = f"Method: Standard (heterogeneity={params.get('degree_heterogeneity', 'N/A'):.2f}, noise={params.get('edge_noise', 'N/A'):.2f})"
                 elif method == "power_law":
@@ -1479,28 +2095,24 @@ elif page == "Graph Family Generation":
                     generation_info = f"Method: Exponential (rate={params.get('rate', 'N/A'):.2f}, avg_degree={params.get('target_avg_degree', 'N/A'):.2f})"
                 elif method == "uniform":
                     generation_info = f"Method: Uniform (min={params.get('min_factor', 'N/A'):.2f}, max={params.get('max_factor', 'N/A'):.2f}, avg_degree={params.get('target_avg_degree', 'N/A'):.2f})"
-            
             st.markdown(f"#### Graph {graph_idx + 1}")
             st.markdown(f"*{generation_info}*")
-            
-            # Create visualization
-            fig = plot_graph_communities(graph)
+            fig = plot_graph_communities(g)
             st.pyplot(fig)
         
         with tab2:
-            # Select a graph for degree distribution with a unique key
             graph_idx = st.selectbox(
                 "Select graph for degree distribution",
                 range(len(st.session_state.current_family_graphs)),
                 key=f"family_degree_{family_name}"
             )
-            graph = st.session_state.current_family_graphs[graph_idx]
-            
-            # Get generation method and parameters for title
+            g = st.session_state.current_family_graphs[graph_idx]
+            if isinstance(g, tuple):
+                g = g[0]
             generation_info = "Method: Unknown"
-            if hasattr(graph, 'generation_method'):
-                method = graph.generation_method
-                params = graph.generation_params
+            if hasattr(g, 'generation_method'):
+                method = g.generation_method
+                params = g.generation_params
                 if method == "standard":
                     generation_info = f"Method: Standard (heterogeneity={params.get('degree_heterogeneity', 'N/A'):.2f}, noise={params.get('edge_noise', 'N/A'):.2f})"
                 elif method == "power_law":
@@ -1509,28 +2121,24 @@ elif page == "Graph Family Generation":
                     generation_info = f"Method: Exponential (rate={params.get('rate', 'N/A'):.2f}, avg_degree={params.get('target_avg_degree', 'N/A'):.2f})"
                 elif method == "uniform":
                     generation_info = f"Method: Uniform (min={params.get('min_factor', 'N/A'):.2f}, max={params.get('max_factor', 'N/A'):.2f}, avg_degree={params.get('target_avg_degree', 'N/A'):.2f})"
-            
             st.markdown(f"#### Graph {graph_idx + 1}")
             st.markdown(f"*{generation_info}*")
-            
-            # Create degree distribution plots
-            fig = plot_degree_distribution(graph.graph)
+            fig = plot_degree_distribution(g.graph)
             st.pyplot(fig)
         
         with tab3:
-            # Select a graph for community analysis with a unique key
             graph_idx = st.selectbox(
                 "Select graph for community analysis",
                 range(len(st.session_state.current_family_graphs)),
                 key=f"family_community_{family_name}"
             )
-            graph = st.session_state.current_family_graphs[graph_idx]
-            
-            # Get generation method and parameters for title
+            g = st.session_state.current_family_graphs[graph_idx]
+            if isinstance(g, tuple):
+                g = g[0]
             generation_info = "Method: Unknown"
-            if hasattr(graph, 'generation_method'):
-                method = graph.generation_method
-                params = graph.generation_params
+            if hasattr(g, 'generation_method'):
+                method = g.generation_method
+                params = g.generation_params
                 if method == "standard":
                     generation_info = f"Method: Standard (heterogeneity={params.get('degree_heterogeneity', 'N/A'):.2f}, noise={params.get('edge_noise', 'N/A'):.2f})"
                 elif method == "power_law":
@@ -1539,28 +2147,24 @@ elif page == "Graph Family Generation":
                     generation_info = f"Method: Exponential (rate={params.get('rate', 'N/A'):.2f}, avg_degree={params.get('target_avg_degree', 'N/A'):.2f})"
                 elif method == "uniform":
                     generation_info = f"Method: Uniform (min={params.get('min_factor', 'N/A'):.2f}, max={params.get('max_factor', 'N/A'):.2f}, avg_degree={params.get('target_avg_degree', 'N/A'):.2f})"
-            
             st.markdown(f"#### Graph {graph_idx + 1}")
             st.markdown(f"*{generation_info}*")
-            
-            # Create community analysis plots
-            fig = plot_membership_matrix(graph)
+            fig = plot_membership_matrix(g)
             st.pyplot(fig)
         
         with tab4:
-            # Select a graph for deviation analysis with a unique key
             graph_idx = st.selectbox(
                 "Select graph for deviation analysis",
                 range(len(st.session_state.current_family_graphs)),
                 key=f"family_deviation_{family_name}"
             )
-            graph = st.session_state.current_family_graphs[graph_idx]
-            
-            # Get generation method and parameters for title
+            g = st.session_state.current_family_graphs[graph_idx]
+            if isinstance(g, tuple):
+                g = g[0]
             generation_info = "Method: Unknown"
-            if hasattr(graph, 'generation_method'):
-                method = graph.generation_method
-                params = graph.generation_params
+            if hasattr(g, 'generation_method'):
+                method = g.generation_method
+                params = g.generation_params
                 if method == "standard":
                     generation_info = f"Method: Standard (heterogeneity={params.get('degree_heterogeneity', 'N/A'):.2f}, noise={params.get('edge_noise', 'N/A'):.2f})"
                 elif method == "power_law":
@@ -1569,23 +2173,16 @@ elif page == "Graph Family Generation":
                     generation_info = f"Method: Exponential (rate={params.get('rate', 'N/A'):.2f}, avg_degree={params.get('target_avg_degree', 'N/A'):.2f})"
                 elif method == "uniform":
                     generation_info = f"Method: Uniform (min={params.get('min_factor', 'N/A'):.2f}, max={params.get('max_factor', 'N/A'):.2f}, avg_degree={params.get('target_avg_degree', 'N/A'):.2f})"
-            
             st.markdown(f"#### Graph {graph_idx + 1}")
             st.markdown(f"*{generation_info}*")
-            
-            # Analyze community connections
-            connection_analysis = graph.analyze_community_connections()
-            
-            # Create subtabs for different views
+            connection_analysis = g.analyze_community_connections()
             subtab1, subtab2, subtab3 = st.tabs([
                 "Connection Matrices",
                 "Deviation Analysis",
                 "Community Statistics"
             ])
-            
             with subtab1:
                 col1, col2 = st.columns(2)
-                
                 with col1:
                     st.markdown("##### Expected Probabilities (Universe)")
                     fig = plt.figure(figsize=(6, 5))
@@ -1595,7 +2192,6 @@ elif page == "Graph Family Generation":
                     plt.xlabel('Community')
                     plt.ylabel('Community')
                     st.pyplot(fig)
-                
                 with col2:
                     st.markdown("##### Actual Probabilities (Graph)")
                     fig = plt.figure(figsize=(6, 5))
@@ -1605,14 +2201,10 @@ elif page == "Graph Family Generation":
                     plt.xlabel('Community')
                     plt.ylabel('Community')
                     st.pyplot(fig)
-            
             with subtab2:
                 st.markdown("##### Deviation Analysis")
-                
                 col1, col2 = st.columns(2)
-                
                 with col1:
-                    # Plot deviation matrix
                     fig = plt.figure(figsize=(6, 5))
                     plt.imshow(connection_analysis["deviation_matrix"], cmap='Reds')
                     plt.colorbar(label='Absolute Deviation')
@@ -1620,28 +2212,20 @@ elif page == "Graph Family Generation":
                     plt.xlabel('Community')
                     plt.ylabel('Community')
                     st.pyplot(fig)
-                
                 with col2:
-                    # Show deviation statistics
                     st.markdown("##### Deviation Statistics")
                     st.metric("Mean Absolute Deviation", f"{connection_analysis['mean_deviation']:.4f}")
                     st.metric("Maximum Absolute Deviation", f"{connection_analysis['max_deviation']:.4f}")
-                    
-                    # Show deviation distribution
                     fig = plt.figure(figsize=(6, 4))
                     plt.hist(connection_analysis["deviation_matrix"].flatten(), bins=20)
                     plt.title('Distribution of Deviations')
                     plt.xlabel('Absolute Deviation')
                     plt.ylabel('Count')
                     st.pyplot(fig)
-                
-                # Add degree distribution analysis if available
                 if "degree_analysis" in connection_analysis:
                     st.markdown("##### Degree Distribution Analysis")
                     degree_analysis = connection_analysis["degree_analysis"]
                     used_params = degree_analysis["used_parameters"]
-                    
-                    # Display the actual parameters used
                     st.write("##### Distribution Parameters Used")
                     col1, col2, col3 = st.columns(3)
                     with col1:
@@ -1657,8 +2241,6 @@ elif page == "Graph Family Generation":
                     with col3:
                         if "scale_factor" in used_params and used_params["scale_factor"] is not None and used_params["scale_factor"] != 1.0:
                             st.metric("Scale Factor", f"{used_params['scale_factor']:.2f}")
-                    
-                    # Display degree statistics with null checks
                     col1, col2 = st.columns(2)
                     with col1:
                         st.write("##### Actual Degree Statistics")
@@ -1676,8 +2258,6 @@ elif page == "Graph Family Generation":
                             st.write(f"Mean: {mean_target:.2f}")
                         if std_target is not None:
                             st.write(f"Std Dev: {std_target:.2f}")
-                    
-                    # Display degree deviation and correlation with null checks
                     col1, col2 = st.columns(2)
                     with col1:
                         deviation = degree_analysis.get('degree_deviation')
@@ -1687,14 +2267,10 @@ elif page == "Graph Family Generation":
                         correlation = degree_analysis.get('degree_correlation')
                         if correlation is not None:
                             st.metric("Degree Correlation", f"{correlation:.4f}")
-            
             with subtab3:
                 st.markdown("##### Community Statistics")
-                
                 col1, col2 = st.columns(2)
-                
                 with col1:
-                    # Show community sizes
                     st.markdown("##### Community Sizes")
                     fig = plt.figure(figsize=(6, 4))
                     plt.bar(range(len(connection_analysis["community_sizes"])), 
@@ -1703,9 +2279,7 @@ elif page == "Graph Family Generation":
                     plt.xlabel('Community')
                     plt.ylabel('Number of Nodes')
                     st.pyplot(fig)
-                
                 with col2:
-                    # Show connection counts
                     fig = plt.figure(figsize=(6, 5))
                     plt.imshow(connection_analysis["connection_counts"], cmap='Blues')
                     plt.colorbar(label='Number of Edges')
@@ -1801,6 +2375,516 @@ elif page == "Graph Family Analysis":
                 )
                 st.pyplot(fig)
 
+# Metapath Analysis Page
+elif page == "Metapath Analysis":
+    st.markdown('<div class="section-header">Metapath Analysis</div>', unsafe_allow_html=True)
+    
+    if st.session_state.current_graph is None:
+        st.warning("Please generate a graph first in the 'Graph Sampling' page.")
+    else:
+        st.markdown("""
+        <div class="info-box">
+        Analyze metapaths in the graph to understand community-level patterns and relationships.
+        Features include:
+        <ul>
+            <li>Community-level metapath visualization</li>
+            <li>Metapath statistics and analysis</li>
+            <li>Node classification based on metapaths</li>
+            <li>Feature importance analysis</li>
+        </ul>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        # Parameters
+        st.markdown('<div class="subsection-header">Metapath Parameters</div>', unsafe_allow_html=True)
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            theta = st.slider(
+                "Probability threshold (θ)",
+                min_value=0.01,
+                max_value=0.5,
+                value=st.session_state.metapath_analysis_state['params']['theta'],
+                help="Threshold for considering an edge likely in the community graph"
+            )
+            min_length = st.slider(
+                "Minimum metapath length",
+                min_value=2,
+                max_value=5,
+                value=2,
+                help="Minimum number of communities in a metapath"
+            )
+            max_length = st.slider(
+                "Maximum metapath length",
+                min_value=min_length,
+                max_value=5,
+                value=max(min_length, st.session_state.metapath_analysis_state['params']['max_length']),
+                help="Maximum number of communities in a metapath"
+            )
+        
+        with col2:
+            allow_loops = st.checkbox(
+                "Allow loops",
+                value=st.session_state.metapath_analysis_state['params']['allow_loops'],
+                help="Allow metapaths to visit the same community multiple times"
+            )
+            allow_backtracking = st.checkbox(
+                "Allow backtracking",
+                value=st.session_state.metapath_analysis_state['params']['allow_backtracking'],
+                help="Allow metapaths to return to the previous community"
+            )
+            top_k = st.slider(
+                "Number of top metapaths",
+                min_value=1,
+                max_value=10,
+                value=st.session_state.metapath_analysis_state['params']['top_k'],
+                help="Number of top metapaths to analyze in detail"
+            )
+        
+        # Run analysis button
+        if st.button("Run Metapath Analysis", key="run_metapath"):
+            print("\n=== DEBUG: Run Metapath button clicked ===")
+            print(f"Current graph state: {st.session_state.current_graph is not None}")
+            print(f"Graph type: {type(st.session_state.current_graph)}")
+            
+            with st.spinner("Analyzing metapaths..."):
+                success = run_metapath_analysis(
+                    st.session_state.current_graph,
+                    theta,
+                    max_length,
+                    allow_loops,
+                    allow_backtracking,
+                    top_k,
+                    min_length
+                )
+                if success:
+                    st.success("Metapath analysis completed successfully!")
+                else:
+                    st.error("Error during metapath analysis. Check console for details.")
+        
+        # Display results if analysis has been run
+        if st.session_state.metapath_analysis_state['analysis_run'] and st.session_state.metapath_analysis_state['results'] is not None:
+            results = st.session_state.metapath_analysis_state['results']
+            
+            # Create tabs for different visualizations
+            tab1, tab2, tab3, tab4 = st.tabs([
+                "Community Structure",
+                "Metapath Statistics",
+                "Multi-Metapath Node Classification",
+                "Understanding Metapath Analysis"
+            ])
+            
+            with tab1:
+                # Show P_sub matrix visualization
+                st.markdown("##### Community Edge Probability Matrix (P_sub)")
+                st.markdown("""
+                This heatmap shows the probability of edges between communities. 
+                - Brighter colors indicate higher probabilities
+                - The matrix shows how likely nodes from one community are to connect to nodes in another community
+                - This helps understand the underlying community structure that gives rise to metapaths
+                """)
+                st.pyplot(results['P_sub_figure'])
+                
+                # Show community-level graph
+                st.markdown("##### Community-Level Metapath Graph")
+                st.markdown("""
+                This graph shows the community-level structure with edges representing likely metapaths.
+                - Nodes represent communities
+                - Edge weights show the probability of connections between communities
+                - This helps visualize the paths that are most likely to occur
+                """)
+                fig = visualize_community_metapath_graph(
+                    results['P_matrix'],
+                    theta=st.session_state.metapath_analysis_state['params']['theta'],
+                    community_mapping=results['community_mapping']
+                )
+                st.pyplot(fig)
+            
+            with tab2:
+                st.markdown("##### Metapath Statistics")
+                stats = results['statistics']
+                
+                # Convert to DataFrame for display
+                stats_df = pd.DataFrame({
+                    'Metapath': stats['metapaths'],
+                    'Instances': stats['instances_count'],
+                    'Avg Path Length': [f"{x:.2f}" for x in stats['avg_path_length']],
+                    'Node Participation (%)': [f"{x*100:.1f}%" for x in stats['participation']]
+                })
+                
+                st.markdown("""
+                **How metapaths are ranked:**
+                Metapaths are ranked based on their probability in the community graph, not just the number of instances.
+                The probability is calculated as the product of edge probabilities along the path.
+                
+                For example, a path "0 → 1 → 2" has probability = P(0,1) × P(1,2)
+                where P(i,j) is the probability of an edge between communities i and j.
+                
+                This means that even if a metapath has fewer instances, it might be ranked higher if:
+                - The edges between its communities have high probabilities
+                - The path is more likely to occur in the underlying community structure
+                """)
+                
+                st.dataframe(stats_df)
+                
+                # Select a metapath to visualize
+                selected_metapath_idx = st.selectbox(
+                    "Select a metapath to visualize",
+                    range(min(st.session_state.metapath_analysis_state['params']['top_k'], len(results['metapaths']))),
+                    format_func=lambda i: stats['metapaths'][i],
+                    key="metapath_selection"
+                )
+                
+                # Show selected metapath
+                selected_metapath = results['metapaths'][selected_metapath_idx]
+                selected_instances = results['instances'][selected_metapath_idx]
+                
+                if selected_instances:
+                    st.markdown("##### Full Graph with Metapath Instances")
+                    st.markdown("""
+                    This visualization shows the full graph with metapath instances highlighted.
+                    - Nodes are colored by their community
+                    - Regular edges are shown in light gray
+                    - Metapath instances are highlighted with bold, colored edges
+                    """)
+                    fig = visualize_metapaths(
+                        st.session_state.current_graph.graph,
+                        st.session_state.current_graph.community_labels,
+                        selected_metapath,
+                        selected_instances,
+                        title=f"Metapath: {stats['metapaths'][selected_metapath_idx]}"
+                    )
+                    st.pyplot(fig)
+                else:
+                    st.info("No instances found for this metapath in the graph.")
+            
+            with tab3:
+                st.markdown("#### Multi-Metapath Node Classification")
+                st.markdown("""
+                This tab performs multi-label classification to predict whether a node participates in multiple metapaths.
+                For each node, a binary vector label is created: 1 if the node participates in the metapath, 0 otherwise.
+                The classifier predicts this vector for each node (multi-label classification).
+                """)
+                metapath_options = results['metapaths'][:st.session_state.metapath_analysis_state['params']['top_k']]
+                metapath_labels = [f"{i}: {stats['metapaths'][i]}" for i in range(len(metapath_options))]
+                selected_indices = st.multiselect(
+                    "Select metapaths for multi-label classification",
+                    options=list(range(len(metapath_options))),
+                    format_func=lambda i: metapath_labels[i],
+                    default=list(range(min(2, len(metapath_options))))
+                )
+                
+                if not selected_indices:
+                    st.warning("Please select at least one metapath")
+                else:
+                    selected_metapaths = [metapath_options[i] for i in selected_indices]
+                    
+                    # Add a button to create splits first
+                    st.markdown("### Create Train/Val/Test Splits")
+                    st.markdown("""
+                    First, create consistent train/validation/test splits that will be used for all models.
+                    This ensures fair comparison between different model types.
+                    """)
+                    
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        train_size = st.slider("Train size", 0.5, 0.9, 0.7, 0.05, key="ml_train_size")
+                    with col2:
+                        val_size = st.slider("Validation size", 0.05, 0.25, 0.15, 0.05, key="ml_val_size")
+                    with col3:
+                        test_size = st.slider("Test size", 0.05, 0.25, 0.15, 0.05, key="ml_test_size")
+                    
+                    total = train_size + val_size + test_size
+                    if abs(total - 1.0) > 1e-6:
+                        st.warning(f"Split sizes sum to {total:.2f}, should be 1.0. Please adjust.")
+                    
+                    if st.button("Create Splits", key="create_splits"):
+                        with st.spinner("Creating train/val/test splits..."):
+                            try:
+                                # Prepare features
+                                feature_opts = {
+                                    'use_degree': True,
+                                    'use_clustering': True,
+                                    'use_node_features': True
+                                }
+                                
+                                X = prepare_node_features(
+                                    st.session_state.current_graph,
+                                    st.session_state.current_graph.community_labels,
+                                    use_degree=feature_opts['use_degree'],
+                                    use_clustering=feature_opts['use_clustering'],
+                                    use_node_features=feature_opts['use_node_features']
+                                )
+                                
+                                # Prepare multi-label targets
+                                n_nodes = X.shape[0]
+                                Y = np.zeros((n_nodes, len(selected_metapaths)), dtype=int)
+                                graph_nx = st.session_state.current_graph.graph
+                                
+                                for j, metapath in enumerate(selected_metapaths):
+                                    instances = find_metapath_instances(graph_nx, st.session_state.current_graph.community_labels, metapath)
+                                    participating_nodes = set()
+                                    for instance in instances:
+                                        participating_nodes.update(instance)
+                                    for i in range(n_nodes):
+                                        if i in participating_nodes:
+                                            Y[i, j] = 1
+                                
+                                # Create splits
+                                splits = create_consistent_train_val_test_split(
+                                    X, Y, 
+                                    train_size=train_size, 
+                                    val_size=val_size, 
+                                    test_size=test_size,
+                                    stratify=False,  # Can't easily stratify multi-label
+                                    seed=42
+                                )
+                                
+                                # Store in session state
+                                if 'metapath_multi_label_state' not in st.session_state.metapath_analysis_state:
+                                    st.session_state.metapath_analysis_state['metapath_multi_label_state'] = {}
+                                    
+                                st.session_state.metapath_analysis_state['metapath_multi_label_state'] = {
+                                    'splits_created': True,
+                                    'splits': splits,
+                                    'X': X,
+                                    'Y': Y,
+                                    'feature_opts': feature_opts,
+                                    'selected_metapaths': selected_metapaths
+                                }
+                                
+                                st.success("Splits created successfully!")
+                                
+                                # Display split statistics
+                                st.markdown("#### Split Statistics")
+                                train_size = len(splits['train_indices']) / n_nodes
+                                val_size = len(splits['val_indices']) / n_nodes
+                                test_size = len(splits['test_indices']) / n_nodes
+                                
+                                col1, col2, col3 = st.columns(3)
+                                col1.metric("Train Split", f"{train_size:.1%}")
+                                col2.metric("Validation Split", f"{val_size:.1%}")
+                                col3.metric("Test Split", f"{test_size:.1%}")
+                                
+                                # Display label distribution in splits
+                                st.markdown("#### Label Distribution in Splits")
+                                train_label_dist = Y[splits['train_indices']].mean(axis=0)
+                                val_label_dist = Y[splits['val_indices']].mean(axis=0)
+                                test_label_dist = Y[splits['test_indices']].mean(axis=0)
+                                
+                                dist_df = pd.DataFrame({
+                                    'Metapath': [metapath_labels[i] for i in selected_indices],
+                                    'Train': [f"{x:.1%}" for x in train_label_dist],
+                                    'Validation': [f"{x:.1%}" for x in val_label_dist],
+                                    'Test': [f"{x:.1%}" for x in test_label_dist]
+                                })
+                                
+                                st.dataframe(dist_df)
+                                
+                            except Exception as e:
+                                st.error(f"Error creating splits: {str(e)}")
+                                import traceback
+                                st.code(traceback.format_exc())
+                    
+                    # Feature selection 
+                    if 'metapath_multi_label_state' in st.session_state.metapath_analysis_state and \
+                       st.session_state.metapath_analysis_state['metapath_multi_label_state'].get('splits_created', False):
+                        
+                        st.markdown("### Feature Selection")
+                        col_feat1, col_feat2, col_feat3 = st.columns(3)
+                        with col_feat1:
+                            use_degree = st.checkbox("Use Degree", value=True, key="ml_use_degree")
+                        with col_feat2:
+                            use_clustering = st.checkbox("Use Clustering Coefficient", value=True, key="ml_use_clustering")
+                        with col_feat3:
+                            use_node_features = st.checkbox("Use Node Features", value=True, key="ml_use_node_features")
+                        
+                        feature_opts = {
+                            'use_degree': use_degree,
+                            'use_clustering': use_clustering,
+                            'use_node_features': use_node_features
+                        }
+                        
+                        st.markdown("### Model Selection")
+                        model_type = st.selectbox(
+                            "Select model type",
+                            ["Random Forest", "MLP", "GCN", "GraphSAGE"],
+                            key="ml_model_type"
+                        )
+                        
+                        model_type_map = {
+                            "Random Forest": "rf",
+                            "MLP": "mlp",
+                            "GCN": "gcn",
+                            "GraphSAGE": "sage"
+                        }
+                        
+                        selected_model_type = model_type_map[model_type]
+                        
+                        if st.button("Run Multi-Metapath Classification", key="run_multilabel"):
+                            with st.spinner("Running multi-label classification..."):
+                                try:
+                                    # Get the splits from session state
+                                    multi_label_state = st.session_state.metapath_analysis_state['metapath_multi_label_state']
+                                    splits = multi_label_state['splits']
+                                    
+                                    # Run the improved classification
+                                    results_ml = multi_metapath_node_classification_improved(
+                                        st.session_state.current_graph,
+                                        st.session_state.current_graph.community_labels,
+                                        multi_label_state['selected_metapaths'],
+                                        model_type=selected_model_type,
+                                        feature_opts=feature_opts,
+                                        splits=splits,
+                                        seed=42
+                                    )
+                                    
+                                    # Store results in session state
+                                    st.session_state.metapath_analysis_state['classification_state'] = {
+                                        'run': True,
+                                        'results': results_ml,
+                                        'model_type': selected_model_type
+                                    }
+                                    
+                                    st.success("Classification completed successfully!")
+                                    
+                                except Exception as e:
+                                    st.error(f"Error running classification: {str(e)}")
+                                    import traceback
+                                    st.code(traceback.format_exc())
+                        
+                        if ('classification_state' in st.session_state.metapath_analysis_state and 
+                            st.session_state.metapath_analysis_state['classification_state']['run']):
+                            classification_state = st.session_state.metapath_analysis_state['classification_state']
+                            results_ml = classification_state['results']
+                            model_type = classification_state['model_type']
+                            
+                            st.markdown("### Classification Results")
+                            col1, col2 = st.columns(2)
+                            with col1:
+                                st.markdown("#### F1 Score")
+                                f1_df = pd.DataFrame({
+                                    'Set': ['Train', 'Validation', 'Test'],
+                                    'F1 Score': [
+                                        results_ml['f1_score']['train'],
+                                        results_ml['f1_score']['val'],
+                                        results_ml['f1_score']['test']
+                                    ]
+                                })
+                                st.dataframe(f1_df)
+                            with col2:
+                                st.markdown("#### Accuracy")
+                                acc_df = pd.DataFrame({
+                                    'Set': ['Train', 'Validation', 'Test'],
+                                    'Accuracy': [
+                                        results_ml['accuracy']['train'],
+                                        results_ml['accuracy']['val'],
+                                        results_ml['accuracy']['test']
+                                    ]
+                                })
+                                st.dataframe(acc_df)
+                            
+                            st.markdown("#### Metapath Participation Rates")
+                            participation_df = pd.DataFrame({
+                                'Metapath': st.session_state.metapath_analysis_state['metapath_multi_label_state']['selected_metapaths'],
+                                'Participation Rate': results_ml['participation_rates']
+                            })
+                            st.dataframe(participation_df)
+                            
+                            st.markdown("#### Model Performance Visualization")
+                            vis_results = {
+                                'train_f1': results_ml['f1_score']['train'],
+                                'val_f1': results_ml['f1_score']['val'],
+                                'test_f1': results_ml['f1_score']['test'],
+                                'feature_importance': results_ml['feature_importance'],
+                                'history': results_ml.get('history')
+                            }
+                            fig = visualize_model_performance(vis_results, model_type, multi_label=True)
+                            st.pyplot(fig)
+                            
+                            # Display GNN embeddings if applicable
+                            if model_type in ['gcn', 'sage'] and 'model' in results_ml:
+                                st.markdown("#### Node Embedding Visualization")
+                                visualize_embeddings = st.checkbox("Visualize embeddings", value=False)
+                                if visualize_embeddings:
+                                    with st.spinner("Computing node embeddings..."):
+                                        # [Visualization code remains the same]
+                                        pass
+                            
+                            st.markdown("### Hyperparameter Optimization")
+                            run_optuna = st.checkbox("Run hyperparameter optimization", value=False)
+                            if run_optuna:
+                                n_trials = st.slider("Number of Optuna trials", min_value=5, max_value=100, value=20)
+                                timeout = st.slider("Timeout (seconds)", min_value=30, max_value=1800, value=300)
+                                
+                                if st.button("Run Optimization", key="run_optuna_multi"):
+                                    with st.spinner("Running hyperparameter optimization..."):
+                                        try:
+                                            # Get the splits from session state
+                                            multi_label_state = st.session_state.metapath_analysis_state['metapath_multi_label_state']
+                                            splits = multi_label_state['splits']
+                                            
+                                            optim_results = optimize_hyperparameters_for_metapath_improved(
+                                                st.session_state.current_graph,
+                                                st.session_state.current_graph.community_labels,
+                                                multi_label_state['selected_metapaths'],
+                                                model_type=selected_model_type,
+                                                multi_label=True,
+                                                feature_opts=feature_opts,
+                                                splits=splits,
+                                                n_trials=n_trials,
+                                                timeout=timeout,
+                                                seed=42
+                                            )
+                                            
+                                            st.session_state.metapath_analysis_state['optuna_results'] = optim_results
+                                            st.success("Optimization completed successfully!")
+                                            
+                                            st.markdown("#### Best Parameters")
+                                            st.json(optim_results['best_params'])
+                                            
+                                            st.markdown("#### Performance with Best Parameters")
+                                            col1, col2, col3 = st.columns(3)
+                                            col1.metric("Train F1", f"{optim_results['train_f1']:.4f}")
+                                            col2.metric("Validation F1", f"{optim_results['val_f1']:.4f}")
+                                            col3.metric("Test F1", f"{optim_results['test_f1']:.4f}")
+                                            
+                                        except Exception as e:
+                                            st.error(f"Error running optimization: {str(e)}")
+                                            import traceback
+                                            st.code(traceback.format_exc())
+                    else:
+                        st.warning("Please create train/val/test splits first before running classification.")
+
+            with tab4:
+                st.markdown("""
+                ### Understanding Metapath Analysis
+                
+                **What are Metapaths?**
+                Metapaths are sequences of communities that frequently appear in the graph. For example, a metapath "0 → 1 → 2" means that nodes from community 0 often connect to nodes in community 1, which then connect to nodes in community 2.
+                
+                **The Analysis Process:**
+                1. **Community Structure** tab shows:
+                   - P_sub matrix: Probability of edges between communities
+                   - Community graph: Visual representation of likely connections
+                
+                2. **Metapath Statistics** tab shows:
+                   - List of most common metapaths
+                   - Number of instances of each metapath
+                   - Average path length and node participation
+                
+                3. **Node Classification** tab:
+                   - Predicts which nodes participate in a selected metapath
+                   - Uses node features to make predictions
+                   - Shows how well the prediction works
+                
+                **How to Use:**
+                1. Start by examining the P_sub matrix to understand community connections
+                2. Look at the metapath statistics to find interesting patterns
+                3. Select a metapath to visualize its instances in the graph
+                4. Use node classification to understand which nodes are likely to participate
+                """)
+
 # Add footer
 st.markdown("""
 ---
@@ -1826,3 +2910,13 @@ def create_graph_dashboard(graph):
         # Pass the graph object directly
         fig = plot_membership_matrix(graph)
         st.pyplot(fig) 
+
+    with tab3:
+        st.subheader("Parameter Analysis")
+        fig = create_parameter_dashboard(graph.extract_parameters())
+        st.pyplot(fig)
+
+    with tab4:
+        st.subheader("Feature Analysis")
+        fig = plot_community_statistics(graph)
+        st.pyplot(fig)

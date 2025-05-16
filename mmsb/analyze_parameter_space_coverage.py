@@ -28,11 +28,21 @@ import random
 from collections import defaultdict
 import matplotlib
 import concurrent.futures
+import math
+from skopt import gp_minimize
+from skopt.space import Real
 
 # Add parent directory to path to allow imports
 parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if parent_dir not in sys.path:
     sys.path.append(parent_dir)
+
+from utils.graph_family_utils import (
+    DeviationCache, DistributionDiversifier,
+    generate_power_law_factors, generate_exponential_factors, generate_uniform_factors,
+    generate_edges_with_config, calculate_community_structure_deviation,
+    generate_test_graph, convert_params_to_config, create_family_params, measure_family_deviation
+)
 
 # Import MMSB modules
 from mmsb.model import GraphUniverse, GraphSample
@@ -45,9 +55,10 @@ from utils.parameter_analysis import (
 )
 
 
-def _generate_family(family_name, family_params, n_graphs_per_family):
+def _generate_family(family_name, family_params, n_graphs_per_family, graph_failure_counts=None, graph_failure_threshold=None, key=None, dist_type=None):
     from mmsb.graph_family import GraphFamilyGenerator  # Needed for multiprocessing
     try:
+        print(f"    [FAMILY CREATE] dist_type in family_params: {family_params.get('method_distribution', None)} | family_name: {family_name}")
         generator = GraphFamilyGenerator(
             K=family_params["K"],
             feature_dim=family_params["feature_dim"],
@@ -72,7 +83,8 @@ def _generate_family(family_name, family_params, n_graphs_per_family):
             triangle_enhancement=family_params["triangle_enhancement"],
             seed=family_params["seed"]
         )
-        graphs = generator.generate(
+        # Generate all graphs for the family in one call
+        results = generator.generate(
             n_graphs=n_graphs_per_family,
             min_communities=family_params["min_communities"],
             max_communities=family_params["max_communities"],
@@ -86,174 +98,184 @@ def _generate_family(family_name, family_params, n_graphs_per_family):
             seed=family_params["seed"],
             show_progress=False
         )
+        graphs = []
+        for i, g in enumerate(results):
+            # If it's a tuple, extract the first element
+            if isinstance(g, tuple):
+                g = g[0]
+            graphs.append(g)
+            print(f"      [FAMILY PROGRESS] {family_name}: {i+1}/{n_graphs_per_family} graphs generated.")
         if graphs and len(graphs) > 0:
-            if isinstance(graphs[0], tuple) and len(graphs[0]) == 2:
-                graphs = [g[0] for g in graphs]
             return (family_name, {'graphs': graphs, 'parameters': family_params.copy()})
         else:
             return (family_name, None)
     except Exception as e:
+        import traceback
         print(f"FAILED family: {family_name} with error: {e}")
+        traceback.print_exc()
+        print('Locals:', locals())
         return (family_name, None)
 
 
+def optimize_for_deviation(dist_type, target_stats, max_deviation, max_calls=20):
+    """
+    Use Bayesian optimization to find parameters that minimize deviation
+    from expected community structure while meeting max_deviation constraint.
+    """
+    # Define parameter spaces for each distribution type
+    if dist_type == "power_law":
+        param_space = [
+            Real(1.5, 4.0, name="power_law_exponent", prior="log-uniform"),
+            Real(1.0, 20.0, name="target_avg_degree", prior="uniform")
+        ]
+    elif dist_type == "exponential":
+        param_space = [
+            Real(0.05, 2.0, name="rate", prior="log-uniform"),
+            Real(1.0, 20.0, name="target_avg_degree", prior="uniform")
+        ]
+    elif dist_type == "uniform":
+        param_space = [
+            Real(0.1, 1.0, name="min_factor", prior="uniform"),
+            Real(1.0, 2.0, name="max_factor", prior="uniform"),
+            Real(1.0, 20.0, name="target_avg_degree", prior="uniform")
+        ]
+    else:
+        return None, None
+
+    def objective(params):
+        config_params = convert_params_to_config(dist_type, params)
+        result = generate_test_graph(dist_type, config_params, target_stats)
+        if result is None:
+            return 100.0
+        mean_deviation, max_deviation_value = result["mean_deviation"], result["max_deviation"]
+        if max_deviation_value > max_deviation:
+            return 10.0 + mean_deviation
+        return mean_deviation
+
+    result = gp_minimize(
+        objective,
+        param_space,
+        n_calls=max_calls,
+        n_initial_points=5,
+        random_state=np.random.randint(0, 10000)
+    )
+    if result.fun < 1.0:
+        best_params = convert_params_to_config(dist_type, result.x)
+        return best_params, result.fun
+    return None, None
+
+
 def generate_diverse_graph_families(
-    n_families: int = 10,
-    n_graphs_per_family: int = 20,
-    base_params: Optional[Dict] = None,
-    seed: int = 42,
-    parallel: bool = False
-) -> Dict[str, Dict[str, Any]]:
+    n_families: int,
+    n_graphs_per_family: int,
+    max_deviation: float = 0.1,
+    seed: int = 42
+) -> dict:
     """
     Generate diverse families of graphs by varying key parameters.
-    Returns a dict mapping family names to dicts with 'graphs' and 'parameters'.
+    Focus on meeting deviation constraints while using diverse distribution types.
     """
-    random.seed(seed)
-    np.random.seed(seed)
-    
-    def random_method_distribution():
-        vals = np.random.dirichlet(np.ones(4))
-        return {
-            "standard": vals[0],
-            "power_law": vals[1],
-            "exponential": vals[2],
-            "uniform": vals[3]
-        }
-
-    def random_config_model_params():
-        # Always use the full global range for each method
-        return {
-            "power_law": {
-                "exponent_min": 0.5,
-                "exponent_max": 4.0,
-                "target_avg_degree_min": 1.0,
-                "target_avg_degree_max": 20.0
-            },
-            "exponential": {
-                "rate_min": 0.05,
-                "rate_max": 2.0,
-                "target_avg_degree_min": 1.0,
-                "target_avg_degree_max": 20.0
-            },
-            "uniform": {
-                "min_factor": 0.1,
-                "max_factor": 2.0,
-                "target_avg_degree_min": 1.0,
-                "target_avg_degree_max": 20.0
-            }
-        }
-
-    def random_standard_method_params():
-        return {
-            "degree_heterogeneity": np.random.uniform(0.0, 1.0),
-            "edge_noise": np.random.uniform(0.0, 0.4)
-        }
-
-    family_variations = []
-    print(f"\nGenerating {n_families} diverse graph families...")
-    while len(family_variations) < n_families:
-        K = np.random.randint(10, 50)
-        feature_dim = np.random.choice([0, 16, 32, 64, 128])
-        block_structure = "assortative"  # Only supported for now
-        edge_density = np.random.uniform(0.01, 0.2)
-        homophily = np.random.uniform(0.0, 1.0)
-        randomness_factor = np.random.uniform(0.0, 1.0)
-        intra_community_regime_similarity = np.random.uniform(0.0, 1.0)
-        inter_community_regime_similarity = np.random.uniform(0.0, 1.0)
-        regimes_per_community = np.random.randint(1, 2)
-        homophily_range = np.random.uniform(0.0, 0.35)
-        density_range = np.random.uniform(0.0, 0.2)
-        method_distribution = random_method_distribution()
-        standard_method_params = random_standard_method_params()
-        config_model_params = random_config_model_params()
-        max_mean_community_deviation = np.random.uniform(0.07, 0.14)
-        max_max_community_deviation = np.random.uniform(0.12, 0.20)
-        max_parameter_search_attempts = np.random.randint(10, 15)
-        parameter_search_range = np.random.uniform(0.9, 1.0)
-        min_edge_density = np.random.uniform(0.005, 0.05)
-        max_retries = np.random.randint(2, 5)
-        triangle_enhancement = np.random.uniform(0.0, 0.0)
-        seed_family = np.random.randint(0, 100000)
-        # Instance-level parameters
-        min_communities = np.random.randint(3, max(4, K // 5))
-        max_communities = np.random.randint(min_communities + 1, max(8, K // 2))
-        min_nodes = np.random.randint(40, 100)
-        max_nodes = np.random.randint(min_nodes + 1, 200)
-        degree_heterogeneity = np.random.uniform(0.0, 1.0)
-        edge_noise = np.random.uniform(0.0, 0.5)
-        sampling_method = np.random.choice(["random"]), #, "similar", "diverse", "correlated"])
-        min_component_size = np.random.randint(2, 3)
-        feature_regime_balance = np.random.uniform(0.0, 1.0)
-        # Only restriction: K > min_nodes/2
-        if K > min_nodes / 2:
-            continue
-        family_variations.append({
-            # Universe/family-level
-            "K": K,
-            "feature_dim": feature_dim,
-            "block_structure": block_structure,
-            "edge_density": edge_density,
-            "homophily": homophily,
-            "randomness_factor": randomness_factor,
-            "intra_community_regime_similarity": intra_community_regime_similarity,
-            "inter_community_regime_similarity": inter_community_regime_similarity,
-            "regimes_per_community": regimes_per_community,
-            "homophily_range": homophily_range,
-            "density_range": density_range,
-            "method_distribution": method_distribution,
-            "standard_method_params": standard_method_params,
-            "config_model_params": config_model_params,
-            "max_mean_community_deviation": max_mean_community_deviation,
-            "max_max_community_deviation": max_max_community_deviation,
-            "max_parameter_search_attempts": max_parameter_search_attempts,
-            "parameter_search_range": parameter_search_range,
-            "min_edge_density": min_edge_density,
-            "max_retries": max_retries,
-            "triangle_enhancement": triangle_enhancement,
-            "seed": seed_family,
-            # Instance-level
-            "min_communities": min_communities,
-            "max_communities": max_communities,
-            "min_nodes": min_nodes,
-            "max_nodes": max_nodes,
-            "degree_heterogeneity": degree_heterogeneity,
-            "edge_noise": edge_noise,
-            "sampling_method": sampling_method,
-            "min_component_size": min_component_size,
-            "feature_regime_balance": feature_regime_balance,
-            "name": f"random_variation_{len(family_variations)}"
-        })
-    family_variations = family_variations[:n_families]
+    if seed is not None:
+        np.random.seed(seed)
+        random.seed(seed)
+    deviation_cache = DeviationCache()
+    diversifier = DistributionDiversifier()
     families = {}
-
-    if parallel:
-        print(f"Generating {n_families} graph families in parallel...")
-        with concurrent.futures.ProcessPoolExecutor() as executor:
-            futures = []
-            for variation in family_variations:
-                family_name = variation.pop("name")
-                family_params = base_params.copy() if base_params else {}
-                family_params.update(variation)
-                futures.append(executor.submit(_generate_family, family_name, family_params, n_graphs_per_family))
-            completed = 0
-            total = len(futures)
-            for future in concurrent.futures.as_completed(futures):
-                family_name, result = future.result()
-                if result is not None:
-                    families[family_name] = result
-                completed += 1
-                if completed % 5 == 0 or completed == total:
-                    print(f"  Progress: {completed}/{total} families completed.")
-    else:
-        for variation in tqdm(family_variations):
-            family_name = variation.pop("name")
-            family_params = base_params.copy() if base_params else {}
-            family_params.update(variation)
-            result = _generate_family(family_name, family_params, n_graphs_per_family)
-            if result[1] is not None:
-                families[result[0]] = result[1]
-
+    print(f"\nGenerating {n_families} diverse graph families...")
+    max_attempts = n_families * 3
+    attempts = 0
+    max_family_failures = 3
+    # --- Early abandonment tracking ---
+    failure_counts = {}  # (dist_type, target_stats_tuple) -> int (family-level)
+    failure_threshold = 2
+    graph_failure_counts = {}  # (dist_type, target_stats_tuple) -> int (graph-level)
+    graph_failure_threshold = 3
+    def stats_to_key(dist_type, target_stats):
+        return (dist_type, tuple(sorted(target_stats.items())))
+    # ---
+    while len(families) < n_families and attempts < max_attempts:
+        target_stats = {
+            "K": np.random.randint(10, 50),
+            "feature_dim": np.random.choice([0, 16, 32, 64, 128]),
+            "edge_density": np.random.uniform(0.01, 0.2),
+            "homophily": np.random.uniform(0.0, 1.0),
+            "n_nodes": np.random.randint(40, 200),
+            "n_communities": np.random.randint(3, 8),
+            "randomness_factor": np.random.uniform(0.0, 1.0)
+        }
+        dist_type = diversifier.select_distribution(deviation_cache)
+        key = stats_to_key(dist_type, target_stats)
+        print(f"[ATTEMPT {attempts+1}] dist_type selected: {dist_type} | target_stats: {target_stats}")
+        # Aggressive early abandonment: skip if too many graph-level failures
+        if graph_failure_counts.get(key, 0) >= graph_failure_threshold:
+            print(f"  Skipping {dist_type} with target {target_stats} (graph-level failures: {graph_failure_counts[key]}) [EARLY ABANDONMENT]")
+            attempts += 1
+            continue
+        if failure_counts.get(key, 0) > failure_threshold:
+            print(f"  Skipping {dist_type} with target {target_stats} (family-level failures: {failure_counts[key]}) [EARLY ABANDONMENT]")
+            attempts += 1
+            continue
+        print(f"  [CACHE LOOKUP] dist_type: {dist_type}")
+        similar_entries = deviation_cache.find_similar_params(dist_type, target_stats)
+        family_name = None
+        family_failures = 0
+        cache_success = False
+        if similar_entries:
+            for entry in similar_entries:
+                config_params = entry["params"]
+                print(f"    [CACHED PARAMS] dist_type: {dist_type} | previous deviation: {entry['deviation']:.4f}")
+                family_name = f"{dist_type}_family_{len(families)}"
+                family_params = create_family_params(target_stats, dist_type, config_params)
+                print(f"    [FAMILY PARAMS] dist_type: {dist_type} | method_distribution: {family_params.get('method_distribution', None)} | family_name: {family_name}")
+                result = _generate_family(family_name, family_params, n_graphs_per_family, graph_failure_counts, graph_failure_threshold, key, dist_type=dist_type)
+                if result[1] is not None:
+                    families[family_name] = result[1]
+                    deviation = measure_family_deviation(result[1])
+                    diversifier.record_success(dist_type, deviation)
+                    deviation_cache.add_success(dist_type, config_params, deviation, target_stats)
+                    print(f"  Success using cached parameters! Deviation: {deviation:.4f}")
+                    cache_success = True
+                    break
+                else:
+                    family_failures += 1
+                    if graph_failure_counts.get(key, 0) >= graph_failure_threshold:
+                        print(f"    Early abandoning {dist_type} for this target due to {graph_failure_counts[key]} graph-level failures. [EARLY ABANDONMENT]")
+                        break
+            if family_name in families:
+                print(f"Progress: {len(families)}/{n_families} families")
+                attempts += 1
+                continue
+        if not cache_success:
+            print(f"  [BAYESIAN OPTIMIZATION] dist_type: {dist_type}")
+            config_params, deviation = optimize_for_deviation(
+                dist_type, target_stats, max_deviation, max_calls=15
+            )
+            if config_params is not None:
+                family_name = f"{dist_type}_family_{len(families)}"
+                family_params = create_family_params(target_stats, dist_type, config_params)
+                print(f"    [FAMILY PARAMS] dist_type: {dist_type} | method_distribution: {family_params.get('method_distribution', None)} | family_name: {family_name}")
+                result = _generate_family(family_name, family_params, n_graphs_per_family, graph_failure_counts, graph_failure_threshold, key, dist_type=dist_type)
+                if result[1] is not None:
+                    families[family_name] = result[1]
+                    diversifier.record_success(dist_type, deviation)
+                    deviation_cache.add_success(dist_type, config_params, deviation, target_stats)
+                    print(f"  Success with optimized parameters! Deviation: {deviation:.4f}")
+                    print(f"Progress: {len(families)}/{n_families} families")
+                else:
+                    family_failures += 1
+                    if graph_failure_counts.get(key, 0) >= graph_failure_threshold:
+                        print(f"    Early abandoning {dist_type} for this target due to {graph_failure_counts[key]} graph-level failures. [EARLY ABANDONMENT]")
+            else:
+                family_failures += 1
+                print(f"  No valid parameters found for {dist_type} with these target stats. Skipping to next attempt. [NO FAMILY CREATED]")
+                if graph_failure_counts.get(key, 0) >= graph_failure_threshold:
+                    print(f"    Early abandoning {dist_type} for this target due to {graph_failure_counts[key]} graph-level failures. [EARLY ABANDONMENT]")
+        if family_failures >= max_family_failures:
+            failure_counts[key] = failure_counts.get(key, 0) + 1
+            print(f"Abandoning {dist_type} for this target after {family_failures} family failures (total family failures: {failure_counts[key]}) [EARLY ABANDONMENT]")
+        attempts += 1
     print(f"\nSuccessfully generated {len(families)} out of {n_families} families")
+    print(f"Distribution counts: {diversifier.get_stats()['counts']}")
     return families
 
 

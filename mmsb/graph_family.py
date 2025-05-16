@@ -229,6 +229,7 @@ class GraphFamilyGenerator:
         Generate a family of graphs.
         Returns a list of (graph, n_attempts) tuples.
         """
+        import numpy as np
         if seed is not None:
             np.random.seed(seed)
         results = []
@@ -310,7 +311,6 @@ class GraphFamilyGenerator:
             print(f"Warning: Could only generate {len(results)} out of {n_graphs} graphs after {attempts} attempts")
         # Print timing summary if requested
         if show_progress or show_timing:
-            import numpy as np
             print("Timing summary for this family:")
             for k in ['community_sampling', 'node_sampling', 'target_param_sampling', 'method_sampling', 'graph_construction', 'total']:
                 arr = np.array(timings[k])

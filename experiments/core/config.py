@@ -68,6 +68,20 @@ class ExperimentConfig:
     device_id: int = 0  # Default to first CUDA device
     force_cpu: bool = False  # Option to force CPU usage
     
+    distribution_type: str = "standard"
+    power_law_exponent: Optional[float] = None
+    power_law_target_avg_degree: Optional[float] = None
+    exponential_rate: Optional[float] = None
+    exponential_target_avg_degree: Optional[float] = None
+    uniform_min_factor: Optional[float] = None
+    uniform_max_factor: Optional[float] = None
+    uniform_target_avg_degree: Optional[float] = None
+    max_mean_community_deviation: float = 0.1
+    max_max_community_deviation: float = 0.2
+    parameter_search_range: float = 0.2
+    max_parameter_search_attempts: int = 20
+    max_retries: int = 10
+    
     def to_dict(self) -> Dict[str, Any]:
         """Convert config to dictionary."""
         return {k: v for k, v in asdict(self).items() if not k.startswith('_')}

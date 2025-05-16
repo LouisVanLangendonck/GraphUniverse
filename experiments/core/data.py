@@ -56,7 +56,7 @@ def prepare_data(
     
     # Get features based on type
     if feature_type == "membership":
-        features = torch.tensor(graph_sample.membership_vectors, dtype=torch.float)
+        features = torch.tensor(graph_sample.community_labels, dtype=torch.long).unsqueeze(1)
     else:  # random features
         features = torch.randn((len(graph_sample.graph.nodes()), config.feature_dim))
     
@@ -78,8 +78,7 @@ def prepare_data(
     for task in config.tasks:
         if task == "community":
             # Community prediction task (original task)
-            labels = torch.tensor([graph_sample.graph.nodes[n]['primary_community'] 
-                                 for n in graph_sample.graph.nodes()], dtype=torch.long)
+            labels = torch.tensor(graph_sample.community_labels, dtype=torch.long)
             num_classes = len(torch.unique(labels))
             
             task_data["community"] = {
@@ -167,7 +166,7 @@ def prepare_data(
 
 def networkx_to_pyg(
     graph: nx.Graph,
-    label_key: str = "primary_community"
+    label_key: str = "label"
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """
     Convert a NetworkX graph to PyTorch tensors for model training.
@@ -190,7 +189,7 @@ def networkx_to_pyg(
     features = data.x if data.x is not None else torch.eye(graph.number_of_nodes(), dtype=torch.float)
     
     # Get labels
-    labels = torch.tensor([data[1][label_key] for data in sorted(graph.nodes(data=True))], dtype=torch.long)
+    labels = torch.tensor([data[1].get(label_key, 0) for data in sorted(graph.nodes(data=True))], dtype=torch.long)
     
     return features, edge_index, labels
 

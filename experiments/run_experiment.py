@@ -212,7 +212,7 @@ def generate_graph(args):
         # Generate real graph properties using analyze_graph_parameters
         real_graph_properties = analyze_graph_parameters(
             graph=graph_sample.graph,
-            membership_vectors=graph_sample.membership_vectors,
+            community_labels=graph_sample.community_labels,
             communities=communities
         )
         
@@ -460,7 +460,7 @@ def visualize_results(graph_sample, model_results, args):
             import matplotlib.pyplot as plt
             
             # Get primary community for each node
-            primary_communities = np.argmax(graph_sample.membership_vectors, axis=1)
+            labels = graph_sample.community_labels
             
             # Plot graph colored by community
             plt.figure(figsize=(10, 8))
@@ -471,10 +471,10 @@ def visualize_results(graph_sample, model_results, args):
                 vis_size = 500
                 sampled_nodes = np.random.choice(graph_sample.n_nodes, size=vis_size, replace=False)
                 subgraph = graph_sample.graph.subgraph(sampled_nodes)
-                node_colors = [primary_communities[i] for i in sampled_nodes]
+                node_colors = [labels[i] for i in sampled_nodes]
             else:
                 subgraph = graph_sample.graph
-                node_colors = primary_communities
+                node_colors = labels
             
             # Position nodes using layout algorithm
             pos = nx.spring_layout(subgraph, seed=args.seed)

@@ -31,7 +31,9 @@ class GNNModel(nn.Module):
         gnn_type: str = "gcn",
         residual: bool = False,
         norm_type: str = "none",  # "none", "batch", "layer"
-        agg_type: str = "mean"  # "mean", "sum", "max"
+        agg_type: str = "mean",  # "mean", "sum", "max"
+        heads: int = 1,  # Number of attention heads for GAT
+        concat_heads: bool = True  # Whether to concatenate or average GAT heads
     ):
         """
         Initialize the GNN model.
@@ -46,6 +48,8 @@ class GNNModel(nn.Module):
             residual: Whether to use residual connections
             norm_type: Type of normalization ("none", "batch", "layer")
             agg_type: Type of aggregation ("mean", "sum", "max")
+            heads: Number of attention heads for GAT
+            concat_heads: Whether to concatenate or average GAT attention heads
         """
         super(GNNModel, self).__init__()
         
@@ -58,11 +62,13 @@ class GNNModel(nn.Module):
         self.residual = residual
         self.norm_type = norm_type
         self.agg_type = agg_type
+        self.heads = heads
+        self.concat_heads = concat_heads
         
         # Initialize layers
         self.convs = nn.ModuleList()
         
-        # Input layer
+        # First layer
         self.convs.append(self._create_conv_layer(input_dim, hidden_dim))
         
         # Hidden layers
@@ -72,38 +78,37 @@ class GNNModel(nn.Module):
         # Output layer
         if num_layers > 1:
             self.convs.append(self._create_conv_layer(hidden_dim, output_dim))
-            
+        
         # Normalization layers
-        if self.norm_type != "none":
+        if self.norm_type != "none" and self.gnn_type != "gat":  # Don't create norms for GAT
             self.norms = nn.ModuleList()
-            for _ in range(num_layers - 1):
+            for i in range(num_layers - 1):
                 if self.norm_type == "batch":
-                    self.norms.append(nn.BatchNorm1d(hidden_dim))
+                    norm_dim = hidden_dim
+                    self.norms.append(nn.BatchNorm1d(norm_dim))
                 elif self.norm_type == "layer":
-                    self.norms.append(nn.LayerNorm(hidden_dim))
+                    norm_dim = hidden_dim
+                    self.norms.append(nn.LayerNorm(norm_dim))
     
-    def _create_conv_layer(self, in_dim: int, out_dim: int) -> nn.Module:
+    def _create_conv_layer(self, in_dim: int, out_dim: int, is_output: bool = False) -> nn.Module:
         """Create a GNN convolutional layer of the specified type."""
         if self.gnn_type == "gcn":
             return GCNConv(in_dim, out_dim)
         elif self.gnn_type == "gat":
-            return GATConv(in_dim, out_dim, heads=1)
+            # For GAT, we need to account for multiple heads
+            if self.concat_heads:
+                # If concatenating heads, each head outputs out_dim/heads features
+                head_dim = out_dim // self.heads
+                return GATConv(in_dim, head_dim, heads=self.heads, concat=True)
+            else:
+                # For averaged heads, dimensions are simpler
+                return GATConv(in_dim, out_dim, heads=self.heads, concat=False)
         elif self.gnn_type == "sage":
             return SAGEConv(in_dim, out_dim, aggr=self.agg_type)
         else:
             raise ValueError(f"Unknown GNN type: {self.gnn_type}")
     
     def forward(self, x: torch.Tensor, edge_index: torch.Tensor) -> torch.Tensor:
-        """
-        Forward pass of the GNN model.
-        
-        Args:
-            x: Node features [num_nodes, input_dim]
-            edge_index: Graph connectivity [2, num_edges]
-            
-        Returns:
-            Node embeddings/predictions [num_nodes, output_dim]
-        """
         prev_x = None  # For residual connections
         
         for i, conv in enumerate(self.convs):
@@ -116,9 +121,19 @@ class GNNModel(nn.Module):
             
             # Final layer doesn't have activation or other operations
             if i < len(self.convs) - 1:
-                # Apply normalization if enabled
-                if self.norm_type != "none":
+                # Apply normalization if enabled and layers exist
+                if self.norm_type != "none" and len(self.norms) > 0:
+                    if self.gnn_type == "gat" and self.concat_heads:
+                        if self.norm_type == "batch":
+                            # For batch norm, we need to average across heads first
+                            x = x.view(-1, self.heads, x.size(1) // self.heads)
+                            x = x.mean(dim=1)
                     x = self.norms[i](x)
+                    
+                    # After batch norm, we need to reshape back to the expected dimension for the next layer
+                    if self.gnn_type == "gat" and self.concat_heads and self.norm_type == "batch":
+                        # Reshape back to the full hidden dimension
+                        x = x.repeat(1, self.heads)
                 
                 # Apply activation
                 x = F.relu(x)

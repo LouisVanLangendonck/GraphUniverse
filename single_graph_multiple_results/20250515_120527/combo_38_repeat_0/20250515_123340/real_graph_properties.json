@@ -1,0 +1,10 @@
+{
+  "density": 0.06784260515603799,
+  "node_count": 67,
+  "avg_degree": 4.477611940298507,
+  "homophily": 0.49333333333333335,
+  "clustering_coefficient": 0.10016260687902478,
+  "power_law_exponent": 1.1369915129878467,
+  "connected_components": 1,
+  "largest_component_size": 67
+}

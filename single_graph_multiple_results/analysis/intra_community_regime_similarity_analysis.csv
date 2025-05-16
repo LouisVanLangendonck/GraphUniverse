@@ -1,0 +1,4 @@
+,num_communities,num_communities,num_nodes,num_nodes,feature_dim,feature_dim,randomness_factor,randomness_factor,min_connection_strength,min_connection_strength,min_component_size,min_component_size,indirect_influence,indirect_influence,node_count,node_count,avg_degree,avg_degree,clustering_coefficient,clustering_coefficient,homophily,homophily,power_law_exponent,power_law_exponent,density,density,connected_components,connected_components,largest_component_size,largest_component_size
+,mean,std,mean,std,mean,std,mean,std,mean,std,mean,std,mean,std,mean,std,mean,std,mean,std,mean,std,mean,std,mean,std,mean,std,mean,std
+intra_community_regime_similarity,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,
+0.2,8.0,,72.0,,32.0,,0.8082,,0.0557,,2.0,,0.0,,72.0,,1.0,,0.0,,0.0,,2.7087,,0.0141,,36.0,,2.0,

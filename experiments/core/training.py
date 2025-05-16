@@ -91,11 +91,17 @@ def optimize_hyperparameters(
             if model_type == "gnn":
                 # GNN-specific parameters
                 residual = trial.suggest_categorical("residual", [True, False])
-                norm_type = trial.suggest_categorical("norm_type", ["none", "batch", "layer"])
+                # For GAT, don't allow any normalization
+                if gnn_type == "gat":
+                    norm_type = "none"  # Force no normalization for GAT
+                else:
+                    norm_type = trial.suggest_categorical("norm_type", ["none", "batch", "layer"])
                 agg_type = trial.suggest_categorical("agg_type", ["mean", "sum", "max"])
                 
                 if gnn_type == "gat":
                     heads = trial.suggest_int("heads", 1, 4)
+                    concat_heads = trial.suggest_categorical("concat_heads", [True, False])
+                    # For GAT, we don't need to adjust hidden_dim as it's handled in the model
                     model = model_creator(
                         input_dim=features.shape[1],
                         hidden_dim=hidden_dim,
@@ -104,9 +110,10 @@ def optimize_hyperparameters(
                         dropout=dropout,
                         gnn_type=gnn_type,
                         residual=residual,
-                        norm_type=norm_type,
+                        norm_type=norm_type,  # Will always be "none" for GAT
                         agg_type=agg_type,
-                        heads=heads  # Only for GAT
+                        heads=heads,
+                        concat_heads=concat_heads
                     ).to(device)
                 else:
                     model = model_creator(
@@ -407,14 +414,21 @@ def train_gnn_model(
                 # Handle GAT-specific parameters
                 if gnn_type == "gat" and "heads" in best_params:
                     heads = best_params.get("heads", 1)
+                    concat_heads = best_params.get("concat_heads", True)
+                    # For GAT, adjust hidden_dim based on concat_heads
+                    effective_hidden_dim = hidden_dim * heads if concat_heads else hidden_dim
                     model = GNNModel(
                         input_dim=features.shape[1],
-                        hidden_dim=hidden_dim,
+                        hidden_dim=effective_hidden_dim,
                         output_dim=n_classes,
                         num_layers=num_layers,
                         dropout=dropout,
                         gnn_type=gnn_type,
-                        heads=heads
+                        residual=best_params.get("residual", False),
+                        norm_type=best_params.get("norm_type", "none"),
+                        agg_type=best_params.get("agg_type", "mean"),
+                        heads=heads,
+                        concat_heads=concat_heads
                     ).to(device)
                 else:
                     model = GNNModel(
@@ -423,7 +437,10 @@ def train_gnn_model(
                         output_dim=n_classes,
                         num_layers=num_layers,
                         dropout=dropout,
-                        gnn_type=gnn_type
+                        gnn_type=gnn_type,
+                        residual=best_params.get("residual", False),
+                        norm_type=best_params.get("norm_type", "none"),
+                        agg_type=best_params.get("agg_type", "mean")
                     ).to(device)
                 
                 if verbose:

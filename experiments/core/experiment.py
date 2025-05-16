@@ -27,6 +27,9 @@ from utils.parameter_analysis import analyze_graph_parameters
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Set CUDA_LAUNCH_BLOCKING for better error reporting
+os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
+
 
 class Experiment:
     """Class for running a single experiment with hyperparameter optimization."""
@@ -133,23 +136,79 @@ class Experiment:
                 edge_density=self.config.edge_density,
                 homophily=self.config.homophily,
                 randomness_factor=self.config.randomness_factor,
-                mixed_membership=self.config.mixed_membership,
                 regimes_per_community=self.config.regimes_per_community,
                 intra_community_regime_similarity=self.config.intra_community_regime_similarity,
                 inter_community_regime_similarity=self.config.inter_community_regime_similarity
             )
             
             print("Generating graph sample...")
-            # Generate graph sample
+            # --- New: Select communities (random for now, could be improved) ---
+            communities = list(range(self.config.num_communities))
+            # --- New: Prepare method-specific config_model_params ---
+            config_model_params = None
+            use_configuration_model = False
+            degree_distribution = None
+            power_law_exponent = None
+            target_avg_degree = None
+            triangle_enhancement = 0.0  # Could be exposed as a config param
+            if self.config.distribution_type == "power_law":
+                use_configuration_model = True
+                degree_distribution = "power_law"
+                power_law_exponent = self.config.power_law_exponent
+                target_avg_degree = self.config.power_law_target_avg_degree
+                config_model_params = {
+                    'power_law_exponent': power_law_exponent,
+                    'target_avg_degree': target_avg_degree
+                }
+            elif self.config.distribution_type == "exponential":
+                use_configuration_model = True
+                degree_distribution = "exponential"
+                config_model_params = {
+                    'rate': self.config.exponential_rate,
+                    'target_avg_degree': self.config.exponential_target_avg_degree
+                }
+                power_law_exponent = None
+                target_avg_degree = self.config.exponential_target_avg_degree
+            elif self.config.distribution_type == "uniform":
+                use_configuration_model = True
+                degree_distribution = "uniform"
+                config_model_params = {
+                    'min_factor': self.config.uniform_min_factor,
+                    'max_factor': self.config.uniform_max_factor,
+                    'target_avg_degree': self.config.uniform_target_avg_degree
+                }
+                power_law_exponent = None
+                target_avg_degree = self.config.uniform_target_avg_degree
+            else:
+                use_configuration_model = False
+                degree_distribution = None
+                config_model_params = None
+                power_law_exponent = None
+                target_avg_degree = None
+            # --- New: Pass all required parameters to GraphSample ---
             graph_sample = GraphSample(
                 universe=universe,
-                communities=list(range(self.config.num_communities)),
+                communities=communities,
                 n_nodes=self.config.num_nodes,
                 min_component_size=self.config.min_component_size,
                 degree_heterogeneity=self.config.degree_heterogeneity,
                 edge_noise=self.config.edge_noise,
-                indirect_influence=self.config.indirect_influence,
-                feature_regime_balance=self.config.feature_regime_balance
+                feature_regime_balance=self.config.feature_regime_balance,
+                target_homophily=self.config.homophily,
+                target_density=self.config.edge_density,
+                use_configuration_model=use_configuration_model,
+                degree_distribution=degree_distribution,
+                power_law_exponent=power_law_exponent,
+                target_avg_degree=target_avg_degree,
+                triangle_enhancement=triangle_enhancement,
+                max_mean_community_deviation=self.config.max_mean_community_deviation,
+                max_max_community_deviation=self.config.max_max_community_deviation,
+                max_parameter_search_attempts=self.config.max_parameter_search_attempts,
+                parameter_search_range=self.config.parameter_search_range,
+                min_edge_density=0.001,  # Could be exposed as a config param
+                max_retries=self.config.max_retries,
+                seed=self.config.seed,
+                config_model_params=config_model_params
             )
             
             # Print timing information
@@ -161,7 +220,7 @@ class Experiment:
             print("\nCalculating graph properties...")
             real_graph_properties = analyze_graph_parameters(
                 graph=graph_sample.graph,
-                membership_vectors=graph_sample.membership_vectors,
+                community_labels=graph_sample.community_labels,
                 communities=list(range(self.config.num_communities))
             )
             
@@ -187,7 +246,19 @@ class Experiment:
             
             # Run models with hyperparameter optimization
             print("\nRunning models...")
-            self._run_models()
+            try:
+                self._run_models()
+            except RuntimeError as e:
+                if "CUDA" in str(e):
+                    print("\nFATAL: CUDA Error detected!")
+                    print("Error message:", str(e))
+                    print("\nStack trace:")
+                    import traceback
+                    traceback.print_exc()
+                    print("\nExperiment stopped due to CUDA error.")
+                    import sys
+                    sys.exit(1)  # Exit with error code
+                raise
             
             # Save results
             print("\nSaving results...")
@@ -225,33 +296,62 @@ class Experiment:
                 if self.config.run_gnn:
                     for gnn_type in self.config.gnn_types:
                         print(f"\nTraining {gnn_type.upper()} model...")
-                        model = GNNModel(
-                            input_dim=data["features"].shape[1],
-                            hidden_dim=64,
-                            output_dim=data["num_classes"],
-                            gnn_type=gnn_type
-                        ).to(self.device)
-                        
-                        result = train_gnn_model(
-                            model, 
-                            data["features"], 
-                            data["edge_index"], 
-                            data["labels"],
-                            data["train_idx"], 
-                            data["val_idx"], 
-                            data["test_idx"],
-                            epochs=self.config.epochs,
-                            patience=self.config.patience,
-                            optimize=self.config.optimize_hyperparams,
-                            n_trials=self.config.n_trials,
-                            timeout=self.config.opt_timeout
-                        )
-                        task_results[f"{gnn_type.upper()}"] = result
-                        
-                        # Log hyperparameter optimization results if available
-                        if 'hyperopt_results' in result:
-                            print(f"Best hyperparameters for {gnn_type.upper()}: {result['hyperopt_results']['best_params']}")
-                            print(f"Best validation score: {result['hyperopt_results']['best_value']:.4f}")
+                        try:
+                            model = GNNModel(
+                                input_dim=data["features"].shape[1],
+                                hidden_dim=64,
+                                output_dim=data["num_classes"],
+                                gnn_type=gnn_type
+                            ).to(self.device)
+                            
+                            # Print model architecture for debugging
+                            print(f"\nModel architecture for {gnn_type.upper()}:")
+                            print(model)
+                            
+                            # Print tensor shapes for debugging
+                            print("\nTensor shapes:")
+                            print(f"Features: {data['features'].shape}")
+                            print(f"Edge index: {data['edge_index'].shape}")
+                            print(f"Labels: {data['labels'].shape}")
+                            print(f"Train idx: {data['train_idx'].shape}")
+                            
+                            result = train_gnn_model(
+                                model, 
+                                data["features"], 
+                                data["edge_index"], 
+                                data["labels"],
+                                data["train_idx"], 
+                                data["val_idx"], 
+                                data["test_idx"],
+                                epochs=self.config.epochs,
+                                patience=self.config.patience,
+                                optimize=self.config.optimize_hyperparams,
+                                n_trials=self.config.n_trials,
+                                timeout=self.config.opt_timeout
+                            )
+                            task_results[f"{gnn_type.upper()}"] = result
+                            
+                            # Log hyperparameter optimization results if available
+                            if 'hyperopt_results' in result:
+                                print(f"Best hyperparameters for {gnn_type.upper()}: {result['hyperopt_results']['best_params']}")
+                                print(f"Best validation score: {result['hyperopt_results']['best_value']:.4f}")
+                                
+                        except RuntimeError as e:
+                            if "CUDA" in str(e):
+                                print(f"\nCUDA Error in {gnn_type.upper()} model:")
+                                print(f"Error message: {str(e)}")
+                                print("\nStack trace:")
+                                import traceback
+                                traceback.print_exc()
+                                print("\nModel state at error:")
+                                print(f"Model type: {gnn_type}")
+                                print(f"Input dimension: {data['features'].shape[1]}")
+                                print(f"Hidden dimension: 64")
+                                print(f"Output dimension: {data['num_classes']}")
+                                print(f"Device: {self.device}")
+                                raise  # Re-raise to stop the experiment
+                            else:
+                                raise
                 
                 if self.config.run_mlp:
                     print("\nTraining MLP model...")
@@ -314,6 +414,10 @@ class Experiment:
             self.results["model_results"] = model_results
             
         except Exception as e:
+            print(f"\nError in _run_models: {str(e)}")
+            print("Stack trace:")
+            import traceback
+            traceback.print_exc()
             raise
     
     def _save_results(self) -> None:

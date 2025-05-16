@@ -15,6 +15,9 @@ from sklearn.preprocessing import StandardScaler
 from collections import Counter, defaultdict
 import matplotlib.pyplot as plt
 import seaborn as sns
+import torch
+from torch_geometric.data import Data
+from torch_geometric.utils import to_undirected
 
 class FeatureRegimeGenerator:
     """
@@ -769,4 +772,31 @@ class GenerativeRuleBasedLabeler:
                         labels[i] = label
                         applied_rules[i] = rule_idx
         
-        return labels, applied_rules 
+        return labels, applied_rules
+
+def graphsample_to_pyg(graph_sample):
+    """
+    Convert a GraphSample to a PyTorch Geometric Data object.
+    Uses node features from the GraphSample if available, otherwise uses identity features.
+    Labels are set to community_labels.
+    """
+    graph = graph_sample.graph
+    n_nodes = graph.number_of_nodes()
+    edges = list(graph.edges())
+    edge_index = torch.tensor(edges, dtype=torch.long).t().contiguous()
+    edge_index = to_undirected(edge_index)
+
+    # Use features from GraphSample if available, else identity
+    if hasattr(graph_sample, 'features') and graph_sample.features is not None:
+        features = torch.tensor(graph_sample.features, dtype=torch.float)
+    else:
+        features = torch.eye(n_nodes, dtype=torch.float)
+
+    # Use community_labels as y
+    if hasattr(graph_sample, 'community_labels') and graph_sample.community_labels is not None:
+        y = torch.tensor(graph_sample.community_labels, dtype=torch.long)
+    else:
+        y = torch.zeros(n_nodes, dtype=torch.long)
+
+    data = Data(x=features, edge_index=edge_index, y=y)
+    return data 

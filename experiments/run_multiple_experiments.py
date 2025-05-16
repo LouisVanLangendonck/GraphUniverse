@@ -16,6 +16,7 @@ import argparse
 from typing import Dict, List, Any
 from datetime import datetime
 from copy import deepcopy
+import random
 
 # Import core experiment functionality
 from experiments.core import (
@@ -30,7 +31,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description='Run multiple MMSB Graph Learning Experiments')
     
     # Parameters to vary
-    parser.add_argument('--vary', type=str, nargs='+', default=['homophily'],
+    parser.add_argument('--vary', type=str, nargs='+', default=['homophily', 'intra_community_regime_similarity'],
                         choices=[
                             'num_communities',
                             'num_nodes',
@@ -60,7 +61,7 @@ def parse_args():
     parser.set_defaults(mixed_membership=False)
     
     # Task selection
-    parser.add_argument('--tasks', type=str, nargs='+', default=['regime'], #, 'regime', 'role'],
+    parser.add_argument('--tasks', type=str, nargs='+', default=['community'], #, 'regime', 'role'],
                         choices=['community', 'regime', 'role'],
                         help='Learning tasks to run')
     
@@ -93,7 +94,7 @@ def parse_args():
                         help='Number of structural roles to discover')
     
     # Model selection and training parameters
-    parser.add_argument('--gnn_types', type=str, nargs='+', default=['gcn'], #, 'sage'],
+    parser.add_argument('--gnn_types', type=str, nargs='+', default=['gcn', 'sage'], #, 'sage'],
                         choices=['gcn', 'gat', 'sage'],
                         help='Types of GNN models to run')
     parser.add_argument('--skip_gnn', action='store_true',
@@ -142,7 +143,7 @@ def parse_args():
     # Feature regime parameter ranges
     parser.add_argument('--regimes_per_community_range', type=int, nargs=3, default=[1, 3, 1],
                         help='Range for regimes_per_community (start, end, step)')
-    parser.add_argument('--intra_community_regime_similarity_range', type=float, nargs=3, default=[0.3, 1.0, 0.05],
+    parser.add_argument('--intra_community_regime_similarity_range', type=float, nargs=3, default=[0.2, 1.0, 0.1],
                         help='Range for intra_community_regime_similarity (start, end, step)')
     parser.add_argument('--inter_community_regime_similarity_range', type=float, nargs=3, default=[0.85, 1.0, 0.05],
                         help='Range for inter_community_regime_similarity (start, end, step)')
@@ -154,6 +155,26 @@ def parse_args():
                         help='Number of times to repeat each parameter combination')
     parser.add_argument('--results_dir', type=str, default='single_graph_multiple_results',
                         help='Directory to save all experiment results')
+    
+    # Distribution types
+    parser.add_argument('--distribution_types', type=str, nargs='+', default=['standard', 'power_law', 'exponential', 'uniform'],
+                        help='Graph generation methods to sample from')
+    # General hyperparameters
+    parser.add_argument('--max_mean_community_deviation', type=float, default=0.10)
+    parser.add_argument('--max_max_community_deviation', type=float, default=0.20)
+    parser.add_argument('--parameter_search_range', type=float, default=1.0)
+    parser.add_argument('--max_parameter_search_attempts', type=int, default=50)
+    parser.add_argument('--max_retries', type=int, default=10)
+    # Power Law
+    parser.add_argument('--power_law_exponent_range', type=float, nargs=2, default=[1.0, 3.0])
+    parser.add_argument('--power_law_target_avg_degree_range', type=float, nargs=2, default=[1.0, 8.0])
+    # Exponential
+    parser.add_argument('--exponential_rate_range', type=float, nargs=2, default=[0.1, 1.0])
+    parser.add_argument('--exponential_target_avg_degree_range', type=float, nargs=2, default=[2.0, 5.0])
+    # Uniform
+    parser.add_argument('--uniform_min_factor_range', type=float, nargs=2, default=[0.3, 1.0])
+    parser.add_argument('--uniform_max_factor_range', type=float, nargs=2, default=[1.0, 1.7])
+    parser.add_argument('--uniform_target_avg_degree_range', type=float, nargs=2, default=[2.0, 10.0])
     
     args = parser.parse_args()
     
@@ -291,10 +312,44 @@ def run_experiments(args):
             for param in all_param_ranges.keys():
                 print(f"  {param}: {getattr(config, param)}")
             
-            # Run experiment
-            print("Generating graph...")
-            experiment = Experiment(config)
-            results = experiment.run()
+            # --- New: Sample distribution type and method-specific params ---
+            tried_distributions = set()
+            success = False
+            available_distributions = list(args.distribution_types)
+            while available_distributions:
+                dist_type = random.choice(available_distributions)
+                tried_distributions.add(dist_type)
+                config.distribution_type = dist_type
+                if dist_type == "power_law":
+                    config.power_law_exponent = np.random.uniform(*args.power_law_exponent_range)
+                    config.power_law_target_avg_degree = np.random.uniform(*args.power_law_target_avg_degree_range)
+                elif dist_type == "exponential":
+                    config.exponential_rate = np.random.uniform(*args.exponential_rate_range)
+                    config.exponential_target_avg_degree = np.random.uniform(*args.exponential_target_avg_degree_range)
+                elif dist_type == "uniform":
+                    config.uniform_min_factor = np.random.uniform(*args.uniform_min_factor_range)
+                    config.uniform_max_factor = np.random.uniform(config.uniform_min_factor, args.uniform_max_factor_range[1])
+                    config.uniform_target_avg_degree = np.random.uniform(*args.uniform_target_avg_degree_range)
+                # Standard: no extra params
+                # --- Set general hyperparameters ---
+                config.max_mean_community_deviation = args.max_mean_community_deviation
+                config.max_max_community_deviation = args.max_max_community_deviation
+                # Make parameter search more aggressive
+                config.parameter_search_range = max(args.parameter_search_range, 1.5)
+                config.max_parameter_search_attempts = max(args.max_parameter_search_attempts, 100)
+                config.max_retries = max(args.max_retries, 15)
+                print(f"Generating graph with distribution: {dist_type}")
+                experiment = Experiment(config)
+                try:
+                    results = experiment.run()
+                    success = True
+                    break
+                except Exception as e:
+                    print(f"Failed to generate graph with distribution {dist_type}: {e}")
+                    available_distributions.remove(dist_type)
+            if not success:
+                print(f"Skipping parameter combination {i+1}/{len(param_combinations)}: Could not generate a valid graph with any distribution.")
+                continue
             
             # Extract results
             result = {
@@ -369,6 +424,21 @@ def run_experiments(args):
                         best_params = hyperopt.get('best_params', {})
                         for param_name, param_value in best_params.items():
                             result[f"{task_name}_{model_name}_param_{param_name}"] = param_value
+            
+            # --- Save distribution and method-specific params ---
+            result['distribution_type'] = config.distribution_type
+            result['power_law_exponent'] = getattr(config, 'power_law_exponent', None)
+            result['power_law_target_avg_degree'] = getattr(config, 'power_law_target_avg_degree', None)
+            result['exponential_rate'] = getattr(config, 'exponential_rate', None)
+            result['exponential_target_avg_degree'] = getattr(config, 'exponential_target_avg_degree', None)
+            result['uniform_min_factor'] = getattr(config, 'uniform_min_factor', None)
+            result['uniform_max_factor'] = getattr(config, 'uniform_max_factor', None)
+            result['uniform_target_avg_degree'] = getattr(config, 'uniform_target_avg_degree', None)
+            result['max_mean_community_deviation'] = config.max_mean_community_deviation
+            result['max_max_community_deviation'] = config.max_max_community_deviation
+            result['parameter_search_range'] = config.parameter_search_range
+            result['max_parameter_search_attempts'] = config.max_parameter_search_attempts
+            result['max_retries'] = config.max_retries
             
             all_results.append(result)
             
