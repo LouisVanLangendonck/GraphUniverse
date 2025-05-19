@@ -2059,22 +2059,28 @@ def train_gnn_model_improved(model, data, optimizer=None, criterion=None, epochs
         criterion = nn.CrossEntropyLoss()
     
     # Initialize tracking variables
-    best_val_f1 = 0
+    best_val_loss = float('inf')  # Start with infinity for loss minimization
     best_model_state = None
     best_epoch = 0
     patience_counter = 0
     history = {
         'train_loss': [],
         'val_loss': [],
-        'train_f1': [],
-        'val_f1': [],
-        'val_raw_outputs': [],  # Store raw model outputs for best epochs
-        'val_predictions': [],   # Store predictions for best epochs
-        'val_true_labels': []    # Store true labels for best epochs
     }
     
-    # Check if this is a multilabel task
-    is_multilabel = data.y.dim() > 1 and data.y.size(1) > 1
+    # Check if this is a multilabel task or regression task based on loss function
+    is_multilabel = isinstance(criterion, nn.BCEWithLogitsLoss)
+    is_regression = isinstance(criterion, nn.MSELoss)
+    
+    # Add appropriate metric tracking based on task type
+    if not is_regression:
+        history['train_f1'] = []
+        history['val_f1'] = []
+    else:
+        history['train_mse'] = []
+        history['val_mse'] = []
+        history['train_r2'] = []
+        history['val_r2'] = []
     
     for epoch in range(epochs):
         # Training
@@ -2092,42 +2098,86 @@ def train_gnn_model_improved(model, data, optimizer=None, criterion=None, epochs
             train_loss = criterion(out[data.train_mask], data.y[data.train_mask]).item()
             val_loss = criterion(out[data.val_mask], data.y[data.val_mask]).item()
             
-            # Calculate F1 scores
-            if is_multilabel:
-                # For multilabel, use sigmoid and threshold
-                train_pred = (torch.sigmoid(out[data.train_mask]) > 0.5).float()
-                val_pred = (torch.sigmoid(out[data.val_mask]) > 0.5).float()
-                train_true = data.y[data.train_mask]
-                val_true = data.y[data.val_mask]
+            # Calculate appropriate metrics based on task
+            if is_regression:
+                from sklearn.metrics import mean_squared_error, r2_score
+                
+                # For regression, use MSE and R^2
+                train_pred = out[data.train_mask].cpu().numpy()
+                val_pred = out[data.val_mask].cpu().numpy()
+                train_true = data.y[data.train_mask].cpu().numpy()
+                val_true = data.y[data.val_mask].cpu().numpy()
+                
+                train_mse = mean_squared_error(train_true, train_pred)
+                val_mse = mean_squared_error(val_true, val_pred)
+                
+                # Handle case where R^2 calculation might fail
+                try:
+                    train_r2 = r2_score(train_true, train_pred)
+                    val_r2 = r2_score(val_true, val_pred)
+                except:
+                    train_r2 = 0.0
+                    val_r2 = 0.0
+                    
+                # Store metrics in history
+                history['train_mse'].append(train_mse)
+                history['val_mse'].append(val_mse)
+                history['train_r2'].append(train_r2)
+                history['val_r2'].append(val_r2)
+                
+                # Use MSE for early stopping
+                monitoring_metric = val_mse
+                is_better = monitoring_metric < best_val_loss
+                
             else:
-                # For single label, use argmax
-                train_pred = out[data.train_mask].argmax(dim=1)
-                val_pred = out[data.val_mask].argmax(dim=1)
-                train_true = data.y[data.train_mask]
-                val_true = data.y[data.val_mask]
-            
-            # Calculate F1 scores using the standardized function
-            train_f1 = calculate_f1_score(train_true, train_pred, multilabel=is_multilabel)
-            val_f1 = calculate_f1_score(val_true, val_pred, multilabel=is_multilabel)
+                # For classification tasks (single or multi-label)
+                if is_multilabel:
+                    # For multilabel, use sigmoid and threshold
+                    train_pred = (torch.sigmoid(out[data.train_mask]) > 0.5).float().cpu().numpy()
+                    val_pred = (torch.sigmoid(out[data.val_mask]) > 0.5).float().cpu().numpy()
+                    train_true = data.y[data.train_mask].cpu().numpy()
+                    val_true = data.y[data.val_mask].cpu().numpy()
+                else:
+                    # For single label, use argmax
+                    train_pred = out[data.train_mask].argmax(dim=1).cpu().numpy()
+                    val_pred = out[data.val_mask].argmax(dim=1).cpu().numpy()
+                    train_true = data.y[data.train_mask].cpu().numpy()
+                    val_true = data.y[data.val_mask].cpu().numpy()
+                
+                # Calculate F1 scores - use sklearn metrics directly to avoid compatibility issues
+                from sklearn.metrics import f1_score
+                
+                # Make sure shapes match for calculation
+                if is_multilabel:
+                    train_f1 = f1_score(train_true, train_pred, average='macro')
+                    val_f1 = f1_score(val_true, val_pred, average='macro')
+                else:
+                    train_f1 = f1_score(train_true, train_pred, average='macro')
+                    val_f1 = f1_score(val_true, val_pred, average='macro')
+                
+                # Store F1 scores in history
+                history['train_f1'].append(train_f1)
+                history['val_f1'].append(val_f1)
+                
+                # Use validation loss for early stopping
+                monitoring_metric = val_loss
+                is_better = monitoring_metric < best_val_loss
         
         # Update history
         history['train_loss'].append(train_loss)
         history['val_loss'].append(val_loss)
-        history['train_f1'].append(train_f1)
-        history['val_f1'].append(val_f1)
         
         # Track best model - only save if we have a new best
-        if val_f1 > best_val_f1:
-            best_val_f1 = val_f1
+        if is_better:
+            best_val_loss = monitoring_metric
             best_model_state = copy.deepcopy(model.state_dict())
             best_epoch = epoch
             patience_counter = 0
             if verbose:
-                print(f"New best model at epoch {epoch} with val_f1: {val_f1:.4f}")
-                # Store the raw outputs and predictions for the best model
-                history['val_raw_outputs'] = out[data.val_mask].clone()
-                history['val_predictions'] = val_pred.clone()
-                history['val_true_labels'] = val_true.clone()
+                if is_regression:
+                    print(f"New best model at epoch {epoch} with val_mse: {val_mse:.4f}")
+                else:
+                    print(f"New best model at epoch {epoch} with val_loss: {val_loss:.4f}")
         else:
             patience_counter += 1
         
@@ -2138,107 +2188,65 @@ def train_gnn_model_improved(model, data, optimizer=None, criterion=None, epochs
             break
         
         if verbose and epoch % 10 == 0:
-            print(f'Epoch {epoch:3d}: Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}, '
-                  f'Train F1: {train_f1:.4f}, Val F1: {val_f1:.4f}')
+            if is_regression:
+                print(f'Epoch {epoch:3d}: Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}, '
+                      f'Train MSE: {train_mse:.4f}, Val MSE: {val_mse:.4f}, '
+                      f'Train R²: {train_r2:.4f}, Val R²: {val_r2:.4f}')
+            else:
+                print(f'Epoch {epoch:3d}: Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}, '
+                      f'Train F1: {train_f1:.4f}, Val F1: {val_f1:.4f}')
     
     # Restore best model
     if best_model_state is not None:
         model.load_state_dict(best_model_state)
     
-    # Verification: Check if the restored model gives the same validation F1
+    # Final evaluation to ensure history is consistent with best model
     model.eval()
     with torch.no_grad():
-        if verbose:
-            print("\n=== Model State Verification ===")
-            print(f"Best model was from epoch {best_epoch}")
-            print(f"Best validation F1 during training: {best_val_f1:.4f}")
-            
-            # Get current model state before comparison
-            current_state = model.state_dict()
-            best_model_state = copy.deepcopy(model.state_dict())
-            state_changed = False
-            for key in best_model_state:
-                if not torch.allclose(current_state[key], best_model_state[key]):
-                    state_changed = True
-                    print(f"WARNING: Model state changed for parameter {key}")
-            if not state_changed:
-                print("Model state loaded correctly")
-        
-        # Now evaluate
         out = model(data.x, data.edge_index)
-        if is_multilabel:
-            val_pred = (torch.sigmoid(out[data.val_mask]) > 0.5).float()
-        else:
-            val_pred = out[data.val_mask].argmax(dim=1)
-        val_true = data.y[data.val_mask]
-        restored_val_f1 = calculate_f1_score(val_true, val_pred, multilabel=is_multilabel)
-        
-        # Also check training F1 for completeness
-        if is_multilabel:
-            train_pred = (torch.sigmoid(out[data.train_mask]) > 0.5).float()
-        else:
-            train_pred = out[data.train_mask].argmax(dim=1)
-        train_true = data.y[data.train_mask]
-        restored_train_f1 = calculate_f1_score(train_true, train_pred, multilabel=is_multilabel)
-        
-        if verbose:
-            print("\n=== Prediction Verification ===")
-            print(f"Validation predictions shape: {val_pred.shape}")
-            print(f"Validation true labels shape: {val_true.shape}")
-            print(f"Unique values in val_pred: {torch.unique(val_pred)}")
-            print(f"Unique values in val_true: {torch.unique(val_true)}")
+        if is_regression:
+            # For regression, update final metrics
+            train_pred = out[data.train_mask].cpu().numpy()
+            val_pred = out[data.val_mask].cpu().numpy()
+            train_true = data.y[data.train_mask].cpu().numpy()
+            val_true = data.y[data.val_mask].cpu().numpy()
             
-            # Print distributions based on task type
+            from sklearn.metrics import mean_squared_error, r2_score
+            train_mse = mean_squared_error(train_true, train_pred)
+            val_mse = mean_squared_error(val_true, val_pred)
+            
+            try:
+                train_r2 = r2_score(train_true, train_pred)
+                val_r2 = r2_score(val_true, val_pred)
+            except:
+                train_r2 = 0.0
+                val_r2 = 0.0
+                
+            if verbose:
+                print(f'\n=== Final Results ===')
+                print(f'Best model from epoch {best_epoch}')
+                print(f'Train MSE: {train_mse:.4f}, Val MSE: {val_mse:.4f}')
+                print(f'Train R²: {train_r2:.4f}, Val R²: {val_r2:.4f}')
+        else:
+            # For classification, update final F1 scores
             if is_multilabel:
-                print("\nValidation predictions per class:")
-                for i in range(val_pred.shape[1]):
-                    pred_counts = torch.bincount(val_pred[:, i].long())
-                    true_counts = torch.bincount(val_true[:, i].long())
-                    print(f"Class {i}:")
-                    print(f"  Predictions: {pred_counts.tolist()}")
-                    print(f"  True labels: {true_counts.tolist()}")
+                train_pred = (torch.sigmoid(out[data.train_mask]) > 0.5).float().cpu().numpy()
+                val_pred = (torch.sigmoid(out[data.val_mask]) > 0.5).float().cpu().numpy()
             else:
-                print(f"Validation predictions distribution: {torch.bincount(val_pred.long())}")
-                print(f"Validation true labels distribution: {torch.bincount(val_true.long())}")
+                train_pred = out[data.train_mask].argmax(dim=1).cpu().numpy()
+                val_pred = out[data.val_mask].argmax(dim=1).cpu().numpy()
+                
+            train_true = data.y[data.train_mask].cpu().numpy()
+            val_true = data.y[data.val_mask].cpu().numpy()
             
-            # Compare raw outputs and predictions between best epoch and restored model
-            print("\n=== Detailed Comparison ===")
-            print("Best epoch raw outputs shape:", history['val_raw_outputs'].shape)
-            print("Restored model raw outputs shape:", out[data.val_mask].shape)
+            from sklearn.metrics import f1_score
+            train_f1 = f1_score(train_true, train_pred, average='macro')
+            val_f1 = f1_score(val_true, val_pred, average='macro')
             
-            # Compare raw outputs
-            raw_output_diff = torch.abs(history['val_raw_outputs'] - out[data.val_mask])
-            print(f"Max difference in raw outputs: {raw_output_diff.max().item():.6f}")
-            print(f"Mean difference in raw outputs: {raw_output_diff.mean().item():.6f}")
-            
-            # Compare predictions
-            pred_diff = torch.abs(history['val_predictions'] - val_pred)
-            print(f"Number of different predictions: {pred_diff.sum().item()}")
-            print(f"Percentage of different predictions: {(pred_diff.sum() / pred_diff.numel() * 100):.2f}%")
-            
-            # Print some example predictions
-            print("\nExample predictions (first 5 samples):")
-            print("Best epoch predictions:")
-            print(history['val_predictions'][:5])
-            print("Restored model predictions:")
-            print(val_pred[:5])
-            print("True labels:")
-            print(val_true[:5])
-    
-    if verbose:
-        print(f'\n=== Final Results ===')
-        print(f'Best validation F1 during training: {best_val_f1:.4f}')
-        print(f'Restored model validation F1: {restored_val_f1:.4f}')
-        print(f'Restored model training F1: {restored_train_f1:.4f}')
-        
-        # Check if the restored F1 matches the best F1 from history
-        max_val_f1_from_history = max(history['val_f1'])
-        print(f'Maximum validation F1 from history: {max_val_f1_from_history:.4f}')
-        
-        if abs(restored_val_f1 - best_val_f1) > 1e-6:
-            print("WARNING: Restored model validation F1 does not match best validation F1!")
-        if abs(restored_val_f1 - max_val_f1_from_history) > 1e-6:
-            print("WARNING: Restored model validation F1 does not match maximum F1 from history!")
+            if verbose:
+                print(f'\n=== Final Results ===')
+                print(f'Best model from epoch {best_epoch}')
+                print(f'Train F1: {train_f1:.4f}, Val F1: {val_f1:.4f}')
     
     return model, history
 
@@ -3225,61 +3233,276 @@ def visualize_khop_metapath_detection(
     
     return fig
 
-def khop_metapath_classification(
-    graph: nx.Graph,
-    community_labels: np.ndarray,
-    node_regimes: np.ndarray,
-    metapath: List[int],
-    k: int,
+def get_or_create_regime_prediction_splits(
+    graph,
+    community_labels,
+    node_regimes,
+    metapath,
+    k,
+    normalize_counts=False,
+    feature_opts=None,
+    train_size=0.7,
+    val_size=0.15,
+    test_size=0.15,
+    seed=42,
+    force_recreate=False
+):
+    """
+    Get existing or create new consistent train/val/test splits for regime prediction.
+    This function will store splits in session state to reuse them across model runs.
+    
+    Args:
+        graph: NetworkX graph or GraphSample
+        community_labels: Community labels for each node
+        node_regimes: Feature regime assignments for each node
+        metapath: Selected metapath
+        k: Hop distance
+        normalize_counts: Whether to normalize counts to distributions
+        feature_opts: Feature options dictionary
+        train_size, val_size, test_size: Split proportions
+        seed: Random seed
+        force_recreate: Whether to force creation of new splits
+        
+    Returns:
+        Dictionary with splits
+    """
+    import streamlit as st
+    
+    # Generate a key for storing these specific splits
+    metapath_str = '_'.join(map(str, metapath))
+    feature_opts_str = '_'.join([f"{k}_{v}" for k, v in (feature_opts or {}).items()])
+    split_key = f"regime_splits_{metapath_str}_{k}_{normalize_counts}_{feature_opts_str}_{seed}"
+    
+    # Initialize regime_prediction_splits in session state if it doesn't exist
+    if 'regime_prediction_splits' not in st.session_state:
+        st.session_state.regime_prediction_splits = {}
+        
+    # Check if we already have these splits
+    if not force_recreate and split_key in st.session_state.regime_prediction_splits:
+        return st.session_state.regime_prediction_splits[split_key]
+    
+    # We need to create new splits
+    graph_nx = graph.graph if hasattr(graph, 'graph') else graph
+    
+    # First, prepare features
+    X = prepare_node_features(
+        graph,
+        community_labels,
+        use_degree=feature_opts.get('use_degree', True) if feature_opts else True,
+        use_clustering=feature_opts.get('use_clustering', True) if feature_opts else True,
+        use_node_features=feature_opts.get('use_node_features', True) if feature_opts else True
+    )
+    
+    # Prepare k-hop regime data
+    khop_data = prepare_khop_regime_data(
+        graph_nx,
+        community_labels,
+        node_regimes,
+        metapath,
+        k,
+        normalize=normalize_counts
+    )
+    
+    # Extract data
+    starting_nodes = khop_data["starting_nodes"]
+    Y = khop_data["regime_counts"]
+    
+    # Filter to nodes with at least one k-hop neighbor
+    valid_nodes = khop_data["nodes_with_neighbors"]
+    valid_indices = [i for i, node in enumerate(starting_nodes) if node in valid_nodes]
+    
+    if not valid_indices:
+        raise ValueError(f"No valid nodes found with k-hop neighbors for the given metapath")
+    
+    starting_nodes = [starting_nodes[i] for i in valid_indices]
+    Y = Y[valid_indices]
+    
+    # Ensure we only use starting nodes that are valid for the feature array
+    max_feature_idx = X.shape[0] - 1
+    valid_starting_nodes = []
+    valid_Y = []
+    
+    for i, node in enumerate(starting_nodes):
+        if node <= max_feature_idx:
+            valid_starting_nodes.append(node)
+            valid_Y.append(Y[i])
+    
+    if not valid_starting_nodes:
+        raise ValueError(f"No valid nodes found with k-hop neighbors that match the feature array size")
+    
+    starting_nodes = valid_starting_nodes
+    Y = np.array(valid_Y)
+    
+    # Filter features to only include starting nodes
+    node_indices = np.array(starting_nodes)
+    node_features = X[node_indices]
+    
+    # Create the splits
+    splits = create_consistent_train_val_test_split(
+        node_features, Y, 
+        train_size=train_size, 
+        val_size=val_size, 
+        test_size=test_size,
+        stratify=False,
+        seed=seed
+    )
+    
+    # Save additional context with the splits for reuse
+    splits_with_context = {
+        'splits': splits,
+        'node_indices': node_indices,
+        'X': node_features,
+        'Y': Y,
+        'starting_nodes': starting_nodes
+    }
+    
+    # Store in session state for future use
+    st.session_state.regime_prediction_splits[split_key] = splits_with_context
+    
+    return splits_with_context
+
+def prepare_khop_regime_data(
+    graph,
+    community_labels,
+    node_regimes,
+    metapath,
+    k,
+    total_regimes=None,
+    normalize=False  # New parameter to control normalization
+):
+    """
+    For each node in the starting community, calculate the counts or distribution of
+    feature regimes among its k-hop neighbors along the given metapath.
+    
+    Args:
+        graph: NetworkX graph
+        community_labels: Node community labels
+        node_regimes: Feature regime assignments for each node
+        metapath: Selected metapath as a list of community indices
+        k: Hop distance along the metapath
+        total_regimes: Total number of possible regimes (if None, calculated from data)
+        normalize: Whether to normalize counts to distributions (default: False)
+        
+    Returns:
+        Dictionary containing:
+        - starting_nodes: List of nodes in the starting community
+        - regime_counts: Matrix of regime counts for each starting node
+        - starting_community: The starting community index
+        - target_community: The k-hop target community index
+        - nodes_with_neighbors: Nodes that have at least one k-hop neighbor
+    """
+    # Check if k is valid for the given metapath
+    if k >= len(metapath):
+        raise ValueError(f"k ({k}) must be less than the length of the metapath ({len(metapath)})")
+    
+    # Identify starting and target communities
+    starting_community = metapath[0]
+    target_community = metapath[k]
+    
+    # Find nodes in starting community
+    starting_nodes = [node for node in graph.nodes() if community_labels[node] == starting_community]
+    
+    # Find metapath instances
+    instances = find_metapath_instances(graph, community_labels, metapath)
+    
+    # Collect all regimes to determine total number if not provided
+    all_regimes = set()
+    for r in node_regimes:
+        if r is not None:
+            all_regimes.add(r)
+    
+    # Set total regimes if not provided
+    if total_regimes is None:
+        total_regimes = max(all_regimes) + 1
+    
+    # Initialize counts matrix with zeros
+    regime_counts = np.zeros((len(starting_nodes), total_regimes), dtype=int)
+    
+    # Maps from node ID to index in the starting_nodes list
+    node_to_idx = {node: i for i, node in enumerate(starting_nodes)}
+    
+    # Track nodes with valid k-hop neighbors
+    nodes_with_neighbors = set()
+    
+    # For each metapath instance, find k-hop neighbors
+    for instance in instances:
+        if len(instance) > k:
+            start_node = instance[0]
+            khop_node = instance[k]
+            
+            # Check if start node is in starting community
+            if start_node in starting_nodes:
+                # Get regime of k-hop neighbor
+                regime = node_regimes[khop_node]
+                if regime is not None:
+                    # Update count
+                    start_idx = node_to_idx[start_node]
+                    regime_counts[start_idx, regime] += 1
+                    nodes_with_neighbors.add(start_node)
+    
+    # Normalize counts to get probabilities if requested
+    if normalize:
+        normalized_counts = np.zeros_like(regime_counts, dtype=float)
+        for i, node in enumerate(starting_nodes):
+            if node in nodes_with_neighbors:
+                row_sum = np.sum(regime_counts[i])
+                if row_sum > 0:
+                    normalized_counts[i] = regime_counts[i] / row_sum
+        regime_counts = normalized_counts
+    
+    return {
+        "starting_nodes": starting_nodes,
+        "regime_counts": regime_counts,  # Now contains raw counts, not normalized
+        "starting_community": starting_community,
+        "target_community": target_community,
+        "nodes_with_neighbors": list(nodes_with_neighbors)
+    }
+
+def khop_regime_prediction(
+    graph,
+    community_labels,
+    node_regimes,
+    metapath,
+    k,
     model_type='rf',
+    task_type='regression',
+    normalize_counts=False,
     feature_opts=None,
     splits=None,
     train_size=0.7,
     val_size=0.15,
     test_size=0.15,
-    seed=42
-) -> Dict[str, Any]:
+    seed=42,
+    use_cached_splits=True
+):
     """
-    Train a classifier to predict the k-hop neighbor's feature regime for nodes in the starting community.
+    Perform prediction of k-hop feature regime counts or distributions.
     
     Args:
-        graph: NetworkX graph
+        graph: NetworkX graph or GraphSample
         community_labels: Community labels for each node
         node_regimes: Feature regime assignments for each node
-        metapath: Selected metapath as a list of community indices
+        metapath: Selected metapath
         k: Hop distance along the metapath
         model_type: Model type ('rf', 'mlp', 'gcn', 'sage')
+        task_type: 'regression' for regime counts/distribution or 'classification' for binary participation
+        normalize_counts: Whether to normalize counts to distributions (default: False)
         feature_opts: Feature options dictionary
         splits: Predefined train/val/test split to use (if None, creates new splits)
         train_size, val_size, test_size: Split proportions (used only if splits is None)
         seed: Random seed
+        use_cached_splits: Whether to use cached splits from session state
         
     Returns:
-        Dictionary with classification results
+        Dictionary with prediction results
     """
-    # First, get k-hop relationships
-    khop_result = khop_metapath_detection(
-        graph,
-        community_labels,
-        node_regimes,
-        metapath,
-        k
-    )
-    
-    # Check if we found any relationships
-    if khop_result["total_relationships"] == 0:
-        return {
-            "error": "No k-hop relationships found for this metapath",
-            "metapath": metapath,
-            "k": k
-        }
-    
-    # Get starting community and create labels
-    starting_community = khop_result["starting_community"]
-    starting_nodes = [node for node in graph.nodes() if community_labels[node] == starting_community]
-    
-    # Prepare features with consistent options
+    # Prepare features with consistent options (same as multi-metapath classification)
     feature_opts = feature_opts or {'use_degree': True, 'use_clustering': True, 'use_node_features': True}
+    
+    # Convert to NetworkX graph if it's a GraphSample
+    graph_nx = graph.graph if hasattr(graph, 'graph') else graph
+    
+    # First, prepare features so we know the feature array shape
     X = prepare_node_features(
         graph,
         community_labels,
@@ -3288,181 +3511,289 @@ def khop_metapath_classification(
         use_node_features=feature_opts.get('use_node_features', True)
     )
     
-    # Create labels for all nodes (default to -1 for nodes not in starting community)
-    Y = np.full(X.shape[0], -1, dtype=int)
+    # Prepare k-hop regime data - use raw counts, not normalized
+    khop_data = prepare_khop_regime_data(
+        graph_nx,
+        community_labels,
+        node_regimes,
+        metapath,
+        k,
+        normalize=normalize_counts
+    )
     
-    # Fill in labels for starting nodes
-    labeled_nodes = khop_result["labeled_nodes"]
-    labels = khop_result["labels"]
+    # Get or create splits - reuse from cache if available
+    if splits is None and use_cached_splits:
+        try:
+            splits_with_context = get_or_create_regime_prediction_splits(
+                graph,
+                community_labels,
+                node_regimes,
+                metapath,
+                k,
+                normalize_counts=normalize_counts,
+                feature_opts=feature_opts,
+                train_size=train_size,
+                val_size=val_size,
+                test_size=test_size,
+                seed=seed
+            )
+            splits = splits_with_context['splits']
+            node_indices = splits_with_context['node_indices']
+            node_features = splits_with_context['X']
+            Y = splits_with_context['Y']
+            starting_nodes = splits_with_context['starting_nodes']
+            
+            # We can skip the data preparation steps below since we have everything
+            data_preparation_done = True
+        except Exception as e:
+            print(f"Could not use cached splits: {e}")
+            data_preparation_done = False
+    else:
+        data_preparation_done = False
     
-    for node in starting_nodes:
-        if node in labeled_nodes:
-            Y[node] = labels[node]
-        else:
-            # For starting nodes without a k-hop neighbor, use a special class
-            # We could make this configurable, but for now we'll use the most common regime
-            # as a default value
-            if khop_result["regime_counts"]:
-                most_common_regime = max(khop_result["regime_counts"].items(), key=lambda x: x[1])[0]
-                Y[node] = most_common_regime
+    # If we couldn't use cached splits, prepare the data as before
+    if not data_preparation_done:
+        # Extract data
+        starting_nodes = khop_data["starting_nodes"]
+        Y = khop_data["regime_counts"]  # Now contains raw counts, not normalized
+        
+        # Filter to nodes with at least one k-hop neighbor
+        valid_nodes = khop_data["nodes_with_neighbors"]
+        valid_indices = [i for i, node in enumerate(starting_nodes) if node in valid_nodes]
+        
+        if not valid_indices:
+            raise ValueError(f"No valid nodes found with k-hop neighbors for the given metapath")
+        
+        starting_nodes = [starting_nodes[i] for i in valid_indices]
+        Y = Y[valid_indices]
+        
+        # Ensure we only use starting nodes that are valid for the feature array
+        max_feature_idx = X.shape[0] - 1
+        valid_starting_nodes = []
+        valid_Y = []
+        
+        for i, node in enumerate(starting_nodes):
+            if node <= max_feature_idx:
+                valid_starting_nodes.append(node)
+                valid_Y.append(Y[i])
+        
+        if not valid_starting_nodes:
+            raise ValueError(f"No valid nodes found with k-hop neighbors that match the feature array size")
+        
+        starting_nodes = valid_starting_nodes
+        Y = np.array(valid_Y)
+        
+        # Filter features to only include starting nodes
+        node_indices = np.array(starting_nodes)
+        node_features = X[node_indices]
+        
+        # Create splits if not provided
+        if splits is None:
+            splits = create_consistent_train_val_test_split(
+                node_features, Y, 
+                train_size=train_size, 
+                val_size=val_size, 
+                test_size=test_size,
+                stratify=False,  # Can't easily stratify regression targets
+                seed=seed
+            )
     
-    # Keep only nodes from the starting community
-    mask = np.array([node in starting_nodes for node in range(len(Y))])
-    X_filtered = X[mask]
-    Y_filtered = Y[mask]
-    
-    # Convert node indices for later reference
-    node_indices = np.arange(len(Y))[mask]
-    
-    # Check if we have enough samples for classification
-    unique_labels = np.unique(Y_filtered)
-    if len(unique_labels) <= 1:
-        return {
-            "error": "Not enough unique labels for classification",
-            "metapath": metapath,
-            "k": k,
-            "unique_labels": unique_labels
-        }
-    
-    # Create or use provided train/val/test splits
-    if splits is None:
-        splits = create_consistent_train_val_test_split(
-            X_filtered, 
-            Y_filtered, 
-            train_size=train_size, 
-            val_size=val_size, 
-            test_size=test_size,
-            stratify=True,  # Single-label so we can stratify
-            seed=seed
-        )
-    
+    # The rest of the function remains the same...
     train_indices = splits['train_indices']
     val_indices = splits['val_indices']
     test_indices = splits['test_indices']
     
     # Train the appropriate model type
     if model_type == 'rf':
-        from sklearn.ensemble import RandomForestClassifier
+        from sklearn.ensemble import RandomForestRegressor
+        from sklearn.multioutput import MultiOutputRegressor
         
-        # Calculate class weights to handle imbalance
-        # We need to count the occurrences of each class
-        class_counts = {}
-        for label in Y_filtered[train_indices]:
-            if label not in class_counts:
-                class_counts[label] = 0
-            class_counts[label] += 1
-            
-        # Set weights inversely proportional to class frequencies
-        n_samples = len(train_indices)
-        n_classes = len(class_counts)
-        class_weights = {label: n_samples / (n_classes * count) for label, count in class_counts.items()}
-        
-        model = RandomForestClassifier(
+        # Create base regressor
+        base_regressor = RandomForestRegressor(
             n_estimators=100,
-            class_weight='balanced',  # Use balanced class weights
             random_state=seed
         )
-        model.fit(X_filtered[train_indices], Y_filtered[train_indices])
+        
+        # Wrap in MultiOutputRegressor for multi-target regression
+        model = MultiOutputRegressor(base_regressor)
+        
+        # Train model
+        model.fit(node_features[train_indices], Y[train_indices])
         
         # Make predictions
-        train_pred = model.predict(X_filtered[train_indices])
-        val_pred = model.predict(X_filtered[val_indices])
-        test_pred = model.predict(X_filtered[test_indices])
+        train_pred = model.predict(node_features[train_indices])
+        val_pred = model.predict(node_features[val_indices])
+        test_pred = model.predict(node_features[test_indices])
+        
+        # Round predictions to nearest integer since we're predicting counts
+        if not normalize_counts:
+            train_pred = np.round(train_pred).astype(int)
+            val_pred = np.round(val_pred).astype(int)
+            test_pred = np.round(test_pred).astype(int)
+            
+            # Ensure non-negative counts
+            train_pred = np.maximum(train_pred, 0)
+            val_pred = np.maximum(val_pred, 0)
+            test_pred = np.maximum(test_pred, 0)
         
         # Calculate metrics
-        train_f1 = f1_score(Y_filtered[train_indices], train_pred, average='macro')
-        val_f1 = f1_score(Y_filtered[val_indices], val_pred, average='macro')
-        test_f1 = f1_score(Y_filtered[test_indices], test_pred, average='macro')
+        from sklearn.metrics import mean_squared_error, r2_score
         
-        train_acc = accuracy_score(Y_filtered[train_indices], train_pred)
-        val_acc = accuracy_score(Y_filtered[val_indices], val_pred)
-        test_acc = accuracy_score(Y_filtered[test_indices], test_pred)
+        train_mse = mean_squared_error(Y[train_indices], train_pred)
+        val_mse = mean_squared_error(Y[val_indices], val_pred)
+        test_mse = mean_squared_error(Y[test_indices], test_pred)
         
-        # Feature importance
-        feature_importance = model.feature_importances_
+        train_r2 = r2_score(Y[train_indices], train_pred)
+        val_r2 = r2_score(Y[val_indices], val_pred)
+        test_r2 = r2_score(Y[test_indices], test_pred)
+        
+        # Extract feature importance
+        feature_importance = np.mean([estimator.feature_importances_ for estimator in model.estimators_], axis=0)
         history = None
         
     elif model_type == 'mlp':
-        from sklearn.neural_network import MLPClassifier
+        from sklearn.neural_network import MLPRegressor
+        from sklearn.multioutput import MultiOutputRegressor
         
-        model = MLPClassifier(
+        # Create base regressor
+        base_regressor = MLPRegressor(
             hidden_layer_sizes=(64, 32),
             max_iter=1000,
             random_state=seed
         )
-        model.fit(X_filtered[train_indices], Y_filtered[train_indices])
+        
+        # Wrap in MultiOutputRegressor for multi-target regression
+        model = MultiOutputRegressor(base_regressor)
+        
+        # Train model
+        model.fit(node_features[train_indices], Y[train_indices])
         
         # Make predictions
-        train_pred = model.predict(X_filtered[train_indices])
-        val_pred = model.predict(X_filtered[val_indices])
-        test_pred = model.predict(X_filtered[test_indices])
+        train_pred = model.predict(node_features[train_indices])
+        val_pred = model.predict(node_features[val_indices])
+        test_pred = model.predict(node_features[test_indices])
+        
+        # Round predictions to nearest integer since we're predicting counts
+        if not normalize_counts:
+            train_pred = np.round(train_pred).astype(int)
+            val_pred = np.round(val_pred).astype(int)
+            test_pred = np.round(test_pred).astype(int)
+            
+            # Ensure non-negative counts
+            train_pred = np.maximum(train_pred, 0)
+            val_pred = np.maximum(val_pred, 0)
+            test_pred = np.maximum(test_pred, 0)
         
         # Calculate metrics
-        train_f1 = f1_score(Y_filtered[train_indices], train_pred, average='macro')
-        val_f1 = f1_score(Y_filtered[val_indices], val_pred, average='macro')
-        test_f1 = f1_score(Y_filtered[test_indices], test_pred, average='macro')
+        from sklearn.metrics import mean_squared_error, r2_score
         
-        train_acc = accuracy_score(Y_filtered[train_indices], train_pred)
-        val_acc = accuracy_score(Y_filtered[val_indices], val_pred)
-        test_acc = accuracy_score(Y_filtered[test_indices], test_pred)
+        train_mse = mean_squared_error(Y[train_indices], train_pred)
+        val_mse = mean_squared_error(Y[val_indices], val_pred)
+        test_mse = mean_squared_error(Y[test_indices], test_pred)
         
-        # Feature importance
-        feature_importance = np.abs(model.coefs_[0]).mean(axis=1)
+        train_r2 = r2_score(Y[train_indices], train_pred)
+        val_r2 = r2_score(Y[val_indices], val_pred)
+        test_r2 = r2_score(Y[test_indices], test_pred)
+        
+        # Extract feature importance - may not be directly available for MLP
+        try:
+            # Try to get coefficients from first layer of first estimator
+            feature_importance = np.abs(model.estimators_[0].coefs_[0]).mean(axis=1)
+        except:
+            # If not available, create placeholder
+            feature_importance = np.ones(node_features.shape[1]) / node_features.shape[1]
+            
         history = None
         
     elif model_type in ['gcn', 'sage']:
-        # Convert filtered data back to full size for PyG
-        # (needed because GNNs work on the whole graph)
-        Y_full = np.full(len(Y), -1)  # Default label for non-starting nodes
-        Y_full[node_indices] = Y_filtered  # Set labels for starting nodes
+        # Create a mapping from original node IDs to continuous indices for PyG
+        node_mapping = {node: i for i, node in enumerate(starting_nodes)}
         
-        # Create PyG data
-        data = prepare_graph_data(graph, X)
+        # Prepare PyG data
+        data = prepare_graph_data_for_subset(
+            graph_nx,
+            X,
+            node_indices,
+            node_mapping
+        )
         
-        # Create masks for filtered nodes
-        train_mask = torch.zeros(len(Y), dtype=torch.bool)
-        val_mask = torch.zeros(len(Y), dtype=torch.bool)
-        test_mask = torch.zeros(len(Y), dtype=torch.bool)
+        # Add labels
+        data.y = torch.tensor(Y, dtype=torch.float)
         
-        # Map filtered indices back to original indices
-        train_mask[node_indices[train_indices]] = True
-        val_mask[node_indices[val_indices]] = True
-        test_mask[node_indices[test_indices]] = True
+        # Add splits
+        num_nodes = data.x.size(0)
+        train_mask = torch.zeros(num_nodes, dtype=torch.bool)
+        val_mask = torch.zeros(num_nodes, dtype=torch.bool)
+        test_mask = torch.zeros(num_nodes, dtype=torch.bool)
         
-        # Add masks and labels to data
+        # Ensure indices are within bounds
+        valid_train = [i for i in train_indices if i < num_nodes]
+        valid_val = [i for i in val_indices if i < num_nodes]
+        valid_test = [i for i in test_indices if i < num_nodes]
+        
+        train_mask[valid_train] = True
+        val_mask[valid_val] = True
+        test_mask[valid_test] = True
+        
         data.train_mask = train_mask
         data.val_mask = val_mask
         data.test_mask = test_mask
-        data.y = torch.tensor(Y_full, dtype=torch.long)
-        
-        # Count number of classes
-        n_classes = len(np.unique(Y_filtered))
         
         # Initialize appropriate model
         if model_type == 'gcn':
-            model = GCN(
-                in_channels=X.shape[1],
-                hidden_channels=64,
-                out_channels=n_classes,
-                dropout=0.5
-            )
+            if task_type == 'regression':
+                model = GCNRegression(
+                    in_channels=data.x.size(1),
+                    hidden_channels=64,
+                    out_channels=Y.shape[1],
+                    dropout=0.5
+                )
+            else:
+                model = GCNMultiLabel(
+                    in_channels=data.x.size(1),
+                    hidden_channels=64,
+                    out_channels=Y.shape[1],
+                    dropout=0.5
+                )
         else:
-            model = GraphSAGE(
-                in_channels=X.shape[1],
-                hidden_channels=64,
-                out_channels=n_classes,
-                dropout=0.5
-            )
+            if task_type == 'regression':
+                model = GraphSAGERegression(
+                    in_channels=data.x.size(1),
+                    hidden_channels=64,
+                    out_channels=Y.shape[1],
+                    dropout=0.5
+                )
+            else:
+                model = GraphSAGEMultiLabel(
+                    in_channels=data.x.size(1),
+                    hidden_channels=64,
+                    out_channels=Y.shape[1],
+                    dropout=0.5
+                )
         
-        # Train model
+        # Train model with improved training function
         optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
         
-        # Use weighted loss to handle class imbalance
-        class_counts = np.bincount(Y_filtered[train_indices])
-        weight = torch.tensor(1.0 / class_counts, dtype=torch.float)
-        weight = weight / weight.sum() * len(class_counts)  # Normalize
-        criterion = nn.CrossEntropyLoss(weight=weight)
+        # Use appropriate loss function based on task
+        if task_type == 'regression':
+            criterion = nn.MSELoss()  # Use MSE loss for regression
+        else:
+            # Use weighted BCE loss for handling class imbalance in classification
+            pos_weight = torch.ones(Y.shape[1]) * 2.0  # Default weight if calculation fails
+            try:
+                pos_weight = torch.tensor([
+                    len(Y[train_indices]) / (2 * max(Y[train_indices, j].sum(), 1))
+                    for j in range(Y.shape[1])
+                ])
+            except Exception as e:
+                print(f"Warning: Could not calculate pos_weight: {e}")
+                    
+            criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
         
+        # Handle the case where there are no nodes in one of the masks
+        if not train_mask.any() or not val_mask.any():
+            raise ValueError("Not enough nodes for train/val/test split. Try with more nodes or different metapath.")
+            
         model, history = train_gnn_model_improved(
             model,
             data,
@@ -3470,94 +3801,399 @@ def khop_metapath_classification(
             criterion=criterion,
             epochs=300,
             early_stopping=True,
-            patience=20,
+            patience=50,
             verbose=False
         )
         
-        # Evaluate with improved evaluation function
+        # Calculate metrics
         model.eval()
         with torch.no_grad():
             out = model(data.x, data.edge_index)
-            train_pred = out[data.train_mask].argmax(dim=1).cpu().numpy()
-            val_pred = out[data.val_mask].argmax(dim=1).cpu().numpy()
-            test_pred = out[data.test_mask].argmax(dim=1).cpu().numpy()
             
-            train_true = data.y[data.train_mask].cpu().numpy()
-            val_true = data.y[data.val_mask].cpu().numpy()
-            test_true = data.y[data.test_mask].cpu().numpy()
+            # No activation needed for regression, use sigmoid for classification
+            if task_type == 'classification':
+                train_pred = torch.sigmoid(out[data.train_mask]).cpu().numpy()
+                val_pred = torch.sigmoid(out[data.val_mask]).cpu().numpy()
+                test_pred = torch.sigmoid(out[data.test_mask]).cpu().numpy()
+            else:
+                train_pred = out[data.train_mask].cpu().numpy()
+                val_pred = out[data.val_mask].cpu().numpy()
+                test_pred = out[data.test_mask].cpu().numpy()
+                
+                # Round predictions to nearest integer since we're predicting counts
+                if not normalize_counts:
+                    train_pred = np.round(train_pred).astype(int)
+                    val_pred = np.round(val_pred).astype(int)
+                    test_pred = np.round(test_pred).astype(int)
+                    
+                    # Ensure non-negative counts
+                    train_pred = np.maximum(train_pred, 0)
+                    val_pred = np.maximum(val_pred, 0)
+                    test_pred = np.maximum(test_pred, 0)
             
-            train_f1 = f1_score(train_true, train_pred, average='macro')
-            val_f1 = f1_score(val_true, val_pred, average='macro')
-            test_f1 = f1_score(test_true, test_pred, average='macro')
+            train_true = Y[train_indices]
+            val_true = Y[val_indices]
+            test_true = Y[test_indices]
             
-            train_acc = accuracy_score(train_true, train_pred)
-            val_acc = accuracy_score(val_true, val_pred)
-            test_acc = accuracy_score(test_true, test_pred)
+            # Calculate appropriate metrics
+            if task_type == 'regression':
+                from sklearn.metrics import mean_squared_error, r2_score
+                
+                train_mse = mean_squared_error(train_true, train_pred)
+                val_mse = mean_squared_error(val_true, val_pred)
+                test_mse = mean_squared_error(test_true, test_pred)
+                
+                train_r2 = r2_score(train_true, train_pred)
+                val_r2 = r2_score(val_true, val_pred)
+                test_r2 = r2_score(test_true, test_pred)
+            else:
+                # For classification, keep original metrics
+                from sklearn.metrics import accuracy_score, f1_score
+                
+                train_pred_binary = (train_pred > 0.5).astype(float)
+                val_pred_binary = (val_pred > 0.5).astype(float)
+                test_pred_binary = (test_pred > 0.5).astype(float)
+                
+                train_acc = accuracy_score(train_true.flatten(), train_pred_binary.flatten())
+                val_acc = accuracy_score(val_true.flatten(), val_pred_binary.flatten())
+                test_acc = accuracy_score(test_true.flatten(), test_pred_binary.flatten())
+                
+                train_f1 = f1_score(train_true, train_pred_binary, average='macro')
+                val_f1 = f1_score(val_true, val_pred_binary, average='macro')
+                test_f1 = f1_score(test_true, test_pred_binary, average='macro')
         
-        # Get feature importance
+        # Extract feature importance from first layer weights
         if model_type == 'gcn':
             feature_importance = np.abs(model.conv1.lin.weight.detach().cpu().numpy()).mean(axis=0)
-        else:  # sage
+        else:
             feature_importance = np.abs(model.conv1.lin_l.weight.detach().cpu().numpy()).mean(axis=0)
     
-    else:
-        return {"error": f"Unknown model type: {model_type}"}
-    
-    return {
+    # Return results with metrics appropriate to the task
+    results = {
         'model': model,
-        'accuracy': {
-            'train': train_acc,
-            'val': val_acc,
-            'test': test_acc
-        },
-        'f1_score': {
-            'train': train_f1,
-            'val': val_f1,
-            'test': test_f1
-        },
+        'node_indices': node_indices,
         'feature_importance': feature_importance,
         'predictions': {
             'train': train_pred,
             'val': val_pred,
             'test': test_pred
         },
-        'true_labels': {
-            'train': Y_filtered[train_indices],
-            'val': Y_filtered[val_indices],
-            'test': Y_filtered[test_indices]
+        'true_values': {
+            'train': Y[train_indices],
+            'val': Y[val_indices],
+            'test': Y[test_indices]
         },
-        'node_indices': node_indices,
-        'khop_result': khop_result,
-        'class_distribution': np.bincount(Y_filtered),
+        'metapath': metapath,
+        'k': k,
         'history': history,
-        'splits': splits
+        'splits': splits,
+        'khop_data': khop_data,
+        'normalize_counts': normalize_counts  # Store whether counts were normalized
     }
+    
+    # Add task-specific metrics
+    if task_type == 'regression':
+        results['metrics'] = {
+            'mse': {
+                'train': train_mse,
+                'val': val_mse,
+                'test': test_mse
+            },
+            'r2': {
+                'train': train_r2,
+                'val': val_r2,
+                'test': test_r2
+            }
+        }
+    else:
+        results['metrics'] = {
+            'accuracy': {
+                'train': train_acc,
+                'val': val_acc,
+                'test': test_acc
+            },
+            'f1_score': {
+                'train': train_f1,
+                'val': val_f1,
+                'test': test_f1
+            }
+        }
+    
+    return results
 
-def optimize_hyperparameters_for_khop(
-    graph: nx.Graph,
-    community_labels: np.ndarray,
-    node_regimes: np.ndarray,
-    metapath: List[int],
-    k: int,
+def prepare_graph_data_for_subset(graph, features, node_indices, node_mapping=None):
+    """
+    Convert NetworkX graph to PyTorch Geometric format for a subset of nodes.
+    
+    Args:
+        graph: NetworkX graph
+        features: Node feature matrix
+        node_indices: Indices of nodes to include
+        node_mapping: Optional mapping from original node IDs to new indices
+        
+    Returns:
+        PyTorch Geometric Data object
+    """
+    if node_mapping is None:
+        node_mapping = {node: i for i, node in enumerate(node_indices)}
+    
+    # Get subgraph containing only the nodes of interest
+    # Note: We need to ensure all nodes are valid for the graph
+    valid_nodes = [n for n in node_indices if n in graph.nodes()]
+    subgraph = graph.subgraph(valid_nodes)
+    
+    # Extract edges, mapping to new node indices
+    edge_list = list(subgraph.edges())
+    if edge_list:
+        edge_index = []
+        for u, v in edge_list:
+            if u in node_mapping and v in node_mapping:
+                edge_index.append([node_mapping[u], node_mapping[v]])
+                # Make undirected (add reverse edges)
+                edge_index.append([node_mapping[v], node_mapping[u]])
+        
+        if edge_index:
+            edge_index = torch.tensor(edge_index, dtype=torch.long).t().contiguous()
+        else:
+            edge_index = torch.zeros((2, 0), dtype=torch.long)
+    else:
+        edge_index = torch.zeros((2, 0), dtype=torch.long)
+    
+    # Extract features for the subset
+    # Make sure we're only accessing valid indices
+    max_idx = features.shape[0] - 1
+    valid_indices = [idx for idx in node_indices if idx <= max_idx]
+    if len(valid_indices) < len(node_indices):
+        print(f"Warning: {len(node_indices) - len(valid_indices)} nodes had indices out of bounds for features array")
+    
+    x = torch.tensor(features[valid_indices], dtype=torch.float)
+    
+    # Create PyG Data object
+    data = Data(x=x, edge_index=edge_index)
+    return data
+
+class GCNRegression(nn.Module):
+    """GCN model for regression tasks."""
+    def __init__(self, in_channels, hidden_channels, out_channels, dropout=0.5, 
+                 normalization='none', skip_connection=False):
+        super(GCNRegression, self).__init__()
+        self.conv1 = GCNConv(in_channels, hidden_channels)
+        self.conv2 = GCNConv(hidden_channels, hidden_channels)
+        self.lin = nn.Linear(hidden_channels, out_channels)
+        self.dropout = dropout
+        self.normalization = normalization
+        self.skip_connection = skip_connection
+        
+        if normalization == 'batch':
+            self.norm1 = BatchNorm1d(hidden_channels)
+            self.norm2 = BatchNorm1d(hidden_channels)
+        elif normalization == 'layer':
+            self.norm1 = LayerNorm(hidden_channels)
+            self.norm2 = LayerNorm(hidden_channels)
+        else:
+            self.norm1 = self.norm2 = None
+
+    def forward(self, x, edge_index):
+        identity = x
+        x = self.conv1(x, edge_index)
+        if self.norm1 is not None:
+            x = self.norm1(x)
+        x = F.relu(x)
+        x = F.dropout(x, p=self.dropout, training=self.training)
+        
+        if self.skip_connection and identity.shape[1] >= x.shape[1]:
+            x = x + identity[:, :x.shape[1]]
+            
+        identity2 = x
+        x = self.conv2(x, edge_index)
+        if self.norm2 is not None:
+            x = self.norm2(x)
+        x = F.relu(x)
+        
+        if self.skip_connection and identity2.shape[1] >= x.shape[1]:
+            x = x + identity2[:, :x.shape[1]]
+            
+        x = self.lin(x)
+        return x  # No activation for regression
+
+class GraphSAGERegression(nn.Module):
+    """GraphSAGE model for regression tasks."""
+    def __init__(self, in_channels, hidden_channels, out_channels, dropout=0.5, 
+                 aggr='mean', normalization='none', skip_connection=False):
+        super(GraphSAGERegression, self).__init__()
+        self.conv1 = SAGEConv(in_channels, hidden_channels, aggr=aggr)
+        self.conv2 = SAGEConv(hidden_channels, hidden_channels, aggr=aggr)
+        self.lin = nn.Linear(hidden_channels, out_channels)
+        self.dropout = dropout
+        self.normalization = normalization
+        self.skip_connection = skip_connection
+        
+        if normalization == 'batch':
+            self.norm1 = BatchNorm1d(hidden_channels)
+            self.norm2 = BatchNorm1d(hidden_channels)
+        elif normalization == 'layer':
+            self.norm1 = LayerNorm(hidden_channels)
+            self.norm2 = LayerNorm(hidden_channels)
+        else:
+            self.norm1 = self.norm2 = None
+
+    def forward(self, x, edge_index):
+        identity = x
+        x = self.conv1(x, edge_index)
+        if self.norm1 is not None:
+            x = self.norm1(x)
+        x = F.relu(x)
+        x = F.dropout(x, p=self.dropout, training=self.training)
+        
+        if self.skip_connection and identity.shape[1] >= x.shape[1]:
+            x = x + identity[:, :x.shape[1]]
+            
+        identity2 = x
+        x = self.conv2(x, edge_index)
+        if self.norm2 is not None:
+            x = self.norm2(x)
+        x = F.relu(x)
+        x = F.dropout(x, p=self.dropout, training=self.training)
+        
+        if self.skip_connection and identity2.shape[1] >= x.shape[1]:
+            x = x + identity2[:, :x.shape[1]]
+            
+        x = self.lin(x)
+        return x  # No activation for regression
+    
+def visualize_regime_prediction_performance(results, model_type):
+    """
+    Visualize the performance of regime count/distribution prediction.
+    
+    Args:
+        results: Results dictionary from khop_regime_prediction
+        model_type: Type of model used for prediction
+        
+    Returns:
+        Matplotlib figure with visualizations
+    """
+    fig, axs = plt.subplots(2, 2, figsize=(14, 12))
+    
+    # Plot metrics
+    metrics = ['train', 'val', 'test']
+    mse_values = [results['metrics']['mse'][m] for m in metrics]
+    r2_values = [results['metrics']['r2'][m] for m in metrics]
+    
+    # MSE plot
+    axs[0, 0].bar(metrics, mse_values, color=['#3498db', '#2ecc71', '#e74c3c'])
+    axs[0, 0].set_title(f'{model_type.upper()} Model - MSE')
+    axs[0, 0].set_ylabel('Mean Squared Error')
+    for i, v in enumerate(mse_values):
+        axs[0, 0].text(i, v + 0.01, f'{v:.3f}', ha='center')
+    
+    # R² plot
+    axs[0, 1].bar(metrics, r2_values, color=['#3498db', '#2ecc71', '#e74c3c'])
+    axs[0, 1].set_title(f'{model_type.upper()} Model - R² Score')
+    axs[0, 1].set_ylabel('R² Score')
+    axs[0, 1].set_ylim(-0.1, 1.0)  # R² can be negative but most useful range is 0-1
+    for i, v in enumerate(r2_values):
+        axs[0, 1].text(i, max(0, v) + 0.05, f'{v:.3f}', ha='center')
+    
+    # Plot predictions vs. true values for all sets with different colors
+    # Get the data for all sets
+    train_true = results['true_values']['train'].flatten()
+    train_pred = results['predictions']['train'].flatten()
+    val_true = results['true_values']['val'].flatten()
+    val_pred = results['predictions']['val'].flatten()
+    test_true = results['true_values']['test'].flatten()
+    test_pred = results['predictions']['test'].flatten()
+    
+    # Determine if we're working with counts or normalized values
+    is_normalized = results.get('normalize_counts', False)
+    
+    # Adjust scatter plot based on counts vs. normalized values
+    if is_normalized:
+        max_value = 1.0
+        axs[1, 0].set_xlim(0, max_value)
+        axs[1, 0].set_ylim(0, max_value)
+        ideal_line = [0, max_value]
+    else:
+        # For counts, determine appropriate range
+        all_values = np.concatenate([train_true, train_pred, val_true, val_pred, test_true, test_pred])
+        max_value = np.max(all_values) * 1.1
+        axs[1, 0].set_xlim(0, max_value)
+        axs[1, 0].set_ylim(0, max_value)
+        ideal_line = [0, max_value]
+    
+    # Plot each set with different colors and markers
+    axs[1, 0].scatter(train_true, train_pred, alpha=0.5, color='#3498db', marker='o', label='Train')
+    axs[1, 0].scatter(val_true, val_pred, alpha=0.5, color='#2ecc71', marker='s', label='Validation')
+    axs[1, 0].scatter(test_true, test_pred, alpha=0.5, color='#e74c3c', marker='^', label='Test')
+    
+    # Plot the ideal line
+    axs[1, 0].plot(ideal_line, ideal_line, 'k--')  # Diagonal line for perfect predictions
+    
+    # Add labels and legend
+    axs[1, 0].set_xlabel('True Values')
+    axs[1, 0].set_ylabel('Predicted Values')
+    axs[1, 0].set_title('Predictions vs. True Values')
+    axs[1, 0].legend(loc='best')
+    
+    # Feature importance
+    if 'feature_importance' in results and results['feature_importance'] is not None:
+        importance = results['feature_importance']
+        if len(importance) > 10:
+            indices = np.argsort(importance)[-10:]
+            importance = importance[indices]
+            feature_names = [f"Feature {i}" for i in indices]
+        else:
+            feature_names = [f"Feature {i}" for i in range(len(importance))]
+        
+        # Sort by importance for better visualization
+        sorted_indices = np.argsort(importance)
+        importance = importance[sorted_indices]
+        feature_names = [feature_names[i] for i in sorted_indices]
+        
+        axs[1, 1].barh(feature_names, importance, color='#9b59b6')
+        axs[1, 1].set_title('Feature Importance')
+        axs[1, 1].set_xlabel('Importance')
+    elif model_type in ['gcn', 'sage'] and 'history' in results:
+        history = results['history']
+        if history and 'train_loss' in history:
+            epochs = range(1, len(history['train_loss']) + 1)
+            axs[1, 1].plot(epochs, history['train_loss'], 'b-', label='Train Loss')
+            if 'val_loss' in history:
+                axs[1, 1].plot(epochs, history['val_loss'], 'r-', label='Val Loss')
+            axs[1, 1].set_title('Training History')
+            axs[1, 1].set_xlabel('Epoch')
+            axs[1, 1].set_ylabel('Loss')
+            axs[1, 1].legend()
+    
+    plt.tight_layout()
+    return fig
+
+def optimize_hyperparameters_for_regime_prediction(
+    graph,
+    community_labels,
+    node_regimes,
+    metapath,
+    k,
     model_type='rf',
     feature_opts=None,
+    normalize_counts=False,
     splits=None,
     n_trials=20,
     timeout=300,
     seed=42
-) -> Dict[str, Any]:
+):
     """
-    Run hyperparameter optimization for K-hop regime classification.
+    Run hyperparameter optimization for regime count/distribution prediction.
     
     Args:
-        graph: NetworkX graph
+        graph: NetworkX graph or GraphSample
         community_labels: Community labels for each node
         node_regimes: Feature regime assignments for each node
         metapath: Selected metapath
-        k: Hop distance along the metapath
+        k: Hop distance
         model_type: Model type ('rf', 'mlp', 'gcn', 'sage')
         feature_opts: Feature options dictionary
-        splits: Predefined train/val/test split to use
+        normalize_counts: Whether to normalize counts to distributions
+        splits: Predefined train/val/test split to use (if None, creates new splits)
         n_trials: Number of Optuna trials
         timeout: Timeout in seconds
         seed: Random seed
@@ -3565,29 +4201,10 @@ def optimize_hyperparameters_for_khop(
     Returns:
         Dictionary with optimization results
     """
-    # First, get k-hop relationships
-    khop_result = khop_metapath_detection(
-        graph,
-        community_labels,
-        node_regimes,
-        metapath,
-        k
-    )
+    # Prepare data
+    graph_nx = graph.graph if hasattr(graph, 'graph') else graph
     
-    # Check if we found any relationships
-    if khop_result["total_relationships"] == 0:
-        return {
-            "error": "No k-hop relationships found for this metapath",
-            "metapath": metapath,
-            "k": k
-        }
-    
-    # Get starting community and create labels
-    starting_community = khop_result["starting_community"]
-    starting_nodes = [node for node in graph.nodes() if community_labels[node] == starting_community]
-    
-    # Prepare features
-    feature_opts = feature_opts or {'use_degree': True, 'use_clustering': True, 'use_node_features': True}
+    # First, prepare features so we know the feature array shape
     X = prepare_node_features(
         graph,
         community_labels,
@@ -3596,142 +4213,219 @@ def optimize_hyperparameters_for_khop(
         use_node_features=feature_opts.get('use_node_features', True)
     )
     
-    # Create labels for all nodes (default to -1 for nodes not in starting community)
-    Y = np.full(X.shape[0], -1, dtype=int)
+    # Prepare k-hop regime data
+    khop_data = prepare_khop_regime_data(
+        graph_nx,
+        community_labels,
+        node_regimes,
+        metapath,
+        k,
+        normalize=normalize_counts
+    )
     
-    # Fill in labels for starting nodes
-    labeled_nodes = khop_result["labeled_nodes"]
-    labels = khop_result["labels"]
+    # Extract data
+    starting_nodes = khop_data["starting_nodes"]
+    Y = khop_data["regime_counts"]
     
-    for node in starting_nodes:
-        if node in labeled_nodes:
-            Y[node] = labels[node]
-        else:
-            # For starting nodes without a k-hop neighbor, use the most common regime
-            if khop_result["regime_counts"]:
-                most_common_regime = max(khop_result["regime_counts"].items(), key=lambda x: x[1])[0]
-                Y[node] = most_common_regime
+    # Filter to nodes with at least one k-hop neighbor
+    valid_nodes = khop_data["nodes_with_neighbors"]
+    valid_indices = [i for i, node in enumerate(starting_nodes) if node in valid_nodes]
     
-    # Keep only nodes from the starting community
-    mask = np.array([node in starting_nodes for node in range(len(Y))])
-    X_filtered = X[mask]
-    Y_filtered = Y[mask]
+    if not valid_indices:
+        raise ValueError(f"No valid nodes found with k-hop neighbors for the given metapath")
     
-    # Convert node indices for later reference
-    node_indices = np.arange(len(Y))[mask]
+    starting_nodes = [starting_nodes[i] for i in valid_indices]
+    Y = Y[valid_indices]
     
-    # Check if we have enough samples for classification
-    unique_labels = np.unique(Y_filtered)
-    if len(unique_labels) <= 1:
-        return {
-            "error": "Not enough unique labels for classification",
-            "metapath": metapath,
-            "k": k,
-            "unique_labels": unique_labels
-        }
+    # Ensure we only use starting nodes that are valid for the feature array
+    max_feature_idx = X.shape[0] - 1
+    valid_starting_nodes = []
+    valid_Y = []
     
-    # Create or use provided train/val/test splits
+    for i, node in enumerate(starting_nodes):
+        if node <= max_feature_idx:
+            valid_starting_nodes.append(node)
+            valid_Y.append(Y[i])
+    
+    if not valid_starting_nodes:
+        raise ValueError(f"No valid nodes found with k-hop neighbors that match the feature array size")
+    
+    starting_nodes = valid_starting_nodes
+    Y = np.array(valid_Y)
+    
+    # Filter features to only include starting nodes
+    node_indices = np.array(starting_nodes)
+    node_features = X[node_indices]
+    
+    # Create splits if not provided
     if splits is None:
         splits = create_consistent_train_val_test_split(
-            X_filtered, 
-            Y_filtered, 
-            stratify=True,
+            node_features, Y, 
+            train_size=0.7, 
+            val_size=0.15, 
+            test_size=0.15,
+            stratify=False,
             seed=seed
         )
     
-    train_indices = splits['train_indices']
-    val_indices = splits['val_indices']
+    # Import libraries needed for all model types
+    import optuna
+    from sklearn.metrics import mean_squared_error, r2_score
+    import copy
     
-    # Create Optuna objective function for the selected model
+    # Define objective function based on model type
+    objective = None  # Initialize to avoid UnboundLocalError
+    best_model = None
+    best_score = float('-inf')  # Changed to negative infinity since we're maximizing
+    
     if model_type == 'rf':
-        def objective(trial):
+        def rf_objective(trial):
+            nonlocal best_model, best_score
+            
             n_estimators = trial.suggest_int('n_estimators', 50, 300)
             max_depth = trial.suggest_int('max_depth', 3, 30)
             min_samples_split = trial.suggest_int('min_samples_split', 2, 20)
             min_samples_leaf = trial.suggest_int('min_samples_leaf', 1, 10)
             
-            model = RandomForestClassifier(
+            from sklearn.ensemble import RandomForestRegressor
+            from sklearn.multioutput import MultiOutputRegressor
+            
+            base_regressor = RandomForestRegressor(
                 n_estimators=n_estimators,
                 max_depth=max_depth,
                 min_samples_split=min_samples_split,
                 min_samples_leaf=min_samples_leaf,
-                class_weight='balanced',
                 random_state=seed
             )
-            model.fit(X_filtered[train_indices], Y_filtered[train_indices])
-            y_pred = model.predict(X_filtered[val_indices])
-            return f1_score(Y_filtered[val_indices], y_pred, average='macro')
-    
+            
+            model = MultiOutputRegressor(base_regressor)
+            
+            model.fit(node_features[splits['train_indices']], Y[splits['train_indices']])
+            y_pred = model.predict(node_features[splits['val_indices']])
+            
+            # Round predictions if we're predicting raw counts
+            if not normalize_counts:
+                y_pred = np.round(y_pred).astype(int)
+                # Ensure non-negative counts
+                y_pred = np.maximum(y_pred, 0)
+            
+            # Calculate both metrics
+            mse = mean_squared_error(Y[splits['val_indices']], y_pred)
+            r2 = r2_score(Y[splits['val_indices']], y_pred)
+            
+            # Combine metrics (R² - MSE)
+            # We negate MSE since we want to minimize it
+            combined_score = r2 - mse
+            
+            # Update best model if this is better
+            if combined_score > best_score:
+                best_score = combined_score
+                best_model = copy.deepcopy(model)
+            
+            return combined_score
+        
+        objective = rf_objective
+            
     elif model_type == 'mlp':
-        def objective(trial):
+        def mlp_objective(trial):
+            nonlocal best_model, best_score
+            
             hidden_layer_sizes = []
             n_layers = trial.suggest_int('n_layers', 1, 3)
             for i in range(n_layers):
                 hidden_layer_sizes.append(trial.suggest_int(f'n_units_l{i}', 16, 256))
+            
             learning_rate = trial.suggest_float('learning_rate', 1e-4, 1e-1, log=True)
             alpha = trial.suggest_float('alpha', 1e-6, 1e-2, log=True)
             
-            model = MLPClassifier(
+            from sklearn.neural_network import MLPRegressor
+            from sklearn.multioutput import MultiOutputRegressor
+            
+            base_regressor = MLPRegressor(
                 hidden_layer_sizes=tuple(hidden_layer_sizes),
                 learning_rate_init=learning_rate,
                 alpha=alpha,
                 max_iter=500,
                 random_state=seed
             )
-            model.fit(X_filtered[train_indices], Y_filtered[train_indices])
-            y_pred = model.predict(X_filtered[val_indices])
-            return f1_score(Y_filtered[val_indices], y_pred, average='macro')
-    
+            
+            model = MultiOutputRegressor(base_regressor)
+            
+            model.fit(node_features[splits['train_indices']], Y[splits['train_indices']])
+            y_pred = model.predict(node_features[splits['val_indices']])
+            
+            # Round predictions if we're predicting raw counts
+            if not normalize_counts:
+                y_pred = np.round(y_pred).astype(int)
+                # Ensure non-negative counts
+                y_pred = np.maximum(y_pred, 0)
+            
+            # Calculate both metrics
+            mse = mean_squared_error(Y[splits['val_indices']], y_pred)
+            r2 = r2_score(Y[splits['val_indices']], y_pred)
+            
+            # Combine metrics (R² - MSE)
+            combined_score = r2 - mse
+            
+            # Update best model if this is better
+            if combined_score > best_score:
+                best_score = combined_score
+                best_model = copy.deepcopy(model)
+            
+            return combined_score
+        
+        objective = mlp_objective
+            
     elif model_type in ['gcn', 'sage']:
-        # Convert filtered data back to full size for PyG
-        Y_full = np.full(len(Y), -1)  # Default label for non-starting nodes
-        Y_full[node_indices] = Y_filtered  # Set labels for starting nodes
+        # Create PyG data for GNN optimization
+        node_mapping = {node: i for i, node in enumerate(starting_nodes)}
+        data = prepare_graph_data_for_subset(graph_nx, X, node_indices, node_mapping)
         
-        # Create PyG data
-        data = prepare_graph_data(graph, X)
+        # Add labels and masks
+        data.y = torch.tensor(Y, dtype=torch.float)
         
-        # Create masks for filtered nodes
-        train_mask = torch.zeros(len(Y), dtype=torch.bool)
-        val_mask = torch.zeros(len(Y), dtype=torch.bool)
-        test_mask = torch.zeros(len(Y), dtype=torch.bool)
+        train_mask = torch.zeros(len(starting_nodes), dtype=torch.bool)
+        val_mask = torch.zeros(len(starting_nodes), dtype=torch.bool)
+        test_mask = torch.zeros(len(starting_nodes), dtype=torch.bool)
         
-        # Map filtered indices back to original indices
-        train_mask[node_indices[train_indices]] = True
-        val_mask[node_indices[val_indices]] = True
-        test_mask[node_indices[splits['test_indices']]] = True
+        # Ensure indices are within bounds
+        valid_train = [i for i in splits['train_indices'] if i < len(starting_nodes)]
+        valid_val = [i for i in splits['val_indices'] if i < len(starting_nodes)]
+        valid_test = [i for i in splits['test_indices'] if i < len(starting_nodes)]
         
-        # Add masks and labels to data
+        train_mask[valid_train] = True
+        val_mask[valid_val] = True
+        test_mask[valid_test] = True
+        
         data.train_mask = train_mask
         data.val_mask = val_mask
         data.test_mask = test_mask
-        data.y = torch.tensor(Y_full, dtype=torch.long)
         
-        # Count number of classes
-        n_classes = len(np.unique(Y_filtered))
-        
-        def objective(trial):
+        def gnn_objective(trial):
+            nonlocal best_model, best_score
+            
             hidden_channels = trial.suggest_int('hidden_channels', 16, 256)
             learning_rate = trial.suggest_float('learning_rate', 1e-4, 1e-1, log=True)
-            dropout = trial.suggest_float('dropout', 0.0, 0.8)
             weight_decay = trial.suggest_float('weight_decay', 1e-6, 1e-2, log=True)
+            dropout = trial.suggest_float('dropout', 0.0, 0.8)
             normalization = trial.suggest_categorical('normalization', ['none', 'batch', 'layer'])
             skip_connection = trial.suggest_categorical('skip_connection', [False, True])
             
             if model_type == 'gcn':
-                model = GCN(
-                    in_channels=X.shape[1],
+                model = GCNRegression(
+                    in_channels=data.x.size(1),
                     hidden_channels=hidden_channels,
-                    out_channels=n_classes,
+                    out_channels=Y.shape[1],
                     dropout=dropout,
                     normalization=normalization,
                     skip_connection=skip_connection
                 )
-            else:
+            else:  # sage
                 aggr = trial.suggest_categorical('aggr', ['mean', 'max', 'sum'])
-                model = GraphSAGE(
-                    in_channels=X.shape[1],
+                model = GraphSAGERegression(
+                    in_channels=data.x.size(1),
                     hidden_channels=hidden_channels,
-                    out_channels=n_classes,
+                    out_channels=Y.shape[1],
                     dropout=dropout,
                     aggr=aggr,
                     normalization=normalization,
@@ -3744,111 +4438,113 @@ def optimize_hyperparameters_for_khop(
                 weight_decay=weight_decay
             )
             
-            # Use weighted loss for imbalanced classes
-            class_counts = np.bincount(Y_filtered[train_indices])
-            weight = torch.tensor(1.0 / class_counts, dtype=torch.float)
-            weight = weight / weight.sum() * len(class_counts)  # Normalize
-            criterion = nn.CrossEntropyLoss(weight=weight)
+            criterion = nn.MSELoss()
             
-            # Use shorter training for optimization
-            model, _ = train_gnn_model_improved(
+            # Train model with early stopping
+            model, history = train_gnn_model_improved(
                 model,
                 data,
                 optimizer=optimizer,
                 criterion=criterion,
                 epochs=100,  # Shorter for optimization
                 early_stopping=True,
-                patience=10,
+                patience=10,  # Shorter for optimization
                 verbose=False
             )
             
-            # Evaluate
+            # Evaluate on validation set
             model.eval()
             with torch.no_grad():
                 out = model(data.x, data.edge_index)
-                val_pred = out[data.val_mask].argmax(dim=1).cpu().numpy()
-                val_true = data.y[data.val_mask].cpu().numpy()
-                val_f1 = f1_score(val_true, val_pred, average='macro')
-            
-            return val_f1
+                y_pred = out[data.val_mask].cpu().numpy()
+                
+                # Round predictions if we're predicting raw counts
+                if not normalize_counts:
+                    y_pred = np.round(y_pred).astype(int)
+                    # Ensure non-negative counts
+                    y_pred = np.maximum(y_pred, 0)
+                
+                # Calculate both metrics
+                mse = mean_squared_error(Y[splits['val_indices']], y_pred)
+                r2 = r2_score(Y[splits['val_indices']], y_pred)
+                
+                # Combine metrics (R² - MSE)
+                combined_score = r2 - mse
+                
+                # Update best model if this is better
+                if combined_score > best_score:
+                    best_score = combined_score
+                    best_model = copy.deepcopy(model)
+                
+                return combined_score
+        
+        objective = gnn_objective
     
-    else:
-        return {"error": f"Unknown model type: {model_type}"}
-    
-    # Run Optuna optimization
-    study = optuna.create_study(direction='maximize')
+    # Run optimization
+    study = optuna.create_study(direction='maximize')  # Changed to maximize since we're using R² - MSE
     study.optimize(objective, n_trials=n_trials, timeout=timeout)
     
-    # Get best parameters
+    # Get best parameters and value
     best_params = study.best_params
     best_value = study.best_value
     
-    # Train final model with best parameters
-    if model_type == 'rf':
-        best_model = RandomForestClassifier(
-            n_estimators=best_params.get('n_estimators', 100),
-            max_depth=best_params.get('max_depth', None),
-            min_samples_split=best_params.get('min_samples_split', 2),
-            min_samples_leaf=best_params.get('min_samples_leaf', 1),
-            class_weight='balanced',
-            random_state=seed
-        )
-        best_model.fit(X_filtered[train_indices], Y_filtered[train_indices])
+    # Train final model with best parameters on full training set
+    if model_type in ['rf', 'mlp']:
+        # Use the best model we found during optimization
+        final_model = best_model
         
         # Make predictions
-        train_pred = best_model.predict(X_filtered[train_indices])
-        val_pred = best_model.predict(X_filtered[val_indices])
-        test_pred = best_model.predict(X_filtered[splits['test_indices']])
+        train_pred = final_model.predict(node_features[splits['train_indices']])
+        val_pred = final_model.predict(node_features[splits['val_indices']])
+        test_pred = final_model.predict(node_features[splits['test_indices']])
+        
+        # Round predictions for counts
+        if not normalize_counts:
+            train_pred = np.round(train_pred).astype(int)
+            val_pred = np.round(val_pred).astype(int)
+            test_pred = np.round(test_pred).astype(int)
+            
+            # Ensure non-negative counts
+            train_pred = np.maximum(train_pred, 0)
+            val_pred = np.maximum(val_pred, 0)
+            test_pred = np.maximum(test_pred, 0)
         
         # Calculate metrics
-        train_f1 = f1_score(Y_filtered[train_indices], train_pred, average='macro')
-        val_f1 = f1_score(Y_filtered[val_indices], val_pred, average='macro')
-        test_f1 = f1_score(Y_filtered[splits['test_indices']], test_pred, average='macro')
+        train_mse = mean_squared_error(Y[splits['train_indices']], train_pred)
+        val_mse = mean_squared_error(Y[splits['val_indices']], val_pred)
+        test_mse = mean_squared_error(Y[splits['test_indices']], test_pred)
+        
+        train_r2 = r2_score(Y[splits['train_indices']], train_pred)
+        val_r2 = r2_score(Y[splits['val_indices']], val_pred)
+        test_r2 = r2_score(Y[splits['test_indices']], test_pred)
         
         # Feature importance
-        feature_importance = best_model.feature_importances_
+        if model_type == 'rf':
+            feature_importance = np.mean([estimator.feature_importances_ for estimator in final_model.estimators_], axis=0)
+        else:  # mlp
+            try:
+                feature_importance = np.abs(final_model.estimators_[0].coefs_[0]).mean(axis=1)
+            except:
+                feature_importance = np.ones(node_features.shape[1]) / node_features.shape[1]
         
-    elif model_type == 'mlp':
-        hidden_layer_sizes = [best_params[f'n_units_l{i}'] 
-                           for i in range(best_params['n_layers'])]
-        best_model = MLPClassifier(
-            hidden_layer_sizes=tuple(hidden_layer_sizes),
-            learning_rate_init=best_params.get('learning_rate', 0.001),
-            alpha=best_params.get('alpha', 0.0001),
-            max_iter=1000,
-            random_state=seed
-        )
-        best_model.fit(X_filtered[train_indices], Y_filtered[train_indices])
+        history = None
         
-        # Make predictions
-        train_pred = best_model.predict(X_filtered[train_indices])
-        val_pred = best_model.predict(X_filtered[val_indices])
-        test_pred = best_model.predict(X_filtered[splits['test_indices']])
-        
-        # Calculate metrics
-        train_f1 = f1_score(Y_filtered[train_indices], train_pred, average='macro')
-        val_f1 = f1_score(Y_filtered[val_indices], val_pred, average='macro')
-        test_f1 = f1_score(Y_filtered[splits['test_indices']], test_pred, average='macro')
-        
-        # Feature importance
-        feature_importance = np.abs(best_model.coefs_[0]).mean(axis=1)
-        
-    elif model_type in ['gcn', 'sage']:
-        # Create the best model
+    else:  # GNN models
+        # Create and train final model with best parameters
         if model_type == 'gcn':
-            best_model = GCN(
-                in_channels=X.shape[1],
+            final_model = GCNRegression(
+                in_channels=data.x.size(1),
                 hidden_channels=best_params['hidden_channels'],
-                out_channels=n_classes,
+                out_channels=Y.shape[1],
                 dropout=best_params['dropout'],
                 normalization=best_params.get('normalization', 'none'),
                 skip_connection=best_params.get('skip_connection', False)
             )
-        else:
-            best_model = GraphSAGE(
-                in_channels=X.shape[1],
+        else:  # sage
+            final_model = GraphSAGERegression(
+                in_channels=data.x.size(1),
                 hidden_channels=best_params['hidden_channels'],
-                out_channels=n_classes,
+                out_channels=Y.shape[1],
                 dropout=best_params['dropout'],
                 aggr=best_params.get('aggr', 'mean'),
                 normalization=best_params.get('normalization', 'none'),
@@ -3856,277 +4552,93 @@ def optimize_hyperparameters_for_khop(
             )
         
         optimizer = torch.optim.Adam(
-            best_model.parameters(), 
+            final_model.parameters(), 
             lr=best_params.get('learning_rate', 0.01),
             weight_decay=best_params.get('weight_decay', 5e-4)
         )
         
-        # Use weighted loss for imbalanced classes
-        class_counts = np.bincount(Y_filtered[train_indices])
-        weight = torch.tensor(1.0 / class_counts, dtype=torch.float)
-        weight = weight / weight.sum() * len(class_counts)  # Normalize
-        criterion = nn.CrossEntropyLoss(weight=weight)
+        criterion = nn.MSELoss()
         
-        # Train with best parameters
-        best_model, history = train_gnn_model_improved(
-            best_model,
+        # Train final model with longer training
+        final_model, history = train_gnn_model_improved(
+            final_model,
             data,
             optimizer=optimizer,
             criterion=criterion,
             epochs=300,
             early_stopping=True,
             patience=20,
+            min_epochs=100,
             verbose=True
         )
         
-        # Evaluate
-        best_model.eval()
+        # Evaluate with final model
+        final_model.eval()
         with torch.no_grad():
-            out = best_model(data.x, data.edge_index)
-            train_pred = out[data.train_mask].argmax(dim=1).cpu().numpy()
-            val_pred = out[data.val_mask].argmax(dim=1).cpu().numpy()
-            test_pred = out[data.test_mask].argmax(dim=1).cpu().numpy()
+            out = final_model(data.x, data.edge_index)
             
-            train_true = data.y[data.train_mask].cpu().numpy()
-            val_true = data.y[data.val_mask].cpu().numpy()
-            test_true = data.y[data.test_mask].cpu().numpy()
+            train_pred = out[data.train_mask].cpu().numpy()
+            val_pred = out[data.val_mask].cpu().numpy()
+            test_pred = out[data.test_mask].cpu().numpy()
             
-            train_f1 = f1_score(train_true, train_pred, average='macro')
-            val_f1 = f1_score(val_true, val_pred, average='macro')
-            test_f1 = f1_score(test_true, test_pred, average='macro')
+            # Round predictions for counts
+            if not normalize_counts:
+                train_pred = np.round(train_pred).astype(int)
+                val_pred = np.round(val_pred).astype(int)
+                test_pred = np.round(test_pred).astype(int)
+                
+                # Ensure non-negative counts
+                train_pred = np.maximum(train_pred, 0)
+                val_pred = np.maximum(val_pred, 0)
+                test_pred = np.maximum(test_pred, 0)
+            
+            # Calculate metrics
+            train_mse = mean_squared_error(Y[splits['train_indices']], train_pred)
+            val_mse = mean_squared_error(Y[splits['val_indices']], val_pred)
+            test_mse = mean_squared_error(Y[splits['test_indices']], test_pred)
+            
+            train_r2 = r2_score(Y[splits['train_indices']], train_pred)
+            val_r2 = r2_score(Y[splits['val_indices']], val_pred)
+            test_r2 = r2_score(Y[splits['test_indices']], test_pred)
         
-        # Get feature importance
+        # Get feature importance from first layer weights
         if model_type == 'gcn':
-            feature_importance = np.abs(best_model.conv1.lin.weight.detach().cpu().numpy()).mean(axis=0)
-        else:  # sage
-            feature_importance = np.abs(best_model.conv1.lin_l.weight.detach().cpu().numpy()).mean(axis=0)
+            feature_importance = np.abs(final_model.conv1.lin.weight.detach().cpu().numpy()).mean(axis=0)
+        else:
+            if hasattr(final_model.conv1, 'lin_l'):
+                feature_importance = np.abs(final_model.conv1.lin_l.weight.detach().cpu().numpy()).mean(axis=0)
+            else:
+                feature_importance = np.abs(final_model.conv1.lin.weight.detach().cpu().numpy()).mean(axis=0)
     
     return {
         'best_params': best_params,
         'best_value': best_value,
-        'best_model': best_model,
-        'train_f1': train_f1,
-        'val_f1': val_f1,
-        'test_f1': test_f1,
-        'feature_importance': feature_importance,
+        'best_model': final_model,
+        'study': study,
         'splits': splits,
-        'khop_result': khop_result,
-        'class_distribution': np.bincount(Y_filtered)
+        'khop_data': khop_data,
+        'metrics': {
+            'mse': {
+                'train': train_mse,
+                'val': val_mse,
+                'test': test_mse
+            },
+            'r2': {
+                'train': train_r2,
+                'val': val_r2,
+                'test': test_r2
+            }
+        },
+        'feature_importance': feature_importance,
+        'predictions': {
+            'train': train_pred,
+            'val': val_pred,
+            'test': test_pred
+        },
+        'true_values': {
+            'train': Y[splits['train_indices']],
+            'val': Y[splits['val_indices']],
+            'test': Y[splits['test_indices']]
+        },
+        'normalize_counts': normalize_counts
     }
-
-def visualize_khop_classification_results(
-    results: Dict[str, Any],
-    figsize: Tuple[int, int] = (12, 8)
-) -> plt.Figure:
-    """
-    Visualize the results of K-hop classification.
-    
-    Args:
-        results: Results dictionary from khop_metapath_classification
-        figsize: Figure size
-        
-    Returns:
-        Matplotlib figure with visualization of results
-    """
-    fig = plt.figure(figsize=figsize)
-    
-    # Create a 2x2 grid
-    gs = plt.GridSpec(2, 2, figure=fig)
-    
-    # Create subplots
-    ax1 = fig.add_subplot(gs[0, 0])  # F1 scores
-    ax2 = fig.add_subplot(gs[0, 1])  # Class distribution
-    ax3 = fig.add_subplot(gs[1, :])  # Feature importance
-    
-    # Plot F1 scores
-    metrics = ['train', 'val', 'test']
-    values = [results['f1_score'][m] for m in metrics]
-    ax1.bar(metrics, values, color=['#3498db', '#2ecc71', '#e74c3c'])
-    ax1.set_title('F1 Scores')
-    ax1.set_ylim(0, 1)
-    for i, v in enumerate(values):
-        ax1.text(i, v + 0.05, f'{v:.3f}', ha='center')
-    
-    # Plot class distribution (from khop_result)
-    if 'class_distribution' in results:
-        class_dist = results['class_distribution']
-        classes = np.arange(len(class_dist))
-        ax2.bar(classes, class_dist, color='#9b59b6')
-        ax2.set_title('Class Distribution')
-        ax2.set_xlabel('Feature Regime')
-        ax2.set_ylabel('Count')
-        ax2.set_xticks(classes)
-        
-        # Add labels with percentages
-        total = np.sum(class_dist)
-        for i, count in enumerate(class_dist):
-            percentage = count / total * 100
-            ax2.text(i, count + 0.5, f'{percentage:.1f}%', ha='center')
-    
-    # Plot feature importance
-    if 'feature_importance' in results and results['feature_importance'] is not None:
-        importance = results['feature_importance']
-        
-        # Limit to top 15 features for readability
-        if len(importance) > 15:
-            top_indices = np.argsort(importance)[-15:]
-            importance = importance[top_indices]
-            feature_names = [f"Feature {i}" for i in top_indices]
-        else:
-            feature_names = [f"Feature {i}" for i in range(len(importance))]
-        
-        # Sort by importance
-        sorted_indices = np.argsort(importance)
-        importance = importance[sorted_indices]
-        feature_names = [feature_names[i] for i in sorted_indices]
-        
-        # Plot horizontal bar chart
-        ax3.barh(feature_names, importance, color='#2980b9')
-        ax3.set_title('Feature Importance')
-        ax3.set_xlabel('Importance')
-    
-    # Add overall title with metapath info
-    if 'khop_result' in results:
-        khop_result = results['khop_result']
-        metapath = khop_result.get('path_community_sequence', [])
-        k = len(metapath) - 1 if metapath else 0
-        fig.suptitle(f'K-hop Classification (k={k}, path={" → ".join(map(str, metapath))})')
-    
-    plt.tight_layout()
-    return fig
-
-def visualize_khop_node_classification(
-    graph: nx.Graph,
-    community_labels: np.ndarray,
-    classification_results: Dict[str, Any],
-    title: str = "K-hop Classification Results",
-    figsize: Tuple[int, int] = (10, 8),
-    node_size: int = 80
-) -> plt.Figure:
-    """
-    Visualize the results of K-hop node classification on the original graph.
-    
-    Args:
-        graph: NetworkX graph
-        community_labels: Community labels for each node
-        classification_results: Results from khop_metapath_classification
-        title: Plot title
-        figsize: Figure size
-        node_size: Size of nodes in the plot
-        
-    Returns:
-        Matplotlib figure
-    """
-    # Create figure
-    fig, ax = plt.subplots(figsize=figsize)
-    
-    # Get node indices and labels
-    node_indices = classification_results.get('node_indices', [])
-    train_indices = classification_results['splits']['train_indices']
-    val_indices = classification_results['splits']['val_indices']
-    test_indices = classification_results['splits']['test_indices']
-    
-    # Determine indices in the original graph
-    train_nodes = node_indices[train_indices]
-    val_nodes = node_indices[val_indices]
-    test_nodes = node_indices[test_indices]
-    
-    # Get predictions and true values
-    train_pred = classification_results['predictions']['train']
-    val_pred = classification_results['predictions']['val']
-    test_pred = classification_results['predictions']['test']
-    
-    # Map predictions back to original nodes
-    all_nodes = list(graph.nodes())
-    node_predictions = {}
-    
-    for i, node in enumerate(train_nodes):
-        node_predictions[node] = train_pred[i]
-    for i, node in enumerate(val_nodes):
-        node_predictions[node] = val_pred[i]
-    for i, node in enumerate(test_nodes):
-        node_predictions[node] = test_pred[i]
-    
-    # Get layout
-    pos = nx.spring_layout(graph, seed=42)
-    
-    # Draw edges
-    nx.draw_networkx_edges(
-        graph,
-        pos,
-        alpha=0.2,
-        width=0.5,
-        edge_color='gray',
-        ax=ax
-    )
-    
-    # Draw nodes by community
-    communities = sorted(set(community_labels))
-    community_cmap = plt.cm.tab20
-    
-    # Draw all nodes with light color first
-    nx.draw_networkx_nodes(
-        graph,
-        pos,
-        node_color='lightgray',
-        node_size=node_size * 0.8,
-        alpha=0.3,
-        ax=ax
-    )
-    
-    # Get unique prediction values for colormap
-    unique_preds = set()
-    for pred in node_predictions.values():
-        unique_preds.add(pred)
-    pred_cmap = plt.cm.rainbow
-    
-    # Draw predicted nodes
-    for pred_class in sorted(unique_preds):
-        nodes_with_class = [node for node, pred in node_predictions.items() if pred == pred_class]
-        if nodes_with_class:
-            nx.draw_networkx_nodes(
-                graph,
-                pos,
-                nodelist=nodes_with_class,
-                node_color=[pred_cmap(pred_class / max(unique_preds))],
-                node_size=node_size,
-                alpha=0.8,
-                ax=ax
-            )
-    
-    # Add legends
-    # Legend for classes
-    class_handles = []
-    class_labels = []
-    for pred_class in sorted(unique_preds):
-        class_handles.append(plt.Line2D([0], [0], marker='o', color='w', 
-                             markerfacecolor=pred_cmap(pred_class / max(unique_preds)), markersize=10))
-        class_labels.append(f'Class {pred_class}')
-    
-    # Legend for communities (show only a few for compactness)
-    comm_handles = []
-    comm_labels = []
-    for i, comm in enumerate(communities[:5]):  # Limit to first 5 communities
-        comm_handles.append(plt.Line2D([0], [0], marker='o', color='w', 
-                           markerfacecolor=community_cmap(i % 20), markersize=8, alpha=0.5))
-        comm_labels.append(f'Community {comm}')
-    
-    if len(communities) > 5:
-        comm_handles.append(plt.Line2D([0], [0], marker='o', color='w', 
-                           markerfacecolor='gray', markersize=8, alpha=0.5))
-        comm_labels.append(f'+ {len(communities) - 5} more')
-    
-    # Combine legends
-    handles = class_handles + comm_handles
-    labels = class_labels + comm_labels
-    
-    ax.legend(handles, labels, loc='best')
-    
-    # Add title
-    ax.set_title(title)
-    
-    # Turn off axis
-    ax.axis('off')
-    
-    return fig
-

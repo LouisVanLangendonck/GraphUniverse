@@ -84,11 +84,9 @@ from utils.metapath_analysis import (
     optimize_hyperparameters_for_metapath_improved,
     khop_metapath_detection,
     visualize_khop_metapath_detection,
-    # New imports for K-hop classification
-    khop_metapath_classification,
-    optimize_hyperparameters_for_khop,
-    visualize_khop_classification_results,
-    visualize_khop_node_classification
+    visualize_regime_prediction_performance,
+    optimize_hyperparameters_for_regime_prediction,
+    khop_regime_prediction
 )
 
 def run_metapath_analysis(graph, theta, max_length, allow_loops, allow_backtracking, top_k, min_length):
@@ -2294,13 +2292,12 @@ elif page == "Metapath Analysis":
             results = st.session_state.metapath_analysis_state['results']
             
             # Create tabs for different visualizations
-            tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+            tab1, tab2, tab3, tab4, tab5 = st.tabs([
                 "Community Structure",
                 "Metapath Statistics",
                 "Node Classification",
                 "Multi-Metapath Node Classification",
                 "K-hop Metapath Detection",
-                "K-hop Classification"  # New tab
             ])
             
             with tab1:
@@ -2839,6 +2836,296 @@ elif page == "Metapath Analysis":
                             "image/png",
                             key="download_viz"
                         )
+
+                    # Inside the K-hop Metapath Detection tab, add a new section after visualization
+                    # In the K-hop Feature Regime Distribution Prediction section
+                    st.markdown("#### K-hop Feature Regime Distribution Prediction")
+                    st.markdown("""
+                    This analysis predicts the distribution or counts of feature regimes in k-hop neighbors.
+                    Rather than binary classification (whether a node participates in a metapath),
+                    this task predicts the numerical pattern of regimes in neighbors.
+
+                    **How it works:**
+                    1. For each starting node, we calculate the counts/distribution of regimes in its k-hop neighbors
+                    2. We train a regression model to predict these values based on node features
+                    3. The model learns to estimate how many nodes of each regime type will be found in the neighborhood
+                    """)
+
+                    # Add option to predict counts or normalized distributions
+                    predict_counts = st.checkbox(
+                        "Predict raw counts (instead of normalized distribution)",
+                        value=True,
+                        help="If checked, predicts actual regime counts. If unchecked, predicts normalized regime distributions (probabilities)."
+                    )
+
+                    # Add model selection
+                    prediction_model = st.selectbox(
+                        "Select model for regime prediction",
+                        ["Random Forest", "MLP", "GCN", "GraphSAGE"],
+                        key="regime_pred_model"
+                    )
+
+                    model_type_map = {
+                        "Random Forest": "rf",
+                        "MLP": "mlp",
+                        "GCN": "gcn",
+                        "GraphSAGE": "sage"
+                    }
+
+                    selected_prediction_model = model_type_map[prediction_model]
+
+                    # Feature selection 
+                    st.markdown("### Feature Selection")
+                    col_feat1, col_feat2, col_feat3 = st.columns(3)
+                    with col_feat1:
+                        pred_use_degree = st.checkbox("Use Degree", value=True, key="regime_pred_use_degree")
+                    with col_feat2:
+                        pred_use_clustering = st.checkbox("Use Clustering Coefficient", value=True, key="regime_pred_use_clustering")
+                    with col_feat3:
+                        pred_use_node_features = st.checkbox("Use Node Features", value=True, key="regime_pred_use_node_features")
+
+                    pred_feature_opts = {
+                        'use_degree': pred_use_degree,
+                        'use_clustering': pred_use_clustering,
+                        'use_node_features': pred_use_node_features
+                    }
+
+                    # Run prediction button
+                    if st.button("Run Regime Prediction", key="run_regime_pred"):
+                        # Check if we already have splits in session state
+                        if 'regime_prediction_splits' in st.session_state:
+                            # Try to get existing splits for this configuration
+                            try:
+                                metapath_str = '_'.join(map(str, selected_metapath))
+                                feature_opts_str = '_'.join([f"{k}_{v}" for k, v in pred_feature_opts.items()])
+                                split_key = f"regime_splits_{metapath_str}_{k}_{not predict_counts}_{feature_opts_str}_42"
+                                
+                                existing_splits = None
+                                if split_key in st.session_state.regime_prediction_splits:
+                                    existing_splits = st.session_state.regime_prediction_splits[split_key]['splits']
+                            except:
+                                existing_splits = None
+                        else:
+                            existing_splits = None
+                        with st.spinner("Running regime prediction..."):
+                            try:
+                                # Run the prediction
+                                prediction_results = khop_regime_prediction(
+                                    st.session_state.current_graph,
+                                    st.session_state.current_graph.community_labels,
+                                    st.session_state.current_graph.node_regimes,
+                                    selected_metapath,
+                                    k,
+                                    model_type=selected_prediction_model,
+                                    task_type='regression',
+                                    normalize_counts=not predict_counts,
+                                    feature_opts=pred_feature_opts,
+                                    splits=existing_splits,  # Use existing splits if available
+                                    seed=42,
+                                    use_cached_splits=True  # Enable using cached splits
+                                )
+                                
+                                # Store results in session state
+                                st.session_state.metapath_analysis_state['regime_prediction_result'] = {
+                                    'results': prediction_results,
+                                    'metapath': selected_metapath,
+                                    'k': k,
+                                    'model_type': selected_prediction_model,
+                                    'predict_counts': predict_counts,
+                                    'analysis_run': True
+                                }
+                                
+                                prediction_type = "count" if predict_counts else "distribution"
+                                st.success(f"Regime {prediction_type} prediction completed successfully!")
+                                
+                            except Exception as e:
+                                st.error(f"Error during regime prediction: {str(e)}")
+                                import traceback
+                                st.code(traceback.format_exc())
+
+                    # Display results if prediction has been run
+                    if ('regime_prediction_result' in st.session_state.metapath_analysis_state and 
+                        st.session_state.metapath_analysis_state['regime_prediction_result'].get('analysis_run', False)):
+                        
+                        pred_results = st.session_state.metapath_analysis_state['regime_prediction_result']
+                        model_type = pred_results['model_type']
+                        results = pred_results['results']
+                        predict_counts = pred_results.get('predict_counts', True)
+                        
+                        st.markdown("### Prediction Results")
+                        prediction_type = "Counts" if predict_counts else "Distribution"
+                        st.markdown(f"#### Regime {prediction_type} Prediction Performance")
+                        
+                        # Display metrics
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            st.markdown("#### Mean Squared Error")
+                            mse_df = pd.DataFrame({
+                                'Set': ['Train', 'Validation', 'Test'],
+                                'MSE': [
+                                    results['metrics']['mse']['train'],
+                                    results['metrics']['mse']['val'],
+                                    results['metrics']['mse']['test']
+                                ]
+                            })
+                            st.dataframe(mse_df)
+                        
+                        with col2:
+                            st.markdown("#### R² Score")
+                            r2_df = pd.DataFrame({
+                                'Set': ['Train', 'Validation', 'Test'],
+                                'R²': [
+                                    results['metrics']['r2']['train'],
+                                    results['metrics']['r2']['val'],
+                                    results['metrics']['r2']['test']
+                                ]
+                            })
+                            st.dataframe(r2_df)
+                        
+                        # Visualization
+                        st.markdown("#### Prediction Visualization")
+                        fig = visualize_regime_prediction_performance(results, model_type)
+                        st.pyplot(fig)
+                        
+                        # Regime counts/distribution examples
+                        st.markdown(f"#### Example Regime {prediction_type} Predictions")
+                        # Select a subset of test samples to display
+                        test_indices = results['splits']['test_indices']
+                        n_examples = min(5, len(test_indices))
+                        
+                        if n_examples > 0:
+                            example_indices = np.random.choice(len(test_indices), size=n_examples, replace=False)
+                            
+                            for i, idx in enumerate(example_indices):
+                                test_idx = test_indices[idx]
+                                true_vals = results['true_values']['test'][idx]
+                                pred_vals = results['predictions']['test'][idx]
+                                
+                                st.markdown(f"##### Example {i+1}")
+                                fig, ax = plt.subplots(figsize=(10, 4))
+                                
+                                x = np.arange(len(true_vals))
+                                width = 0.35
+                                
+                                rects1 = ax.bar(x - width/2, true_vals, width, label='True')
+                                rects2 = ax.bar(x + width/2, pred_vals, width, label='Predicted')
+                                
+                                ax.set_xticks(x)
+                                ax.set_xticklabels([f'Regime {j}' for j in range(len(true_vals))])
+                                ax.set_ylabel('Count' if predict_counts else 'Probability')
+                                ax.set_title(f'Regime {prediction_type} Prediction - Example {i+1}')
+                                ax.legend()
+                                
+                                # Add value labels on top of bars
+                                for rect in rects1:
+                                    height = rect.get_height()
+                                    if height > 0:
+                                        ax.text(rect.get_x() + rect.get_width()/2., height,
+                                            f'{height:.1f}' if not predict_counts else f'{int(height)}',
+                                            ha='center', va='bottom')
+                                            
+                                for rect in rects2:
+                                    height = rect.get_height()
+                                    if height > 0:
+                                        ax.text(rect.get_x() + rect.get_width()/2., height,
+                                            f'{height:.1f}' if not predict_counts else f'{int(height)}',
+                                            ha='center', va='bottom')
+                                
+                                st.pyplot(fig)
+                        
+                        # Add aggregate statistics across all test samples
+                        st.markdown("#### Aggregate Regime Importance")
+                        
+                        true_vals_test = results['true_values']['test']
+                        pred_vals_test = results['predictions']['test']
+                        
+                        # Calculate mean values for each regime across test set
+                        mean_true = np.mean(true_vals_test, axis=0)
+                        mean_pred = np.mean(pred_vals_test, axis=0)
+                        
+                        # Create a bar chart comparing mean true vs predicted values
+                        fig, ax = plt.subplots(figsize=(10, 5))
+                        x = np.arange(len(mean_true))
+                        width = 0.35
+                        
+                        rects1 = ax.bar(x - width/2, mean_true, width, label='True')
+                        rects2 = ax.bar(x + width/2, mean_pred, width, label='Predicted')
+                        
+                        ax.set_xlabel('Regime')
+                        ax.set_ylabel('Average ' + ('Count' if predict_counts else 'Probability'))
+                        ax.set_title('Average Regime ' + prediction_type + ' Across Test Set')
+                        ax.set_xticks(x)
+                        ax.set_xticklabels([f'Regime {i}' for i in range(len(mean_true))])
+                        ax.legend()
+                        
+                        # Add value labels on top of bars
+                        for rect in rects1:
+                            height = rect.get_height()
+                            if height > 0:
+                                ax.text(rect.get_x() + rect.get_width()/2., height,
+                                    f'{height:.2f}',
+                                    ha='center', va='bottom')
+                                    
+                        for rect in rects2:
+                            height = rect.get_height()
+                            if height > 0:
+                                ax.text(rect.get_x() + rect.get_width()/2., height,
+                                    f'{height:.2f}',
+                                    ha='center', va='bottom')
+                        
+                        st.pyplot(fig)
+                        
+                        # Offer hyperparameter optimization
+                        st.markdown("### Hyperparameter Optimization")
+                        run_optuna = st.checkbox("Run hyperparameter optimization", value=False, key="run_optuna_regime")
+                        if run_optuna:
+                            n_trials = st.slider("Number of Optuna trials", min_value=5, max_value=100, value=20, key="regime_optuna_trials")
+                            timeout = st.slider("Timeout (seconds)", min_value=30, max_value=1800, value=300, key="regime_optuna_timeout")
+                            
+                            if st.button("Run Optimization", key="run_optuna_regime_button"):
+                                with st.spinner("Running hyperparameter optimization..."):
+                                    try:
+                                        optim_results = optimize_hyperparameters_for_regime_prediction(
+                                            st.session_state.current_graph,
+                                            st.session_state.current_graph.community_labels,
+                                            st.session_state.current_graph.node_regimes,
+                                            selected_metapath,
+                                            k,
+                                            model_type=selected_prediction_model,
+                                            feature_opts=pred_feature_opts,
+                                            normalize_counts=not predict_counts,
+                                            splits=results['splits'] if 'splits' in results else None,
+                                            n_trials=n_trials,
+                                            timeout=timeout,
+                                            seed=42
+                                        )
+                                        
+                                        st.session_state.metapath_analysis_state['regime_optuna_results'] = optim_results
+                                        st.success("Optimization completed successfully!")
+                                        
+                                        st.markdown("#### Best Parameters")
+                                        st.json(optim_results['best_params'])
+                                        
+                                        st.markdown("#### Performance with Best Parameters")
+                                        col1, col2, col3 = st.columns(3)
+                                        col1.metric("Train MSE", f"{optim_results['metrics']['mse']['train']:.4f}")
+                                        col2.metric("Validation MSE", f"{optim_results['metrics']['mse']['val']:.4f}")
+                                        col3.metric("Test MSE", f"{optim_results['metrics']['mse']['test']:.4f}")
+                                        
+                                        col1, col2, col3 = st.columns(3)
+                                        col1.metric("Train R²", f"{optim_results['metrics']['r2']['train']:.4f}")
+                                        col2.metric("Validation R²", f"{optim_results['metrics']['r2']['val']:.4f}")
+                                        col3.metric("Test R²", f"{optim_results['metrics']['r2']['test']:.4f}")
+                                        
+                                        # Visualization
+                                        st.markdown("#### Optimized Model Performance")
+                                        fig = visualize_regime_prediction_performance(optim_results, model_type)
+                                        st.pyplot(fig)
+                                        
+                                    except Exception as e:
+                                        st.error(f"Error during optimization: {str(e)}")
+                                        import traceback
+                                        st.code(traceback.format_exc())
             
             with tab5:
                 st.markdown("""
@@ -2902,270 +3189,6 @@ elif page == "Metapath Analysis":
                 - Compare results across different metapaths
                 - Use the visualization to identify clusters of similar nodes
                 """)
-
-            with tab6:
-                st.markdown("#### K-hop Metapath Classification")
-                st.markdown("""
-                This analysis builds upon the K-hop metapath detection by training models to predict the feature regime
-                of k-hop neighbors for nodes in the starting community. This allows us to:
-                
-                1. Classify nodes based on the feature regimes of their k-hop neighbors
-                2. Understand how feature information propagates along specific metapaths
-                3. Compare the performance of different model types on this task
-                
-                **Note:** This task is different from standard node classification as it specifically models the 
-                relationship between a node and the feature regimes of its k-hop neighbors along a given metapath.
-                """)
-                
-                # Select a metapath to analyze
-                metapath_options = results['metapaths'][:st.session_state.metapath_analysis_state['params']['top_k']]
-                stats = results['statistics']
-                metapath_labels = [f"{i}: {stats['metapaths'][i]}" for i in range(len(metapath_options))]
-                
-                selected_metapath_idx = st.selectbox(
-                    "Select a metapath for k-hop classification",
-                    range(min(st.session_state.metapath_analysis_state['params']['top_k'], len(results['metapaths']))),
-                    format_func=lambda i: metapath_labels[i],
-                    key="khop_classification_metapath_selection"
-                )
-                
-                selected_metapath = results['metapaths'][selected_metapath_idx]
-                
-                # Select k (hop distance)
-                max_k = len(selected_metapath) - 1
-                k = st.slider("Select k (hop distance)", 1, max(1, max_k), 1, key="khop_classification_k_selection")
-                
-                # Feature selection for classification
-                st.markdown("### Feature Selection")
-                col_feat1, col_feat2, col_feat3 = st.columns(3)
-                with col_feat1:
-                    use_degree = st.checkbox("Use Degree", value=True, key="khop_use_degree")
-                with col_feat2:
-                    use_clustering = st.checkbox("Use Clustering Coefficient", value=True, key="khop_use_clustering")
-                with col_feat3:
-                    use_node_features = st.checkbox("Use Node Features", value=True, key="khop_use_node_features")
-                
-                feature_opts = {
-                    'use_degree': use_degree,
-                    'use_clustering': use_clustering,
-                    'use_node_features': use_node_features
-                }
-                
-                # Model selection
-                st.markdown("### Model Selection")
-                model_type = st.selectbox(
-                    "Select model type",
-                    ["Random Forest", "MLP", "GCN", "GraphSAGE"],
-                    key="khop_model_type"
-                )
-                
-                model_type_map = {
-                    "Random Forest": "rf",
-                    "MLP": "mlp",
-                    "GCN": "gcn",
-                    "GraphSAGE": "sage"
-                }
-                
-                selected_model_type = model_type_map[model_type]
-                
-                # Add a button to run classification
-                if st.button("Run K-hop Classification", key="run_khop_classification_model"):
-                    with st.spinner("Training classification model..."):
-                        try:
-                            # Check if graph has node_regimes
-                            if not hasattr(st.session_state.current_graph, 'node_regimes') or st.session_state.current_graph.node_regimes is None:
-                                st.error("Graph does not have feature regime information. Please generate a graph with features.")
-                            else:
-                                # Run k-hop classification
-                                classification_results = khop_metapath_classification(
-                                    st.session_state.current_graph.graph,
-                                    st.session_state.current_graph.community_labels,
-                                    st.session_state.current_graph.node_regimes,
-                                    selected_metapath,
-                                    k,
-                                    model_type=selected_model_type,
-                                    feature_opts=feature_opts
-                                )
-                                
-                                # Store results in session state
-                                st.session_state.metapath_analysis_state['khop_classification_result'] = {
-                                    'results': classification_results,
-                                    'metapath': selected_metapath,
-                                    'k': k,
-                                    'model_type': selected_model_type,
-                                    'analysis_run': True
-                                }
-                                
-                                st.success("K-hop classification completed successfully!")
-                        except Exception as e:
-                            st.error(f"Error during k-hop classification: {str(e)}")
-                            import traceback
-                            st.code(traceback.format_exc())
-                
-                # Hyperparameter optimization section
-                st.markdown("### Hyperparameter Optimization")
-                run_optuna = st.checkbox("Run hyperparameter optimization", value=False, key="khop_run_optuna")
-                
-                if run_optuna:
-                    n_trials = st.slider("Number of Optuna trials", min_value=5, max_value=100, value=20, key="khop_n_trials")
-                    timeout = st.slider("Timeout (seconds)", min_value=30, max_value=1800, value=300, key="khop_timeout")
-                    
-                    if st.button("Run Optimization", key="run_khop_optuna"):
-                        with st.spinner("Running hyperparameter optimization..."):
-                            try:
-                                # Check if graph has node_regimes
-                                if not hasattr(st.session_state.current_graph, 'node_regimes') or st.session_state.current_graph.node_regimes is None:
-                                    st.error("Graph does not have feature regime information. Please generate a graph with features.")
-                                else:
-                                    # Run optimization
-                                    optim_results = optimize_hyperparameters_for_khop(
-                                        st.session_state.current_graph.graph,
-                                        st.session_state.current_graph.community_labels,
-                                        st.session_state.current_graph.node_regimes,
-                                        selected_metapath,
-                                        k,
-                                        model_type=selected_model_type,
-                                        feature_opts=feature_opts,
-                                        n_trials=n_trials,
-                                        timeout=timeout
-                                    )
-                                    
-                                    # Store results in session state
-                                    st.session_state.metapath_analysis_state['khop_optuna_results'] = optim_results
-                                    st.success("Optimization completed successfully!")
-                                    
-                                    # Display best parameters
-                                    st.markdown("#### Best Parameters")
-                                    st.json(optim_results['best_params'])
-                                    
-                                    # Display performance with best parameters
-                                    col1, col2, col3 = st.columns(3)
-                                    col1.metric("Train F1", f"{optim_results['train_f1']:.4f}")
-                                    col2.metric("Validation F1", f"{optim_results['val_f1']:.4f}")
-                                    col3.metric("Test F1", f"{optim_results['test_f1']:.4f}")
-                                    
-                            except Exception as e:
-                                st.error(f"Error running optimization: {str(e)}")
-                                import traceback
-                                st.code(traceback.format_exc())
-                
-                # Display classification results if analysis has been run
-                if ('khop_classification_result' in st.session_state.metapath_analysis_state and 
-                    st.session_state.metapath_analysis_state['khop_classification_result'].get('analysis_run', False)):
-                    
-                    classification_data = st.session_state.metapath_analysis_state['khop_classification_result']
-                    classification_results = classification_data['results']
-                    
-                    # Check if there was an error in classification
-                    if 'error' in classification_results:
-                        st.error(f"Error in classification: {classification_results['error']}")
-                    else:
-                        # Create columns for visualization
-                        col1, col2 = st.columns(2)
-                        
-                        with col1:
-                            # Display performance metrics
-                            st.markdown("#### Classification Performance")
-                            metrics_df = pd.DataFrame({
-                                'Set': ['Train', 'Validation', 'Test'],
-                                'Accuracy': [
-                                    classification_results['accuracy']['train'],
-                                    classification_results['accuracy']['val'],
-                                    classification_results['accuracy']['test']
-                                ],
-                                'F1 Score': [
-                                    classification_results['f1_score']['train'],
-                                    classification_results['f1_score']['val'],
-                                    classification_results['f1_score']['test']
-                                ]
-                            })
-                            st.dataframe(metrics_df)
-                            
-                            # Display class distribution
-                            if 'class_distribution' in classification_results:
-                                st.markdown("#### Class Distribution")
-                                class_dist = classification_results['class_distribution']
-                                classes = np.arange(len(class_dist))
-                                class_df = pd.DataFrame({
-                                    'Feature Regime': classes,
-                                    'Count': class_dist,
-                                    'Percentage': [f"{count/sum(class_dist)*100:.1f}%" for count in class_dist]
-                                })
-                                st.dataframe(class_df)
-                        
-                        with col2:
-                            # Create a visualization button
-                            if st.button("Generate Visualizations", key="generate_khop_vis"):
-                                with st.spinner("Generating visualizations..."):
-                                    # Results visualization
-                                    st.markdown("#### Classification Results Summary")
-                                    fig1 = visualize_khop_classification_results(classification_results)
-                                    st.pyplot(fig1)
-                                    
-                                    # Graph visualization
-                                    st.markdown("#### Graph Visualization")
-                                    fig2 = visualize_khop_node_classification(
-                                        st.session_state.current_graph.graph,
-                                        st.session_state.current_graph.community_labels,
-                                        classification_results,
-                                        title=f"K-hop Classification (k={k}, {model_type})"
-                                    )
-                                    st.pyplot(fig2)
-                            
-                            # Feature importance
-                            if 'feature_importance' in classification_results and classification_results['feature_importance'] is not None:
-                                st.markdown("#### Feature Importance")
-                                # Get top features
-                                importance = classification_results['feature_importance']
-                                if len(importance) > 10:
-                                    top_indices = np.argsort(importance)[-10:]
-                                    importance = importance[top_indices]
-                                    feature_names = [f"Feature {i}" for i in top_indices]
-                                else:
-                                    feature_names = [f"Feature {i}" for i in range(len(importance))]
-                                
-                                # Create dataframe
-                                importance_df = pd.DataFrame({
-                                    'Feature': feature_names,
-                                    'Importance': importance
-                                }).sort_values('Importance', ascending=False)
-                                
-                                st.dataframe(importance_df)
-                        
-                        # Create additional section for comparing train/test/val sets
-                        st.markdown("#### Detailed Class Distribution Across Sets")
-                        # Extract predictions and true values
-                        train_pred = classification_results['predictions']['train']
-                        val_pred = classification_results['predictions']['val']
-                        test_pred = classification_results['predictions']['test']
-                        
-                        train_true = classification_results['true_labels']['train']
-                        val_true = classification_results['true_labels']['val']
-                        test_true = classification_results['true_labels']['test']
-                        
-                        # Create tables for confusion matrices if requested
-                        if st.checkbox("Show confusion matrices", value=False):
-                            from sklearn.metrics import confusion_matrix
-                            
-                            # Calculate confusion matrices
-                            train_cm = confusion_matrix(train_true, train_pred)
-                            val_cm = confusion_matrix(val_true, val_pred)
-                            test_cm = confusion_matrix(test_true, test_pred)
-                            
-                            # Display them in columns
-                            cm_col1, cm_col2, cm_col3 = st.columns(3)
-                            
-                            with cm_col1:
-                                st.markdown("**Train Confusion Matrix**")
-                                st.dataframe(pd.DataFrame(train_cm))
-                            
-                            with cm_col2:
-                                st.markdown("**Validation Confusion Matrix**")
-                                st.dataframe(pd.DataFrame(val_cm))
-                            
-                            with cm_col3:
-                                st.markdown("**Test Confusion Matrix**")
-                                st.dataframe(pd.DataFrame(test_cm))
 
 # Add footer
 st.markdown("""
