@@ -560,17 +560,14 @@ class GraphUniverse:
             print(f"  Final community set size: {len(result)}")
         
         return list(result)
-
+    
+    
 class GraphSample:
     """
     Represents a single graph instance sampled from the GraphUniverse.
     
-    This modified version implements:
-    1. Filtering of components smaller than min_component_size
-    2. All graph properties reflect the filtered state
-    3. Feature regime generation and analysis
-    4. Neighborhood feature analysis
-    5. Optional configuration model-like edge generation with configurable degree distributions
+    This modified version implements both standard DC-SBM and the new
+    Distribution-Community-Coupled Corrected SBM (DCCC-SBM).
     """
     
     def __init__(
@@ -578,55 +575,54 @@ class GraphSample:
         universe: GraphUniverse,
         communities: List[int],
         n_nodes: int,
-        min_component_size: int,  # Remove default
-        degree_heterogeneity: float,  # Remove default
-        edge_noise: float,  # Remove default
-        feature_regime_balance: float,  # Remove default
+        min_component_size: int,
+        degree_heterogeneity: float,
+        edge_noise: float,
+        feature_regime_balance: float,
         target_homophily: Optional[float],
         target_density: Optional[float],
-        use_configuration_model: bool,  # Remove default
-        degree_distribution: str,  # Remove default
+        use_configuration_model: bool,
+        degree_distribution: str,
         power_law_exponent: Optional[float],
         target_avg_degree: Optional[float],
-        triangle_enhancement: float,  # Remove default
-        max_mean_community_deviation: float,  # Remove ALL defaults
+        triangle_enhancement: float,
+        max_mean_community_deviation: float,
         max_max_community_deviation: float,
         max_parameter_search_attempts: int,
         parameter_search_range: float,
         min_edge_density: float,
         max_retries: int,
-        seed: Optional[int] = None,  # Keep this one as it's optional
-        exact_filtered_graph: Optional[Dict[str, Any]] = None,  # Keep this one as it's optional
-        config_model_params: Optional[dict] = None  # NEW: method-specific config params
+        seed: Optional[int] = None,
+        exact_filtered_graph: Optional[Dict[str, Any]] = None,
+        config_model_params: Optional[dict] = None,
+        # DCCC-SBM parameters
+        use_dccc_sbm: bool = False,
+        community_imbalance: float = 0.0,
+        degree_distribution_overlap: float = 0.5,
+        dccc_global_degree_params: Optional[dict] = None,
+        # New parameters
+        aggressive_separation: bool = True,
+        alpha: float = 0.5
     ):
         """
         Initialize and generate a graph sample.
-        All parameters must be provided by the caller (typically app.py).
-        No default values are provided to ensure explicit parameter setting.
-        """
-        # Store ALL parameters first before any processing
-        self.max_mean_community_deviation = max_mean_community_deviation
-        self.max_max_community_deviation = max_max_community_deviation
-        self.max_parameter_search_attempts = max_parameter_search_attempts
-        self.parameter_search_range = parameter_search_range
-        self.min_edge_density = min_edge_density
-        self.max_retries = max_retries
-        self.config_model_params = config_model_params if config_model_params is not None else {}
         
-        # If we have an exact filtered graph, use it directly
-        if exact_filtered_graph is not None:
-            self.graph = exact_filtered_graph['graph']
-            self.community_labels = exact_filtered_graph['labels']
-            self.degree_factors = exact_filtered_graph['degree_factors']
-            self.adjacency = exact_filtered_graph['adjacency']
-            self.n_nodes = self.graph.number_of_nodes()
-            self.generation_method = exact_filtered_graph['generation_method']
-            self.generation_params = exact_filtered_graph['generation_params']
-            self.node_map = exact_filtered_graph['node_map']
-            self.reverse_node_map = exact_filtered_graph['reverse_node_map']
-            return  # Exit early as we don't need to generate a new graph
-
-        # Original initialization code...
+        Added DCCC-SBM parameters:
+        - use_dccc_sbm: Whether to use the Distribution-Community-Coupled Corrected SBM
+        - community_imbalance: Controls how imbalanced community sizes are (0-1)
+        - degree_distribution_overlap: Controls how much degree distributions overlap (0-1)
+        - dccc_global_degree_params: Parameters for the global degree distribution
+        """
+        # Store additional DCCC-SBM parameters
+        # Store additional DCCC-SBM parameters
+        self.use_dccc_sbm = use_dccc_sbm
+        self.community_imbalance = community_imbalance
+        self.degree_distribution_overlap = degree_distribution_overlap
+        self.dccc_global_degree_params = dccc_global_degree_params or {}
+        self.aggressive_separation = aggressive_separation
+        self.alpha = alpha
+        
+        # Original initialization code with modifications...
         self.timing_info = {}
         total_start = time.time()
 
@@ -649,15 +645,35 @@ class GraphSample:
         self.target_avg_degree = target_avg_degree
         self.triangle_enhancement = triangle_enhancement
 
+        # Store community deviation parameters as instance attributes
+        self.max_mean_community_deviation = max_mean_community_deviation
+        self.max_max_community_deviation = max_max_community_deviation
+        self.min_edge_density = min_edge_density
+        self.max_retries = max_retries
+
         # Initialize generation method and parameters
         self.generation_method = "standard"
         self.generation_params = {
             "degree_heterogeneity": degree_heterogeneity,
             "edge_noise": edge_noise,
-            "max_mean_community_deviation": max_mean_community_deviation,  # Store constraints in all methods
+            "max_mean_community_deviation": max_mean_community_deviation,
             "max_max_community_deviation": max_max_community_deviation
         }
-        if use_configuration_model and degree_distribution in ["power_law", "exponential", "uniform"]:
+        
+        # If DCCC-SBM is enabled, update generation method
+        if use_dccc_sbm:
+            self.generation_method = "dccc_sbm"
+            self.generation_params.update({
+                "community_imbalance": community_imbalance,
+                "degree_distribution_overlap": degree_distribution_overlap,
+                "degree_distribution_type": degree_distribution,
+                "aggressive_separation": aggressive_separation,
+                "alpha": alpha
+            })
+            if degree_distribution == "power_law":
+                self.generation_params["power_law_exponent"] = power_law_exponent
+            
+        elif use_configuration_model and degree_distribution in ["power_law", "exponential", "uniform"]:
             self.generation_method = degree_distribution
             if degree_distribution == "power_law":
                 self.generation_params = {
@@ -705,12 +721,49 @@ class GraphSample:
         
         # Time: Generate memberships
         start = time.time()
-        self.community_labels = self._generate_memberships(n_nodes, K_sub)  # Now returns 1D array
+        if self.use_dccc_sbm:
+            # For DCCC-SBM, use the imbalanced membership generation
+            self.community_labels = self._generate_memberships_with_imbalance(
+                n_nodes, K_sub, self.community_imbalance)
+        else:
+            # Standard membership generation
+            self.community_labels = self._generate_memberships(n_nodes, K_sub)  # Now returns 1D array
         self.timing_info['memberships'] = time.time() - start
         
         # Time: Generate degree factors
         start = time.time()
-        if self.use_configuration_model:
+        if self.use_dccc_sbm:
+            # For DCCC-SBM, generate community-coupled degree factors
+            global_degree_params = {}
+            if degree_distribution == "power_law":
+                global_degree_params = {
+                    "exponent": power_law_exponent,
+                    "x_min": 1.0
+                }
+            elif degree_distribution == "exponential":
+                global_degree_params = {
+                    "rate": getattr(self, 'rate', 0.5)
+                }
+            elif degree_distribution == "uniform":
+                global_degree_params = {
+                    "min_degree": getattr(self, 'min_factor', 0.5),
+                    "max_degree": getattr(self, 'max_factor', 1.5)
+                }
+                
+            # Update with any user-provided parameters
+            if dccc_global_degree_params:
+                global_degree_params.update(dccc_global_degree_params)
+                
+            # Generate community-specific degree factors using improved method
+            self.degree_factors = self._generate_community_degree_factors_improved(
+                self.community_labels,
+                degree_distribution,
+                degree_distribution_overlap,
+                global_degree_params,
+                target_avg_degree or (self.target_density * (n_nodes - 1)),
+                aggressive_separation
+            )
+        elif self.use_configuration_model:
             self.degree_factors = self._generate_degree_factors_configuration(
                 n_nodes,
                 None,  # degree_heterogeneity not used in configuration model
@@ -737,7 +790,19 @@ class GraphSample:
                 max_parameter_search_attempts=self.max_parameter_search_attempts,
                 parameter_search_range=self.parameter_search_range
             )
+        elif self.use_dccc_sbm:
+            # Use the alpha-weighted edge generation for DCCC-SBM
+            self.adjacency = self._generate_edges_with_alpha(
+                self.community_labels,
+                self.P_sub,
+                self.degree_factors,
+                alpha=self.alpha,
+                noise=edge_noise,
+                min_edge_density=self.min_edge_density,
+                max_retries=self.max_retries
+            )
         else:
+            # Standard DC-SBM edge generation
             self.adjacency = self._generate_edges(
                 self.community_labels,
                 self.P_sub,
@@ -745,7 +810,7 @@ class GraphSample:
                 edge_noise
             )
         self.timing_info['edge_generation'] = time.time() - start
-        
+
         # Create initial NetworkX graph
         temp_graph = nx.from_scipy_sparse_array(self.adjacency)
         
@@ -922,6 +987,35 @@ class GraphSample:
         # Directly assign each node to a random community
         return np.random.choice(K_sub, size=n_nodes)
 
+    def _generate_memberships_with_imbalance(
+        self, n_nodes: int, K_sub: int, community_imbalance: float = 0.0
+    ) -> np.ndarray:
+        """
+        Generate community assignments with controlled imbalance.
+        
+        Args:
+            n_nodes: Number of nodes
+            K_sub: Number of communities
+            community_imbalance: Controls how imbalanced communities are (0-1)
+                0 = perfectly balanced, 1 = maximally imbalanced
+                
+        Returns:
+            Array of community labels
+        """
+        if community_imbalance == 0.0:
+            # Balanced communities - equal probability
+            probs = np.ones(K_sub) / K_sub
+        else:
+            # Generate imbalanced distribution using Dirichlet with concentration parameter
+            # Lower alpha = more imbalanced
+            alpha = max(0.01, (1.0 - community_imbalance) * 10)  # Map 0-1 to 10-0.01
+            probs = np.random.dirichlet(np.ones(K_sub) * alpha)
+        
+        # Sample from categorical distribution
+        labels = np.random.choice(K_sub, size=n_nodes, p=probs)
+        
+        return labels
+
     def _generate_degree_factors(self, n_nodes: int, heterogeneity: float) -> np.ndarray:
         """
         Generate degree correction factors for nodes.
@@ -948,6 +1042,243 @@ class GraphSample:
         factors = factors / factors.mean()
         
         return factors
+
+    def _generate_community_degree_factors_improved(
+        self,
+        community_labels: np.ndarray,
+        degree_distribution_type: str,
+        degree_distribution_overlap: float,
+        global_degree_params: dict,
+        target_avg_degree: float,
+        aggressive_separation: bool = True
+    ) -> np.ndarray:
+        """
+        Generate degree factors with more aggressive community-based differentiation.
+        
+        Args:
+            community_labels: Array of community labels
+            degree_distribution_type: Type of distribution
+            degree_distribution_overlap: How much distributions overlap (0-1)
+            global_degree_params: Parameters for global distribution
+            target_avg_degree: Target average degree
+            aggressive_separation: Whether to use more aggressive separation between communities
+            
+        Returns:
+            Array of degree factors
+        """
+        n_communities = len(np.unique(community_labels))
+        n_nodes = len(community_labels)
+        degree_factors = np.zeros(n_nodes)
+        rho = degree_distribution_overlap  # Overlap parameter (0-1)
+        
+        # Define the global quantile function based on the distribution type
+        if degree_distribution_type == "power_law":
+            exponent = global_degree_params.get("exponent", 2.5)
+            x_min = global_degree_params.get("x_min", 1.0)
+            
+            def global_quantile_func(p):
+                # Inverse CDF for power law: x_min * (1-p)^(-1/alpha)
+                return x_min * np.power(1 - p, -1/exponent)
+        
+        elif degree_distribution_type == "exponential":
+            rate = global_degree_params.get("rate", 1.0)
+            
+            def global_quantile_func(p):
+                # Inverse CDF for exponential: -ln(1-p)/rate
+                return -np.log(1 - p) / rate
+        
+        elif degree_distribution_type == "uniform":
+            min_degree = global_degree_params.get("min_degree", 1.0)
+            max_degree = global_degree_params.get("max_degree", 10.0)
+            
+            def global_quantile_func(p):
+                # Inverse CDF for uniform: min + p * (max - min)
+                return min_degree + p * (max_degree - min_degree)
+        
+        else:
+            raise ValueError(f"Unknown degree distribution type: {degree_distribution_type}")
+        
+        if aggressive_separation and rho < 0.5:
+            # APPROACH 1: "Bin-based" approach - assign different percentile ranges to different communities
+            # This creates much more distinct degree distributions when overlap is low
+            
+            # Create community-specific percentile ranges
+            percentile_ranges = []
+            range_size = 1.0 / n_communities
+            
+            for i in range(n_communities):
+                # Calculate base range for this community
+                base_start = i * range_size
+                base_end = (i + 1) * range_size
+                
+                # Apply overlap - when rho=0, ranges are disjoint; when rho=1, all communities use full range [0,1]
+                # Linear interpolation between disjoint ranges and full range
+                start = base_start * (1 - rho)
+                end = (base_end * (1 - rho)) + rho
+                
+                percentile_ranges.append((start, end))
+            
+            # Process each community
+            for i in range(n_communities):
+                # Get nodes in this community
+                comm_mask = (community_labels == i)
+                comm_size = np.sum(comm_mask)
+                
+                if comm_size == 0:
+                    continue
+                
+                # Get percentile range for this community
+                p_start, p_end = percentile_ranges[i]
+                
+                # Generate uniform random samples within the community's percentile range
+                p_samples = np.random.uniform(p_start, p_end, comm_size)
+                
+                # Apply global quantile function to get degrees
+                community_degrees = global_quantile_func(p_samples)
+                
+                # Ensure valid degrees (positive)
+                community_degrees = np.maximum(1, community_degrees)
+                
+                # Assign to nodes in this community
+                degree_factors[comm_mask] = community_degrees
+        else:
+            # APPROACH 2: Enhanced quantile transformation approach with more extreme parameters
+            # Generate more extreme a_values and b_values for stronger differentiation
+            if aggressive_separation:
+                # Much wider ranges for aggressive separation
+                a_values = np.linspace(0.2, 2.0, n_communities)  # Wider range for scale
+                b_values = np.linspace(-5, 5, n_communities)     # Wider range for shift
+            else:
+                # Original ranges
+                a_values = np.linspace(0.7, 1.3, n_communities)
+                b_values = np.linspace(-2, 2, n_communities)
+            
+            # Process each community
+            for i in range(n_communities):
+                # Get nodes in this community
+                comm_mask = (community_labels == i)
+                comm_size = np.sum(comm_mask)
+                
+                if comm_size == 0:
+                    continue
+                
+                # Generate uniform random samples for quantile transformation
+                p_samples = np.random.uniform(0, 1, comm_size)
+                
+                # Apply quantile transformation with overlap parameter
+                # T_i(p) = (1 - (1-ρ) * a_i) * Q_global(p) + (1-ρ) * b_i
+                community_degrees = (1 - (1-rho) * a_values[i]) * global_quantile_func(p_samples) + (1-rho) * b_values[i]
+                
+                # Ensure valid degrees (positive)
+                community_degrees = np.maximum(1, community_degrees)
+                
+                # Assign to nodes in this community
+                degree_factors[comm_mask] = community_degrees
+        
+        # Scale to match target average degree if specified
+        if target_avg_degree is not None:
+            current_avg = np.mean(degree_factors)
+            scaling_factor = target_avg_degree / current_avg
+            degree_factors *= scaling_factor
+        
+        # Optional: Skip final normalization to preserve differences between communities
+        # This would require changing how edge probabilities are calculated
+        # For now, keep normalization for compatibility
+        degree_factors = degree_factors / np.mean(degree_factors)
+        
+        return degree_factors
+
+    def _generate_edges_with_alpha(
+        self, 
+        community_labels: np.ndarray,
+        P_sub: np.ndarray,
+        degree_factors: np.ndarray,
+        alpha: float = 0.5,
+        noise: float = 0.0,
+        min_edge_density: float = 0.005,
+        max_retries: int = 5
+    ) -> sp.spmatrix:
+        """
+        Generate edges with a parameter controlling relative importance of degrees vs. community structure.
+        
+        Args:
+            community_labels: Node community assignments (indices)
+            P_sub: Community-community probability matrix
+            degree_factors: Node degree factors
+            alpha: Weight of community structure vs. degree factors (0-1)
+                0 = only degree factors matter, 1 = only community structure matters
+            noise: Edge noise level
+            min_edge_density: Minimum acceptable edge density
+            max_retries: Maximum number of retries if graph is too sparse
+            
+        Returns:
+            Sparse adjacency matrix
+        """
+        n_nodes = len(community_labels)
+        
+        for attempt in range(max_retries):
+            # Create node pairs using meshgrid
+            i_nodes, j_nodes = np.triu_indices(n_nodes, k=1)
+            
+            # Get community pairs for all node pairs at once
+            comm_i = community_labels[i_nodes]
+            comm_j = community_labels[j_nodes]
+            
+            # Get base probabilities from P matrix
+            community_probs = P_sub[comm_i, comm_j]
+            
+            # Calculate degree contribution
+            degree_contrib = degree_factors[i_nodes] * degree_factors[j_nodes]
+            
+            # Normalize degree contribution to [0,1] range
+            max_degree_contrib = np.max(degree_contrib)
+            if max_degree_contrib > 0:
+                degree_contrib = degree_contrib / max_degree_contrib
+            
+            # Combine community structure and degree factors with alpha parameter
+            edge_probs = alpha * community_probs + (1 - alpha) * degree_contrib
+            
+            # Add noise if specified
+            if noise > 0:
+                edge_probs *= (1 + np.random.uniform(-noise, noise, size=len(edge_probs)))
+                edge_probs = np.clip(edge_probs, 0, 1)
+            
+            # Sample edges
+            edges = np.random.random(len(edge_probs)) < edge_probs
+            
+            # Get the edges that were sampled
+            rows = i_nodes[edges]
+            cols = j_nodes[edges]
+            
+            # Create data for both directions (undirected graph)
+            all_rows = np.concatenate([rows, cols])
+            all_cols = np.concatenate([cols, rows])
+            all_data = np.ones(len(all_rows))
+            
+            # Create sparse adjacency matrix
+            adj = sp.csr_matrix((all_data, (all_rows, all_cols)), shape=(n_nodes, n_nodes))
+            
+            # Calculate actual edge density
+            actual_density = len(all_rows) / (n_nodes * (n_nodes - 1))
+            
+            if actual_density >= min_edge_density:
+                return adj
+            
+            # If density is too low, increase edge probabilities
+            if attempt < max_retries - 1:
+                print(f"Attempt {attempt + 1}: Graph too sparse (density={actual_density:.4f}). Retrying with adjusted probabilities...")
+                # Adjust approach based on alpha - if alpha is high, increase P_sub; if alpha is low, increase degree contribution
+                if alpha > 0.5:
+                    P_sub = P_sub * 2  # Double the connection probabilities
+                else:
+                    degree_factors = degree_factors * 1.5  # Increase degree factors
+                noise = noise * 0.5  # Reduce noise to maintain signal
+            else:
+                print(f"Warning: Could not achieve minimum edge density after {max_retries} attempts.")
+                print(f"Final density: {actual_density:.4f}")
+                return adj
+        
+        return adj
 
     def _generate_edges(
         self, 

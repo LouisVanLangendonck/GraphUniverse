@@ -14,6 +14,7 @@ from typing import Dict, List, Optional, Tuple, Union, Any
 from sklearn.manifold import TSNE
 from sklearn.decomposition import PCA
 import seaborn as sns
+import pandas as pd
 
 def visualize_graph_generation_process(
     graph: nx.Graph,
@@ -2251,6 +2252,387 @@ def compare_feature_distributions(
     
     return fig
 
+def plot_community_degree_distributions(graph, ax=None, kde=True, title=None):
+    """
+    Create a detailed visualization of degree distributions by community.
+    
+    Args:
+        graph: GraphSample instance
+        ax: Matplotlib axis (optional)
+        kde: Whether to use KDE for smoother distributions
+        title: Plot title (optional)
+        
+    Returns:
+        Matplotlib figure
+    """
+    import matplotlib.pyplot as plt
+    import numpy as np
+    import networkx as nx
+    import seaborn as sns
+    
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(10, 6))
+    else:
+        fig = ax.figure
+    
+    # Get community labels and node degrees
+    community_labels = graph.community_labels
+    degrees = np.array([d for _, d in graph.graph.degree()])
+    
+    # Group degrees by community
+    community_degrees = {}
+    for i, degree in enumerate(degrees):
+        if i < len(community_labels):
+            community = int(community_labels[i])
+            if community not in community_degrees:
+                community_degrees[community] = []
+            community_degrees[community].append(degree)
+    
+    # Number of communities
+    n_communities = len(community_degrees)
+    
+    # Generate a color palette
+    colors = sns.color_palette("husl", n_communities)
+    
+    # Create KDE plots for each community
+    for i, (community, degrees_list) in enumerate(sorted(community_degrees.items())):
+        if kde:
+            # KDE plot for smoother visualization
+            sns.kdeplot(
+                degrees_list, 
+                ax=ax, 
+                color=colors[i], 
+                label=f"Community {community}",
+                fill=True, 
+                alpha=0.3
+            )
+        else:
+            # Histogram for more direct visualization
+            ax.hist(
+                degrees_list, 
+                bins=20, 
+                alpha=0.6, 
+                color=colors[i],
+                label=f"Community {community}", 
+                density=True
+            )
+    
+    # Add legend, labels and title
+    ax.legend(title="Communities")
+    ax.set_xlabel("Node Degree")
+    ax.set_ylabel("Density")
+    
+    if title:
+        ax.set_title(title)
+    else:
+        if hasattr(graph, 'degree_distribution_overlap'):
+            title = f"Degree Distributions by Community (Overlap={graph.degree_distribution_overlap:.2f})"
+        else:
+            title = "Degree Distributions by Community"
+        ax.set_title(title)
+    
+    # Add grid
+    ax.grid(True, linestyle='--', alpha=0.7)
+    
+    return fig
+
+def create_dccc_sbm_dashboard(graph):
+    """
+    Create a dashboard specifically for analyzing degree-community coupling.
+    
+    Args:
+        graph: GraphSample instance
+        
+    Returns:
+        Matplotlib figure with multiple subplots
+    """
+    import matplotlib.pyplot as plt
+    import numpy as np
+    import networkx as nx
+    import seaborn as sns
+    from matplotlib.gridspec import GridSpec
+    
+    # Create figure with GridSpec
+    fig = plt.figure(figsize=(15, 12))
+    gs = GridSpec(2, 2, figure=fig)
+    
+    # 1. Degree distribution by community (KDE)
+    ax1 = fig.add_subplot(gs[0, 0])
+    plot_community_degree_distributions(graph, ax=ax1, kde=True)
+    
+    # 2. Degree distribution histogram
+    ax2 = fig.add_subplot(gs[0, 1])
+    plot_community_degree_distributions(graph, ax=ax2, kde=False, title="Degree Histograms by Community")
+    
+    # 3. Community size distribution
+    ax3 = fig.add_subplot(gs[1, 0])
+    community_counts = np.bincount(graph.community_labels)
+    ax3.bar(
+        range(len(community_counts)), 
+        community_counts, 
+        color=sns.color_palette("husl", len(community_counts))
+    )
+    ax3.set_xlabel('Community')
+    ax3.set_ylabel('Number of Nodes')
+    ax3.set_title('Community Size Distribution')
+    ax3.set_xticks(range(len(community_counts)))
+    
+    # 4. Box plot of degrees by community
+    ax4 = fig.add_subplot(gs[1, 1])
+    
+    # Prepare data for box plot
+    community_data = []
+    community_labels_plot = []
+    
+    for comm, degrees in sorted({
+        comm: [d for i, d in enumerate(np.array([d for _, d in graph.graph.degree()])) 
+               if i < len(graph.community_labels) and graph.community_labels[i] == comm]
+        for comm in np.unique(graph.community_labels)
+    }.items()):
+        community_data.append(degrees)
+        community_labels_plot.append(f"Comm {comm}")
+    
+    # Create box plot
+    bplot = ax4.boxplot(
+        community_data, 
+        patch_artist=True, 
+        labels=community_labels_plot,
+        showfliers=False  # Hide outliers for cleaner visualization
+    )
+    
+    # Color boxes
+    colors = sns.color_palette("husl", len(community_data))
+    for patch, color in zip(bplot['boxes'], colors):
+        patch.set_facecolor(color)
+        patch.set_alpha(0.6)
+    
+    ax4.set_title('Degree Distribution by Community (Box Plot)')
+    ax4.set_xlabel('Community')
+    ax4.set_ylabel('Node Degree')
+    ax4.grid(True, linestyle='--', alpha=0.7)
+    
+    # Add parameter information
+    if hasattr(graph, 'generation_params'):
+        params = graph.generation_params
+        param_text = '\n'.join([
+            f"Generation Method: {graph.generation_method}",
+            f"Degree Distribution Overlap: {params.get('degree_distribution_overlap', 'N/A')}",
+            f"Community Imbalance: {params.get('community_imbalance', 'N/A')}",
+            f"Alpha (Structure vs Degree): {params.get('alpha', 'N/A')}",
+            f"Aggressive Separation: {params.get('aggressive_separation', 'N/A')}"
+        ])
+        
+        fig.text(0.02, 0.02, param_text, fontsize=10)
+    
+    plt.tight_layout(rect=[0, 0.05, 1, 0.95])  # Leave space for parameter text
+    plt.suptitle("Community-Degree Distribution Analysis", fontsize=16)
+    
+    return fig
+
+def plot_degree_community_interaction(graph):
+    """
+    Create a combined visualization showing how degrees and community structure interact.
+    
+    Args:
+        graph: GraphSample instance
+        
+    Returns:
+        Matplotlib figure
+    """
+    import matplotlib.pyplot as plt
+    import numpy as np
+    import networkx as nx
+    
+    # Create figure with multiple subplots
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 6))
+    
+    # 1. Graph visualization with node sizes proportional to degrees
+    pos = nx.spring_layout(graph.graph, seed=42)
+    degrees = np.array([d for _, d in graph.graph.degree()])
+    # Scale node sizes for better visualization
+    node_sizes = 50 + 100 * (degrees / max(degrees)) ** 2
+    
+    # Draw nodes colored by community
+    nx.draw_networkx_nodes(
+        graph.graph,
+        pos=pos,
+        node_size=node_sizes,
+        node_color=[int(c) for c in graph.community_labels],
+        cmap='tab20',
+        alpha=0.8,
+        ax=ax1
+    )
+    
+    # Draw edges
+    nx.draw_networkx_edges(
+        graph.graph,
+        pos=pos,
+        width=0.5,
+        alpha=0.4,
+        ax=ax1
+    )
+    
+    ax1.set_title("Graph with Node Sizes by Degree, Colors by Community")
+    ax1.axis('off')
+    
+    # 2. Scatter plot: Community (x) vs Degree (y)
+    communities = graph.community_labels
+    
+    # Generate colors for communities
+    import matplotlib.cm as cm
+    n_communities = len(np.unique(communities))
+    colors = cm.tab20(np.linspace(0, 1, n_communities))
+    
+    # Add jitter to x-coordinates for better visualization
+    jitter = np.random.normal(0, 0.05, size=len(communities))
+    
+    # Scatter plot
+    for i, comm in enumerate(np.unique(communities)):
+        mask = communities == comm
+        ax2.scatter(
+            communities[mask] + jitter[mask],
+            degrees[mask],
+            color=colors[i],
+            s=30,
+            alpha=0.7,
+            label=f"Community {comm}"
+        )
+    
+    # Add labels and legend
+    ax2.set_xlabel("Community")
+    ax2.set_ylabel("Node Degree")
+    ax2.set_xticks(np.unique(communities))
+    ax2.legend(title="Communities")
+    ax2.set_title("Relationship Between Community and Degree")
+    ax2.grid(True, linestyle='--', alpha=0.7)
+    
+    # Add overall title with parameters
+    if hasattr(graph, 'generation_params'):
+        params = graph.generation_params
+        plt.suptitle(
+            f"Community-Degree Coupling Analysis\n" +
+            f"Overlap={params.get('degree_distribution_overlap', 'N/A')}, " +
+            f"Alpha={params.get('alpha', 'N/A')}, " +
+            f"Method={graph.generation_method}",
+            fontsize=14
+        )
+    
+    plt.tight_layout()
+    
+    return fig
+
+def add_dccc_visualization_to_app(graph):
+    """
+    Add enhanced visualizations for the improved DCCC-SBM model.
+    """
+    import streamlit as st
+    import matplotlib.pyplot as plt
+    import numpy as np
+    import seaborn as sns
+    import pandas as pd
+    
+    # Only show if using DCCC-SBM
+    if hasattr(graph, 'generation_method') and graph.generation_method == "dccc_sbm":
+        st.markdown("## Enhanced DCCC-SBM Analysis")
+        
+        st.markdown("""
+        This section provides detailed analysis of the DCCC-SBM model with enhanced
+        degree distribution control and alpha parameter for balancing community structure
+        vs. degree-based edge formation.
+        """)
+        
+        # Create basic degree distribution by community plot
+        fig1 = plot_community_degree_distributions(graph)
+        st.pyplot(fig1)
+        
+        # Create comprehensive dashboard
+        with st.expander("Detailed Degree Distribution Dashboard", expanded=False):
+            fig2 = create_dccc_sbm_dashboard(graph)
+            st.pyplot(fig2)
+        
+        # Create degree-community interaction visualization
+        with st.expander("Community-Degree Interaction Analysis", expanded=False):
+            fig3 = plot_degree_community_interaction(graph)
+            st.pyplot(fig3)
+        
+        # Add description of the parameters
+        st.markdown("### DCCC-SBM Parameters Explanation")
+        
+        params = graph.generation_params
+        
+        # Create a DataFrame to display parameters
+        params_df = pd.DataFrame([
+            ["Degree Distribution Overlap", params.get('degree_distribution_overlap', 'N/A'), 
+             "Controls how much degree distributions overlap between communities (0=disjoint, 1=identical)"],
+            ["Community Imbalance", params.get('community_imbalance', 'N/A'),
+             "Controls how imbalanced community sizes are (0=balanced, 1=highly imbalanced)"],
+            ["Alpha (α)", params.get('alpha', 'N/A'),
+             "Weight of community structure vs. degree factors (0=only degrees matter, 1=only community structure matters)"],
+            ["Aggressive Separation", params.get('aggressive_separation', 'N/A'),
+             "Whether to use more aggressive approach to separate degree distributions"],
+            ["Degree Distribution", params.get('degree_distribution_type', 'N/A'),
+             "Type of global degree distribution to partition among communities"]
+        ], columns=["Parameter", "Value", "Description"])
+        
+        st.table(params_df)
+        
+        # Add explanation of how the improved model works
+        st.markdown("""
+        ### Understanding Improved DCCC-SBM
+        
+        The Distribution-Community-Coupled Corrected SBM (DCCC-SBM) creates graphs where
+        community membership and node degrees are correlated in a controllable way.
+        
+        #### Key Improvements:
+        
+        1. **Aggressive Degree Separation**: When enabled and overlap is low, communities are
+           assigned to different "bins" of the global degree distribution, creating much more
+           distinct degree patterns.
+        
+        2. **Alpha Parameter**: Controls the balance between community structure (P matrix) and
+           degree factors when determining edge probabilities:
+           - α = 0: Only degree factors matter (ignores community structure)
+           - α = 1: Only community structure matters (ignores degree factors)
+           - α = 0.5: Equal weight to both factors
+        
+        3. **Community Imbalance**: Controls how unevenly nodes are distributed across communities,
+           allowing for more realistic graph structures.
+        """)
+        
+        # Add metrics about the degree-community correlation
+        st.markdown("### Degree-Community Correlation Metrics")
+        
+        # Calculate metrics
+        degrees = np.array([d for _, d in graph.graph.degree()])
+        communities = graph.community_labels
+        
+        # Average degree by community
+        community_avg_degrees = {}
+        for comm in np.unique(communities):
+            mask = communities == comm
+            community_avg_degrees[comm] = np.mean(degrees[mask])
+        
+        # Create metrics DataFrame
+        metrics_df = pd.DataFrame([
+            [comm, avg, np.std(degrees[communities == comm])]
+            for comm, avg in community_avg_degrees.items()
+        ], columns=["Community", "Average Degree", "Std Deviation"])
+        
+        st.dataframe(metrics_df)
+        
+        # Calculate degree range statistics to measure degree separation
+        min_degrees = [np.min(degrees[communities == comm]) for comm in np.unique(communities)]
+        max_degrees = [np.max(degrees[communities == comm]) for comm in np.unique(communities)]
+        
+        # Display range statistics
+        range_df = pd.DataFrame({
+            "Community": np.unique(communities),
+            "Min Degree": min_degrees,
+            "Max Degree": max_degrees,
+            "Range": [max_d - min_d for min_d, max_d in zip(min_degrees, max_degrees)]
+        })
+        
+        st.dataframe(range_df)
 
 def create_dashboard(graph, membership_matrix, communities, universe_P, figsize=(18, 12)):
     """

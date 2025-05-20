@@ -43,6 +43,8 @@ from utils.visualizations import (
     plot_degree_distribution,
     plot_community_overlap_distribution,
     create_dashboard,
+    create_dccc_sbm_dashboard,
+    add_dccc_visualization_to_app
 )
 from utils.graph_family_visualizations import (
     plot_parameter_distributions,
@@ -1010,16 +1012,100 @@ elif page == "Graph Sampling":
         # Method-specific parameters
         st.markdown('<div class="subsection-header">Method Parameters</div>', unsafe_allow_html=True)
         col1, col2 = st.columns(2)
-        
+
         with col1:
             st.session_state.graph_params['method'] = st.selectbox(
                 "Graph generation method",
-                options=["Standard", "Power Law", "Exponential", "Uniform"],
-                index=["Standard", "Power Law", "Exponential", "Uniform"].index(st.session_state.graph_params['method']),
+                options=["Standard", "DCCC-SBM", "Power Law", "Exponential", "Uniform"],
+                index=["Standard", "DCCC-SBM", "Power Law", "Exponential", "Uniform"].index(st.session_state.graph_params.get('method', "Standard")),
                 help="Method for generating the graph structure"
             )
             
-            if st.session_state.graph_params['method'] == "Power Law":
+            # DCCC-SBM specific parameters
+            if st.session_state.graph_params['method'] == "DCCC-SBM":
+                st.session_state.graph_params['method_params']['community_imbalance'] = st.slider(
+                    "Community imbalance",
+                    min_value=0.0,
+                    max_value=1.0,
+                    value=st.session_state.graph_params['method_params'].get('community_imbalance', 0.3),
+                    step=0.1,
+                    help="Controls how imbalanced community sizes are (0=balanced, 1=maximally imbalanced)"
+                )
+                
+                st.session_state.graph_params['method_params']['degree_distribution_overlap'] = st.slider(
+                    "Degree distribution overlap",
+                    min_value=0.0,
+                    max_value=1.0,
+                    value=st.session_state.graph_params['method_params'].get('degree_distribution_overlap', 0.5),
+                    step=0.1,
+                    help="Controls how much degree distributions overlap between communities (0=disjoint, 1=complete overlap)"
+                )
+                
+                # Add new parameters for improved DCCC-SBM
+                st.session_state.graph_params['method_params']['aggressive_separation'] = st.checkbox(
+                    "Aggressive degree separation",
+                    value=st.session_state.graph_params['method_params'].get('aggressive_separation', True),
+                    help="Uses a more aggressive approach to separate degree distributions between communities"
+                )
+                
+                st.session_state.graph_params['method_params']['alpha'] = st.slider(
+                    "Community-degree balance (α)",
+                    min_value=0.0,
+                    max_value=1.0,
+                    value=st.session_state.graph_params['method_params'].get('alpha', 0.5),
+                    step=0.1,
+                    help="Controls the balance between community structure and degree factors (0=only degrees matter, 1=only community structure matters)"
+                )
+                
+                degree_dist_type = st.selectbox(
+                    "Degree distribution type",
+                    options=["power_law", "exponential", "uniform"],
+                    index=["power_law", "exponential", "uniform"].index(
+                        st.session_state.graph_params['method_params'].get('degree_distribution_type', "power_law")
+                    ),
+                    help="Type of global degree distribution to partition among communities"
+                )
+                st.session_state.graph_params['method_params']['degree_distribution_type'] = degree_dist_type
+                
+                # Additional parameters based on distribution type
+                if degree_dist_type == "power_law":
+                    st.session_state.graph_params['method_params']['power_law_exponent'] = st.slider(
+                        "Power law exponent",
+                        min_value=2.0,
+                        max_value=3.0,
+                        value=st.session_state.graph_params['method_params'].get('power_law_exponent', 2.5),
+                        step=0.1,
+                        help="Exponent for power law degree distribution (lower values = more heavy-tailed)"
+                    )
+                elif degree_dist_type == "exponential":
+                    st.session_state.graph_params['method_params']['rate'] = st.slider(
+                        "Exponential rate",
+                        min_value=0.1,
+                        max_value=2.0,
+                        value=st.session_state.graph_params['method_params'].get('rate', 0.5),
+                        step=0.1,
+                        help="Rate parameter for exponential degree distribution"
+                    )
+                elif degree_dist_type == "uniform":
+                    st.session_state.graph_params['method_params']['min_factor'] = st.slider(
+                        "Minimum degree factor",
+                        min_value=0.1,
+                        max_value=1.0,
+                        value=st.session_state.graph_params['method_params'].get('min_factor', 0.5),
+                        step=0.1,
+                        help="Minimum factor for uniform degree distribution"
+                    )
+                    st.session_state.graph_params['method_params']['max_factor'] = st.slider(
+                        "Maximum degree factor",
+                        min_value=1.0,
+                        max_value=2.0,
+                        value=st.session_state.graph_params['method_params'].get('max_factor', 1.5),
+                        step=0.1,
+                        help="Maximum factor for uniform degree distribution"
+                    )
+                    
+            # Original parameters for other methods
+            elif st.session_state.graph_params['method'] == "Power Law":
                 st.session_state.graph_params['method_params']['power_law_exponent'] = st.slider(
                     "Power law exponent",
                     min_value=2.0,
@@ -1054,29 +1140,44 @@ elif page == "Graph Sampling":
                     step=0.1,
                     help="Maximum factor for uniform degree distribution"
                 )
-        
+
         with col2:
+            # Standard paramaters (degree heterogeneity and edge noise)
+            if st.session_state.graph_params['method'] == "Standard":
                 st.session_state.graph_params['method_params']['degree_heterogeneity'] = st.slider(
                     "Degree heterogeneity",
                     min_value=0.0,
                     max_value=1.0,
-                    value=st.session_state.graph_params['method_params']['degree_heterogeneity'],
-                step=0.1,
-                help="Amount of degree heterogeneity to introduce"
+                    value=st.session_state.graph_params['method_params'].get('degree_heterogeneity', 0.5),
+                    step=0.1,
+                    help="Amount of degree heterogeneity to introduce"
                 )
-                st.session_state.graph_params['method_params']['edge_noise'] = st.slider(
-                    "Edge noise",
-                    min_value=0.0,
-                    max_value=0.5,
-                    value=st.session_state.graph_params['method_params']['edge_noise'],
+            # Edge noise is available for all methods
+            st.session_state.graph_params['method_params']['edge_noise'] = st.slider(
+                "Edge noise",
+                min_value=0.0,
+                max_value=0.5,
+                value=st.session_state.graph_params['method_params'].get('edge_noise', 0.0),
                 step=0.01,
                 help="Amount of random noise to add to edge probabilities"
-                )
+            )
+            
+            # Add target average degree for all methods
+            target_avg_degree = st.slider(
+                "Target average degree",
+                min_value=1.0,
+                max_value=20.0,
+                value=st.session_state.graph_params['method_params'].get('target_avg_degree', 5.0),
+                step=0.5,
+                help="Target average node degree (if not specified, calculated from density)"
+            )
+            st.session_state.graph_params['method_params']['target_avg_degree'] = target_avg_degree
+
         st.session_state.graph_params['seed'] = st.number_input(
                 "Random seed",
                 min_value=0,
                 max_value=1000,
-            value=st.session_state.graph_params['seed'],
+                value=st.session_state.graph_params['seed'],
                 help="Random seed for reproducibility"
         )
         
@@ -1089,21 +1190,72 @@ elif page == "Graph Sampling":
                         size=st.session_state.graph_params['num_communities']
                     )
                 else:
-                    communities = st.session_state.universe.sample_random_community_subset(
-                        size=st.session_state.graph_params['num_communities'],
-                        method=st.session_state.graph_params['sampling_method']
+                    communities = st.session_state.universe.sample_community_subset(
+                        size=st.session_state.graph_params['num_communities']
                     )
-                
-                # Build config_model_params for method-specific parameters
+
+                # Initialize config_model_params
                 config_model_params = {}
-                if st.session_state.graph_params['method'] == "Power Law":
-                    config_model_params['power_law_exponent'] = st.session_state.graph_params['method_params'].get('power_law_exponent')
-                if st.session_state.graph_params['method'] == "Exponential":
-                    config_model_params['rate'] = st.session_state.graph_params['method_params'].get('rate')
-                if st.session_state.graph_params['method'] == "Uniform":
-                    config_model_params['min_factor'] = st.session_state.graph_params['method_params'].get('min_factor')
-                    config_model_params['max_factor'] = st.session_state.graph_params['method_params'].get('max_factor')
                 
+                # Build configuration parameters based on the selected method
+                if st.session_state.graph_params['method'] == "DCCC-SBM":
+                    # Setup for DCCC-SBM
+                    use_dccc_sbm = True
+                    community_imbalance = st.session_state.graph_params['method_params'].get('community_imbalance', 0.3)
+                    degree_distribution_overlap = st.session_state.graph_params['method_params'].get('degree_distribution_overlap', 0.5)
+                    degree_distribution = st.session_state.graph_params['method_params'].get('degree_distribution_type', 'power_law')
+                    aggressive_separation = st.session_state.graph_params['method_params'].get('aggressive_separation', True)
+                    alpha = st.session_state.graph_params['method_params'].get('alpha', 0.5)
+                    
+                    # Distribution-specific parameters
+                    dccc_global_degree_params = {}
+                    if degree_distribution == "power_law":
+                        dccc_global_degree_params = {
+                            "exponent": st.session_state.graph_params['method_params'].get('power_law_exponent', 2.5),
+                            "x_min": 1.0
+                        }
+                    elif degree_distribution == "exponential":
+                        dccc_global_degree_params = {
+                            "rate": st.session_state.graph_params['method_params'].get('rate', 0.5)
+                        }
+                    elif degree_distribution == "uniform":
+                        dccc_global_degree_params = {
+                            "min_degree": st.session_state.graph_params['method_params'].get('min_factor', 0.5),
+                            "max_degree": st.session_state.graph_params['method_params'].get('max_factor', 1.5)
+                        }
+                    
+                    # Other parameters
+                    use_configuration_model = False
+                    power_law_exponent = None if degree_distribution != "power_law" else dccc_global_degree_params["exponent"]
+                    
+                else:
+                    # Setup for other methods
+                    use_dccc_sbm = False
+                    community_imbalance = 0.0
+                    degree_distribution_overlap = 0.0
+                    dccc_global_degree_params = None
+                    aggressive_separation = False  # Default value for non-DCCC-SBM methods
+                    alpha = 0.5  # Default value for non-DCCC-SBM methods
+                    
+                    # Configuration model parameters 
+                    use_configuration_model = st.session_state.graph_params['method'] != "Standard"
+                    degree_distribution = (
+                        "power_law" if st.session_state.graph_params['method'] == "Power Law"
+                        else "exponential" if st.session_state.graph_params['method'] == "Exponential"
+                        else "uniform" if st.session_state.graph_params['method'] == "Uniform"
+                        else None
+                    )
+                    power_law_exponent = st.session_state.graph_params['method_params'].get('power_law_exponent')
+                    
+                    # Set config_model_params based on method
+                    if st.session_state.graph_params['method'] == "Power Law":
+                        config_model_params['power_law_exponent'] = st.session_state.graph_params['method_params'].get('power_law_exponent')
+                    elif st.session_state.graph_params['method'] == "Exponential":
+                        config_model_params['rate'] = st.session_state.graph_params['method_params'].get('rate')
+                    elif st.session_state.graph_params['method'] == "Uniform":
+                        config_model_params['min_factor'] = st.session_state.graph_params['method_params'].get('min_factor')
+                        config_model_params['max_factor'] = st.session_state.graph_params['method_params'].get('max_factor')
+
                 # Set up universal parameters for GraphSample
                 universal_params = dict(
                     universe=st.session_state.universe,
@@ -1115,14 +1267,9 @@ elif page == "Graph Sampling":
                     feature_regime_balance=0.5,
                     target_homophily=None,
                     target_density=None,
-                    use_configuration_model=(st.session_state.graph_params['method'] != "Standard"),
-                    degree_distribution=(
-                        "power_law" if st.session_state.graph_params['method'] == "Power Law"
-                        else "exponential" if st.session_state.graph_params['method'] == "Exponential"
-                        else "uniform" if st.session_state.graph_params['method'] == "Uniform"
-                        else None
-                    ),
-                    power_law_exponent=st.session_state.graph_params['method_params'].get('power_law_exponent'),
+                    use_configuration_model=use_configuration_model,
+                    degree_distribution=degree_distribution,
+                    power_law_exponent=power_law_exponent,
                     target_avg_degree=st.session_state.graph_params['method_params'].get('target_avg_degree'),
                     triangle_enhancement=st.session_state.graph_params['method_params'].get('triangle_enhancement', 0.0),
                     max_mean_community_deviation=st.session_state.graph_params['max_mean_community_deviation'],
@@ -1132,9 +1279,16 @@ elif page == "Graph Sampling":
                     min_edge_density=st.session_state.graph_params['min_edge_density'],
                     max_retries=st.session_state.graph_params['max_retries'],
                     seed=st.session_state.graph_params['seed'],
-                    config_model_params=config_model_params
+                    config_model_params=config_model_params,
+                    # New DCCC-SBM parameters
+                    use_dccc_sbm=use_dccc_sbm,
+                    community_imbalance=community_imbalance,
+                    degree_distribution_overlap=degree_distribution_overlap,
+                    dccc_global_degree_params=dccc_global_degree_params,
+                    aggressive_separation=aggressive_separation,
+                    alpha=alpha
                 )
-                
+
                 # Create the graph sample
                 graph = GraphSample(**universal_params)
                 st.session_state.current_graph = graph
@@ -1154,6 +1308,10 @@ elif page == "Graph Sampling":
                 # Plot degree distribution
                 fig = plot_degree_distribution(st.session_state.current_graph.graph)
                 st.pyplot(fig)
+                
+                # Add DCCC-SBM specific visualizations if applicable
+                if st.session_state.graph_params['method'] == "DCCC-SBM":
+                    add_dccc_visualization_to_app(graph)
                 
                 # Add community connection analysis
                 st.markdown('<div class="subsection-header">Community Connection Analysis</div>', unsafe_allow_html=True)
