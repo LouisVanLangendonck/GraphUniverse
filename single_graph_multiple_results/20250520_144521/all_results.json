@@ -1,0 +1,330 @@
+[
+  {
+    "experiment_id": "0_0",
+    "combination": 0,
+    "repeat": 0,
+    "timestamp": "20250520_145128",
+    "num_communities": 10,
+    "num_nodes": 94,
+    "feature_dim": 30,
+    "edge_density": 0.025234287745070482,
+    "homophily": 0.0,
+    "randomness_factor": 0.11868686660935734,
+    "overlap_density": 0.2740108069372788,
+    "min_connection_strength": 0.05759591699069455,
+    "min_component_size": 4,
+    "degree_heterogeneity": 1,
+    "indirect_influence": 0.0,
+    "regimes_per_community": 3,
+    "intra_community_regime_similarity": 0.7420521141075801,
+    "inter_community_regime_similarity": 0.9511216748244871,
+    "feature_regime_balance": 0.22549781792332652,
+    "distribution_type": "standard",
+    "graph-density": 0.04,
+    "graph-node_count": 75,
+    "graph-avg_degree": 2.96,
+    "graph-homophily": 0.0,
+    "graph-clustering_coefficient": 0.13312576312576313,
+    "graph-power_law_exponent": 1.9709104301144975,
+    "graph-connected_components": 1,
+    "graph-largest_component_size": 75,
+    "model_results": {
+      "community--gcn": {
+        "train": {
+          "accuracy": 0.5555555555555556,
+          "f1_macro": 0.5055860805860807,
+          "roc_auc": 0.0
+        },
+        "val": {
+          "accuracy": 0.2,
+          "f1_macro": 0.16666666666666666,
+          "roc_auc": 0.0
+        },
+        "test": {
+          "accuracy": 0.0,
+          "f1_macro": 0.0,
+          "roc_auc": 0.0
+        },
+        "train_time": 8.353468179702759
+      },
+      "community--sage": {
+        "train": {
+          "accuracy": 1.0,
+          "f1_macro": 1.0,
+          "roc_auc": 0.0
+        },
+        "val": {
+          "accuracy": 0.2,
+          "f1_macro": 0.17407407407407408,
+          "roc_auc": 0.0
+        },
+        "test": {
+          "accuracy": 0.06666666666666667,
+          "f1_macro": 0.027777777777777776,
+          "roc_auc": 0.0
+        },
+        "train_time": 7.598531723022461
+      },
+      "community--mlp": {
+        "train": {
+          "accuracy": 0.7111111111111111,
+          "f1_macro": 0.5414951714951715,
+          "roc_auc": 0.0
+        },
+        "val": {
+          "accuracy": 0.26666666666666666,
+          "f1_macro": 0.2222222222222222,
+          "roc_auc": 0.0
+        },
+        "test": {
+          "accuracy": 0.0,
+          "f1_macro": 0.0,
+          "roc_auc": 0.0
+        },
+        "train_time": 5.057609558105469
+      },
+      "community--rf": {
+        "train": {
+          "accuracy": 1.0,
+          "f1_macro": 1.0,
+          "roc_auc": 1.0
+        },
+        "val": {
+          "accuracy": 0.2,
+          "f1_macro": 0.16071428571428573,
+          "roc_auc": 0.0
+        },
+        "test": {
+          "accuracy": 0.0,
+          "f1_macro": 0.0,
+          "roc_auc": 0.0
+        },
+        "train_time": 0.32288527488708496
+      },
+      "k_hop_community_counts--gcn": {
+        "train": {
+          "mse": 0.7724483609199524,
+          "r2": 0.2689779996871948
+        },
+        "val": {
+          "mse": 0.6773626208305359,
+          "r2": 0.05968606472015381
+        },
+        "test": {
+          "mse": 0.9430742859840393,
+          "r2": 0.13203299045562744
+        },
+        "train_time": 6.337367534637451
+      },
+      "k_hop_community_counts--sage": {
+        "train": {
+          "mse": 1.0276072025299072,
+          "r2": 0.02750331163406372
+        },
+        "val": {
+          "mse": 0.7105897068977356,
+          "r2": 0.013560295104980469
+        },
+        "test": {
+          "mse": 1.1802873611450195,
+          "r2": -0.0862882137298584
+        },
+        "train_time": 1.3721675872802734
+      },
+      "k_hop_community_counts--mlp": {
+        "train": {
+          "mse": 1.1179269552230835,
+          "r2": -0.05797255039215088
+        },
+        "val": {
+          "mse": 0.7428866028785706,
+          "r2": -0.03127419948577881
+        },
+        "test": {
+          "mse": 1.2802304029464722,
+          "r2": -0.17827177047729492
+        },
+        "train_time": 1.763692855834961
+      },
+      "k_hop_community_counts--rf": {
+        "train": {
+          "mse": 0.15238222222222222,
+          "r2": 0.8554688610939186
+        },
+        "val": {
+          "mse": 0.7982873333333333,
+          "r2": -0.11561895483787499
+        },
+        "test": {
+          "mse": 1.2643906666666667,
+          "r2": -0.1715033824201262
+        },
+        "train_time": 0.3524496555328369
+      }
+    }
+  },
+  {
+    "experiment_id": "1_0",
+    "combination": 1,
+    "repeat": 0,
+    "timestamp": "20250520_150027",
+    "num_communities": 7,
+    "num_nodes": 157,
+    "feature_dim": 16,
+    "edge_density": 0.048365822558598615,
+    "homophily": 1.0,
+    "randomness_factor": 0.8459652560985333,
+    "overlap_density": 0.21375285185668308,
+    "min_connection_strength": 0.04177924340048357,
+    "min_component_size": 6,
+    "degree_heterogeneity": 0,
+    "indirect_influence": 0.0,
+    "regimes_per_community": 2,
+    "intra_community_regime_similarity": 0.5501781419705067,
+    "inter_community_regime_similarity": 0.9601106876365051,
+    "feature_regime_balance": 0.6610346736707073,
+    "distribution_type": "standard",
+    "graph-density": 0.047689041319614565,
+    "graph-node_count": 157,
+    "graph-avg_degree": 7.439490445859873,
+    "graph-homophily": 1.0,
+    "graph-clustering_coefficient": 0.33747257696302296,
+    "graph-power_law_exponent": -0.2902265657607425,
+    "graph-connected_components": 7,
+    "graph-largest_component_size": 29,
+    "model_results": {
+      "community--gcn": {
+        "train": {
+          "accuracy": 1.0,
+          "f1_macro": 1.0,
+          "roc_auc": 0.0
+        },
+        "val": {
+          "accuracy": 0.9354838709677419,
+          "f1_macro": 0.9507936507936509,
+          "roc_auc": 0.0
+        },
+        "test": {
+          "accuracy": 1.0,
+          "f1_macro": 1.0,
+          "roc_auc": 0.0
+        },
+        "train_time": 7.656783103942871
+      },
+      "community--sage": {
+        "train": {
+          "accuracy": 1.0,
+          "f1_macro": 1.0,
+          "roc_auc": 0.0
+        },
+        "val": {
+          "accuracy": 0.9032258064516129,
+          "f1_macro": 0.9022144522144523,
+          "roc_auc": 0.0
+        },
+        "test": {
+          "accuracy": 0.78125,
+          "f1_macro": 0.7761286332714903,
+          "roc_auc": 0.0
+        },
+        "train_time": 14.35767650604248
+      },
+      "community--mlp": {
+        "train": {
+          "accuracy": 0.851063829787234,
+          "f1_macro": 0.823657049026507,
+          "roc_auc": 0.0
+        },
+        "val": {
+          "accuracy": 0.1935483870967742,
+          "f1_macro": 0.1619047619047619,
+          "roc_auc": 0.0
+        },
+        "test": {
+          "accuracy": 0.15625,
+          "f1_macro": 0.13849642421070993,
+          "roc_auc": 0.0
+        },
+        "train_time": 11.610975980758667
+      },
+      "community--rf": {
+        "train": {
+          "accuracy": 1.0,
+          "f1_macro": 1.0,
+          "roc_auc": 1.0
+        },
+        "val": {
+          "accuracy": 0.12903225806451613,
+          "f1_macro": 0.10744810744810744,
+          "roc_auc": 0.3492596051093589
+        },
+        "test": {
+          "accuracy": 0.1875,
+          "f1_macro": 0.1360544217687075,
+          "roc_auc": 0.584072640550473
+        },
+        "train_time": 0.37984371185302734
+      },
+      "k_hop_community_counts--gcn": {
+        "train": {
+          "mse": 0.21765632927417755,
+          "r2": 0.990443766117096
+        },
+        "val": {
+          "mse": 0.41712620854377747,
+          "r2": 0.9832245111465454
+        },
+        "test": {
+          "mse": 0.4304228723049164,
+          "r2": 0.9812495112419128
+        },
+        "train_time": 8.539201021194458
+      },
+      "k_hop_community_counts--sage": {
+        "train": {
+          "mse": 0.12594138085842133,
+          "r2": 0.9944705367088318
+        },
+        "val": {
+          "mse": 2.614964008331299,
+          "r2": 0.8948343992233276
+        },
+        "test": {
+          "mse": 4.849512100219727,
+          "r2": 0.7887410521507263
+        },
+        "train_time": 5.016673564910889
+      },
+      "k_hop_community_counts--mlp": {
+        "train": {
+          "mse": 14.967239379882812,
+          "r2": 0.3428630828857422
+        },
+        "val": {
+          "mse": 24.29984474182129,
+          "r2": 0.022737085819244385
+        },
+        "test": {
+          "mse": 23.212419509887695,
+          "r2": -0.011201024055480957
+        },
+        "train_time": 1.4564566612243652
+      },
+      "k_hop_community_counts--rf": {
+        "train": {
+          "mse": 3.387756686930091,
+          "r2": 0.8510340768340547
+        },
+        "val": {
+          "mse": 25.654700460829492,
+          "r2": -0.03652751323338199
+        },
+        "test": {
+          "mse": 22.867600446428572,
+          "r2": -0.0006468747674233111
+        },
+        "train_time": 0.1658012866973877
+      }
+    }
+  }
+]

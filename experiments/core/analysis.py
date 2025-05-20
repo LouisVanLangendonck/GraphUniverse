@@ -13,7 +13,7 @@ from datetime import datetime
 from utils.parameter_analysis import analyze_graph_parameters
 
 def analyze_results(results: List[Dict[str, Any]], args) -> Optional[pd.DataFrame]:
-    """Analyze experiment results."""
+    """Analyze experiment results with a simplified approach."""
     if not results:  # Handle case where all experiments failed
         print("No results to analyze - all experiments failed.")
         return None
@@ -28,92 +28,70 @@ def analyze_results(results: List[Dict[str, Any]], args) -> Optional[pd.DataFram
     # Save full results first
     df.to_csv(os.path.join(analysis_dir, "full_results.csv"), index=False)
     
-    # Get available columns for analysis
-    available_columns = df.columns.tolist()
+    # Separate analysis by task
+    tasks = ["community", "k_hop_community_counts"]
+    models = ["gcn", "sage", "mlp", "rf"]
     
-    # Define base metrics to keep from input parameters
-    input_metrics = [
-        'num_communities',
-        'num_nodes',
-        'feature_dim',
-        'feature_signal',
-        'randomness_factor',
-        'min_connection_strength',
-        'min_component_size',
-        'indirect_influence'
-    ]
-    
-    # Define real graph metrics from analyze_graph_parameters
-    real_graph_metrics = [
-        'node_count',
-        'edge_count',
-        'avg_degree',
-        'avg_communities_per_node',
-        'clustering_coefficient',
-        'triangle_count',
-        'triangle_density',
-        'homophily',
-        'power_law_exponent',
-        'density',
-        'connected_components',
-        'largest_component_size'
-    ]
-    
-    model_metrics = []
-    for model in ['GAT', 'GCN', 'SAGE', 'MLP', 'RandomForest']:  # All possible models
-        if f"{model}_accuracy" in available_columns:
-            model_metrics.extend([
-                (f"{model}_accuracy", ['mean', 'std']),
-                (f"{model}_f1", ['mean', 'std']),
-                (f"{model}_train_time", ['mean', 'std'])
-            ])
-    
-    # For each varied parameter
-    for param in args.vary:
-        if param not in df.columns:
-            print(f"Warning: Parameter {param} not found in results")
-            continue
+    for task in tasks:
+        # Create task-specific dataframe
+        task_columns = [col for col in df.columns if task in col or not any(m in col for m in ["community", "k_hop"])]
+        task_df = df[task_columns]
+        
+        # Save task-specific dataframe
+        task_df.to_csv(os.path.join(analysis_dir, f"{task}_results.csv"), index=False)
+        
+        # For each varied parameter, create an analysis
+        for param in args.vary:
+            if param not in df.columns:
+                print(f"Warning: Parameter {param} not found in results")
+                continue
+                
+            # Calculate aggregations by the parameter
+            model_metrics = {}
+            for model in models:
+                # Classification metrics
+                if task == "community":
+                    for metric in ["test_acc", "test_f1", "test_precision", "test_recall"]:
+                        col = f"{task}-{model}-{metric}"
+                        if col in df.columns:
+                            model_metrics[f"{model}_{metric}"] = ['mean', 'std']
+                # Regression metrics
+                else:
+                    for metric in ["test_mse", "test_rmse", "test_mae", "test_r2"]:
+                        col = f"{task}-{model}-{metric}"
+                        if col in df.columns:
+                            model_metrics[f"{model}_{metric}"] = ['mean', 'std']
+                            
+            # Add training time
+            for model in models:
+                col = f"{task}-{model}-train_time"
+                if col in df.columns:
+                    model_metrics[f"{model}_train_time"] = ['mean', 'std']
             
-        # Build aggregation dictionary with available metrics
-        agg_dict = {}
-        
-        # Add input metrics if available
-        for metric in input_metrics:
-            if metric in available_columns:
-                agg_dict[metric] = ['mean', 'std']
-        
-        # Add real graph metrics if available
-        for metric in real_graph_metrics:
-            if metric in available_columns:
-                agg_dict[metric] = ['mean', 'std']
-        
-        # Add model metrics if available
-        for metric, aggs in model_metrics:
-            if metric in available_columns:
-                agg_dict[metric] = aggs
-        
-        if not agg_dict:  # Skip if no metrics available
-            print(f"Warning: No metrics available for parameter {param}")
-            continue
+            # Graph metrics to include
+            graph_metrics = {}
+            for metric in ["density", "avg_degree", "clustering_coefficient", "homophily"]:
+                col = f"graph-{metric}"
+                if col in df.columns:
+                    graph_metrics[col] = ['mean', 'std']
             
-        try:
+            # Create aggregation dictionary
+            agg_dict = {**model_metrics, **graph_metrics}
+            
+            if not agg_dict:  # Skip if no metrics available
+                print(f"Warning: No metrics available for parameter {param} in task {task}")
+                continue
+                
             # Calculate mean performance for each parameter value
-            param_analysis = df.groupby(param).agg(agg_dict).round(4)
-            
-            # Save analysis
-            param_analysis.to_csv(os.path.join(analysis_dir, f"{param}_analysis.csv"))
-            
-            # Print summary
-            print(f"\nAnalysis for {param}:")
-            print(param_analysis)
-            
-        except Exception as e:
-            print(f"Error analyzing parameter {param}: {str(e)}")
-            continue
+            try:
+                param_analysis = df.groupby(param).agg(agg_dict).round(4)
+                param_analysis.to_csv(os.path.join(analysis_dir, f"{task}_{param}_analysis.csv"))
+            except Exception as e:
+                print(f"Error analyzing parameter {param} for task {task}: {str(e)}")
     
     # Create summary of successful vs failed experiments
     total_experiments = len(results)
-    successful = sum(1 for r in results if any(k.endswith('_accuracy') for k in r.keys()))
+    successful = sum(1 for r in results if any(f"{task}-{model}-test_acc" in r for task in tasks for model in models))
     print(f"\nExperiment Summary:")
     print(f"Total experiments: {total_experiments}")
     print(f"Successful: {successful}")

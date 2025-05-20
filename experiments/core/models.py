@@ -11,150 +11,129 @@ import torch.nn.functional as F
 from torch_geometric.nn import GCNConv, SAGEConv, GATConv
 from sklearn.base import BaseEstimator
 from typing import Dict, List, Optional, Tuple, Union, Any
+from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
 
 from experiments.core.data import prepare_data
 
-class GNNModel(nn.Module):
-    """
-    Base class for GNN models.
-    
-    Supports various GNN architectures for node classification tasks.
-    """
+class GNNModel(torch.nn.Module):
+    """Graph Neural Network model for node classification or regression."""
     
     def __init__(
         self,
         input_dim: int,
         hidden_dim: int,
         output_dim: int,
+        gnn_type: str = "gcn",
         num_layers: int = 2,
         dropout: float = 0.5,
-        gnn_type: str = "gcn",
+        is_regression: bool = False,
         residual: bool = False,
-        norm_type: str = "none",  # "none", "batch", "layer"
-        agg_type: str = "mean",  # "mean", "sum", "max"
-        heads: int = 1,  # Number of attention heads for GAT
-        concat_heads: bool = True  # Whether to concatenate or average GAT heads
+        norm_type: str = "none",
+        agg_type: str = "mean",
+        heads: int = 1,
+        concat_heads: bool = True
     ):
         """
-        Initialize the GNN model.
+        Initialize GNN model.
         
         Args:
             input_dim: Input feature dimension
             hidden_dim: Hidden layer dimension
-            output_dim: Output dimension (number of classes)
+            output_dim: Output dimension (number of classes for classification, number of communities for regression)
+            gnn_type: Type of GNN to use ("gcn", "gat", or "sage")
             num_layers: Number of GNN layers
             dropout: Dropout rate
-            gnn_type: Type of GNN ("gcn", "gat", "sage")
+            is_regression: Whether this is a regression task (True) or classification task (False)
             residual: Whether to use residual connections
-            norm_type: Type of normalization ("none", "batch", "layer")
-            agg_type: Type of aggregation ("mean", "sum", "max")
+            norm_type: Type of normalization to use ("none", "batch", or "layer")
+            agg_type: Type of aggregation to use ("mean", "max", or "sum")
             heads: Number of attention heads for GAT
-            concat_heads: Whether to concatenate or average GAT attention heads
+            concat_heads: Whether to concatenate attention heads for GAT
         """
-        super(GNNModel, self).__init__()
+        super().__init__()
         
-        self.input_dim = input_dim
-        self.hidden_dim = hidden_dim
-        self.output_dim = output_dim
-        self.num_layers = num_layers
-        self.dropout = dropout
         self.gnn_type = gnn_type
+        self.num_layers = num_layers
+        self.is_regression = is_regression
         self.residual = residual
         self.norm_type = norm_type
         self.agg_type = agg_type
         self.heads = heads
         self.concat_heads = concat_heads
         
-        # Initialize layers
-        self.convs = nn.ModuleList()
+        # GNN layers
+        self.convs = torch.nn.ModuleList()
+        self.norms = torch.nn.ModuleList()
         
-        # First layer
-        self.convs.append(self._create_conv_layer(input_dim, hidden_dim))
+        # Input layer
+        if gnn_type == "gcn":
+            self.convs.append(GCNConv(input_dim, hidden_dim))
+        elif gnn_type == "gat":
+            self.convs.append(GATConv(input_dim, hidden_dim, heads=heads, concat=concat_heads))
+        elif gnn_type == "sage":
+            self.convs.append(SAGEConv(input_dim, hidden_dim, aggr=agg_type))
+        
+        # Add normalization layer if specified
+        if norm_type == "batch":
+            self.norms.append(torch.nn.BatchNorm1d(hidden_dim * heads if gnn_type == "gat" and concat_heads else hidden_dim))
+        elif norm_type == "layer":
+            self.norms.append(torch.nn.LayerNorm(hidden_dim * heads if gnn_type == "gat" and concat_heads else hidden_dim))
+        else:
+            self.norms.append(torch.nn.Identity())
         
         # Hidden layers
-        for _ in range(num_layers - 2):
-            self.convs.append(self._create_conv_layer(hidden_dim, hidden_dim))
+        for _ in range(num_layers - 1):
+            if gnn_type == "gcn":
+                self.convs.append(GCNConv(hidden_dim, hidden_dim))
+            elif gnn_type == "gat":
+                self.convs.append(GATConv(hidden_dim * heads if concat_heads else hidden_dim, 
+                                        hidden_dim, heads=heads, concat=concat_heads))
+            elif gnn_type == "sage":
+                self.convs.append(SAGEConv(hidden_dim, hidden_dim, aggr=agg_type))
+            
+            # Add normalization layer if specified
+            if norm_type == "batch":
+                self.norms.append(torch.nn.BatchNorm1d(hidden_dim * heads if gnn_type == "gat" and concat_heads else hidden_dim))
+            elif norm_type == "layer":
+                self.norms.append(torch.nn.LayerNorm(hidden_dim * heads if gnn_type == "gat" and concat_heads else hidden_dim))
+            else:
+                self.norms.append(torch.nn.Identity())
         
         # Output layer
-        if num_layers > 1:
-            self.convs.append(self._create_conv_layer(hidden_dim, output_dim))
+        self.lin = torch.nn.Linear(hidden_dim * heads if gnn_type == "gat" and concat_heads else hidden_dim, output_dim)
         
-        # Normalization layers
-        if self.norm_type != "none" and self.gnn_type != "gat":  # Don't create norms for GAT
-            self.norms = nn.ModuleList()
-            for i in range(num_layers - 1):
-                if self.norm_type == "batch":
-                    norm_dim = hidden_dim
-                    self.norms.append(nn.BatchNorm1d(norm_dim))
-                elif self.norm_type == "layer":
-                    norm_dim = hidden_dim
-                    self.norms.append(nn.LayerNorm(norm_dim))
-    
-    def _create_conv_layer(self, in_dim: int, out_dim: int, is_output: bool = False) -> nn.Module:
-        """Create a GNN convolutional layer of the specified type."""
-        if self.gnn_type == "gcn":
-            return GCNConv(in_dim, out_dim)
-        elif self.gnn_type == "gat":
-            # For GAT, we need to account for multiple heads
-            if self.concat_heads:
-                # If concatenating heads, each head outputs out_dim/heads features
-                head_dim = out_dim // self.heads
-                return GATConv(in_dim, head_dim, heads=self.heads, concat=True)
-            else:
-                # For averaged heads, dimensions are simpler
-                return GATConv(in_dim, out_dim, heads=self.heads, concat=False)
-        elif self.gnn_type == "sage":
-            return SAGEConv(in_dim, out_dim, aggr=self.agg_type)
-        else:
-            raise ValueError(f"Unknown GNN type: {self.gnn_type}")
-    
-    def forward(self, x: torch.Tensor, edge_index: torch.Tensor) -> torch.Tensor:
-        prev_x = None  # For residual connections
+        # Dropout
+        self.dropout = torch.nn.Dropout(dropout)
         
-        for i, conv in enumerate(self.convs):
-            # Residual connection
-            if self.residual and i > 0 and i < len(self.convs) - 1:
-                prev_x = x
+        # Activation for regression (ReLU to ensure non-negative counts)
+        self.regression_activation = torch.nn.ReLU() if is_regression else None
+    
+    def forward(self, x, edge_index):
+        """Forward pass."""
+        # GNN layers
+        for i in range(self.num_layers):
+            identity = x
+            x = self.convs[i](x, edge_index)
+            x = self.norms[i](x)
+            x = F.relu(x)
+            x = self.dropout(x)
             
-            # Apply convolution
-            x = conv(x, edge_index)
-            
-            # Final layer doesn't have activation or other operations
-            if i < len(self.convs) - 1:
-                # Apply normalization if enabled and layers exist
-                if self.norm_type != "none" and len(self.norms) > 0:
-                    if self.gnn_type == "gat" and self.concat_heads:
-                        if self.norm_type == "batch":
-                            # For batch norm, we need to average across heads first
-                            x = x.view(-1, self.heads, x.size(1) // self.heads)
-                            x = x.mean(dim=1)
-                    x = self.norms[i](x)
-                    
-                    # After batch norm, we need to reshape back to the expected dimension for the next layer
-                    if self.gnn_type == "gat" and self.concat_heads and self.norm_type == "batch":
-                        # Reshape back to the full hidden dimension
-                        x = x.repeat(1, self.heads)
-                
-                # Apply activation
-                x = F.relu(x)
-                
-                # Apply dropout
-                x = F.dropout(x, p=self.dropout, training=self.training)
-                
-                # Add residual connection
-                if self.residual and prev_x is not None:
-                    if prev_x.size() == x.size():
-                        x = x + prev_x
+            # Add residual connection if enabled
+            if self.residual and x.shape == identity.shape:
+                x = x + identity
+        
+        # Output layer
+        x = self.lin(x)
+        
+        # For regression, ensure non-negative outputs
+        if self.is_regression:
+            x = self.regression_activation(x)
         
         return x
 
 
-class MLPModel(nn.Module):
-    """
-    Multi-layer perceptron baseline model.
-    
-    Ignores graph structure and only uses node features.
-    """
+class MLPModel(torch.nn.Module):
+    """Multi-layer perceptron for node classification or regression."""
     
     def __init__(
         self,
@@ -163,137 +142,117 @@ class MLPModel(nn.Module):
         output_dim: int,
         num_layers: int = 2,
         dropout: float = 0.5,
-        batch_norm: bool = False
+        is_regression: bool = False
     ):
         """
-        Initialize the MLP model.
+        Initialize MLP model.
         
         Args:
             input_dim: Input feature dimension
             hidden_dim: Hidden layer dimension
-            output_dim: Output dimension (number of classes)
-            num_layers: Number of MLP layers
+            output_dim: Output dimension (number of classes for classification, number of communities for regression)
+            num_layers: Number of hidden layers
             dropout: Dropout rate
-            batch_norm: Whether to use batch normalization
+            is_regression: Whether this is a regression task (True) or classification task (False)
         """
-        super(MLPModel, self).__init__()
+        super().__init__()
         
-        self.input_dim = input_dim
-        self.hidden_dim = hidden_dim
-        self.output_dim = output_dim
         self.num_layers = num_layers
-        self.dropout = dropout
-        self.batch_norm = batch_norm
-        
-        # Initialize layers
-        self.layers = nn.ModuleList()
+        self.is_regression = is_regression
         
         # Input layer
-        self.layers.append(nn.Linear(input_dim, hidden_dim))
+        self.layers = torch.nn.ModuleList([
+            torch.nn.Linear(input_dim, hidden_dim)
+        ])
         
         # Hidden layers
-        for _ in range(num_layers - 2):
-            self.layers.append(nn.Linear(hidden_dim, hidden_dim))
+        for _ in range(num_layers - 1):
+            self.layers.append(torch.nn.Linear(hidden_dim, hidden_dim))
         
         # Output layer
-        if num_layers > 1:
-            self.layers.append(nn.Linear(hidden_dim, output_dim))
-            
-        # Batch normalization layers
-        if self.batch_norm:
-            self.bns = nn.ModuleList()
-            for _ in range(num_layers - 1):
-                self.bns.append(nn.BatchNorm1d(hidden_dim))
-    
-    def forward(self, x: torch.Tensor, edge_index: Optional[torch.Tensor] = None) -> torch.Tensor:
-        """
-        Forward pass of the MLP model.
+        self.layers.append(torch.nn.Linear(hidden_dim, output_dim))
         
-        Args:
-            x: Node features [num_nodes, input_dim]
-            edge_index: Ignored, included for API compatibility with GNN
-            
-        Returns:
-            Node predictions [num_nodes, output_dim]
-        """
-        for i, layer in enumerate(self.layers):
-            # Apply linear layer
-            x = layer(x)
-            
-            # Final layer doesn't have activation or other operations
-            if i < len(self.layers) - 1:
-                # Apply batch norm if enabled
-                if self.batch_norm:
-                    x = self.bns[i](x)
-                
-                # Apply activation
-                x = F.relu(x)
-                
-                # Apply dropout
-                x = F.dropout(x, p=self.dropout, training=self.training)
+        # Dropout
+        self.dropout = torch.nn.Dropout(dropout)
+        
+        # Activation for regression (ReLU to ensure non-negative counts)
+        self.regression_activation = torch.nn.ReLU() if is_regression else None
+    
+    def forward(self, x):
+        """Forward pass."""
+        # Hidden layers
+        for i in range(self.num_layers):
+            x = self.layers[i](x)
+            x = F.relu(x)
+            x = self.dropout(x)
+        
+        # Output layer
+        x = self.layers[-1](x)
+        
+        # For regression, ensure non-negative outputs
+        if self.is_regression:
+            x = self.regression_activation(x)
         
         return x
 
 
 class SklearnModel:
-    """
-    Wrapper for scikit-learn models.
-    
-    Provides a consistent interface with PyTorch models.
-    """
+    """Wrapper for scikit-learn models."""
     
     def __init__(
         self,
         input_dim: int,
         output_dim: int,
-        model_type: str = "random_forest",
-        **kwargs
+        is_regression: bool = False,
+        n_estimators: int = 100,
+        max_depth: Optional[int] = None,
+        min_samples_split: int = 2,
+        min_samples_leaf: int = 1,
+        random_state: int = 42
     ):
         """
-        Initialize the scikit-learn model.
+        Initialize scikit-learn model.
         
         Args:
             input_dim: Input feature dimension
-            output_dim: Output dimension (number of classes)
-            model_type: Type of model ("random_forest", etc.)
-            **kwargs: Additional arguments for the model
+            output_dim: Output dimension (number of classes for classification, number of communities for regression)
+            is_regression: Whether this is a regression task (True) or classification task (False)
+            n_estimators: Number of trees in the forest
+            max_depth: Maximum depth of the trees
+            min_samples_split: Minimum number of samples required to split an internal node
+            min_samples_leaf: Minimum number of samples required to be at a leaf node
+            random_state: Random state for reproducibility
         """
         self.input_dim = input_dim
         self.output_dim = output_dim
-        self.model_type = model_type
+        self.is_regression = is_regression
         
-        # Initialize model
-        if model_type == "random_forest":
-            from sklearn.ensemble import RandomForestClassifier
-            self.model = RandomForestClassifier(**kwargs)
+        if is_regression:
+            # For regression, use RandomForestRegressor
+            self.model = RandomForestRegressor(
+                n_estimators=n_estimators,
+                max_depth=max_depth,
+                min_samples_split=min_samples_split,
+                min_samples_leaf=min_samples_leaf,
+                random_state=random_state
+            )
         else:
-            raise ValueError(f"Unknown model type: {model_type}")
+            # For classification, use RandomForestClassifier
+            self.model = RandomForestClassifier(
+                n_estimators=n_estimators,
+                max_depth=max_depth,
+                min_samples_split=min_samples_split,
+                min_samples_leaf=min_samples_leaf,
+                random_state=random_state
+            )
     
-    def fit(self, x: np.ndarray, y: np.ndarray) -> 'SklearnModel':
-        """
-        Train the model.
-        
-        Args:
-            x: Input features [num_samples, input_dim]
-            y: Labels [num_samples]
-            
-        Returns:
-            Self for chaining
-        """
-        self.model.fit(x, y)
-        return self
+    def fit(self, X, y):
+        """Fit the model."""
+        self.model.fit(X, y)
     
-    def predict(self, x: np.ndarray) -> np.ndarray:
-        """
-        Make predictions.
-        
-        Args:
-            x: Input features [num_samples, input_dim]
-            
-        Returns:
-            Predicted class labels [num_nodes]
-        """
-        return self.model.predict(x)
+    def predict(self, X):
+        """Make predictions."""
+        return self.model.predict(X)
     
     def predict_proba(self, x: np.ndarray) -> np.ndarray:
         """

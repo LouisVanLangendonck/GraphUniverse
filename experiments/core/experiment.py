@@ -18,7 +18,7 @@ import pandas as pd
 from experiments.core.data import prepare_data
 from experiments.core.config import ExperimentConfig
 from experiments.core.models import GNNModel, MLPModel, SklearnModel
-from experiments.core.training import train_gnn_model, train_mlp_model, train_sklearn_model
+from experiments.core.training import train_and_evaluate, optimize_hyperparameters
 from experiments.core.metrics import model_performance_summary
 from mmsb.model import GraphUniverse, GraphSample
 from utils.parameter_analysis import analyze_graph_parameters
@@ -118,7 +118,277 @@ class Experiment:
             pass
     
     def run(self) -> Dict[str, Any]:
-        """Run the experiment."""
+        """
+        Run the experiment.
+        
+        Returns:
+            Dictionary containing experiment results
+        """
+        try:
+            # Set random seeds
+            torch.manual_seed(42)
+            np.random.seed(42)
+            if self.device.type == "cuda":
+                torch.cuda.manual_seed(42)
+            
+            # Generate graph
+            print("\nGenerating graph...")
+            graph_sample = self.generate_graph()
+            
+            # Prepare data
+            print("\nPreparing data for tasks...")
+            task_data = prepare_data(graph_sample, self.config)
+            
+            # Train and evaluate models for each task
+            model_results = {}
+            for task in self.config.tasks:
+                print(f"\nTraining models for task: {task}")
+                
+                # Set is_regression based on task type
+                is_regression = self.config.is_regression[task]
+                
+                # Get data for this task
+                data = task_data[task]
+                
+                # Train GNN models if enabled
+                if self.config.run_gnn:
+                    for gnn_type in self.config.gnn_types:
+                        print(f"\nTraining {gnn_type.upper()} model...")
+                        try:
+                            # Get output dimension based on task type
+                            if is_regression:
+                                output_dim = data['labels'].shape[1]  # For regression, use the number of target values
+                            else:
+                                output_dim = data['num_classes']  # For classification, use number of classes
+                            
+                            model = GNNModel(
+                                input_dim=data['features'].shape[1],
+                                hidden_dim=self.config.hidden_dim,
+                                output_dim=output_dim,
+                                num_layers=self.config.num_layers,
+                                dropout=self.config.dropout,
+                                gnn_type=gnn_type,
+                                is_regression=is_regression
+                            )
+                            
+                            if self.config.optimize_hyperparams:
+                                print(f"Optimizing hyperparameters for {gnn_type.upper()}...")
+                                hyperopt_results = optimize_hyperparameters(
+                                    model_creator=lambda **kwargs: GNNModel(**kwargs),
+                                    features=data['features'],
+                                    edge_index=data['edge_index'],
+                                    labels=data['labels'],
+                                    train_idx=data['train_idx'],
+                                    val_idx=data['val_idx'],
+                                    test_idx=data['test_idx'],
+                                    model_type="gnn",
+                                    gnn_type=gnn_type,
+                                    n_trials=self.config.n_trials,
+                                    max_epochs=self.config.epochs,
+                                    timeout=self.config.optimization_timeout,
+                                    device=self.device,
+                                    is_regression=is_regression
+                                )
+                                
+                                # Update model with best parameters
+                                if hyperopt_results and "best_params" in hyperopt_results:
+                                    best_params = hyperopt_results["best_params"]
+                                    model = GNNModel(
+                                        input_dim=data['features'].shape[1],
+                                        hidden_dim=best_params.get("hidden_dim", self.config.hidden_dim),
+                                        output_dim=output_dim,
+                                        num_layers=best_params.get("num_layers", self.config.num_layers),
+                                        dropout=best_params.get("dropout", self.config.dropout),
+                                        gnn_type=gnn_type,
+                                        is_regression=is_regression,
+                                        residual=best_params.get("residual", False),
+                                        norm_type=best_params.get("norm_type", "none"),
+                                        agg_type=best_params.get("agg_type", "mean"),
+                                        heads=best_params.get("heads", 1) if gnn_type == "gat" else None,
+                                        concat_heads=best_params.get("concat_heads", True) if gnn_type == "gat" else None
+                                    )
+                            
+                            results = train_and_evaluate(model, data, self.config, is_regression)
+                            # if self.config.optimize_hyperparams and hyperopt_results:
+                            #     results['hyperopt_results'] = hyperopt_results
+                            model_results[f"{task}--{gnn_type}"] = results
+                        except Exception as e:
+                            print(f"Error in experiment: {str(e)}")
+                            print("Traceback:")
+                            import traceback
+                            traceback.print_exc()
+                            continue
+                
+                # Train MLP model if enabled
+                if self.config.run_mlp:
+                    print("\nTraining MLP model...")
+                    try:
+                        # Get output dimension based on task type
+                        if is_regression:
+                            output_dim = data['labels'].shape[1]  # For regression, use the number of target values
+                        else:
+                            output_dim = data['num_classes']  # For classification, use number of classes
+                        
+                        model = MLPModel(
+                            input_dim=data['features'].shape[1],
+                            hidden_dim=self.config.hidden_dim,
+                            output_dim=output_dim,
+                            num_layers=self.config.num_layers,
+                            dropout=self.config.dropout,
+                            is_regression=is_regression
+                        )
+                        
+                        if self.config.optimize_hyperparams:
+                            print("Optimizing hyperparameters for MLP...")
+                            hyperopt_results = optimize_hyperparameters(
+                                model_creator=lambda **kwargs: MLPModel(**kwargs),
+                                features=data['features'],
+                                edge_index=None,
+                                labels=data['labels'],
+                                train_idx=data['train_idx'],
+                                val_idx=data['val_idx'],
+                                test_idx=data['test_idx'],
+                                model_type="mlp",
+                                n_trials=self.config.n_trials,
+                                max_epochs=self.config.epochs,
+                                timeout=self.config.optimization_timeout,
+                                device=self.device,
+                                is_regression=is_regression
+                            )
+                            
+                            # Update model with best parameters
+                            if hyperopt_results and "best_params" in hyperopt_results:
+                                best_params = hyperopt_results["best_params"]
+                                model = MLPModel(
+                                    input_dim=data['features'].shape[1],
+                                    hidden_dim=best_params.get("hidden_dim", self.config.hidden_dim),
+                                    output_dim=output_dim,
+                                    num_layers=best_params.get("num_layers", self.config.num_layers),
+                                    dropout=best_params.get("dropout", self.config.dropout),
+                                    is_regression=is_regression
+                                )
+                        
+                        results = train_and_evaluate(model, data, self.config, is_regression)
+                        # if self.config.optimize_hyperparams and hyperopt_results:
+                        #     results['hyperopt_results'] = hyperopt_results
+                        model_results[f"{task}--mlp"] = results
+                    except Exception as e:
+                        print(f"Error in experiment: {str(e)}")
+                        print("Traceback:")
+                        import traceback
+                        traceback.print_exc()
+                
+                # Train Random Forest model if enabled
+                if self.config.run_rf:
+                    print("\nTraining Random Forest model...")
+                    try:
+                        # Get output dimension based on task type
+                        if is_regression:
+                            output_dim = data['labels'].shape[1]  # For regression, use the number of target values
+                        else:
+                            output_dim = data['num_classes']  # For classification, use number of classes
+                        
+                        model = SklearnModel(
+                            input_dim=data['features'].shape[1],
+                            output_dim=output_dim,
+                            is_regression=is_regression
+                        )
+                        
+                        if self.config.optimize_hyperparams:
+                            print("Optimizing hyperparameters for Random Forest...")
+                            hyperopt_results = optimize_hyperparameters(
+                                model_creator=lambda **kwargs: SklearnModel(**kwargs),
+                                features=data['features'],
+                                edge_index=None,
+                                labels=data['labels'],
+                                train_idx=data['train_idx'],
+                                val_idx=data['val_idx'],
+                                test_idx=data['test_idx'],
+                                model_type="rf",
+                                n_trials=self.config.n_trials,
+                                max_epochs=self.config.epochs,
+                                timeout=self.config.optimization_timeout,
+                                device=self.device,
+                                is_regression=is_regression
+                            )
+                            
+                            # Update model with best parameters
+                            if hyperopt_results and "best_params" in hyperopt_results:
+                                best_params = hyperopt_results["best_params"]
+                                model = SklearnModel(
+                                    input_dim=data['features'].shape[1],
+                                    output_dim=output_dim,
+                                    is_regression=is_regression,
+                                    n_estimators=best_params.get("n_estimators", 100),
+                                    max_depth=best_params.get("max_depth", None),
+                                    min_samples_split=best_params.get("min_samples_split", 2),
+                                    min_samples_leaf=best_params.get("min_samples_leaf", 1)
+                                )
+                        
+                        results = train_and_evaluate(model, data, self.config, is_regression)
+                        # if self.config.optimize_hyperparams and hyperopt_results:
+                        #     results['hyperopt_results'] = hyperopt_results
+                        model_results[f"{task}--rf"] = results
+                    except Exception as e:
+                        print(f"Error in experiment: {str(e)}")
+                        print("Traceback:")
+                        import traceback
+                        traceback.print_exc()
+            
+            # Save results
+            print("\nSaving results...")
+            self._save_results(graph_sample, model_results)
+            
+            return {
+                "graph_sample": graph_sample,
+                "model_results": model_results
+            }
+            
+        except Exception as e:
+            print(f"Error in experiment: {str(e)}")
+            print("Traceback:")
+            import traceback
+            traceback.print_exc()
+            raise
+    
+    def _save_results(self, graph_sample: GraphSample, model_results: Dict[str, Any]) -> None:
+        """Save experiment results in JSON format."""
+        try:
+            # Save model results directly
+            model_results_path = os.path.join(self.output_dir, "model_results.json")
+            with open(model_results_path, 'w') as f:
+                json.dump(model_results, f, indent=2)
+            
+            # Save graph sample
+            graph_sample_path = os.path.join(self.output_dir, "graph_sample.pkl")
+            import pickle
+            with open(graph_sample_path, 'wb') as f:
+                pickle.dump(graph_sample, f)
+            
+        except Exception as e:
+            print(f"Error saving results: {str(e)}")
+            print("Traceback:")
+            import traceback
+            traceback.print_exc()
+            
+            # Save error information
+            error_info = {
+                "error": str(e),
+                "traceback": traceback.format_exc(),
+                "timestamp": datetime.now().strftime("%Y%m%d_%H%M%S")
+            }
+            
+            error_path = os.path.join(self.output_dir, "error_info.json")
+            with open(error_path, 'w') as f:
+                json.dump(error_info, f, indent=2)
+
+    def generate_graph(self) -> GraphSample:
+        """
+        Generate a graph sample using the MMSB model based on the experiment configuration.
+        
+        Returns:
+            GraphSample: The generated graph sample
+        """
         try:
             # Set random seeds
             torch.manual_seed(42)
@@ -142,15 +412,17 @@ class Experiment:
             )
             
             print("Generating graph sample...")
-            # --- New: Select communities (random for now, could be improved) ---
+            # Select communities (random for now, could be improved)
             communities = list(range(self.config.num_communities))
-            # --- New: Prepare method-specific config_model_params ---
+            
+            # Prepare method-specific config_model_params
             config_model_params = None
             use_configuration_model = False
             degree_distribution = None
             power_law_exponent = None
             target_avg_degree = None
             triangle_enhancement = 0.0  # Could be exposed as a config param
+            
             if self.config.distribution_type == "power_law":
                 use_configuration_model = True
                 degree_distribution = "power_law"
@@ -185,7 +457,8 @@ class Experiment:
                 config_model_params = None
                 power_law_exponent = None
                 target_avg_degree = None
-            # --- New: Pass all required parameters to GraphSample ---
+            
+            # Create graph sample with all required parameters
             graph_sample = GraphSample(
                 universe=universe,
                 communities=communities,
@@ -227,256 +500,8 @@ class Experiment:
             # Store real graph properties in the graph sample
             graph_sample.real_graph_properties = real_graph_properties
             
-            # Prepare data for all tasks
-            print("\nPreparing data for tasks...")
-            task_data = prepare_data(
-                graph_sample=graph_sample,
-                config=self.config,
-                feature_type=self.config.feature_type
-            )
-            
-            # Store results
-            self.results = {
-                "graph_sample": graph_sample,
-                "task_data": task_data,
-                "real_graph_properties": real_graph_properties,
-                "model_results": {},
-                "timing_info": graph_sample.timing_info  # Store timing information
-            }
-            
-            # Run models with hyperparameter optimization
-            print("\nRunning models...")
-            try:
-                self._run_models()
-            except RuntimeError as e:
-                if "CUDA" in str(e):
-                    print("\nFATAL: CUDA Error detected!")
-                    print("Error message:", str(e))
-                    print("\nStack trace:")
-                    import traceback
-                    traceback.print_exc()
-                    print("\nExperiment stopped due to CUDA error.")
-                    import sys
-                    sys.exit(1)  # Exit with error code
-                raise
-            
-            # Save results
-            print("\nSaving results...")
-            self._save_results()
-            
-            return self.results
+            return graph_sample
             
         except Exception as e:
-            print(f"Error in experiment: {str(e)}")
-            print("Traceback:")
-            import traceback
-            traceback.print_exc()
-            raise
-    
-    def _run_models(self) -> None:
-        """Run all models for each task with hyperparameter optimization if enabled."""
-        try:
-            # Move data to device for each task
-            if self.device.type == "cuda":
-                for task_name, data in self.results["task_data"].items():
-                    data["features"] = data["features"].to(self.device)
-                    data["edge_index"] = data["edge_index"].to(self.device)
-                    data["labels"] = data["labels"].to(self.device)
-                    data["train_idx"] = data["train_idx"].to(self.device)
-                    data["val_idx"] = data["val_idx"].to(self.device)
-                    data["test_idx"] = data["test_idx"].to(self.device)
-            
-            # Train models for each task
-            model_results = {}
-            
-            for task_name, data in self.results["task_data"].items():
-                print(f"\nTraining models for {task_name} prediction task...")
-                task_results = {}
-                
-                if self.config.run_gnn:
-                    for gnn_type in self.config.gnn_types:
-                        print(f"\nTraining {gnn_type.upper()} model...")
-                        try:
-                            model = GNNModel(
-                                input_dim=data["features"].shape[1],
-                                hidden_dim=64,
-                                output_dim=data["num_classes"],
-                                gnn_type=gnn_type
-                            ).to(self.device)
-                            
-                            # Print model architecture for debugging
-                            print(f"\nModel architecture for {gnn_type.upper()}:")
-                            print(model)
-                            
-                            # Print tensor shapes for debugging
-                            print("\nTensor shapes:")
-                            print(f"Features: {data['features'].shape}")
-                            print(f"Edge index: {data['edge_index'].shape}")
-                            print(f"Labels: {data['labels'].shape}")
-                            print(f"Train idx: {data['train_idx'].shape}")
-                            
-                            result = train_gnn_model(
-                                model, 
-                                data["features"], 
-                                data["edge_index"], 
-                                data["labels"],
-                                data["train_idx"], 
-                                data["val_idx"], 
-                                data["test_idx"],
-                                epochs=self.config.epochs,
-                                patience=self.config.patience,
-                                optimize=self.config.optimize_hyperparams,
-                                n_trials=self.config.n_trials,
-                                timeout=self.config.opt_timeout
-                            )
-                            task_results[f"{gnn_type.upper()}"] = result
-                            
-                            # Log hyperparameter optimization results if available
-                            if 'hyperopt_results' in result:
-                                print(f"Best hyperparameters for {gnn_type.upper()}: {result['hyperopt_results']['best_params']}")
-                                print(f"Best validation score: {result['hyperopt_results']['best_value']:.4f}")
-                                
-                        except RuntimeError as e:
-                            if "CUDA" in str(e):
-                                print(f"\nCUDA Error in {gnn_type.upper()} model:")
-                                print(f"Error message: {str(e)}")
-                                print("\nStack trace:")
-                                import traceback
-                                traceback.print_exc()
-                                print("\nModel state at error:")
-                                print(f"Model type: {gnn_type}")
-                                print(f"Input dimension: {data['features'].shape[1]}")
-                                print(f"Hidden dimension: 64")
-                                print(f"Output dimension: {data['num_classes']}")
-                                print(f"Device: {self.device}")
-                                raise  # Re-raise to stop the experiment
-                            else:
-                                raise
-                
-                if self.config.run_mlp:
-                    print("\nTraining MLP model...")
-                    model = MLPModel(
-                        input_dim=data["features"].shape[1],
-                        hidden_dim=64,
-                        output_dim=data["num_classes"],
-                        num_layers=2,
-                        dropout=0.5
-                    ).to(self.device)
-                    
-                    result = train_mlp_model(
-                        model, 
-                        data["features"], 
-                        data["labels"],
-                        data["train_idx"], 
-                        data["val_idx"], 
-                        data["test_idx"],
-                        epochs=self.config.epochs,
-                        patience=self.config.patience,
-                        optimize=self.config.optimize_hyperparams,
-                        n_trials=self.config.n_trials,
-                        timeout=self.config.opt_timeout
-                    )
-                    task_results["MLP"] = result
-                    
-                    # Log hyperparameter optimization results if available
-                    if 'hyperopt_results' in result:
-                        print(f"Best hyperparameters for MLP: {result['hyperopt_results']['best_params']}")
-                        print(f"Best validation score: {result['hyperopt_results']['best_value']:.4f}")
-                
-                if self.config.run_rf:
-                    print("\nTraining Random Forest model...")
-                    model = SklearnModel(
-                        input_dim=data["features"].shape[1],
-                        output_dim=data["num_classes"]
-                    )
-                    result = train_sklearn_model(
-                        model, 
-                        data["features"], 
-                        data["labels"],
-                        data["train_idx"], 
-                        data["val_idx"], 
-                        data["test_idx"],
-                        optimize=self.config.optimize_hyperparams,
-                        n_trials=self.config.n_trials,
-                        timeout=self.config.opt_timeout
-                    )
-                    task_results["RandomForest"] = result
-                    
-                    # Log hyperparameter optimization results if available
-                    if 'hyperopt_results' in result:
-                        print(f"Best hyperparameters for RandomForest: {result['hyperopt_results']['best_params']}")
-                        print(f"Best validation score: {result['hyperopt_results']['best_value']:.4f}")
-                
-                # Store results for this task
-                model_results[task_name] = task_results
-            
-            # Store all model results
-            self.results["model_results"] = model_results
-            
-        except Exception as e:
-            print(f"\nError in _run_models: {str(e)}")
-            print("Stack trace:")
-            import traceback
-            traceback.print_exc()
-            raise
-    
-    def _save_results(self) -> None:
-        """Save experiment results."""
-        try:
-            # Create a serializable version of model results
-            serializable_results = {}
-            for task_name, task_results in self.results["model_results"].items():
-                serializable_task = {}
-                for model_name, result in task_results.items():
-                    serializable_model = {
-                        "test_acc": result.get("test_acc", 0),
-                        "train_time": result.get("train_time", 0),
-                        "metrics": result.get("metrics", {}),
-                        "history": result.get("history", {})
-                    }
-                    
-                    # Add hyperparameter optimization results if available
-                    if 'hyperopt_results' in result:
-                        serializable_model["hyperopt_results"] = {
-                            "best_params": result["hyperopt_results"].get("best_params", {}),
-                            "best_value": result["hyperopt_results"].get("best_value", 0.0),
-                            "n_trials": result["hyperopt_results"].get("n_trials", 0)
-                        }
-                    
-                    serializable_task[model_name] = serializable_model
-                serializable_results[task_name] = serializable_task
-            
-            # Save model results
-            model_results_path = os.path.join(self.output_dir, "model_results.json")
-            with open(model_results_path, 'w') as f:
-                json.dump(serializable_results, f, indent=2)
-            
-            # Save real graph properties
-            real_props_path = os.path.join(self.output_dir, "real_graph_properties.json")
-            with open(real_props_path, 'w') as f:
-                json.dump(self.results["real_graph_properties"], f, indent=2)
-            
-            # Save task-specific information
-            for task_name, data in self.results["task_data"].items():
-                task_info = {}
-                
-                # Save task-specific metadata
-                if task_name == "regime" and "rules" in data:
-                    task_info["rules"] = [str(rule) for rule in data["rules"]]
-                elif task_name == "role" and "role_analyzer" in data:
-                    role_analyzer = data["role_analyzer"]
-                    task_info["role_definitions"] = role_analyzer.interpret_roles()
-                
-                if task_info:
-                    task_path = os.path.join(self.output_dir, f"{task_name}_info.json")
-                    with open(task_path, 'w') as f:
-                        json.dump(task_info, f, indent=2)
-            
-            # Save graph sample
-            graph_sample_path = os.path.join(self.output_dir, "graph_sample.pkl")
-            import pickle
-            with open(graph_sample_path, 'wb') as f:
-                pickle.dump(self.results["graph_sample"], f)
-            
-        except Exception as e:
+            logger.error(f"Error generating graph: {str(e)}")
             raise

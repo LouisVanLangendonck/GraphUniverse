@@ -986,8 +986,8 @@ elif page == "Graph Sampling":
         with col2:
             st.session_state.graph_params['sampling_method'] = st.selectbox(
                 "Community sampling method",
-                options=["random", "connected", "diverse"],
-                index=["random", "connected", "diverse"].index(st.session_state.graph_params['sampling_method']),
+                options=["connected", "random"],
+                index=["connected", "random"].index(st.session_state.graph_params['sampling_method']),
                 help="Method for sampling communities from the universe"
             )
             st.session_state.graph_params['max_mean_community_deviation'] = st.slider(
@@ -1084,10 +1084,15 @@ elif page == "Graph Sampling":
         if st.button("Generate Graph", key="generate_graph"):
             with st.spinner("Sampling graph..."):
                 # Sample communities
-                communities = st.session_state.universe.sample_connected_community_subset(
-                    size=st.session_state.graph_params['num_communities'],
-                    method=st.session_state.graph_params['sampling_method']
-                )
+                if st.session_state.graph_params['sampling_method'] == "connected":
+                    communities = st.session_state.universe.sample_connected_community_subset(
+                        size=st.session_state.graph_params['num_communities']
+                    )
+                else:
+                    communities = st.session_state.universe.sample_random_community_subset(
+                        size=st.session_state.graph_params['num_communities'],
+                        method=st.session_state.graph_params['sampling_method']
+                    )
                 
                 # Build config_model_params for method-specific parameters
                 config_model_params = {}

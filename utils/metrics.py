@@ -17,7 +17,10 @@ from sklearn.metrics import (
     roc_auc_score,
     precision_recall_curve,
     auc,
-    average_precision_score
+    average_precision_score,
+    mean_squared_error,
+    mean_absolute_error,
+    r2_score
 )
 from sklearn.preprocessing import OneHotEncoder
 from sklearn.model_selection import train_test_split
@@ -562,3 +565,65 @@ def community_structure_similarity(
     results["size_correlation"] = np.corrcoef(size1, size2)[0, 1]
     
     return results
+
+
+def calculate_task_metrics(
+    model,
+    data,
+    task_type: str,
+    split: str = 'test',
+    best_model: bool = False
+) -> Dict[str, float]:
+    """Calculate metrics for a specific task and split."""
+    if not best_model and split == 'test':
+        return {}  # Don't calculate test metrics during optimization
+        
+    if task_type == 'community':
+        # For community classification
+        pred = model(data.x, data.edge_index)
+        pred_labels = pred.argmax(dim=1)
+        
+        # Convert tensors to numpy for metric calculation
+        true_labels = data.y.cpu().numpy()
+        pred_labels = pred_labels.cpu().numpy()
+        
+        return {
+            'accuracy': float(accuracy_score(true_labels, pred_labels)),
+            'f1': float(f1_score(true_labels, pred_labels, average='weighted'))
+        }
+    else:
+        # For counting task
+        pred = model(data.x, data.edge_index)
+        
+        # Convert tensors to numpy for metric calculation
+        true_values = data.y.cpu().numpy()
+        pred_values = pred.cpu().numpy()
+        
+        return {
+            'mse': float(mean_squared_error(true_values, pred_values)),
+            'r2': float(r2_score(true_values, pred_values))
+        }
+
+
+def evaluate_model(
+    model,
+    train_data,
+    val_data,
+    test_data,
+    task_type: str,
+    best_model: bool = False
+) -> Dict[str, Dict[str, float]]:
+    """Evaluate model performance across all splits."""
+    metrics = {}
+    
+    # Calculate metrics for each split
+    for split, data in [('train', train_data), ('val', val_data), ('test', test_data)]:
+        metrics[split] = calculate_task_metrics(
+            model,
+            data,
+            task_type,
+            split,
+            best_model
+        )
+    
+    return metrics

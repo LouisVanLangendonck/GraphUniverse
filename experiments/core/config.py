@@ -1,5 +1,7 @@
 """
-Configuration class for MMSB graph learning experiments.
+Configuration for graph learning experiments.
+
+This module defines the configuration classes and default parameters for experiments.
 """
 
 from dataclasses import dataclass, field, asdict
@@ -9,7 +11,48 @@ import os
 
 @dataclass
 class ExperimentConfig:
-    """Configuration for a single experiment."""
+    """Configuration for graph learning experiments."""
+    
+    # Task configuration
+    tasks: List[str] = field(default_factory=lambda: ['community', 'k_hop_community_counts'])
+    khop_community_counts_k: int = 2  # Number of hops for community counts task
+    
+    # Model configuration
+    gnn_types: List[str] = field(default_factory=lambda: ['gcn', 'gat', 'sage'])
+    run_gnn: bool = True
+    run_mlp: bool = True
+    run_rf: bool = True
+    
+    # Training configuration
+    learning_rate: float = 0.01
+    weight_decay: float = 5e-4
+    epochs: int = 200
+    patience: int = 50
+    batch_size: int = 32
+    
+    # Model architecture
+    hidden_dim: int = 64
+    num_layers: int = 2
+    dropout: float = 0.5
+    
+    # Hyperparameter optimization
+    optimize_hyperparams: bool = False
+    n_trials: int = 10
+    optimization_timeout: int = 300  # Timeout in seconds for hyperparameter optimization
+    
+    # Output configuration
+    output_dir: str = 'results'
+    
+    # Task-specific parameters
+    is_regression: Dict[str, bool] = field(default_factory=lambda: {
+        'community': False,
+        'k_hop_community_counts': True
+    })
+    
+    # Regression-specific parameters
+    regression_loss: str = 'mse'  # 'mse' or 'mae'
+    regression_metrics: List[str] = field(default_factory=lambda: ['mse', 'rmse', 'mae', 'r2'])
+    
     # Graph generation parameters
     num_communities: int = 5
     num_nodes: int = 100
@@ -35,7 +78,6 @@ class ExperimentConfig:
     feature_regime_balance: float = 0.3  # Default to unbalanced regimes
     
     # Task parameters
-    tasks: List[str] = field(default_factory=lambda: ["community"])  # Default to just community task
     regime_task_min_hop: int = 1
     regime_task_max_hop: int = 3
     regime_task_n_labels: int = 4
@@ -44,30 +86,11 @@ class ExperimentConfig:
     role_task_max_motif_size: int = 3
     role_task_n_roles: int = 5
     
-    # Model parameters
-    gnn_types: List[str] = field(default_factory=lambda: ['gat', 'gcn', 'sage'])
-    run_gnn: bool = True
-    run_mlp: bool = True
-    run_rf: bool = True
-    
     # Training parameters
     train_ratio: float = 0.6
     val_ratio: float = 0.2
     test_ratio: float = 0.2
     seed: int = 42
-    patience: int = 150
-    epochs: int = 500
-    
-    # Hyperparameter optimization parameters
-    optimize_hyperparams: bool = True
-    n_trials: int = 15  # Number of hyperparameter optimization trials
-    opt_timeout: int = 300  # Timeout in seconds for each model's optimization
-    
-    # Output parameters
-    output_dir: str = "results"
-    device_id: int = 0  # Default to first CUDA device
-    force_cpu: bool = False  # Option to force CPU usage
-    
     distribution_type: str = "standard"
     power_law_exponent: Optional[float] = None
     power_law_target_avg_degree: Optional[float] = None
@@ -81,6 +104,35 @@ class ExperimentConfig:
     parameter_search_range: float = 0.2
     max_parameter_search_attempts: int = 20
     max_retries: int = 10
+    
+    # Output parameters
+    device_id: int = 0  # Default to first CUDA device
+    force_cpu: bool = False  # Option to force CPU usage
+    
+    def __post_init__(self):
+        """Validate configuration after initialization."""
+        # Validate tasks
+        valid_tasks = ['community', 'k_hop_community_counts']
+        for task in self.tasks:
+            if task not in valid_tasks:
+                raise ValueError(f"Invalid task: {task}. Must be one of {valid_tasks}")
+        
+        # Validate GNN types
+        valid_gnn_types = ['gcn', 'gat', 'sage']
+        for gnn_type in self.gnn_types:
+            if gnn_type not in valid_gnn_types:
+                raise ValueError(f"Invalid GNN type: {gnn_type}. Must be one of {valid_gnn_types}")
+        
+        # Validate regression loss
+        valid_losses = ['mse', 'mae']
+        if self.regression_loss not in valid_losses:
+            raise ValueError(f"Invalid regression loss: {self.regression_loss}. Must be one of {valid_losses}")
+        
+        # Validate regression metrics
+        valid_metrics = ['mse', 'rmse', 'mae', 'r2']
+        for metric in self.regression_metrics:
+            if metric not in valid_metrics:
+                raise ValueError(f"Invalid regression metric: {metric}. Must be one of {valid_metrics}")
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert config to dictionary."""

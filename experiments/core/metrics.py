@@ -1,17 +1,133 @@
 """
-Metrics and evaluation utilities for graph learning experiments.
-
-This module provides functions for evaluating model performance and computing various metrics.
+Metrics for evaluating model performance on node classification and regression tasks.
 """
 
 import numpy as np
+import torch
 from sklearn.metrics import (
-    accuracy_score,
-    precision_recall_fscore_support,
-    roc_auc_score,
-    confusion_matrix
+    accuracy_score, precision_score, recall_score, f1_score,
+    mean_squared_error, mean_absolute_error, r2_score,
+    precision_recall_fscore_support, roc_auc_score
 )
 from typing import Dict, List, Optional, Union, Any
+
+def compute_metrics(
+    y_true: Union[np.ndarray, torch.Tensor],
+    y_pred: Union[np.ndarray, torch.Tensor],
+    is_regression: bool = False
+) -> Dict[str, float]:
+    """
+    Compute metrics for model evaluation.
+    
+    Args:
+        y_true: True labels
+        y_pred: Predicted labels
+        is_regression: Whether this is a regression task (True) or classification task (False)
+        
+    Returns:
+        Dictionary of metric names and values
+    """
+    # Convert tensors to numpy arrays
+    if isinstance(y_true, torch.Tensor):
+        y_true = y_true.cpu().numpy()
+    if isinstance(y_pred, torch.Tensor):
+        y_pred = y_pred.cpu().numpy()
+    
+    metrics = {}
+    
+    if is_regression:
+        # Regression metrics
+        metrics['mse'] = mean_squared_error(y_true, y_pred)
+        metrics['rmse'] = np.sqrt(metrics['mse'])
+        metrics['mae'] = mean_absolute_error(y_true, y_pred)
+        metrics['r2'] = r2_score(y_true, y_pred)
+        
+        # For multilabel regression, compute metrics per label
+        if len(y_true.shape) > 1:
+            per_label_metrics = {}
+            for i in range(y_true.shape[1]):
+                per_label_metrics[f'mse_label_{i}'] = mean_squared_error(y_true[:, i], y_pred[:, i])
+                per_label_metrics[f'rmse_label_{i}'] = np.sqrt(per_label_metrics[f'mse_label_{i}'])
+                per_label_metrics[f'mae_label_{i}'] = mean_absolute_error(y_true[:, i], y_pred[:, i])
+                per_label_metrics[f'r2_label_{i}'] = r2_score(y_true[:, i], y_pred[:, i])
+            metrics.update(per_label_metrics)
+    else:
+        # Classification metrics
+        # For classification, ensure predictions are class indices
+        if len(y_pred.shape) > 1:
+            # Store probabilities for ROC-AUC before converting to class indices
+            y_score = y_pred
+            y_pred = np.argmax(y_pred, axis=1)
+        
+        metrics['accuracy'] = accuracy_score(y_true, y_pred)
+        
+        # For multiclass classification, compute macro and weighted averages
+        metrics['precision_macro'] = precision_score(y_true, y_pred, average='macro', zero_division=0)
+        metrics['precision_weighted'] = precision_score(y_true, y_pred, average='weighted', zero_division=0)
+        metrics['recall_macro'] = recall_score(y_true, y_pred, average='macro', zero_division=0)
+        metrics['recall_weighted'] = recall_score(y_true, y_pred, average='weighted', zero_division=0)
+        metrics['f1_macro'] = f1_score(y_true, y_pred, average='macro', zero_division=0)
+        metrics['f1_weighted'] = f1_score(y_true, y_pred, average='weighted', zero_division=0)
+        
+        # Compute ROC-AUC if we have probability scores
+        if 'y_score' in locals():
+            try:
+                if y_score.shape[1] == 2:  # Binary case
+                    metrics['roc_auc'] = roc_auc_score(y_true, y_score[:, 1])
+                else:  # Multi-class case
+                    metrics['roc_auc'] = roc_auc_score(y_true, y_score, multi_class='ovr')
+            except Exception as e:
+                metrics['roc_auc'] = 0.0
+    
+    return metrics
+
+
+def compute_loss(
+    y_true: torch.Tensor,
+    y_pred: torch.Tensor,
+    is_regression: bool = False
+) -> torch.Tensor:
+    """
+    Compute loss for model training.
+    
+    Args:
+        y_true: True labels
+        y_pred: Predicted labels
+        is_regression: Whether this is a regression task (True) or classification task (False)
+        
+    Returns:
+        Loss value
+    """
+    if is_regression:
+        # For regression, use MSE loss
+        return torch.nn.functional.mse_loss(y_pred, y_true)
+    else:
+        # For classification, use cross entropy loss
+        return torch.nn.functional.cross_entropy(y_pred, y_true)
+
+
+def compute_accuracy(
+    y_true: torch.Tensor,
+    y_pred: torch.Tensor,
+    is_regression: bool = False
+) -> float:
+    """
+    Compute accuracy for model evaluation.
+    
+    Args:
+        y_true: True labels
+        y_pred: Predicted labels
+        is_regression: Whether this is a regression task (True) or classification task (False)
+        
+    Returns:
+        Accuracy value
+    """
+    if is_regression:
+        # For regression, compute R² score as accuracy proxy
+        return r2_score(y_true.cpu().numpy(), y_pred.cpu().numpy())
+    else:
+        # For classification, compute standard accuracy
+        return (y_pred.argmax(dim=1) == y_true).float().mean().item()
 
 
 def evaluate_node_classification(
@@ -160,4 +276,99 @@ def model_performance_summary(
                     class_name = target_names[i] if target_names else f"Class {i}"
                     summary_lines.append(f"  {class_name}: {count} ({frac:.2%})")
     
-    return "\n".join(summary_lines) 
+    return "\n".join(summary_lines)
+
+
+def compute_classification_metrics(predictions: Union[torch.Tensor, np.ndarray], 
+                                labels: Union[torch.Tensor, np.ndarray],
+                                return_all: bool = False) -> Dict[str, float]:
+    """
+    Compute classification metrics.
+    
+    Args:
+        predictions: Model predictions (either class indices or probabilities)
+        labels: True labels
+        return_all: Whether to return all metrics or just accuracy
+        
+    Returns:
+        Dictionary of metrics
+    """
+    # Convert tensors to numpy if needed
+    if isinstance(predictions, torch.Tensor):
+        y_pred = predictions.cpu().numpy()
+    else:
+        y_pred = predictions
+        
+    if isinstance(labels, torch.Tensor):
+        y_true = labels.cpu().numpy()
+    else:
+        y_true = labels
+    
+    # Compute metrics
+    accuracy = accuracy_score(y_true, y_pred)
+    
+    if return_all:
+        precision, recall, f1, _ = precision_recall_fscore_support(
+            y_true, y_pred, average='weighted', zero_division=0
+        )
+        
+        return {
+            'accuracy': accuracy,
+            'precision': precision,
+            'recall': recall,
+            'f1': f1
+        }
+    
+    return {'accuracy': accuracy}
+
+
+def compute_regression_metrics(
+    y_true: Union[np.ndarray, torch.Tensor],
+    y_pred: Union[np.ndarray, torch.Tensor],
+    return_all: bool = False
+) -> Union[float, Dict[str, float]]:
+    """
+    Compute regression metrics.
+    
+    Args:
+        y_true: True labels
+        y_pred: Predicted labels
+        return_all: Whether to return all metrics or just R² score
+        
+    Returns:
+        If return_all is False, returns R² score.
+        If return_all is True, returns dictionary of metrics.
+    """
+    # Convert tensors to numpy arrays
+    if isinstance(y_true, torch.Tensor):
+        y_true = y_true.cpu().numpy()
+    if isinstance(y_pred, torch.Tensor):
+        y_pred = y_pred.cpu().numpy()
+    
+    # Compute metrics
+    mse = mean_squared_error(y_true, y_pred)
+    rmse = np.sqrt(mse)
+    mae = mean_absolute_error(y_true, y_pred)
+    r2 = r2_score(y_true, y_pred)
+    
+    if not return_all:
+        return r2
+    
+    metrics = {
+        'mse': mse,
+        'rmse': rmse,
+        'mae': mae,
+        'r2': r2
+    }
+    
+    # For multilabel regression, compute metrics per label
+    if len(y_true.shape) > 1:
+        per_label_metrics = {}
+        for i in range(y_true.shape[1]):
+            per_label_metrics[f'mse_label_{i}'] = mean_squared_error(y_true[:, i], y_pred[:, i])
+            per_label_metrics[f'rmse_label_{i}'] = np.sqrt(per_label_metrics[f'mse_label_{i}'])
+            per_label_metrics[f'mae_label_{i}'] = mean_absolute_error(y_true[:, i], y_pred[:, i])
+            per_label_metrics[f'r2_label_{i}'] = r2_score(y_true[:, i], y_pred[:, i])
+        metrics.update(per_label_metrics)
+    
+    return metrics 

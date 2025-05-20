@@ -453,88 +453,9 @@ class GraphUniverse:
         else:
             raise ValueError(f"Unknown sampling method: {method}")
             
-    # def generate_community_co_membership_matrix(
-    #     self, 
-    #     overlap_density: float = 0.1,
-    #     structure: str = "modular"
-    # ) -> np.ndarray:
-    #     """
-    #     Generate a community co-membership matrix to model overlapping communities.
-        
-    #     Args:
-    #         overlap_density: Overall density of overlaps between communities
-    #         structure: Structure of overlaps ("modular", "hierarchical", "hub-spoke")
-            
-    #     Returns:
-    #         K × K co-membership probability matrix
-    #     """
-    #     K = self.K
-    #     co_membership = np.eye(K)  # Diagonal is always 1 (self-membership)
-        
-    #     if structure == "modular":
-    #         # Create modules of overlapping communities
-    #         module_size = max(2, K // 5)  # Module size
-    #         for i in range(0, K, module_size):
-    #             module_end = min(i + module_size, K)
-    #             module_indices = np.arange(i, module_end)
-                
-    #             # Communities within same module have higher overlap probability
-    #             for j in module_indices:
-    #                 for k in module_indices:
-    #                     if j != k:
-    #                         co_membership[j, k] = overlap_density
-                            
-    #     elif structure == "hierarchical":
-    #         # Hierarchical structure with stronger overlaps between related communities
-    #         levels = int(np.log2(K)) + 1
-    #         for i in range(K):
-    #             for j in range(i+1, K):
-    #                 # Compute overlap based on hierarchical distance
-    #                 bin_i, bin_j = bin(i)[2:].zfill(levels), bin(j)[2:].zfill(levels)
-    #                 common_prefix = 0
-    #                 for b_i, b_j in zip(bin_i, bin_j):
-    #                     if b_i == b_j:
-    #                         common_prefix += 1
-    #                     else:
-    #                         break
-                    
-    #                 # Probability decreases with hierarchical distance
-    #                 hier_distance = levels - common_prefix
-    #                 overlap_prob = overlap_density * (0.5 ** (hier_distance - 1))
-    #                 co_membership[i, j] = co_membership[j, i] = overlap_prob
-                    
-    #     elif structure == "hub-spoke":
-    #         # Some communities are hubs that overlap with many others
-    #         num_hubs = max(1, K // 10)
-    #         hub_indices = np.random.choice(K, size=num_hubs, replace=False)
-            
-    #         # Hub-spoke connections
-    #         for hub in hub_indices:
-    #             for i in range(K):
-    #                 if i != hub:
-    #                     co_membership[hub, i] = co_membership[i, hub] = overlap_density
-                        
-    #         # Hub-hub connections (stronger)
-    #         for i in hub_indices:
-    #             for j in hub_indices:
-    #                 if i != j:
-    #                     co_membership[i, j] = overlap_density * 2
-                        
-    #     else:
-    #         # Random uniform co-membership
-    #         for i in range(K):
-    #             for j in range(i+1, K):
-    #                 p = np.random.uniform(0, overlap_density)
-    #                 co_membership[i, j] = co_membership[j, i] = p
-                    
-    #     return co_membership
-
     def sample_connected_community_subset(
         self,
         size: int,
-        method: str = "random",
-        similarity_bias: float = 0.0,
-        max_attempts: int = 10,
         existing_communities: Optional[List[int]] = None,
         seed: Optional[int] = None
     ) -> List[int]:

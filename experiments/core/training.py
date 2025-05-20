@@ -21,8 +21,19 @@ from optuna import create_study, Trial
 from optuna.samplers import TPESampler
 from optuna.pruners import MedianPruner
 
-from experiments.core.metrics import evaluate_node_classification
+from experiments.core.metrics import (
+    compute_metrics,
+    compute_loss,
+    compute_accuracy,
+    evaluate_node_classification,
+    model_performance_summary,
+    compute_classification_metrics,
+    compute_regression_metrics
+)
+from experiments.core.config import ExperimentConfig
 from sklearn.metrics import accuracy_score, precision_recall_fscore_support
+
+from experiments.core.models import GNNModel, MLPModel, SklearnModel
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -41,217 +52,653 @@ def optimize_hyperparameters(
     n_trials: int = 20,
     max_epochs: int = 200,
     timeout: Optional[int] = 600,  # 10 minutes per optimization
-    device: Optional[torch.device] = None
+    device: Optional[torch.device] = None,
+    is_regression: bool = False
 ) -> Dict[str, Any]:
     """
     Optimize hyperparameters for a given model using Optuna.
-    
-    Args:
-        model_creator: Function that creates a model given parameters
-        features: Node features
-        edge_index: Graph connectivity
-        labels: Node labels
-        train_idx: Training node indices
-        val_idx: Validation node indices
-        test_idx: Test node indices
-        model_type: Type of model ("gnn", "mlp", "rf")
-        gnn_type: Type of GNN if model_type is "gnn"
-        n_trials: Number of optimization trials
-        max_epochs: Maximum number of training epochs per trial
-        timeout: Timeout in seconds for the optimization
-        device: Device to run on
-        
-    Returns:
-        Dictionary with best hyperparameters and model
+    For classification tasks, maximizes F1 score.
+    For regression tasks, minimizes MSE.
     """
     # Use GPU if available
     if device is None:
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     
-    # Move data to device
+    # Move data to device once
     features = features.to(device)
     if edge_index is not None:
         edge_index = edge_index.to(device)
     labels = labels.to(device)
     train_idx = train_idx.to(device)
     val_idx = val_idx.to(device)
+    test_idx = test_idx.to(device)
     
-    # Define the objective function for optimization
-    def objective(trial: Trial) -> float:
-        # Define hyperparameters to optimize based on model type
-        if model_type == "gnn" or model_type == "mlp":
-            # Common parameters for neural networks
-            lr = trial.suggest_float("lr", 1e-4, 1e-2, log=True)
-            weight_decay = trial.suggest_float("weight_decay", 1e-5, 1e-3, log=True)
-            dropout = trial.suggest_float("dropout", 0.1, 0.6)
-            hidden_dim = trial.suggest_categorical("hidden_dim", [16, 32, 64, 128])
-            num_layers = trial.suggest_int("num_layers", 1, 3)
+    # Enable mixed precision training if using CUDA
+    scaler = torch.cuda.amp.GradScaler() if device.type == 'cuda' else None
+    
+    def objective(trial):
+        # Common hyperparameters for all models
+        lr = trial.suggest_float('lr', 1e-4, 1e-2, log=True)
+        weight_decay = trial.suggest_float('weight_decay', 1e-5, 1e-2, log=True)
+        patience = trial.suggest_int('patience', 10, 50)
+        
+        # Model-specific hyperparameters
+        if model_type == "gnn":
+            hidden_dim = trial.suggest_int('hidden_dim', 32, 256)
+            num_layers = trial.suggest_int('num_layers', 1, 4)
+            dropout = trial.suggest_float('dropout', 0.1, 0.7)
             
-            # Model-specific parameters
-            if model_type == "gnn":
-                # GNN-specific parameters
-                residual = trial.suggest_categorical("residual", [True, False])
-                # For GAT, don't allow any normalization
-                if gnn_type == "gat":
-                    norm_type = "none"  # Force no normalization for GAT
-                else:
-                    norm_type = trial.suggest_categorical("norm_type", ["none", "batch", "layer"])
-                agg_type = trial.suggest_categorical("agg_type", ["mean", "sum", "max"])
-                
-                if gnn_type == "gat":
-                    heads = trial.suggest_int("heads", 1, 4)
-                    concat_heads = trial.suggest_categorical("concat_heads", [True, False])
-                    # For GAT, we don't need to adjust hidden_dim as it's handled in the model
-                    model = model_creator(
-                        input_dim=features.shape[1],
-                        hidden_dim=hidden_dim,
-                        output_dim=len(torch.unique(labels)),
-                        num_layers=num_layers,
-                        dropout=dropout,
-                        gnn_type=gnn_type,
-                        residual=residual,
-                        norm_type=norm_type,  # Will always be "none" for GAT
-                        agg_type=agg_type,
-                        heads=heads,
-                        concat_heads=concat_heads
-                    ).to(device)
-                else:
-                    model = model_creator(
-                        input_dim=features.shape[1],
-                        hidden_dim=hidden_dim,
-                        output_dim=len(torch.unique(labels)),
-                        num_layers=num_layers,
-                        dropout=dropout,
-                        gnn_type=gnn_type,
-                        residual=residual,
-                        norm_type=norm_type,
-                        agg_type=agg_type
-                    ).to(device)
-            else:  # MLP
-                model = model_creator(
-                    input_dim=features.shape[1],
-                    hidden_dim=hidden_dim,
-                    output_dim=len(torch.unique(labels)),
-                    num_layers=num_layers,
-                    dropout=dropout
-                ).to(device)
+            # GNN-specific parameters
+            if gnn_type == "gat":
+                heads = trial.suggest_int('heads', 1, 8)
+                concat_heads = trial.suggest_categorical('concat_heads', [True, False])
+            else:
+                heads = 1
+                concat_heads = True
             
-            # Optimizer and loss function
-            optimizer = optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
-            criterion = nn.CrossEntropyLoss()
+            residual = trial.suggest_categorical('residual', [True, False])
+            norm_type = trial.suggest_categorical('norm_type', ['none', 'batch', 'layer'])
+            agg_type = trial.suggest_categorical('agg_type', ['mean', 'max', 'sum'])
             
-            # Training with early stopping
-            best_val_acc = 0.0
-            early_stop_counter = 0
-            early_stop_patience = trial.suggest_int("patience", 30, 100)
+            # Create GNN model
+            model = model_creator(
+                input_dim=features.shape[1],
+                hidden_dim=hidden_dim,
+                output_dim=labels.shape[1] if is_regression else labels.max().item() + 1,  # Use number of communities for regression
+                num_layers=num_layers,
+                dropout=dropout,
+                gnn_type=gnn_type,
+                residual=residual,
+                norm_type=norm_type,
+                agg_type=agg_type,
+                heads=heads,
+                concat_heads=concat_heads,
+                is_regression=is_regression
+            ).to(device)
+            
+        elif model_type == "mlp":
+            hidden_dim = trial.suggest_int('hidden_dim', 32, 256)
+            num_layers = trial.suggest_int('num_layers', 1, 4)
+            dropout = trial.suggest_float('dropout', 0.1, 0.7)
+            
+            # Create MLP model
+            model = model_creator(
+                input_dim=features.shape[1],
+                hidden_dim=hidden_dim,
+                output_dim=labels.shape[1] if is_regression else labels.max().item() + 1,  # Use number of communities for regression
+                num_layers=num_layers,
+                dropout=dropout,
+                is_regression=is_regression
+            ).to(device)
+            
+        else:  # sklearn model
+            # Create sklearn model with required parameters
+            model = model_creator(
+                input_dim=features.shape[1],
+                output_dim=labels.shape[1] if is_regression else labels.max().item() + 1,  # Use number of communities for regression
+                is_regression=is_regression
+            )
+        
+        # Initialize optimizer for PyTorch models
+        if model_type in ["gnn", "mlp"]:
+            optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
+            criterion = torch.nn.MSELoss() if is_regression else torch.nn.CrossEntropyLoss()
+            
+            # Training loop
+            best_val_metric = float('inf') if is_regression else 0.0
+            patience_counter = 0
             
             for epoch in range(max_epochs):
-                # Training step
                 model.train()
                 optimizer.zero_grad()
                 
-                if model_type == "gnn":
-                    out = model(features, edge_index)
-                else:  # MLP
-                    out = model(features)
+                # Use mixed precision training if available
+                if scaler is not None:
+                    with torch.cuda.amp.autocast():
+                        out = model(features, edge_index) if model_type == "gnn" else model(features)
+                        if is_regression:
+                            # For regression, ensure output matches target shape
+                            loss = criterion(out[train_idx], labels[train_idx])
+                        else:
+                            loss = criterion(out[train_idx], labels[train_idx])
+                    
+                    scaler.scale(loss).backward()
+                    scaler.step(optimizer)
+                    scaler.update()
+                else:
+                    out = model(features, edge_index) if model_type == "gnn" else model(features)
+                    if is_regression:
+                        # For regression, ensure output matches target shape
+                        loss = criterion(out[train_idx], labels[train_idx])
+                    else:
+                        loss = criterion(out[train_idx], labels[train_idx])
+                    loss.backward()
+                    optimizer.step()
                 
-                loss = criterion(out[train_idx], labels[train_idx])
-                loss.backward()
-                optimizer.step()
-                
-                # Validation step
+                # Evaluate
                 model.eval()
                 with torch.no_grad():
-                    if model_type == "gnn":
-                        out = model(features, edge_index)
-                    else:  # MLP
-                        out = model(features)
+                    out = model(features, edge_index) if model_type == "gnn" else model(features)
+                    val_loss = criterion(out[val_idx], labels[val_idx])
                     
-                    val_loss = criterion(out[val_idx], labels[val_idx]).item()
-                    val_pred = out[val_idx].argmax(dim=1)
-                    val_acc = (val_pred == labels[val_idx]).float().mean().item()
+                    if is_regression:
+                        # For regression, use MSE as the metric (lower is better)
+                        val_metric = val_loss.item()
+                    else:
+                        # For classification, use F1 score (higher is better)
+                        val_pred = out[val_idx].argmax(dim=1)
+                        val_true = labels[val_idx]
+                        val_metric = compute_metrics(val_true.cpu().numpy(), val_pred.cpu().numpy())['f1_macro']
                 
-                # Report intermediate metric to pruner
-                trial.report(val_acc, epoch)
-                
-                # Handle pruning
-                if trial.should_prune():
-                    raise optuna.exceptions.TrialPruned()
-                
-                # Early stopping logic
-                if val_acc > best_val_acc:
-                    best_val_acc = val_acc
-                    early_stop_counter = 0
+                # Early stopping
+                if is_regression:
+                    # For regression, lower MSE is better
+                    if val_metric < best_val_metric:
+                        best_val_metric = val_metric
+                        patience_counter = 0
+                    else:
+                        patience_counter += 1
                 else:
-                    early_stop_counter += 1
+                    # For classification, higher F1 is better
+                    if val_metric > best_val_metric:
+                        best_val_metric = val_metric
+                        patience_counter = 0
+                    else:
+                        patience_counter += 1
                 
-                if early_stop_counter >= early_stop_patience:
+                if patience_counter >= patience:
                     break
             
-            return best_val_acc
+            # For regression, return negative MSE (to maximize)
+            # For classification, return F1 score (already maximizing)
+            return -best_val_metric if is_regression else best_val_metric
             
-        elif model_type == "rf":
-            # Random Forest parameters
-            n_estimators = trial.suggest_int("n_estimators", 50, 300)
-            max_depth = trial.suggest_int("max_depth", 3, 20)
-            min_samples_split = trial.suggest_int("min_samples_split", 2, 10)
-            min_samples_leaf = trial.suggest_int("min_samples_leaf", 1, 10)
-            
-            # Move data to CPU for sklearn
+        else:  # sklearn model
+            # Convert data to numpy for sklearn
             X_train = features[train_idx].cpu().numpy()
             y_train = labels[train_idx].cpu().numpy()
             X_val = features[val_idx].cpu().numpy()
             y_val = labels[val_idx].cpu().numpy()
             
-            # Create and train model
-            from sklearn.ensemble import RandomForestClassifier
-            model = RandomForestClassifier(
-                n_estimators=n_estimators,
-                max_depth=max_depth,
-                min_samples_split=min_samples_split,
-                min_samples_leaf=min_samples_leaf,
-                random_state=42
-            )
+            # Train and evaluate
             model.fit(X_train, y_train)
+            if is_regression:
+                # For regression, use MSE
+                y_pred = model.predict(X_val)
+                val_metric = np.mean((y_val - y_pred) ** 2)
+                return -val_metric  # Return negative MSE to maximize
+            else:
+                # For classification, use F1 score
+                y_pred = model.predict(X_val)
+                val_metric = compute_metrics(y_val, y_pred)['f1_macro']
+                return val_metric
+    
+    # Create study
+    study = optuna.create_study(direction='maximize')  # Always maximize (negative MSE for regression)
+    study.optimize(objective, n_trials=n_trials, timeout=timeout)
+    
+    # Get best parameters
+    best_params = study.best_params
+    
+    # Create final model with best parameters
+    if model_type == "gnn":
+        final_model = model_creator(
+            input_dim=features.shape[1],
+            hidden_dim=best_params['hidden_dim'],
+            output_dim=labels.shape[1] if is_regression else labels.max().item() + 1,  # Use number of communities for regression
+            num_layers=best_params['num_layers'],
+            dropout=best_params['dropout'],
+            gnn_type=gnn_type,
+            residual=best_params.get('residual', False),
+            norm_type=best_params.get('norm_type', 'none'),
+            agg_type=best_params.get('agg_type', 'mean'),
+            heads=best_params.get('heads', 1),
+            concat_heads=best_params.get('concat_heads', True),
+            is_regression=is_regression
+        ).to(device)
+    elif model_type == "mlp":
+        final_model = model_creator(
+            input_dim=features.shape[1],
+            hidden_dim=best_params['hidden_dim'],
+            output_dim=labels.shape[1] if is_regression else labels.max().item() + 1,  # Use number of communities for regression
+            num_layers=best_params['num_layers'],
+            dropout=best_params['dropout'],
+            is_regression=is_regression
+        ).to(device)
+    else:  # sklearn model
+        final_model = model_creator(
+            input_dim=features.shape[1],
+            output_dim=labels.shape[1] if is_regression else labels.max().item() + 1,  # Use number of communities for regression
+            is_regression=is_regression
+        )
+    
+    return {
+        'best_params': best_params,
+        'best_value': -study.best_value if is_regression else study.best_value,  # Convert back to MSE for regression
+        'n_trials': len(study.trials),
+        'model': final_model
+    }
+
+
+def train_model(
+    model: Union[GNNModel, MLPModel, SklearnModel],
+    data: Dict[str, Any],
+    config: Any,
+    is_regression: bool = False
+) -> Dict[str, Any]:
+    """
+    Train a model and return results.
+    """
+    # For scikit-learn models, use a different training procedure
+    if isinstance(model, SklearnModel):
+        print("Using CPU for scikit-learn model")
+        start_time = time.time()
+        
+        # Convert data to numpy arrays
+        X_train = data['features'][data['train_idx']].cpu().numpy()
+        y_train = data['labels'][data['train_idx']].cpu().numpy()
+        X_val = data['features'][data['val_idx']].cpu().numpy()
+        y_val = data['labels'][data['val_idx']].cpu().numpy()
+        X_test = data['features'][data['test_idx']].cpu().numpy()
+        y_test = data['labels'][data['test_idx']].cpu().numpy()
+        
+        # Train model
+        model.fit(X_train, y_train)
+        
+        # Make predictions
+        y_pred_train = model.predict(X_train)
+        y_pred_val = model.predict(X_val)
+        y_pred_test = model.predict(X_test)
+        
+        # Compute metrics
+        train_metrics = compute_metrics(y_train, y_pred_train, is_regression)
+        val_metrics = compute_metrics(y_val, y_pred_val, is_regression)
+        test_metrics = compute_metrics(y_test, y_pred_test, is_regression)
+        
+        # Store results
+        results = {
+            'train_time': time.time() - start_time,
+            'metrics': {
+                'train': train_metrics,
+                'val': val_metrics,
+                'test': test_metrics
+            }
+        }
+        
+        return results
+    
+    # For PyTorch models
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    print(f"\nUsing device: {device}")
+    if device.type == 'cuda':
+        print(f"GPU: {torch.cuda.get_device_name(0)}")
+        print(f"CUDA Version: {torch.version.cuda}")
+        print(f"Mixed Precision Training: Enabled")
+    
+    model = model.to(device)
+    
+    # Move data to device
+    features = data['features'].to(device)
+    edge_index = data['edge_index'].to(device)
+    labels = data['labels'].to(device)
+    train_idx = data['train_idx'].to(device)
+    val_idx = data['val_idx'].to(device)
+    test_idx = data['test_idx'].to(device)
+    
+    print(f"Data moved to {device}")
+    print(f"Features shape: {features.shape}, device: {features.device}")
+    print(f"Edge index shape: {edge_index.shape}, device: {edge_index.device}")
+    
+    # Initialize optimizer
+    optimizer = optim.Adam(model.parameters(), lr=config.learning_rate, weight_decay=config.weight_decay)
+    
+    # Initialize loss function
+    criterion = nn.MSELoss() if is_regression else nn.CrossEntropyLoss()
+    
+    # Enable mixed precision training if using CUDA
+    scaler = torch.cuda.amp.GradScaler() if device.type == 'cuda' else None
+    
+    # Initialize early stopping
+    best_val_acc = 0
+    best_epoch = 0
+    patience_counter = 0
+    
+    # Training history
+    history = {
+        'train_loss': [],
+        'val_loss': [],
+        'train_acc': [],
+        'val_acc': []
+    }
+    
+    # Training loop
+    start_time = time.time()
+    for epoch in range(config.epochs):
+        model.train()
+        optimizer.zero_grad()
+        
+        # Use mixed precision training if available
+        if scaler is not None:
+            with torch.cuda.amp.autocast():
+                # Forward pass
+                if isinstance(model, GNNModel):
+                    out = model(features, edge_index)
+                else:
+                    out = model(features)
+                
+                # Compute loss
+                loss = criterion(out[train_idx], labels[train_idx])
+            
+            # Backward pass with gradient scaling
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
+        else:
+            # Forward pass
+            if isinstance(model, GNNModel):
+                out = model(features, edge_index)
+            else:
+                out = model(features)
+            
+            # Compute loss
+            loss = criterion(out[train_idx], labels[train_idx])
+            
+            # Backward pass
+            loss.backward()
+            optimizer.step()
+        
+        # Evaluate
+        model.eval()
+        with torch.no_grad():
+            if isinstance(model, GNNModel):
+                out = model(features, edge_index)
+            else:
+                out = model(features)
+            
+            # Compute losses
+            train_loss = criterion(out[train_idx], labels[train_idx])
+            val_loss = criterion(out[val_idx], labels[val_idx])
+            
+            # Compute accuracies
+            if is_regression:
+                train_acc = 1 - train_loss / torch.var(labels[train_idx])
+                val_acc = 1 - val_loss / torch.var(labels[val_idx])
+            else:
+                train_acc = (out[train_idx].argmax(dim=1) == labels[train_idx]).float().mean()
+                val_acc = (out[val_idx].argmax(dim=1) == labels[val_idx]).float().mean()
+        
+        # Store metrics
+        history['train_loss'].append(train_loss.item())
+        history['val_loss'].append(val_loss.item())
+        history['train_acc'].append(train_acc.item())
+        history['val_acc'].append(val_acc.item())
+        
+        # Print progress
+        if epoch % 10 == 0 or epoch == config.epochs - 1:
+            print(f"Epoch {epoch:4d}: Train Loss: {train_loss.item():.4f}, Train Acc: {train_acc.item():.4f}, "
+                  f"Val Loss: {val_loss.item():.4f}, Val Acc: {val_acc.item():.4f}")
+        
+        # Early stopping
+        if val_acc > best_val_acc:
+            best_val_acc = val_acc
+            best_epoch = epoch
+            patience_counter = 0
+        else:
+            patience_counter += 1
+            if patience_counter >= config.patience:
+                print(f"Early stopping at epoch {epoch}")
+                break
+    
+    # Store final results
+    results = {
+        'train_time': time.time() - start_time,
+        'history': history,
+        'best_epoch': best_epoch,
+        'best_val_acc': best_val_acc.item()
+    }
+    
+    # Final evaluation
+    model.eval()
+    with torch.no_grad():
+        if isinstance(model, GNNModel):
+            out = model(features, edge_index)
+        else:
+            out = model(features)
+        
+        # Compute metrics for all sets
+        train_metrics = compute_metrics(labels[train_idx], out[train_idx], is_regression)
+        val_metrics = compute_metrics(labels[val_idx], out[val_idx], is_regression)
+        test_metrics = compute_metrics(labels[test_idx], out[test_idx], is_regression)
+        
+        results['metrics'] = {
+            'train': train_metrics,
+            'val': val_metrics,
+            'test': test_metrics
+        }
+    
+    print(f"\nTraining completed in {results['train_time']:.2f} seconds")
+    print(f"Best validation accuracy: {best_val_acc.item():.4f} at epoch {best_epoch}")
+    
+    return results
+
+
+def train_and_evaluate(
+    model: Union[GNNModel, MLPModel, SklearnModel],
+    data: Dict[str, Any],
+    config: ExperimentConfig,
+    is_regression: bool = False
+) -> Dict[str, Any]:
+    """
+    Train and evaluate a model.
+    
+    Returns:
+        Dictionary with structure:
+        {
+                'train': {
+                    'metric1': value,
+                    'metric2': value,
+                    ...
+                },
+                'val': {
+                    'metric1': value,
+                    'metric2': value,
+                    ...
+                },
+                'test': {
+                    'metric1': value,
+                    'metric2': value,
+                    ...
+                }
+            }
+        }
+    """
+    # Set up device
+    device = torch.device("cuda" if torch.cuda.is_available() and not config.force_cpu else "cpu")
+    
+    # Move model to device if it's a PyTorch model
+    if isinstance(model, (GNNModel, MLPModel)):
+        model = model.to(device)
+    
+    # Get data
+    features = data['features'].to(device)
+    edge_index = data['edge_index'].to(device)
+    labels = data['labels'].to(device)
+    train_idx = data['train_idx'].to(device)
+    val_idx = data['val_idx'].to(device)
+    test_idx = data['test_idx'].to(device)
+    
+    # Initialize optimizer if it's a PyTorch model
+    if isinstance(model, (GNNModel, MLPModel)):
+        optimizer = torch.optim.Adam(
+            model.parameters(),
+            lr=config.learning_rate,
+            weight_decay=config.weight_decay
+        )
+        
+        # Set up loss function
+        if is_regression:
+            criterion = torch.nn.MSELoss()
+        else:
+            criterion = torch.nn.CrossEntropyLoss()
+        
+        # Training loop
+        best_val_metric = float('inf') if is_regression else 0.0  # Lower MSE is better, higher F1 is better
+        patience_counter = 0
+        best_model_state = None
+        
+        # Initialize metrics tracking
+        metrics_history = {
+            'train': {'loss': [], 'metric': []},
+            'val': {'loss': [], 'metric': []}
+        }
+        
+        start_time = time.time()
+        
+        for epoch in range(config.epochs):
+            model.train()
+            optimizer.zero_grad()
+            
+            # Forward pass
+            if isinstance(model, GNNModel):
+                out = model(features, edge_index)
+            else:  # MLPModel
+                out = model(features)
+            
+            # Compute loss
+            loss = criterion(out[train_idx], labels[train_idx])
+            
+            # Backward pass
+            loss.backward()
+            optimizer.step()
             
             # Evaluate
-            val_acc = model.score(X_val, y_val)
-            return val_acc
+            model.eval()
+            with torch.no_grad():
+                if isinstance(model, GNNModel):
+                    out = model(features, edge_index)
+                else:  # MLPModel
+                    out = model(features)
+                
+                # Compute metrics for train and val sets
+                for idx, name in [(train_idx, 'train'), (val_idx, 'val')]:
+                    current_loss = criterion(out[idx], labels[idx]).item()
+                    metrics_history[name]['loss'].append(current_loss)
+                    
+                    if is_regression:
+                        # For regression, use MSE as metric
+                        current_metric = current_loss
+                    else:
+                        # For classification, use F1 score
+                        y_pred = out[idx].argmax(dim=1)
+                        y_true = labels[idx]
+                        current_metric = compute_metrics(y_true.cpu().numpy(), y_pred.cpu().numpy())['f1_macro']
+                    
+                    metrics_history[name]['metric'].append(current_metric)
+                
+                # Model selection based on validation metric
+                val_metric = metrics_history['val']['metric'][-1]
+                if (is_regression and val_metric < best_val_metric) or \
+                   (not is_regression and val_metric > best_val_metric):
+                    best_val_metric = val_metric
+                    best_model_state = {key: value.cpu() for key, value in model.state_dict().items()}
+                    patience_counter = 0
+                else:
+                    patience_counter += 1
+                    if patience_counter >= config.patience:
+                        break
         
-        else:
-            raise ValueError(f"Unknown model type: {model_type}")
+        train_time = time.time() - start_time
+        
+        # Load best model
+        if best_model_state is not None:
+            model.load_state_dict(best_model_state)
+        
+        # Final evaluation on all sets
+        model.eval()
+        with torch.no_grad():
+            if isinstance(model, GNNModel):
+                out = model(features, edge_index)
+            else:  # MLPModel
+                out = model(features)
+            
+            results = {}
+            
+            # Evaluate on all sets
+            for idx, name in [(train_idx, 'train'), (val_idx, 'val'), (test_idx, 'test')]:
+                if is_regression:
+                    # Regression metrics
+                    mse = criterion(out[idx], labels[idx]).item()
+                    r2 = 1 - mse / torch.var(labels[idx])
+                    results[name] = {
+                        'mse': mse,
+                        'r2': r2.item()
+                    }
+                else:
+                    # Classification metrics
+                    y_pred = out[idx].argmax(dim=1)
+                    y_true = labels[idx]
+                    y_score = out[idx].softmax(dim=1)
+                    
+                    # Calculate metrics
+                    metrics = compute_metrics(y_true.cpu().numpy(), y_pred.cpu().numpy())
+                    
+                    results[name] = {
+                        'accuracy': metrics['accuracy'],
+                        'f1_macro': metrics['f1_macro'],
+                        'roc_auc': metrics['roc_auc'] if 'roc_auc' in metrics else 0.0
+                    }
+            
+            # Add training time
+            results['train_time'] = train_time
+            
+            return results
     
-    # Create a study object and optimize the objective function
-    pruner = MedianPruner(n_startup_trials=5, n_warmup_steps=5)
-    sampler = TPESampler(seed=42)
-    study = create_study(
-        direction="maximize",
-        sampler=sampler,
-        pruner=pruner
-    )
-    
-    try:
-        study.optimize(objective, n_trials=n_trials, timeout=timeout)
+    else:  # SklearnModel
+        # Convert data to numpy arrays
+        X_train = features[train_idx].cpu().numpy()
+        y_train = labels[train_idx].cpu().numpy()
+        X_val = features[val_idx].cpu().numpy()
+        y_val = labels[val_idx].cpu().numpy()
+        X_test = features[test_idx].cpu().numpy()
+        y_test = labels[test_idx].cpu().numpy()
         
-        logger.info(f"Best trial for {model_type}{f' ({gnn_type})' if gnn_type else ''}:")
-        logger.info(f"  Value: {study.best_trial.value:.4f}")
-        logger.info(f"  Params: {study.best_trial.params}")
+        # Train model
+        start_time = time.time()
+        model.fit(X_train, y_train)
+        train_time = time.time() - start_time
         
-        return {
-            "best_params": study.best_trial.params,
-            "best_value": study.best_trial.value,
-            "best_trial": study.best_trial.number,
-            "n_trials": len(study.trials),
-            "study": study
-        }
+        results = {}
         
-    except Exception as e:
-        logger.error(f"Error during hyperparameter optimization: {str(e)}")
-        return {
-            "best_params": {},
-            "best_value": 0.0,
-            "error": str(e)
-        }
+        # Evaluate on all sets
+        for X, y, name in [(X_train, y_train, 'train'), 
+                          (X_val, y_val, 'val'),
+                          (X_test, y_test, 'test')]:
+            y_pred = model.predict(X)
+            
+            if is_regression:
+                # Regression metrics
+                mse = np.mean((y - y_pred) ** 2)
+                r2 = 1 - mse / np.var(y)
+                results[name] = {
+                    'mse': mse,
+                    'r2': r2
+                }
+            else:
+                # Classification metrics
+                y_score = model.predict_proba(X)
+                metrics = compute_metrics(y, y_pred)
+                roc_auc = compute_metrics(y, y_score)['roc_auc']
+                
+                results[name] = {
+                    'accuracy': metrics['accuracy'],
+                    'f1_macro': metrics['f1_macro'],
+                    'roc_auc': roc_auc
+                }
+        
+        # Add training time
+        results['train_time'] = train_time
+        
+        return results
 
 
 def train_gnn_model(
@@ -395,7 +842,8 @@ def train_gnn_model(
                 n_trials=n_trials,
                 max_epochs=epochs,
                 timeout=timeout,
-                device=device
+                device=device,
+                is_regression=False
             )
             
             # Update hyperparameters based on optimization
@@ -693,7 +1141,8 @@ def train_mlp_model(
             n_trials=n_trials,
             max_epochs=epochs,
             timeout=timeout,
-            device=device
+            device=device,
+            is_regression=False
         )
         
         # Update hyperparameters based on optimization

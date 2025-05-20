@@ -12,7 +12,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 import json
 from pathlib import Path
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 import glob
 
 # Set page config
@@ -47,274 +47,235 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-def load_experiment_data(results_dir: str) -> tuple[pd.DataFrame, Dict[str, Any]]:
-    """Load experiment results and metadata."""
-    # Load CSV data
-    df = pd.read_csv(Path(results_dir) / "all_results.csv")
-    
-    # Load metadata
-    with open(Path(results_dir) / "experiment_metadata.json", 'r') as f:
-        metadata = json.load(f)
-    
-    return df, metadata
+def load_experiment_data(results_dir: str) -> List[Dict[str, Any]]:
+    """Load experiment results from JSON."""
+    with open(Path(results_dir) / "all_results.json", 'r') as f:
+        data = json.load(f)
+    return data
 
-def get_model_columns(df: pd.DataFrame) -> tuple[Dict[str, List[str]], List[str]]:
-    """Get columns grouped by model and metric type."""
-    model_cols = {}
-    metric_names = set()
+def get_available_tasks_and_metrics(data: List[Dict[str, Any]]) -> Tuple[List[str], Dict[str, List[str]]]:
+    """Get available tasks and their metrics from the data."""
+    tasks = set()
+    task_metrics = {}
     
-    # Find all unique model prefixes and metric names
-    for col in df.columns:
-        # Check for task_model_metric pattern (e.g., community_GCN_accuracy)
-        parts = col.split('_')
-        if len(parts) >= 3 and parts[0] in ['community', 'regime', 'role']:
-            task = parts[0]
-            model_name = parts[1]
-            metric = '_'.join(parts[2:])  # Join remaining parts as metric name
+    # Get all tasks and metrics from the first experiment
+    if data:
+        first_exp = data[0]
+        for model_key in first_exp['model_results'].keys():
+            task = model_key.split('--')[0]
+            tasks.add(task)
             
-            model_key = f"{task}_{model_name}"
-            if model_key not in model_cols:
-                model_cols[model_key] = []
-            model_cols[model_key].append(col)
-            metric_names.add(metric)
+            # Get metrics for this task
+            if task not in task_metrics:
+                task_metrics[task] = set()
+            
+            # Get metrics from any split (they should be the same)
+            split_data = next(iter(first_exp['model_results'][model_key].values()))
+            if isinstance(split_data, dict):
+                task_metrics[task].update(split_data.keys())
     
-    return model_cols, sorted(list(metric_names))
+    return sorted(list(tasks)), {task: sorted(list(metrics)) for task, metrics in task_metrics.items()}
 
-def get_parameter_columns(df: pd.DataFrame) -> List[str]:
-    """Get columns that represent experiment parameters."""
-    # Parameters are columns that aren't model metrics or metadata
-    exclude_prefixes = ['community_', 'regime_', 'role_', 'experiment_', 'graph_']
-    return [col for col in df.columns if not any(col.startswith(prefix) for prefix in exclude_prefixes)]
+def get_numeric_properties(data: List[Dict[str, Any]]) -> List[str]:
+    """Get all numeric top-level properties that can be used as x-axis (including input params and graph- properties)."""
+    if not data:
+        return []
+    first_exp = data[0]
+    exclude = {'model_results', 'experiment_id', 'timestamp', 'combination', 'repeat'}
+    numeric_keys = []
+    for key, value in first_exp.items():
+        if key not in exclude and isinstance(value, (int, float)):
+            numeric_keys.append(key)
+    return numeric_keys
 
-def create_scatter_plot(
-    df: pd.DataFrame,
-    x_param: str,
-    y_metric: str,
-    color_param: Optional[str] = None,
-    size_param: Optional[str] = None,
-    models: Optional[List[str]] = None
+def create_metric_plot(
+    data: List[Dict[str, Any]],
+    task: str,
+    x_property: str,
+    metric: str,
+    selected_models: List[str],
+    selected_splits: List[str],
+    title_suffix: str = ""
 ) -> go.Figure:
-    """Create an interactive scatter plot."""
+    """Create a plot for a specific metric showing all experiments as dots with different marker symbols for splits."""
     fig = go.Figure()
     
-    if models:
-        for model in models:
-            # Get the specific metric column for this model
-            model_y_col = f"{model}_{y_metric}"
-            if model_y_col not in df.columns:
-                continue
-                
-            fig.add_trace(go.Scatter(
-                x=df[x_param],
-                y=df[model_y_col],
-                mode='markers',
-                name=model,
-                marker=dict(
-                    size=10 if not size_param else df[size_param],
-                    colorscale='Viridis' if color_param else None,
-                    color=df[color_param] if color_param else None,
-                    showscale=True if color_param else False
-                )
-            ))
-    else:
+    # Define marker symbols for splits
+    split_markers = {
+        'train': 'circle',
+        'val': 'diamond',
+        'test': 'square'
+    }
+    # Define colors for models
+    model_colors = {
+        'gcn': '#1f77b4',
+        'sage': '#ff7f0e',
+        'mlp': '#2ca02c',
+        'rf': '#d62728'
+    }
+    # Add split marker legend entries in black (only once)
+    for split in selected_splits:
         fig.add_trace(go.Scatter(
-            x=df[x_param],
-            y=df[y_metric],
+            x=[None],
+            y=[None],
             mode='markers',
+            name=f"{split}",
             marker=dict(
-                size=10 if not size_param else df[size_param],
-                colorscale='Viridis' if color_param else None,
-                color=df[color_param] if color_param else None,
-                showscale=True if color_param else False
-            )
+                symbol=split_markers[split],
+                color='black',
+                size=12
+            ),
+            showlegend=True
         ))
-    
-    fig.update_layout(
-        title=f"{y_metric} vs {x_param}",
-        xaxis_title=x_param,
-        yaxis_title=y_metric,
-        hovermode='closest'
-    )
-    
-    return fig
-
-def create_3d_scatter_plot(
-    df: pd.DataFrame,
-    x_param: str,
-    y_param: str,
-    z_metric: str,
-    color_param: Optional[str] = None,
-    models: Optional[List[str]] = None
-) -> go.Figure:
-    """Create an interactive 3D scatter plot."""
-    fig = go.Figure()
-    
-    if models:
-        for model in models:
-            # Get the specific metric column for this model
-            model_z_col = f"{model}_{z_metric}"
-            if model_z_col not in df.columns:
-                continue
-                
-            fig.add_trace(go.Scatter3d(
-                x=df[x_param],
-                y=df[y_param],
-                z=df[model_z_col],
-                mode='markers',
-                name=model,
-                marker=dict(
-                    size=5,
-                    colorscale='Viridis' if color_param else None,
-                    color=df[color_param] if color_param else None,
-                    showscale=True if color_param else False
-                )
-            ))
-    else:
-        fig.add_trace(go.Scatter3d(
-            x=df[x_param],
-            y=df[y_param],
-            z=df[z_metric],
+    # Add model color legend entries (only once)
+    for model in selected_models:
+        fig.add_trace(go.Scatter(
+            x=[None],
+            y=[None],
             mode='markers',
+            name=f"{model.upper()}",
             marker=dict(
-                size=5,
-                colorscale='Viridis' if color_param else None,
-                color=df[color_param] if color_param else None,
-                showscale=True if color_param else False
-            )
+                symbol='circle',
+                color=model_colors[model],
+                size=12
+            ),
+            showlegend=True
         ))
-    
+    # Add actual data traces (no legend)
+    for model in selected_models:
+        model_key = f"{task}--{model}"
+        for split in selected_splits:
+            x_values = []
+            y_values = []
+            for exp in data:
+                if model_key in exp['model_results']:
+                    model_data = exp['model_results'][model_key]
+                    if split in model_data and metric in model_data[split]:
+                        x_values.append(exp[x_property])
+                        y_values.append(model_data[split][metric])
+            if x_values and y_values:
+                fig.add_trace(go.Scatter(
+                    x=x_values,
+                    y=y_values,
+                    mode='markers',
+                    name=None,
+                    marker=dict(
+                        symbol=split_markers[split],
+                        color=model_colors[model],
+                        size=10
+                    ),
+                    showlegend=False
+                ))
+    # Update layout
     fig.update_layout(
-        title=f"3D Plot: {x_param} vs {y_param} vs {z_metric}",
-        scene=dict(
-            xaxis_title=x_param,
-            yaxis_title=y_param,
-            zaxis_title=z_metric
-        )
+        title=f"{task} {metric} vs {x_property}{title_suffix}",
+        xaxis_title=x_property,
+        yaxis_title=metric,
+        showlegend=True,
+        legend=dict(
+            orientation="h",
+            yanchor="top",
+            y=-0.2,
+            xanchor="left",
+            x=0,
+            font=dict(size=14)
+        ),
+        margin=dict(t=80, b=80)
     )
-    
     return fig
 
 # Main dashboard
 st.markdown('<div class="main-header">MMSB Experiment Results Dashboard</div>', unsafe_allow_html=True)
 
 # Sidebar - Load Data
-st.sidebar.title("Data Selection")
-
-# Find all result directories
-result_dirs = glob.glob("single_graph_multiple_results/*/")
-if not result_dirs:
-    st.error("No experiment results found in 'single_graph_multiple_results' directory")
-    st.stop()
-
-# Select experiment
-selected_dir = st.sidebar.selectbox(
-    "Select Experiment",
-    result_dirs,
-    format_func=lambda x: Path(x).name
-)
+st.sidebar.header("Data Selection")
+results_dir = st.sidebar.text_input("Results Directory", "single_graph_multiple_results")
 
 # Load data
-df, metadata = load_experiment_data(selected_dir)
+try:
+    data = load_experiment_data(results_dir)
+    st.sidebar.success("Data loaded successfully!")
+except Exception as e:
+    st.error(f"Error loading data: {str(e)}")
+    st.stop()
+
+# Get available tasks and metrics
+tasks, task_metrics = get_available_tasks_and_metrics(data)
+
+# Task Selection
+task = st.sidebar.selectbox("Select Task", tasks)
+
+# Metric Selection
+available_metrics = task_metrics[task]
+metric = st.sidebar.selectbox("Select Metric", available_metrics)
+
+# X-axis selection (numeric properties)
+numeric_properties = get_numeric_properties(data)
+x_property = st.sidebar.selectbox("Select X-axis (Numeric Property)", numeric_properties)
+
+# Model selection
+available_models = ['gcn', 'sage', 'mlp', 'rf']
+selected_models = st.sidebar.multiselect(
+    "Select Models to Display",
+    available_models,
+    default=available_models
+)
+
+# Split selection
+splits = ['train', 'val', 'test']
+selected_splits = st.sidebar.multiselect(
+    "Select Splits to Display",
+    splits,
+    default=splits
+)
+
+# Second graph options
+st.sidebar.markdown("---")
+st.sidebar.header("Second Graph Options")
+show_second_graph = st.sidebar.checkbox("Show Second Graph", value=False)
+
+if show_second_graph:
+    second_task = st.sidebar.selectbox("Select Second Task", tasks, index=1 if len(tasks) > 1 else 0)
+    second_metric = st.sidebar.selectbox("Select Second Metric", task_metrics[second_task])
+    second_x_property = st.sidebar.selectbox("Select Second X-axis", numeric_properties, index=1 if len(numeric_properties) > 1 else 0)
+
+# Create and display plots
+if selected_models and selected_splits:
+    col1, col2 = st.columns([1, 1], gap="large")
+    with col1:
+        st.markdown(f'<div style="margin-bottom: 20px;"></div>', unsafe_allow_html=True)
+        fig1 = create_metric_plot(data, task, x_property, metric, selected_models, selected_splits)
+        st.plotly_chart(fig1, use_container_width=True)
+    if show_second_graph:
+        with col2:
+            st.markdown(f'<div style="margin-bottom: 20px;"></div>', unsafe_allow_html=True)
+            fig2 = create_metric_plot(
+                data, 
+                second_task, 
+                second_x_property, 
+                second_metric, 
+                selected_models, 
+                selected_splits,
+                " (Second Graph)"
+            )
+            st.plotly_chart(fig2, use_container_width=True)
+else:
+    st.warning("Please select at least one model and one split to display")
 
 # Display experiment metadata
 st.markdown('<div class="section-header">Experiment Overview</div>', unsafe_allow_html=True)
-col1, col2, col3 = st.columns(3)
+col1, col2 = st.columns(2)
 
 with col1:
-    st.metric("Total Experiments", len(df))
-    st.metric("Parameters Varied", len(metadata['varied_parameters']))
+    st.metric("Total Experiments", len(data))
+    st.metric("Available Tasks", len(tasks))
 
 with col2:
-    st.metric("GNN Models", len(metadata['model_types']['gnn']))
-    st.metric("Other Models", int(metadata['model_types']['mlp']) + int(metadata['model_types']['rf']))
-
-with col3:
-    st.metric("Max Epochs", metadata['training_params']['epochs'])
-    st.metric("Early Stopping Patience", metadata['training_params']['patience'])
-
-# Get available columns for plotting
-model_cols, metric_names = get_model_columns(df)
-
-# Get available tasks
-available_tasks = sorted(list(set(col.split('_')[0] for col in df.columns 
-                              if any(col.startswith(f"{task}_") for task in ['community', 'regime', 'role']))))
-
-# Task Selection
-st.sidebar.markdown("### Task Selection")
-selected_task = st.sidebar.selectbox(
-    "Select Task",
-    available_tasks,
-    index=0 if 'community' in available_tasks else 0
-)
-
-# Filter model columns for selected task
-task_model_cols = {k: v for k, v in model_cols.items() if k.startswith(selected_task)}
-
-# Model Selection
-st.sidebar.markdown("### Model Selection")
-selected_models = st.sidebar.multiselect(
-    "Select Models to Compare",
-    list(task_model_cols.keys()),
-    default=list(task_model_cols.keys())[:2]
-)
-
-# Get parameter columns
-param_cols = get_parameter_columns(df)
-
-# Visualization Options
-st.markdown('<div class="section-header">Visualization</div>', unsafe_allow_html=True)
-
-viz_type = st.radio(
-    "Visualization Type",
-    ["2D Scatter Plot", "3D Scatter Plot"]
-)
-
-if viz_type == "2D Scatter Plot":
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        x_param = st.selectbox("X-axis Parameter", param_cols)
-        y_metric = st.selectbox("Y-axis Metric", metric_names)
-    
-    with col2:
-        color_param = st.selectbox("Color Parameter (optional)", ["None"] + param_cols)
-        size_param = st.selectbox("Size Parameter (optional)", ["None"] + param_cols)
-    
-    # Create plot
-    fig = create_scatter_plot(
-        df,
-        x_param,
-        y_metric,
-        color_param if color_param != "None" else None,
-        size_param if size_param != "None" else None,
-        selected_models
-    )
-    st.plotly_chart(fig, use_container_width=True)
-
-else:  # 3D Scatter Plot
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        x_param = st.selectbox("X-axis Parameter", param_cols)
-        y_param = st.selectbox("Y-axis Parameter", param_cols)
-        z_metric = st.selectbox("Z-axis Metric", metric_names)
-    
-    with col2:
-        color_param = st.selectbox("Color Parameter (optional)", ["None"] + param_cols)
-    
-    # Create 3D plot
-    fig = create_3d_scatter_plot(
-        df,
-        x_param,
-        y_param,
-        z_metric,
-        color_param if color_param != "None" else None,
-        selected_models
-    )
-    st.plotly_chart(fig, use_container_width=True)
+    st.metric("Available Models", len(available_models))
+    st.metric("Available Metrics", len(available_metrics))
 
 # Data Table View
 st.markdown('<div class="section-header">Data Table</div>', unsafe_allow_html=True)
 show_data = st.checkbox("Show Raw Data")
 if show_data:
-    st.dataframe(df) 
+    st.json(data) 

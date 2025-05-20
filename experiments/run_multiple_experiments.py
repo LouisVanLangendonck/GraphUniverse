@@ -17,6 +17,7 @@ from typing import Dict, List, Any
 from datetime import datetime
 from copy import deepcopy
 import random
+import torch
 
 # Import core experiment functionality
 from experiments.core import (
@@ -31,7 +32,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description='Run multiple MMSB Graph Learning Experiments')
     
     # Parameters to vary
-    parser.add_argument('--vary', type=str, nargs='+', default=['homophily', 'intra_community_regime_similarity'],
+    parser.add_argument('--vary', type=str, nargs='+', default=['homophily'], #'intra_community_regime_similarity', 'inter_community_regime_similarity', 'feature_regime_balance'],
                         choices=[
                             'num_communities',
                             'num_nodes',
@@ -61,40 +62,35 @@ def parse_args():
     parser.set_defaults(mixed_membership=False)
     
     # Task selection
-    parser.add_argument('--tasks', type=str, nargs='+', default=['community'], #, 'regime', 'role'],
-                        choices=['community', 'regime', 'role'],
+    parser.add_argument('--tasks', type=str, nargs='+', default=['community', 'k_hop_community_counts'],
+                        choices=['community', 'k_hop_community_counts'],
                         help='Learning tasks to run')
     
+    # K-hop community counts task parameters
+    parser.add_argument('--khop_community_counts_k', type=int, default=2,
+                        help='Number of hops to consider for community counts task')
+    
+    # Regression-specific parameters
+    parser.add_argument('--regression_loss', type=str, default='mse',
+                        choices=['mse', 'mae'],
+                        help='Loss function for regression tasks')
+    parser.add_argument('--regression_metrics', type=str, nargs='+', 
+                        default=['mse', 'rmse', 'mae', 'r2'],
+                        choices=['mse', 'rmse', 'mae', 'r2'],
+                        help='Metrics to compute for regression tasks')
+    
     # Feature regime parameters
-    parser.add_argument('--regimes_per_community', type=int, default=4,
+    parser.add_argument('--regimes_per_community', type=int, default=2,
                         help='Number of feature regimes per community')
     parser.add_argument('--intra_community_regime_similarity', type=float, default=0.2,
                         help='How similar regimes within same community should be (0-1)')
     parser.add_argument('--inter_community_regime_similarity', type=float, default=0.9,
                         help='How similar regimes between communities should be (0-1)')
-    parser.add_argument('--feature_regime_balance', type=float, default=0.3,
+    parser.add_argument('--feature_regime_balance', type=float, default=0.5,
                         help='How evenly regimes are distributed within communities (0-1)')
     
-    # Feature regime task parameters
-    parser.add_argument('--regime_task_min_hop', type=int, default=2,
-                        help='Minimum hop distance for regime task neighborhood analysis')
-    parser.add_argument('--regime_task_max_hop', type=int, default=3,
-                        help='Maximum hop distance for regime task neighborhood analysis')
-    parser.add_argument('--regime_task_n_labels', type=int, default=5,
-                        help='Number of labels to generate for regime task')
-    parser.add_argument('--regime_task_min_support', type=float, default=0.1,
-                        help='Minimum support for regime task rules')
-    parser.add_argument('--regime_task_max_rules_per_label', type=int, default=3,
-                        help='Maximum number of rules per label for regime task')
-    
-    # Role task parameters
-    parser.add_argument('--role_task_max_motif_size', type=int, default=3,
-                        help='Maximum motif size for role analysis')
-    parser.add_argument('--role_task_n_roles', type=int, default=5,
-                        help='Number of structural roles to discover')
-    
     # Model selection and training parameters
-    parser.add_argument('--gnn_types', type=str, nargs='+', default=['gcn', 'sage'], #, 'sage'],
+    parser.add_argument('--gnn_types', type=str, nargs='+', default=['gcn', 'sage'],
                         choices=['gcn', 'gat', 'sage'],
                         help='Types of GNN models to run')
     parser.add_argument('--skip_gnn', action='store_true',
@@ -111,7 +107,7 @@ def parse_args():
     # Hyperparameter optimization parameters
     parser.add_argument('--optimize_hyperparams', action='store_true',
                         help='Enable hyperparameter optimization for each model')
-    parser.add_argument('--n_trials', type=int, default=15,
+    parser.add_argument('--n_trials', type=int, default=20,
                         help='Number of hyperparameter optimization trials')
     parser.add_argument('--opt_timeout', type=int, default=300,
                         help='Timeout in seconds for hyperparameter optimization')
@@ -121,11 +117,11 @@ def parse_args():
                         help='Range for num_communities (start, end, step)')
     parser.add_argument('--num_nodes_range', type=int, nargs=3, default=[60, 160, 50],
                         help='Range for num_nodes (start, end, step)')
-    parser.add_argument('--feature_dim_range', type=int, nargs=3, default=[32, 32, 0],
+    parser.add_argument('--feature_dim_range', type=int, nargs=3, default=[16, 32, 2],
                         help='Range for feature_dim (start, end, step)')
-    parser.add_argument('--edge_density_range', type=float, nargs=3, default=[0.02, 0.15, 0.015],
+    parser.add_argument('--edge_density_range', type=float, nargs=3, default=[0.01, 0.15, 0.015],
                         help='Range for overall edge density (start, end, step)')
-    parser.add_argument('--homophily_range', type=float, nargs=3, default=[0.0, 1.0, 0.1],
+    parser.add_argument('--homophily_range', type=float, nargs=3, default=[0.0, 1.0, 0.05],
                         help='Range for homophily - controls intra/inter community ratio (0=equal, 1=max homophily)')
     parser.add_argument('--randomness_factor_range', type=float, nargs=3, default=[0.0, 1.0, 0.25],
                         help='Range for randomness_factor (start, end, step)')
@@ -143,9 +139,9 @@ def parse_args():
     # Feature regime parameter ranges
     parser.add_argument('--regimes_per_community_range', type=int, nargs=3, default=[1, 3, 1],
                         help='Range for regimes_per_community (start, end, step)')
-    parser.add_argument('--intra_community_regime_similarity_range', type=float, nargs=3, default=[0.2, 1.0, 0.1],
+    parser.add_argument('--intra_community_regime_similarity_range', type=float, nargs=3, default=[0.1, 1.0, 0.1],
                         help='Range for intra_community_regime_similarity (start, end, step)')
-    parser.add_argument('--inter_community_regime_similarity_range', type=float, nargs=3, default=[0.85, 1.0, 0.05],
+    parser.add_argument('--inter_community_regime_similarity_range', type=float, nargs=3, default=[0.75, 1.0, 0.05],
                         help='Range for inter_community_regime_similarity (start, end, step)')
     parser.add_argument('--feature_regime_balance_range', type=float, nargs=3, default=[0.1, 0.9, 0.2],
                         help='Range for feature_regime_balance (start, end, step)')
@@ -157,14 +153,14 @@ def parse_args():
                         help='Directory to save all experiment results')
     
     # Distribution types
-    parser.add_argument('--distribution_types', type=str, nargs='+', default=['standard', 'power_law', 'exponential', 'uniform'],
+    parser.add_argument('--distribution_types', type=str, nargs='+', default=['standard'], #, 'power_law', 'exponential', 'uniform'],
                         help='Graph generation methods to sample from')
     # General hyperparameters
-    parser.add_argument('--max_mean_community_deviation', type=float, default=0.10)
-    parser.add_argument('--max_max_community_deviation', type=float, default=0.20)
+    parser.add_argument('--max_mean_community_deviation', type=float, default=0.7)
+    parser.add_argument('--max_max_community_deviation', type=float, default=0.7)
     parser.add_argument('--parameter_search_range', type=float, default=1.0)
-    parser.add_argument('--max_parameter_search_attempts', type=int, default=50)
-    parser.add_argument('--max_retries', type=int, default=10)
+    parser.add_argument('--max_parameter_search_attempts', type=int, default=15)
+    parser.add_argument('--max_retries', type=int, default=1)
     # Power Law
     parser.add_argument('--power_law_exponent_range', type=float, nargs=2, default=[1.0, 3.0])
     parser.add_argument('--power_law_target_avg_degree_range', type=float, nargs=2, default=[1.0, 8.0])
@@ -284,13 +280,11 @@ def run_experiments(args):
             
             # Set task parameters
             config.tasks = args.tasks
-            config.regime_task_min_hop = args.regime_task_min_hop
-            config.regime_task_max_hop = args.regime_task_max_hop
-            config.regime_task_n_labels = args.regime_task_n_labels
-            config.regime_task_min_support = args.regime_task_min_support
-            config.regime_task_max_rules_per_label = args.regime_task_max_rules_per_label
-            config.role_task_max_motif_size = args.role_task_max_motif_size
-            config.role_task_n_roles = args.role_task_n_roles
+            config.khop_community_counts_k = args.khop_community_counts_k
+            
+            # Set regression-specific parameters
+            config.regression_loss = args.regression_loss
+            config.regression_metrics = args.regression_metrics
             
             # Set model parameters
             config.gnn_types = args.gnn_types
@@ -307,6 +301,7 @@ def run_experiments(args):
             
             # Set output directory
             config.output_dir = os.path.join(results_dir, f"combo_{i}_repeat_{repeat}")
+            os.makedirs(config.output_dir, exist_ok=True)
             
             print(f"Starting experiment with parameters:")
             for param in all_param_ranges.keys():
@@ -360,97 +355,41 @@ def run_experiments(args):
             }
             
             # Store input parameters
-            input_params = [
-                'num_communities',
-                'num_nodes',
-                'feature_dim',
-                'edge_density',
-                'homophily',
-                'randomness_factor',
-                'min_connection_strength',
-                'min_component_size',
-                'indirect_influence',
-                # Feature regime parameters
-                'regimes_per_community',
-                'intra_community_regime_similarity',
-                'inter_community_regime_similarity',
-                'feature_regime_balance'
-            ]
-            
-            for param in input_params:
-                if hasattr(config, param):
-                    result[param] = getattr(config, param)
-            
-            # Store real graph properties
+            for param_name in [
+            'num_communities', 'num_nodes', 'feature_dim', 'edge_density',
+            'homophily', 'randomness_factor', 'overlap_density',
+            'min_connection_strength', 'min_component_size', 'degree_heterogeneity',
+            'indirect_influence', 'regimes_per_community',
+            'intra_community_regime_similarity', 'inter_community_regime_similarity',
+            'feature_regime_balance', 'distribution_type'
+            ]:
+                if hasattr(config, param_name):
+                    result[param_name] = getattr(config, param_name)
+
+            # Store graph properties
             if hasattr(results["graph_sample"], "real_graph_properties"):
-                real_props = results["graph_sample"].real_graph_properties
-                for key, value in real_props.items():
-                    result[key] = value
-            else:
-                # If real graph properties are not in graph_sample, try to get them from results
-                real_props = results.get("real_graph_properties", {})
-                for key, value in real_props.items():
-                    result[key] = value
-            
-            # Add model metrics for each task
-            for task_name, task_results in results["model_results"].items():
-                for model_name, model_result in task_results.items():
-                    # Basic metrics
-                    result[f"{task_name}_{model_name}_accuracy"] = model_result.get('test_acc', 0)
-                    result[f"{task_name}_{model_name}_train_time"] = model_result.get('train_time', 0)
-                    
-                    # Detailed metrics
-                    metrics = model_result.get('metrics', {})
-                    for metric_type in ['metrics_macro', 'metrics_micro', 'metrics_weighted']:
-                        if metric_type in metrics:
-                            for metric_name, metric_value in metrics[metric_type].items():
-                                result[f"{task_name}_{model_name}_{metric_type}_{metric_name}"] = metric_value
-                    
-                    # Training history
-                    if 'history' in model_result:
-                        history = model_result['history']
-                        result[f"{task_name}_{model_name}_final_train_loss"] = history['train_loss'][-1]
-                        result[f"{task_name}_{model_name}_final_val_loss"] = history['val_loss'][-1]
-                        result[f"{task_name}_{model_name}_best_val_acc"] = max(history['val_acc'])
-                        result[f"{task_name}_{model_name}_epochs_trained"] = len(history['train_loss'])
-                    
-                    # Hyperparameter optimization results
-                    if 'hyperopt_results' in model_result:
-                        hyperopt = model_result['hyperopt_results']
-                        result[f"{task_name}_{model_name}_best_val_score"] = hyperopt.get('best_value', 0)
-                        result[f"{task_name}_{model_name}_n_trials"] = hyperopt.get('n_trials', 0)
-                        
-                        # Store best hyperparameters
-                        best_params = hyperopt.get('best_params', {})
-                        for param_name, param_value in best_params.items():
-                            result[f"{task_name}_{model_name}_param_{param_name}"] = param_value
-            
-            # --- Save distribution and method-specific params ---
-            result['distribution_type'] = config.distribution_type
-            result['power_law_exponent'] = getattr(config, 'power_law_exponent', None)
-            result['power_law_target_avg_degree'] = getattr(config, 'power_law_target_avg_degree', None)
-            result['exponential_rate'] = getattr(config, 'exponential_rate', None)
-            result['exponential_target_avg_degree'] = getattr(config, 'exponential_target_avg_degree', None)
-            result['uniform_min_factor'] = getattr(config, 'uniform_min_factor', None)
-            result['uniform_max_factor'] = getattr(config, 'uniform_max_factor', None)
-            result['uniform_target_avg_degree'] = getattr(config, 'uniform_target_avg_degree', None)
-            result['max_mean_community_deviation'] = config.max_mean_community_deviation
-            result['max_max_community_deviation'] = config.max_max_community_deviation
-            result['parameter_search_range'] = config.parameter_search_range
-            result['max_parameter_search_attempts'] = config.max_parameter_search_attempts
-            result['max_retries'] = config.max_retries
+                graph_props = results["graph_sample"].real_graph_properties
+                for key, value in graph_props.items():
+                    if isinstance(value, (int, float, str, bool)) and not isinstance(value, (np.ndarray, torch.Tensor)):
+                        result[f"graph-{key}"] = value
+
+            # Process task results in a cleaner way
+            result['model_results'] = results['model_results']
+
             
             all_results.append(result)
             
             # Save all results to CSV after each experiment
-            df = pd.DataFrame(all_results)
+            # df = pd.DataFrame(all_results)
             
             # Save both CSV and JSON for flexibility
-            csv_path = os.path.join(results_dir, "all_results.csv")
+            # csv_path = os.path.join(results_dir, "all_results.csv")
             json_path = os.path.join(results_dir, "all_results.json")
+            with open(json_path, 'w') as f:
+                json.dump(all_results, f, indent=2)
             
-            df.to_csv(csv_path, index=False)
-            df.to_json(json_path, orient='records', indent=2)
+            # df.to_csv(csv_path, index=False)
+            # df.to_json(json_path, orient='records', indent=2)
             
             # Also save a metadata file with experiment configuration
             metadata = {
@@ -473,18 +412,9 @@ def run_experiments(args):
                     "n_trials": args.n_trials,
                     "timeout": args.opt_timeout
                 },
-                "task_params": {
-                    "regime": {
-                        "min_hop": args.regime_task_min_hop,
-                        "max_hop": args.regime_task_max_hop,
-                        "n_labels": args.regime_task_n_labels,
-                        "min_support": args.regime_task_min_support,
-                        "max_rules_per_label": args.regime_task_max_rules_per_label
-                    },
-                    "role": {
-                        "max_motif_size": args.role_task_max_motif_size,
-                        "n_roles": args.role_task_n_roles
-                    }
+                "regression_params": {
+                    "loss": args.regression_loss,
+                    "metrics": args.regression_metrics
                 }
             }
             

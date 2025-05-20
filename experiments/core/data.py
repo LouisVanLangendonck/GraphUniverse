@@ -17,10 +17,49 @@ from mmsb.feature_regimes import FeatureRegimeGenerator, NeighborhoodFeatureAnal
 from utils.motif_and_role_analysis import MotifRoleAnalyzer
 
 
+def compute_khop_community_counts(
+    graph: nx.Graph,
+    community_labels: List[int],
+    k: int
+) -> torch.Tensor:
+    """
+    Compute the count of communities in K-hop neighborhood for each node.
+    Only counts nodes that are exactly K hops away.
+    
+    Args:
+        graph: NetworkX graph
+        community_labels: List of community labels for each node
+        k: Number of hops to consider (only nodes exactly k hops away are counted)
+        
+    Returns:
+        Tensor of shape [num_nodes, num_communities] containing community counts
+    """
+    num_nodes = len(graph)
+    num_communities = len(set(community_labels))
+    
+    # Initialize count matrix
+    community_counts = torch.zeros((num_nodes, num_communities), dtype=torch.float)
+    
+    # For each node, compute K-hop neighborhood and count communities
+    for node in range(num_nodes):
+        # Get nodes at exactly k hops away
+        khop_nodes = set(nx.single_source_shortest_path_length(graph, node, cutoff=k).keys())
+        # Remove nodes that are closer than k hops
+        if k > 1:
+            closer_nodes = set(nx.single_source_shortest_path_length(graph, node, cutoff=k-1).keys())
+            khop_nodes = khop_nodes - closer_nodes
+        
+        # Count communities in k-hop neighborhood
+        for neighbor in khop_nodes:
+            community = community_labels[neighbor]
+            community_counts[node, community] += 1
+    
+    return community_counts
+
+
 def prepare_data(
     graph_sample: GraphSample,
-    config: ExperimentConfig,
-    feature_type: str = "membership"
+    config: ExperimentConfig
 ) -> Dict[str, Dict[str, Any]]:
     """
     Prepare data for model training from a GraphSample.
@@ -28,7 +67,6 @@ def prepare_data(
     Args:
         graph_sample: The graph sample to prepare data from
         config: Experiment configuration
-        feature_type: Type of features to use ("membership" or "random")
         
     Returns:
         Dictionary containing data for each task
@@ -54,11 +92,8 @@ def prepare_data(
         print(f"Edge content: {list(graph_sample.graph.edges())[:5]}")
         raise
     
-    # Get features based on type
-    if feature_type == "membership":
-        features = torch.tensor(graph_sample.community_labels, dtype=torch.long).unsqueeze(1)
-    else:  # random features
-        features = torch.randn((len(graph_sample.graph.nodes()), config.feature_dim))
+    # Get features and convert to float
+    features = torch.tensor(graph_sample.features, dtype=torch.float)
     
     # Split data
     n_nodes = len(graph_sample.graph.nodes())
@@ -91,82 +126,108 @@ def prepare_data(
                 "num_classes": num_classes
             }
             
-        elif task == "regime":
-            # Feature regime prediction task using rule-based generation
-            print("\nPreparing regime task data...")
+        elif task == "k_hop_community_counts":
+            # K-hop community count prediction task
+            print("\nPreparing community counts task data...")
             
-            # Compute neighborhood features if not already done
-            if graph_sample.neighborhood_analyzer is None:
-                print("Computing neighborhood features...")
-                graph_sample.compute_neighborhood_features(max_hops=config.regime_task_max_hop)
+            # Get community labels
+            community_labels = graph_sample.community_labels
             
-            # Get frequency vectors for all hop distances in the specified range
-            freq_vectors_by_hop = {}
-            for k in range(config.regime_task_min_hop, config.regime_task_max_hop + 1):
-                freq_vectors_by_hop[k] = graph_sample.neighborhood_analyzer.get_all_frequency_vectors(k)
-            
-            # Generate rule-based labels
-            rule_generator = GenerativeRuleBasedLabeler(
-                n_labels=config.regime_task_n_labels,
-                min_support=config.regime_task_min_support,
-                max_rules_per_label=config.regime_task_max_rules_per_label,
-                min_hop=config.regime_task_min_hop,
-                max_hop=config.regime_task_max_hop,
-                seed=config.seed
-            )
-            
-            print("Generating and applying rules...")
-            rules = rule_generator.generate_rules(freq_vectors_by_hop)
-            regime_labels, applied_rules = rule_generator.apply_rules(freq_vectors_by_hop)
-            
-            # Convert to tensor
-            regime_labels = torch.tensor(regime_labels, dtype=torch.long)
-            
-            task_data["regime"] = {
-                "features": features,
-                "edge_index": edge_index,
-                "labels": regime_labels,
-                "train_idx": train_idx,
-                "val_idx": val_idx,
-                "test_idx": test_idx,
-                "num_classes": config.regime_task_n_labels,
-                "rules": rules,
-                "applied_rules": applied_rules,
-                "freq_vectors_by_hop": freq_vectors_by_hop
-            }
-            print("Regime task data preparation complete.")
-            
-        elif task == "role":
-            # Role prediction task using motif analysis
-            print("\nPreparing role task data...")
-            motif_analyzer = MotifRoleAnalyzer(
+            # Compute K-hop community counts
+            community_count_vectors = compute_khop_community_counts(
                 graph=graph_sample.graph,
-                max_motif_size=config.role_task_max_motif_size,
-                n_roles=config.role_task_n_roles
+                community_labels=community_labels,
+                k=config.khop_community_counts_k
             )
             
-            role_labels = motif_analyzer.get_node_roles()
-            role_labels = torch.tensor(role_labels, dtype=torch.long)
-            
-            task_data["role"] = {
+            task_data["k_hop_community_counts"] = {
                 "features": features,
                 "edge_index": edge_index,
-                "labels": role_labels,
+                "labels": community_count_vectors,
                 "train_idx": train_idx,
                 "val_idx": val_idx,
                 "test_idx": test_idx,
-                "num_classes": config.role_task_n_roles,
-                "motif_counts": motif_analyzer.motif_counts,
-                "role_assignments": motif_analyzer.role_assignments
+                "num_classes": len(torch.unique(torch.tensor(community_labels)))
             }
-            print("Role task data preparation complete.")
+            print("Community counts task data preparation complete.")
+            
+        # elif task == "regime":
+        #     # Feature regime prediction task using rule-based generation
+        #     print("\nPreparing regime task data...")
+            
+        #     # Compute neighborhood features if not already done
+        #     if graph_sample.neighborhood_analyzer is None:
+        #         print("Computing neighborhood features...")
+        #         graph_sample.compute_neighborhood_features(max_hops=config.regime_task_max_hop)
+            
+        #     # Get frequency vectors for all hop distances in the specified range
+        #     freq_vectors_by_hop = {}
+        #     for k in range(config.regime_task_min_hop, config.regime_task_max_hop + 1):
+        #         freq_vectors_by_hop[k] = graph_sample.neighborhood_analyzer.get_all_frequency_vectors(k)
+            
+        #     # Generate rule-based labels
+        #     rule_generator = GenerativeRuleBasedLabeler(
+        #         n_labels=config.regime_task_n_labels,
+        #         min_support=config.regime_task_min_support,
+        #         max_rules_per_label=config.regime_task_max_rules_per_label,
+        #         min_hop=config.regime_task_min_hop,
+        #         max_hop=config.regime_task_max_hop,
+        #         seed=config.seed
+        #     )
+            
+        #     print("Generating and applying rules...")
+        #     rules = rule_generator.generate_rules(freq_vectors_by_hop)
+        #     regime_labels, applied_rules = rule_generator.apply_rules(freq_vectors_by_hop)
+            
+        #     # Convert to tensor
+        #     regime_labels = torch.tensor(regime_labels, dtype=torch.long)
+            
+        #     task_data["regime"] = {
+        #         "features": features,
+        #         "edge_index": edge_index,
+        #         "labels": regime_labels,
+        #         "train_idx": train_idx,
+        #         "val_idx": val_idx,
+        #         "test_idx": test_idx,
+        #         "num_classes": config.regime_task_n_labels,
+        #         "rules": rules,
+        #         "applied_rules": applied_rules,
+        #         "freq_vectors_by_hop": freq_vectors_by_hop
+        #     }
+        #     print("Regime task data preparation complete.")
+            
+        # elif task == "role":
+        #     # Role prediction task using motif analysis
+        #     print("\nPreparing role task data...")
+        #     motif_analyzer = MotifRoleAnalyzer(
+        #         graph=graph_sample.graph,
+        #         max_motif_size=config.role_task_max_motif_size,
+        #         n_roles=config.role_task_n_roles
+        #     )
+            
+        #     role_labels = motif_analyzer.get_node_roles()
+        #     role_labels = torch.tensor(role_labels, dtype=torch.long)
+            
+        #     task_data["role"] = {
+        #         "features": features,
+        #         "edge_index": edge_index,
+        #         "labels": role_labels,
+        #         "train_idx": train_idx,
+        #         "val_idx": val_idx,
+        #         "test_idx": test_idx,
+        #         "num_classes": config.role_task_n_roles,
+        #         "motif_counts": motif_analyzer.motif_counts,
+        #         "role_assignments": motif_analyzer.role_assignments
+        #     }
+        #     print("Role task data preparation complete.")
     
     return task_data
 
 
 def networkx_to_pyg(
     graph: nx.Graph,
-    label_key: str = "label"
+    label_key: str = "label",
+    is_vector_label: bool = False
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """
     Convert a NetworkX graph to PyTorch tensors for model training.
@@ -174,6 +235,7 @@ def networkx_to_pyg(
     Args:
         graph: NetworkX graph
         label_key: Node attribute key for labels
+        is_vector_label: Whether the labels are vectors (e.g., community counts) or single values
         
     Returns:
         Tuple of (features, edge_index, labels)
@@ -186,10 +248,19 @@ def networkx_to_pyg(
     edge_index = to_undirected(data.edge_index)
     
     # Get features from the converted data
-    features = data.x if data.x is not None else torch.eye(graph.number_of_nodes(), dtype=torch.float)
+    features = data.x
     
     # Get labels
-    labels = torch.tensor([data[1].get(label_key, 0) for data in sorted(graph.nodes(data=True))], dtype=torch.long)
+    if is_vector_label:
+        # For vector labels (e.g., community counts), use float dtype
+        labels = torch.tensor([data[1].get(label_key, torch.zeros(data[1].get(label_key).shape)) 
+                             for data in sorted(graph.nodes(data=True))], 
+                            dtype=torch.float)
+    else:
+        # For single-value labels (e.g., community membership), use long dtype
+        labels = torch.tensor([data[1].get(label_key, 0) 
+                             for data in sorted(graph.nodes(data=True))], 
+                            dtype=torch.long)
     
     return features, edge_index, labels
 
