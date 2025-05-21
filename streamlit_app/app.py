@@ -1047,6 +1047,25 @@ elif page == "Graph Sampling":
                     value=st.session_state.graph_params['method_params'].get('aggressive_separation', True),
                     help="Uses a more aggressive approach to separate degree distributions between communities"
                 )
+
+                # Add degree method selection for DCCC-SBM
+                degree_method = st.selectbox(
+                    "Degree generation method",
+                    options=["standard", "gmda"],
+                    index=["standard", "gmda"].index(
+                        st.session_state.graph_params['method_params'].get('degree_method', "standard")
+                    ),
+                    help="Method for generating community-specific degree distributions (standard=bin-based approach, gmda=Gaussian Mixture Degree Allocation)"
+                )
+                st.session_state.graph_params['method_params']['degree_method'] = degree_method
+                
+                # Help text to explain the different methods
+                if degree_method == "gmda":
+                    st.info("""
+                    **Gaussian Mixture Degree Allocation (GMDA)** places each community's degree distribution 
+                    as a Gaussian component in quantile space. This creates more natural-looking, smoothly separated 
+                    degree distributions between communities.
+                    """)
                 
                 st.session_state.graph_params['method_params']['alpha'] = st.slider(
                     "Community-degree balance (α)",
@@ -1206,6 +1225,7 @@ elif page == "Graph Sampling":
                     degree_distribution = st.session_state.graph_params['method_params'].get('degree_distribution_type', 'power_law')
                     aggressive_separation = st.session_state.graph_params['method_params'].get('aggressive_separation', True)
                     alpha = st.session_state.graph_params['method_params'].get('alpha', 0.5)
+                    degree_method = st.session_state.graph_params['method_params'].get('degree_method', 'standard')
                     
                     # Distribution-specific parameters
                     dccc_global_degree_params = {}
@@ -1236,6 +1256,7 @@ elif page == "Graph Sampling":
                     dccc_global_degree_params = None
                     aggressive_separation = False  # Default value for non-DCCC-SBM methods
                     alpha = 0.5  # Default value for non-DCCC-SBM methods
+                    degree_method = 'standard'  # Default value for non-DCCC-SBM methods
                     
                     # Configuration model parameters 
                     use_configuration_model = st.session_state.graph_params['method'] != "Standard"
@@ -1286,7 +1307,8 @@ elif page == "Graph Sampling":
                     degree_distribution_overlap=degree_distribution_overlap,
                     dccc_global_degree_params=dccc_global_degree_params,
                     aggressive_separation=aggressive_separation,
-                    alpha=alpha
+                    alpha=alpha,
+                    degree_method=degree_method
                 )
 
                 # Create the graph sample
