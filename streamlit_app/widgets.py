@@ -31,56 +31,142 @@ from utils.visualizations import (
 
 def universe_parameters_widget() -> Dict[str, Any]:
     """
-    Widget for collecting universe parameters.
+    Widget for collecting universe generation parameters.
     
     Returns:
         Dictionary of universe parameters
     """
     st.markdown("### Universe Parameters")
     
+    # Basic Parameters
     col1, col2 = st.columns(2)
     
     with col1:
-        K = st.slider("Number of communities (K)", min_value=5, max_value=100, value=20, 
-                     help="Total number of community types in the universe")
-        block_structure = st.selectbox(
-            "Block structure",
-            ["assortative", "disassortative", "core-periphery", "hierarchical"],
-            help="Structure of the edge probability matrix"
+        K = st.slider(
+            "Number of communities",
+            min_value=2,
+            max_value=20,
+            value=10,
+            help="Total number of communities in the universe"
+        )
+        feature_dim = st.slider(
+            "Feature dimension",
+            min_value=0,
+            max_value=100,
+            value=0,
+            help="Dimension of node features (0 for no features)"
         )
     
     with col2:
-        feature_dim = st.slider("Feature dimension", min_value=0, max_value=128, value=32, 
-                               help="Dimension of node features (0 for no features)")
-        overlap_structure = st.selectbox(
-            "Overlap structure",
-            ["modular", "hierarchical", "hub-spoke"],
-            help="Structure of community overlaps"
+        block_structure = st.selectbox(
+            "Block structure",
+            ["assortative", "disassortative", "mixed"],
+            help="Type of community structure"
+        )
+        edge_density = st.slider(
+            "Edge density",
+            min_value=0.01,
+            max_value=0.5,
+            value=0.1,
+            step=0.01,
+            help="Base probability of edges"
         )
     
-    col3, col4 = st.columns(2)
-    
-    with col3:
-        edge_density = st.slider("Edge density within communities", min_value=0.01, max_value=0.5, value=0.1, 
-                                step=0.01, help="Probability of edges within communities")
+    # Feature Generation Parameters
+    if feature_dim > 0:
+        st.markdown("### Feature Generation Parameters")
+        col3, col4 = st.columns(2)
         
-    with col4:
-        inter_community_density = st.slider("Edge density between communities", min_value=0.001, max_value=0.1, 
-                                          value=0.01, step=0.001, 
-                                          help="Probability of edges between different communities")
+        with col3:
+            cluster_count_factor = st.slider(
+                "Cluster count factor",
+                min_value=0.1,
+                max_value=4.0,
+                value=1.0,
+                step=0.1,
+                help="Number of clusters relative to communities"
+            )
+            center_variance = st.slider(
+                "Center variance",
+                min_value=0.1,
+                max_value=2.0,
+                value=1.0,
+                step=0.1,
+                help="Separation between cluster centers"
+            )
+        
+        with col4:
+            cluster_variance = st.slider(
+                "Cluster variance",
+                min_value=0.01,
+                max_value=0.5,
+                value=0.1,
+                step=0.01,
+                help="Spread within each cluster"
+            )
+            assignment_skewness = st.slider(
+                "Assignment skewness",
+                min_value=0.0,
+                max_value=1.0,
+                value=0.0,
+                step=0.1,
+                help="If some clusters are used more frequently"
+            )
+        
+        community_exclusivity = st.slider(
+            "Community exclusivity",
+            min_value=0.0,
+            max_value=1.0,
+            value=1.0,
+            step=0.1,
+            help="How exclusively clusters map to communities"
+        )
     
-    overlap_density = st.slider("Community overlap density", min_value=0.0, max_value=0.5, value=0.2, 
-                              step=0.01, help="Density of community overlaps")
+    # Other Parameters
+    st.markdown("### Other Parameters")
+    col5, col6 = st.columns(2)
     
-    return {
+    with col5:
+        homophily = st.slider(
+            "Homophily",
+            min_value=0.0,
+            max_value=1.0,
+            value=0.8,
+            step=0.1,
+            help="Strength of community-based edge formation"
+        )
+    
+    with col6:
+        randomness_factor = st.slider(
+            "Randomness factor",
+            min_value=0.0,
+            max_value=1.0,
+            value=0.0,
+            step=0.1,
+            help="Amount of randomness in edge formation"
+        )
+    
+    # Return all parameters
+    params = {
         "K": K,
         "feature_dim": feature_dim,
         "block_structure": block_structure,
-        "overlap_structure": overlap_structure,
         "edge_density": edge_density,
-        "inter_community_density": inter_community_density,
-        "overlap_density": overlap_density
+        "homophily": homophily,
+        "randomness_factor": randomness_factor
     }
+    
+    # Add feature parameters if features are enabled
+    if feature_dim > 0:
+        params.update({
+            "cluster_count_factor": cluster_count_factor,
+            "center_variance": center_variance,
+            "cluster_variance": cluster_variance,
+            "assignment_skewness": assignment_skewness,
+            "community_exclusivity": community_exclusivity
+        })
+    
+    return params
 
 
 def universe_stats_widget(universe: GraphUniverse):
@@ -151,6 +237,7 @@ def graph_parameters_widget(universe: GraphUniverse) -> Dict[str, Any]:
     """
     st.markdown("### Sampling Parameters")
     
+    # Basic Parameters
     col1, col2 = st.columns(2)
     
     with col1:
@@ -167,26 +254,217 @@ def graph_parameters_widget(universe: GraphUniverse) -> Dict[str, Any]:
         avg_memberships = st.slider("Average communities per node", min_value=1.0, max_value=5.0, value=1.5,
                                   step=0.1, help="Controls community overlap")
     
-    col3, col4 = st.columns(2)
-    
-    with col3:
-        membership_concentration = st.slider("Membership concentration", min_value=1.0, max_value=20.0, value=5.0,
-                                           step=0.5, help="Controls how evenly distributed memberships are")
+    # Feature Generation Parameters
+    if universe.feature_dim > 0:
+        st.markdown("### Feature Generation Parameters")
+        col3, col4 = st.columns(2)
         
-    with col4:
-        degree_heterogeneity = st.slider("Degree heterogeneity", min_value=0.0, max_value=1.0, value=0.5)
+        with col3:
+            cluster_count_factor = st.slider(
+                "Cluster count factor",
+                min_value=0.1,
+                max_value=4.0,
+                value=1.0,
+                step=0.1,
+                help="Number of clusters relative to communities"
+            )
+            center_variance = st.slider(
+                "Center variance",
+                min_value=0.1,
+                max_value=2.0,
+                value=1.0,
+                step=0.1,
+                help="Separation between cluster centers"
+            )
+        
+        with col4:
+            cluster_variance = st.slider(
+                "Cluster variance",
+                min_value=0.01,
+                max_value=0.5,
+                value=0.1,
+                step=0.01,
+                help="Spread within each cluster"
+            )
+            assignment_skewness = st.slider(
+                "Assignment skewness",
+                min_value=0.0,
+                max_value=1.0,
+                value=0.0,
+                step=0.1,
+                help="If some clusters are used more frequently"
+            )
+        
+        community_exclusivity = st.slider(
+            "Community exclusivity",
+            min_value=0.0,
+            max_value=1.0,
+            value=1.0,
+            step=0.1,
+            help="How exclusively clusters map to communities"
+        )
     
-    edge_noise = st.slider("Edge noise", min_value=0.0, max_value=1.0, value=0.0)
+    # Degree Distribution Parameters
+    st.markdown("### Degree Distribution Parameters")
+    col5, col6 = st.columns(2)
     
-    return {
+    with col5:
+        degree_method = st.selectbox(
+            "Degree generation method",
+            ["standard", "gmda", "configuration"],
+            help="Method for generating node degrees"
+        )
+        
+        if degree_method == "gmda":
+            alpha = st.slider(
+                "Community-degree balance (α)",
+                min_value=0.0,
+                max_value=1.0,
+                value=0.5,
+                step=0.1,
+                help="Balance between community structure and degree factors"
+            )
+            aggressive_separation = st.checkbox(
+                "Aggressive separation",
+                value=True,
+                help="Force stronger separation between community degree distributions"
+            )
+    
+    with col6:
+        degree_distribution = st.selectbox(
+            "Degree distribution type",
+            ["power_law", "exponential", "uniform"],
+            help="Type of degree distribution to generate"
+        )
+        
+        if degree_distribution == "power_law":
+            power_law_exponent = st.slider(
+                "Power law exponent",
+                min_value=2.0,
+                max_value=3.0,
+                value=2.5,
+                step=0.1,
+                help="Exponent for power law distribution"
+            )
+        
+        target_avg_degree = st.slider(
+            "Target average degree",
+            min_value=1.0,
+            max_value=20.0,
+            value=5.0,
+            step=0.5,
+            help="Target average degree for the graph"
+        )
+    
+    # DCCC-SBM Parameters
+    st.markdown("### DCCC-SBM Parameters")
+    use_dccc_sbm = st.checkbox(
+        "Use DCCC-SBM",
+        value=False,
+        help="Use Degree-Corrected Configuration Model SBM"
+    )
+    
+    if use_dccc_sbm:
+        col7, col8 = st.columns(2)
+        
+        with col7:
+            community_imbalance = st.slider(
+                "Community imbalance",
+                min_value=0.0,
+                max_value=1.0,
+                value=0.0,
+                step=0.1,
+                help="Degree of imbalance between communities"
+            )
+        
+        with col8:
+            degree_distribution_overlap = st.slider(
+                "Degree distribution overlap",
+                min_value=0.0,
+                max_value=1.0,
+                value=0.5,
+                step=0.1,
+                help="Overlap between community degree distributions"
+            )
+    
+    # Other Parameters
+    st.markdown("### Other Parameters")
+    col9, col10 = st.columns(2)
+    
+    with col9:
+        degree_heterogeneity = st.slider(
+            "Degree heterogeneity",
+            min_value=0.0,
+            max_value=1.0,
+            value=0.5,
+            help="Amount of variation in node degrees"
+        )
+        edge_noise = st.slider(
+            "Edge noise",
+            min_value=0.0,
+            max_value=1.0,
+            value=0.0,
+            help="Random noise in edge generation"
+        )
+    
+    with col10:
+        min_component_size = st.slider(
+            "Minimum component size",
+            min_value=1,
+            max_value=10,
+            value=1,
+            help="Minimum size for connected components"
+        )
+        triangle_enhancement = st.slider(
+            "Triangle enhancement",
+            min_value=0.0,
+            max_value=1.0,
+            value=0.0,
+            help="Enhance triangle formation"
+        )
+    
+    # Return all parameters
+    params = {
         "n_communities": n_communities,
         "n_nodes": n_nodes,
         "sampling_method": sampling_method,
         "avg_memberships": avg_memberships,
-        "membership_concentration": membership_concentration,
         "degree_heterogeneity": degree_heterogeneity,
-        "edge_noise": edge_noise
+        "edge_noise": edge_noise,
+        "min_component_size": min_component_size,
+        "triangle_enhancement": triangle_enhancement,
+        "degree_method": degree_method,
+        "degree_distribution": degree_distribution,
+        "target_avg_degree": target_avg_degree,
+        "use_dccc_sbm": use_dccc_sbm
     }
+    
+    # Add conditional parameters
+    if universe.feature_dim > 0:
+        params.update({
+            "cluster_count_factor": cluster_count_factor,
+            "center_variance": center_variance,
+            "cluster_variance": cluster_variance,
+            "assignment_skewness": assignment_skewness,
+            "community_exclusivity": community_exclusivity
+        })
+    
+    if degree_distribution == "power_law":
+        params["power_law_exponent"] = power_law_exponent
+    
+    if degree_method == "gmda":
+        params.update({
+            "alpha": alpha,
+            "aggressive_separation": aggressive_separation
+        })
+    
+    if use_dccc_sbm:
+        params.update({
+            "community_imbalance": community_imbalance,
+            "degree_distribution_overlap": degree_distribution_overlap
+        })
+    
+    return params
 
 
 def graph_stats_widget(graph: GraphSample):

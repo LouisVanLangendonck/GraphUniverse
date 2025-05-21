@@ -19,7 +19,11 @@ import networkx as nx
 import scipy.sparse as sp
 from typing import Dict, List, Optional, Tuple, Union, Callable, Any
 import pandas as pd
-from mmsb.feature_regimes import FeatureRegimeGenerator, NeighborhoodFeatureAnalyzer, FeatureRegimeLabelGenerator
+from mmsb.feature_regimes import (
+    SimplifiedFeatureGenerator,
+    NeighborhoodFeatureAnalyzer,
+    FeatureClusterLabelGenerator
+)
 import time
 
 def sample_connected_community_subset(
@@ -145,64 +149,65 @@ class GraphUniverse:
         K: int,
         P: Optional[np.ndarray] = None,
         feature_dim: int = 0,
-        intra_community_regime_similarity: float = 0.8,
-        inter_community_regime_similarity: float = 0.2,
         block_structure: str = "assortative",
         edge_density: float = 0.1,
         homophily: float = 0.8,
         randomness_factor: float = 0.0,
-        regimes_per_community: int = 2,
+        # Feature generation parameters
+        cluster_count_factor: float = 1.0,  # Number of clusters relative to communities
+        center_variance: float = 1.0,       # Separation between cluster centers
+        cluster_variance: float = 0.1,      # Spread within each cluster
+        assignment_skewness: float = 0.0,   # If some clusters are used more frequently
+        community_exclusivity: float = 1.0, # How exclusively clusters map to communities
         seed: Optional[int] = None
     ):
         """
-        Initialize the graph universe.
+        Initialize a graph universe with K communities and optional feature generation.
         
         Args:
-            K: Total number of community types
-            P: Optional edge probability matrix (K × K)
+            K: Number of communities
+            P: Optional probability matrix (if None, will be generated)
             feature_dim: Dimension of node features
-            intra_community_regime_similarity: How similar regimes within same community should be (0-1)
-            inter_community_regime_similarity: How similar regimes between communities should be (0-1)
-            block_structure: Type of block structure ("assortative", "disassortative", "core-periphery", "hierarchical")
-            edge_density: Overall edge density
-            homophily: Strength of within-community connections
-            randomness_factor: Amount of random noise in edge probabilities
-            regimes_per_community: Number of feature regimes per community
+            block_structure: Type of block structure ("assortative", "disassortative", "mixed")
+            edge_density: Base edge density
+            homophily: Strength of community-based edge formation
+            randomness_factor: Amount of randomness in edge formation
+            cluster_count_factor: Number of clusters relative to communities (0.1 to 4.0)
+            center_variance: Separation between cluster centers
+            cluster_variance: Spread within each cluster
+            assignment_skewness: If some clusters are used more frequently (0.0 to 1.0)
+            community_exclusivity: How exclusively clusters map to communities (0.0 to 1.0)
             seed: Random seed for reproducibility
         """
         self.K = K
         self.feature_dim = feature_dim
-        self.regimes_per_community = regimes_per_community
         
-        # Set random seed if provided
+        # Set random seed
         if seed is not None:
             np.random.seed(seed)
-        
-        # Generate or validate probability matrix
-        if P is not None:
-            if P.shape != (K, K):
-                raise ValueError(f"Probability matrix must be {K}×{K}")
-            self.P = P
-        else:
+            
+        # Generate or use provided probability matrix
+        if P is None:
             self.P = self._generate_probability_matrix(
                 K, block_structure, edge_density, homophily, randomness_factor
             )
-        
-        # Initialize feature regime generator if features are enabled
+        else:
+            self.P = P
+            
+        # Initialize feature generator if features are enabled
         if feature_dim > 0:
-            self.regime_generator = FeatureRegimeGenerator(
+            self.feature_generator = SimplifiedFeatureGenerator(
                 universe_K=K,
                 feature_dim=feature_dim,
-                regimes_per_community=regimes_per_community,
-                intra_community_regime_similarity=intra_community_regime_similarity,
-                inter_community_regime_similarity=inter_community_regime_similarity,
-                feature_variance=0.1,
+                cluster_count_factor=cluster_count_factor,
+                center_variance=center_variance,
+                cluster_variance=cluster_variance,
+                assignment_skewness=assignment_skewness,
+                community_exclusivity=community_exclusivity,
                 seed=seed
             )
-            self.regime_prototypes = self.regime_generator.regime_prototypes
         else:
-            self.regime_generator = None
-            self.regime_prototypes = None
+            self.feature_generator = None
         
         # Store parameters
         self.edge_density = edge_density
@@ -212,8 +217,8 @@ class GraphUniverse:
         self.feature_variance = 0.1
         self.feature_similarity_matrix = None
         # Store regime parameters
-        self.intra_community_regime_similarity = intra_community_regime_similarity
-        self.inter_community_regime_similarity = inter_community_regime_similarity
+        self.intra_community_regime_similarity = 0.8
+        self.inter_community_regime_similarity = 0.2
 
     def _generate_probability_matrix(
         self, 
@@ -604,7 +609,9 @@ class GraphSample:
         aggressive_separation: bool = True,
         alpha: float = 0.5,
         # New GMDA parameter
-        degree_method: str = "standard"
+        degree_method: str = "standard",
+        # New parameter to disable deviation limiting
+        disable_deviation_limiting: bool = False
     ):
         """
         Initialize and generate a graph sample.
@@ -616,13 +623,13 @@ class GraphSample:
         - dccc_global_degree_params: Parameters for the global degree distribution
         """
         # Store additional DCCC-SBM parameters
-        # Store additional DCCC-SBM parameters
         self.use_dccc_sbm = use_dccc_sbm
         self.community_imbalance = community_imbalance
         self.degree_distribution_overlap = degree_distribution_overlap
         self.dccc_global_degree_params = dccc_global_degree_params or {}
         self.aggressive_separation = aggressive_separation
         self.alpha = alpha
+        self.disable_deviation_limiting = disable_deviation_limiting  # Store the parameter
         
         # Original initialization code with modifications...
         self.timing_info = {}
@@ -899,39 +906,38 @@ class GraphSample:
                 mean_deviation = deviations["mean_deviation"]
                 max_deviation = deviations["max_deviation"]
                 
-                if mean_deviation > self.max_mean_community_deviation:
-                    raise ValueError(f"Graph exceeds mean community deviation limit: {mean_deviation:.4f} > {self.max_mean_community_deviation:.4f}")
-                if max_deviation > self.max_max_community_deviation:
-                    raise ValueError(f"Graph exceeds maximum community deviation limit: {max_deviation:.4f} > {self.max_max_community_deviation:.4f}")
-        else:
-            # If no components meet the size threshold, keep an empty graph
-            self.graph = nx.Graph()
-            self.n_nodes = 0
-            self.community_labels = np.array([], dtype=int)
-            self.degree_factors = np.zeros(0)
-            self.adjacency = sp.csr_matrix((0, 0))
-            self.features = None if universe.feature_dim > 0 else None
-            self.node_map = {}
-            self.reverse_node_map = {}
-            self.node_labels = np.zeros(0, dtype=int)
-            self.node_regimes = None
-            self.neighborhood_analyzer = None
-            self.label_generator = None
+                if not self.disable_deviation_limiting:
+                    if mean_deviation > self.max_mean_community_deviation:
+                        raise ValueError(f"Graph exceeds mean community deviation limit: {mean_deviation:.4f} > {self.max_mean_community_deviation:.4f}")
+                    if max_deviation > self.max_max_community_deviation:
+                        raise ValueError(f"Graph exceeds maximum community deviation limit: {max_deviation:.4f} > {self.max_max_community_deviation:.4f}")
+            else:
+                # If no components meet the size threshold, keep an empty graph
+                self.graph = nx.Graph()
+                self.n_nodes = 0
+                self.community_labels = np.array([], dtype=int)
+                self.degree_factors = np.zeros(0)
+                self.adjacency = sp.csr_matrix((0, 0))
+                self.features = None if universe.feature_dim > 0 else None
+                self.node_map = {}
+                self.reverse_node_map = {}
+                self.node_labels = np.zeros(0, dtype=int)
+                self.node_clusters = None
+                self.neighborhood_analyzer = None
+                self.label_generator = None
         self.timing_info['graph_reconstruction'] = time.time() - start
         
         # Time: Feature generation
         start = time.time()
         if universe.feature_dim > 0:
-            # Assign nodes to feature regimes using community labels directly
-            self.node_regimes = universe.regime_generator.assign_node_regimes(
-                self.community_labels,
-                regime_balance=self.feature_regime_balance
-            )
+            # Get community assignments directly from community_labels
+            community_assignments = self.community_labels
             
-            # Generate features based on regimes
-            self.features = universe.regime_generator.generate_node_features(
-                self.node_regimes
-            )
+            # Generate node clusters based on community assignments
+            self.node_clusters = universe.feature_generator.assign_node_clusters(community_assignments)
+            
+            # Generate features based on node clusters
+            self.features = universe.feature_generator.generate_node_features(self.node_clusters)
             
             # Initialize these as None - they will be computed on demand
             self.neighborhood_analyzer = None
@@ -939,7 +945,7 @@ class GraphSample:
             self.node_labels = None
         else:
             self.features = None
-            self.node_regimes = None
+            self.node_clusters = None
             self.neighborhood_analyzer = None
             self.label_generator = None
             self.node_labels = None
@@ -965,9 +971,9 @@ class GraphSample:
             if self.features is not None:
                 node_attrs["features"] = self.features[i].tolist()
                 
-            # Add regime information if available
-            if self.node_regimes is not None:
-                node_attrs["feature_regime"] = int(self.node_regimes[i])
+            # Add cluster information if available
+            if self.node_clusters is not None:
+                node_attrs["feature_cluster"] = int(self.node_clusters[i])
                 
             # Update node attributes
             nx.set_node_attributes(self.graph, {node: node_attrs})
@@ -1608,40 +1614,27 @@ class GraphSample:
         feature_signal: float,
     ) -> np.ndarray:
         """
-        Generate node features based on community memberships.
+        Generate node features using the new SimplifiedFeatureGenerator.
         
         Args:
-            memberships: Node-community membership vectors
-            prototypes: Feature prototypes for the universe communities
-            feature_signal: How strongly features correlate with community membership
+            memberships: Node community assignments
+            prototypes: Not used in new implementation
+            feature_signal: Not used in new implementation
             
         Returns:
-            Node feature matrix
+            np.ndarray: Node features
         """
-        n_nodes = memberships.shape[0]
-        feature_dim = prototypes.shape[1]
+        if self.universe.feature_generator is None:
+            return np.zeros((len(memberships), 0))
+            
+        # Get community assignments for each node
+        community_assignments = np.argmax(memberships, axis=1)
         
-        # Get prototypes for selected communities
-        community_prototypes = prototypes[self.communities]
+        # Generate node clusters based on community assignments
+        node_clusters = self.universe.feature_generator.assign_node_clusters(community_assignments)
         
-        # Generate random noise features
-        noise = np.random.normal(0, 1, size=(n_nodes, feature_dim))
-        # Normalize noise
-        noise = noise / np.linalg.norm(noise, axis=1, keepdims=True)
-        
-        # Generate community-based features
-        community_features = memberships @ community_prototypes
-        # Normalize community features
-        community_features = community_features / np.linalg.norm(community_features, axis=1, keepdims=True)
-        
-        # Combine signal and noise based on feature_signal parameter
-        # Square feature_signal to make the effect more pronounced at low values
-        signal_weight = np.sqrt(feature_signal)  # This makes the transition more gradual
-        features = signal_weight * community_features + (1 - signal_weight) * noise
-        
-        # Normalize final features
-        norms = np.linalg.norm(features, axis=1, keepdims=True)
-        features = features / norms
+        # Generate features based on node clusters
+        features = self.universe.feature_generator.generate_node_features(node_clusters)
         
         return features
 
@@ -1802,7 +1795,7 @@ class GraphSample:
         frequency_vectors = self.neighborhood_analyzer.get_all_frequency_vectors(1)
         
         # Create label generator
-        label_generator = FeatureRegimeLabelGenerator(
+        label_generator = FeatureClusterLabelGenerator(
             frequency_vectors=frequency_vectors,
             n_labels=n_classes,
             balance_tolerance=1.0 - balance_ratio,
@@ -1830,7 +1823,7 @@ class GraphSample:
             start = time.time()
             self.neighborhood_analyzer = NeighborhoodFeatureAnalyzer(
                 graph=self.graph,
-                node_regimes=self.node_regimes,
+                node_regimes=self.node_clusters,  # Use node_clusters instead of node_regimes
                 total_regimes=len(self.communities) * self.universe.regimes_per_community,
                 max_hops=max_hops
             )
@@ -1852,7 +1845,7 @@ class GraphSample:
             
             start = time.time()
             # Generate balanced labels based on neighborhood features
-            self.label_generator = FeatureRegimeLabelGenerator(
+            self.label_generator = FeatureClusterLabelGenerator(
                 frequency_vectors=self.neighborhood_analyzer.get_all_frequency_vectors(1),
                 n_labels=len(self.communities),
                 balance_tolerance=balance_tolerance,
@@ -1914,140 +1907,45 @@ class GraphSample:
         parameter_search_range: float = None
     ) -> Optional[sp.spmatrix]:
         """
-        Generate edges using a configuration model-like approach.
-        Uses global parameters from instance for constraints.
+        Generate edges using the configuration model approach.
         """
-        # Use instance parameters instead of defaults
-        min_edge_density = self.min_edge_density if min_edge_density is None else min_edge_density
-        max_retries = self.max_retries if max_retries is None else max_retries
-        max_mean_community_deviation = self.max_mean_community_deviation if max_mean_community_deviation is None else max_mean_community_deviation
-        max_max_community_deviation = self.max_max_community_deviation if max_max_community_deviation is None else max_max_community_deviation
-        max_parameter_search_attempts = self.max_parameter_search_attempts if max_parameter_search_attempts is None else max_parameter_search_attempts
-        parameter_search_range = self.parameter_search_range if parameter_search_range is None else parameter_search_range
+        # ... existing code until deviation check ...
 
-        n_nodes = len(community_labels)
-        best_adj = None
-        best_filtered_data = None
-        
-        # For each attempt with new base hyperparameters
-        for base_attempt in range(max_retries):
-            # Sample initial hyperparameters based on distribution type
-            if self.degree_distribution == "power_law":
-                current_exponent = np.random.uniform(1.5, 3.0)
-                current_target = np.random.uniform(2.0, 20.0)
-            elif self.degree_distribution == "exponential":
-                current_rate = np.random.uniform(0.1, 1.0)
-                current_target = np.random.uniform(2.0, 20.0)
-            else:  # uniform
-                current_min = np.random.uniform(0.3, 0.7)
-                current_max = np.random.uniform(1.3, 1.7)
-                current_target = np.random.uniform(2.0, 20.0)
+        # 3. NOW check deviations on filtered graph
+        if not self.disable_deviation_limiting:
+            deviations = self._calculate_community_deviations(
+                filtered_graph,
+                filtered_labels,
+                P_sub
+            )
+            mean_deviation = deviations["mean_deviation"]
+            max_deviation = deviations["max_deviation"]
             
-            # Try parameter variations around these base values
-            for param_attempt in range(max_parameter_search_attempts):
-                try:
-                    # Adjust parameters based on search range
-                    if self.degree_distribution == "power_law":
-                        search_exponent = current_exponent + np.random.uniform(-parameter_search_range, parameter_search_range)
-                        search_target = current_target * (1 + np.random.uniform(-parameter_search_range, parameter_search_range))
-                        
-                        adjusted_factors = self._generate_degree_factors_configuration(
-                            n_nodes,
-                            None,
-                            self.degree_distribution,
-                            search_exponent,
-                            search_target
-                        )
-                        
-                        current_params = {
-                            'power_law_exponent': search_exponent,
-                            'target_avg_degree': search_target
-                        }
-                    elif self.degree_distribution == "exponential":
-                        search_rate = current_rate * (1 + np.random.uniform(-parameter_search_range, parameter_search_range))
-                        search_target = current_target * (1 + np.random.uniform(-parameter_search_range, parameter_search_range))
-                        
-                        adjusted_factors = degree_factors * search_target / np.mean(degree_factors)
-                        current_params = {
-                            'rate': search_rate,
-                            'target_avg_degree': search_target
-                        }
-                    else:  # uniform
-                        search_min = current_min * (1 + np.random.uniform(-parameter_search_range, parameter_search_range))
-                        search_max = current_max * (1 + np.random.uniform(-parameter_search_range, parameter_search_range))
-                        search_target = current_target * (1 + np.random.uniform(-parameter_search_range, parameter_search_range))
-                        
-                        adjusted_factors = np.random.uniform(search_min, search_max, size=n_nodes) * search_target
-                        current_params = {
-                            'min_factor': search_min,
-                            'max_factor': search_max,
-                            'target_avg_degree': search_target
-                        }
-                    
-                    # 1. Generate initial graph
-                    adj = self._generate_edges_configuration_single(
-                        community_labels,
-                        P_sub,
-                        adjusted_factors,
-                        noise,
-                        min_edge_density,
-                        1  # Only one try here as we'll retry with different params if needed
-                    )
-                    
-                    if adj is None:
-                        continue
-                    
-                    # 2. Create graph and filter components
-                    temp_graph = nx.from_scipy_sparse_array(adj)
-                    components = list(nx.connected_components(temp_graph))
-                    components.sort(key=len, reverse=True)
-                    
-                    # Filter components
-                    kept_components = [comp for comp in components if len(comp) >= self.min_component_size]
-                    if not kept_components:
-                        continue
-                    
-                    # Create filtered graph
-                    kept_nodes = sorted(list(set().union(*kept_components)))
-                    filtered_graph = nx.Graph()
-                    filtered_graph.add_nodes_from(range(len(kept_nodes)))
-                    
-                    # Add edges with remapped indices
-                    node_map = {old: new for new, old in enumerate(kept_nodes)}
-                    for comp in kept_components:
-                        for u, v in temp_graph.subgraph(comp).edges():
-                            filtered_graph.add_edge(node_map[u], node_map[v])
-                    
-                    # Update labels for filtered graph
-                    filtered_labels = community_labels[kept_nodes]
-                    
-                    # 3. NOW check deviations on filtered graph
-                    deviations = self._calculate_community_deviations(
-                        filtered_graph,
-                        filtered_labels,
-                        P_sub
-                    )
-                    mean_deviation = deviations["mean_deviation"]
-                    max_deviation = deviations["max_deviation"]
-                    
-                    # 4. If deviations are within limits, we've found a valid graph
-                    if mean_deviation <= max_mean_community_deviation and max_deviation <= max_max_community_deviation:
-                        # Store the EXACT graph and all its properties
-                        self.graph = filtered_graph.copy()  # Make a deep copy
-                        self.community_labels = filtered_labels.copy()
-                        self.degree_factors = adjusted_factors[kept_nodes].copy()
-                        self.adjacency = nx.adjacency_matrix(filtered_graph)
-                        self.generation_method = self.degree_distribution
-                        self.generation_params = current_params.copy()
-                        self.node_map = node_map.copy()
-                        self.reverse_node_map = {new: old for old, new in node_map.items()}
-                        
-                        return self.adjacency
-                        
-                except Exception as e:
-                    continue
-        
-        raise ValueError(f"Could not generate valid graph with {self.degree_distribution} distribution after {max_retries} attempts")
+            # 4. If deviations are within limits, we've found a valid graph
+            if mean_deviation <= max_mean_community_deviation and max_deviation <= max_max_community_deviation:
+                # Store the EXACT graph and all its properties
+                self.graph = filtered_graph.copy()  # Make a deep copy
+                self.community_labels = filtered_labels.copy()
+                self.degree_factors = adjusted_factors[kept_nodes].copy()
+                self.adjacency = nx.adjacency_matrix(filtered_graph)
+                self.generation_method = self.degree_distribution
+                self.generation_params = current_params.copy()
+                self.node_map = node_map.copy()
+                self.reverse_node_map = {new: old for old, new in node_map.items()}
+                
+                return self.adjacency
+        else:
+            # Skip deviation check and accept the graph
+            self.graph = filtered_graph.copy()  # Make a deep copy
+            self.community_labels = filtered_labels.copy()
+            self.degree_factors = adjusted_factors[kept_nodes].copy()
+            self.adjacency = nx.adjacency_matrix(filtered_graph)
+            self.generation_method = self.degree_distribution
+            self.generation_params = current_params.copy()
+            self.node_map = node_map.copy()
+            self.reverse_node_map = {new: old for old, new in node_map.items()}
+            
+            return self.adjacency
 
     def _generate_edges_configuration_single(
         self,
@@ -2430,3 +2328,376 @@ class GraphSample:
             "mean_deviation": mean_deviation,
             "max_deviation": max_deviation
         }
+
+    def calculate_community_signals(self, feature_metric='cosine', structure_metric='kl', degree_metric='wasserstein'):
+        """
+        Calculate all community-related signal metrics.
+        
+        Args:
+            feature_metric: Distance metric for feature signal
+            structure_metric: Divergence metric for structure signal
+            degree_metric: Distance metric for degree signal
+            
+        Returns:
+            Dictionary with aggregated and community-level metrics
+        """
+        import numpy as np
+        
+        # Calculate individual signals if graph has necessary components
+        signals = {}
+        
+        # Feature signal (if features available)
+        if self.features is not None and len(self.features) > 0:
+            try:
+                feature_signals = self.calculate_feature_signal(distance_metric=feature_metric)
+                signals['feature_signal'] = feature_signals
+                signals['mean_feature_signal'] = float(np.mean(list(feature_signals.values())))
+                signals['min_feature_signal'] = float(np.min(list(feature_signals.values())))
+                signals['max_feature_signal'] = float(np.max(list(feature_signals.values())))
+            except Exception as e:
+                print(f"Error calculating feature signal: {e}")
+        
+        # Structure signal
+        try:
+            structure_signals = self.calculate_structure_signal(divergence_metric=structure_metric)
+            signals['structure_signal'] = structure_signals
+            signals['mean_structure_signal'] = float(np.mean(list(structure_signals.values())))
+            signals['min_structure_signal'] = float(np.min(list(structure_signals.values())))
+            signals['max_structure_signal'] = float(np.max(list(structure_signals.values())))
+        except Exception as e:
+            print(f"Error calculating structure signal: {e}")
+        
+        # Degree signal
+        try:
+            degree_signals = self.calculate_degree_signal(distance_metric=degree_metric)
+            signals['degree_signal'] = degree_signals
+            signals['mean_degree_signal'] = float(np.mean(list(degree_signals.values())))
+            signals['min_degree_signal'] = float(np.min(list(degree_signals.values())))
+            signals['max_degree_signal'] = float(np.max(list(degree_signals.values())))
+        except Exception as e:
+            print(f"Error calculating degree signal: {e}")
+        
+        return signals
+
+    def calculate_feature_signal(self, distance_metric='cosine', epsilon=1e-8):
+        """
+        Calculate Feature Signal: Inter vs Intra-Community Distance
+        
+        Args:
+            distance_metric: Distance metric to use ('cosine' or 'euclidean')
+            epsilon: Small constant to avoid division by zero
+            
+        Returns:
+            Dictionary mapping community index to feature signal
+        """
+        # Check if features exist
+        if self.features is None or len(self.features) == 0:
+            raise ValueError("No features available for this graph")
+        
+        from scipy.spatial.distance import pdist, cdist
+        import numpy as np
+        
+        # Get unique communities
+        unique_communities = np.unique(self.community_labels)
+        
+        # Initialize results
+        feature_signals = {}
+        
+        # For each community
+        for community in unique_communities:
+            # Get indices of nodes in this community
+            community_mask = (self.community_labels == community)
+            if np.sum(community_mask) <= 1:  # Skip if only one node or none
+                continue
+                
+            community_indices = np.where(community_mask)[0]
+            non_community_indices = np.where(~community_mask)[0]
+            
+            # Get features for nodes in this community
+            community_features = self.features[community_indices]
+            
+            # Get features for nodes not in this community
+            non_community_features = self.features[non_community_indices]
+            
+            # Calculate intra-community distances
+            if distance_metric == 'cosine':
+                intra_distances = pdist(community_features, metric='cosine')
+            else:  # euclidean
+                intra_distances = pdist(community_features, metric='euclidean')
+            
+            # Calculate inter-community distances
+            if len(non_community_indices) > 0:
+                if distance_metric == 'cosine':
+                    inter_distances = cdist(community_features, non_community_features, metric='cosine')
+                else:  # euclidean
+                    inter_distances = cdist(community_features, non_community_features, metric='euclidean')
+                
+                # Calculate mean inter-community distance
+                mean_inter = np.mean(inter_distances)
+            else:
+                mean_inter = 0.0
+            
+            # Calculate mean intra-community distance
+            if len(intra_distances) > 0:
+                mean_intra = np.mean(intra_distances)
+            else:
+                mean_intra = 0.0
+            
+            # Calculate feature signal
+            feature_signal = mean_inter / (mean_intra + epsilon)
+            
+            # Store results
+            feature_signals[int(community)] = float(feature_signal)
+        
+        return feature_signals
+
+    def calculate_structure_signal(self, divergence_metric='kl'):
+        """
+        Calculate Structure Signal: Edge Probability Row Divergence
+        
+        Args:
+            divergence_metric: Divergence metric to use ('kl', 'js', or 'cosine')
+            
+        Returns:
+            Dictionary mapping community index to structure signal
+        """
+        import numpy as np
+        from scipy.spatial.distance import cosine
+        from scipy.special import kl_div, rel_entr
+        
+        # Get unique communities
+        unique_communities = np.unique(self.community_labels)
+        n_communities = len(unique_communities)
+        
+        # Initialize community-community edge probability matrix
+        edge_probs = np.zeros((n_communities, n_communities))
+        
+        # Count nodes in each community
+        community_sizes = np.zeros(n_communities, dtype=int)
+        for label in self.community_labels:
+            community_sizes[label] += 1
+        
+        # Count edges between communities
+        for i, j in self.graph.edges():
+            comm_i = self.community_labels[i]
+            comm_j = self.community_labels[j]
+            edge_probs[comm_i, comm_j] += 1
+            edge_probs[comm_j, comm_i] += 1  # Undirected graph
+        
+        # Calculate actual probabilities
+        for i in range(n_communities):
+            for j in range(n_communities):
+                if i == j:
+                    # Within community: divide by n(n-1)/2
+                    n = community_sizes[i]
+                    if n > 1:
+                        edge_probs[i, j] = edge_probs[i, j] / (n * (n - 1))
+                else:
+                    # Between communities: divide by n1*n2
+                    n1, n2 = community_sizes[i], community_sizes[j]
+                    if n1 > 0 and n2 > 0:
+                        edge_probs[i, j] = edge_probs[i, j] / (n1 * n2)
+        
+        # Normalize rows to form distributions
+        row_sums = np.sum(edge_probs, axis=1, keepdims=True)
+        row_sums[row_sums == 0] = 1.0  # Avoid division by zero
+        normalized_probs = edge_probs / row_sums
+        
+        # Initialize results
+        structure_signals = {}
+        
+        # Define JS divergence function
+        def js_divergence(p, q):
+            # Add small epsilon to avoid log(0)
+            p = p + 1e-10
+            q = q + 1e-10
+            # Normalize
+            p = p / np.sum(p)
+            q = q / np.sum(q)
+            m = 0.5 * (p + q)
+            return 0.5 * np.sum(rel_entr(p, m)) + 0.5 * np.sum(rel_entr(q, m))
+        
+        # For each community
+        for i in range(n_communities):
+            if community_sizes[i] <= 1:  # Skip if only one node or none
+                continue
+                
+            # Initialize minimum divergence as infinity
+            min_divergence = float('inf')
+            
+            # For each other community
+            for j in range(n_communities):
+                if i == j or community_sizes[j] <= 1:
+                    continue
+                    
+                # Calculate divergence based on specified metric
+                if divergence_metric == 'kl':
+                    # KL divergence (with small epsilon to avoid division by zero)
+                    p = normalized_probs[i] + 1e-10
+                    q = normalized_probs[j] + 1e-10
+                    divergence = np.sum(rel_entr(p, q))
+                elif divergence_metric == 'js':
+                    # JS divergence
+                    divergence = js_divergence(normalized_probs[i], normalized_probs[j])
+                else:  # cosine
+                    # Cosine distance
+                    divergence = cosine(normalized_probs[i], normalized_probs[j])
+                
+                # Update minimum divergence
+                min_divergence = min(min_divergence, divergence)
+            
+            # Store structure signal for this community (if valid)
+            if min_divergence != float('inf'):
+                structure_signals[int(unique_communities[i])] = float(min_divergence)
+            else:
+                structure_signals[int(unique_communities[i])] = 0.0
+        
+        return structure_signals
+
+    def calculate_degree_signal(self, distance_metric='wasserstein'):
+        """
+        Calculate Degree Signal: Statistical Distance Between Degree Distributions
+        
+        Args:
+            distance_metric: Distance metric to use ('wasserstein' or 'js')
+            
+        Returns:
+            Dictionary mapping community index to degree signal
+        """
+        import numpy as np
+        from scipy.stats import wasserstein_distance
+        from scipy.special import kl_div, rel_entr
+        
+        # Get unique communities
+        unique_communities = np.unique(self.community_labels)
+        n_communities = len(unique_communities)
+        
+        # Collect degrees for each community
+        community_degrees = []
+        for community in unique_communities:
+            # Get indices of nodes in this community
+            community_mask = (self.community_labels == community)
+            community_indices = np.where(community_mask)[0]
+            
+            # Get degrees of nodes in this community
+            degrees = [self.graph.degree(i) for i in community_indices]
+            community_degrees.append(degrees)
+        
+        # Define JS divergence function for discrete distributions
+        def js_divergence_discrete(p_counts, q_counts):
+            # Get all unique values
+            all_values = sorted(set(p_counts + q_counts))
+            
+            # Count occurrences
+            p_dist = np.zeros(len(all_values))
+            q_dist = np.zeros(len(all_values))
+            
+            for i, val in enumerate(all_values):
+                p_dist[i] = p_counts.count(val)
+                q_dist[i] = q_counts.count(val)
+            
+            # Normalize
+            p_dist = p_dist / np.sum(p_dist)
+            q_dist = q_dist / np.sum(q_dist)
+            
+            # Add small epsilon to avoid log(0)
+            p_dist = p_dist + 1e-10
+            q_dist = q_dist + 1e-10
+            
+            # Renormalize
+            p_dist = p_dist / np.sum(p_dist)
+            q_dist = q_dist / np.sum(q_dist)
+            
+            # Calculate JS divergence
+            m = 0.5 * (p_dist + q_dist)
+            js = 0.5 * np.sum(rel_entr(p_dist, m)) + 0.5 * np.sum(rel_entr(q_dist, m))
+            
+            return js
+        
+        # Initialize results
+        degree_signals = {}
+        
+        # For each community
+        for i, community in enumerate(unique_communities):
+            if len(community_degrees[i]) <= 1:  # Skip if only one node or none
+                continue
+                
+            # Initialize minimum distance as infinity
+            min_distance = float('inf')
+            
+            # For each other community
+            for j, other_community in enumerate(unique_communities):
+                if community == other_community or len(community_degrees[j]) <= 1:
+                    continue
+                    
+                # Calculate distance based on specified metric
+                if distance_metric == 'wasserstein':
+                    # Wasserstein distance
+                    distance = wasserstein_distance(community_degrees[i], community_degrees[j])
+                else:  # js
+                    # JS divergence
+                    distance = js_divergence_discrete(community_degrees[i], community_degrees[j])
+                
+                # Update minimum distance
+                min_distance = min(min_distance, distance)
+            
+            # Store degree signal for this community (if valid)
+            if min_distance != float('inf'):
+                degree_signals[int(community)] = float(min_distance)
+            else:
+                degree_signals[int(community)] = 0.0
+        
+        return degree_signals
+
+    def update_feature_generator(
+        self,
+        cluster_count_factor: float = 1.0,
+        center_variance: float = 1.0,
+        cluster_variance: float = 0.1,
+        assignment_skewness: float = 0.0,
+        community_exclusivity: float = 1.0,
+        seed: Optional[int] = None
+    ) -> None:
+        """
+        Update the feature generator with new parameters.
+        
+        Args:
+            cluster_count_factor: Number of clusters relative to communities
+            center_variance: Separation between cluster centers
+            cluster_variance: Spread within each cluster
+            assignment_skewness: If some clusters are used more frequently
+            community_exclusivity: How exclusively clusters map to communities
+            seed: Random seed for reproducibility
+        """
+        if self.feature_dim > 0:
+            self.feature_generator = SimplifiedFeatureGenerator(
+                universe_K=self.K,
+                feature_dim=self.feature_dim,
+                cluster_count_factor=cluster_count_factor,
+                center_variance=center_variance,
+                cluster_variance=cluster_variance,
+                assignment_skewness=assignment_skewness,
+                community_exclusivity=community_exclusivity,
+                seed=seed
+            )
+
+    def regenerate_features(self) -> None:
+        """
+        Regenerate node features using the current feature generator parameters.
+        This should be called after updating feature generator parameters.
+        """
+        if self.universe.feature_generator is None:
+            return
+            
+        # Get community assignments directly from community_labels
+        community_assignments = self.community_labels
+        
+        # Generate node clusters based on community assignments
+        node_clusters = self.universe.feature_generator.assign_node_clusters(community_assignments)
+        
+        # Generate features based on node clusters
+        self.features = self.universe.feature_generator.generate_node_features(node_clusters)
+        
+        # Update node attributes in the graph
+        for i in range(self.n_nodes):
+            self.graph.nodes[i]['features'] = self.features[i].tolist()

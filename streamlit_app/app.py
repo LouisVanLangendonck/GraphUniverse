@@ -15,11 +15,12 @@ import networkx as nx
 import pandas as pd
 import os
 import sys
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Dict, List, Optional, Tuple, Union, Any
 from sklearn.decomposition import PCA
 from collections import Counter, defaultdict
 import plotly.graph_objects as go
 import io
+import seaborn as sns
 
 # Add parent directory to path to allow imports
 parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -30,10 +31,9 @@ if parent_dir not in sys.path:
 from mmsb.model import GraphUniverse, GraphSample
 from mmsb.graph_family import GraphFamilyGenerator
 from mmsb.feature_regimes import (
-    FeatureRegimeGenerator, 
+    SimplifiedFeatureGenerator,
     NeighborhoodFeatureAnalyzer, 
-    FeatureRegimeLabelGenerator,
-    GenerativeRuleBasedLabeler
+    FeatureClusterLabelGenerator
 )
 from utils.visualizations import (
     plot_graph_communities, 
@@ -44,7 +44,9 @@ from utils.visualizations import (
     plot_community_overlap_distribution,
     create_dashboard,
     create_dccc_sbm_dashboard,
-    add_dccc_visualization_to_app
+    add_dccc_visualization_to_app,
+    plot_community_size_distribution,
+    visualize_community_cluster_assignments
 )
 from utils.graph_family_visualizations import (
     plot_parameter_distributions,
@@ -833,62 +835,78 @@ if page == "Universe Creation":
             max_value=1.0,
             value=0.5,
             step=0.05,
-            help="Controls the amount of Gaussian noise added to the universe's strength matrix. Noise has standard deviation = randomness_factor × min(p, q), where p and q are the within- and between-community strengths. At 1.0, noise can set some strengths to zero and can be large compared to the original values. Only negative values are clipped to zero; values above 1 are allowed and will be scaled/clipped later in graph instances."
+            help="Controls the amount of Gaussian noise added to the universe's strength matrix"
         )
     
     # Feature parameters if features are enabled
     if feature_dim > 0:
-        st.markdown('<div class="subsection-header">Feature Parameters</div>', unsafe_allow_html=True)
+        st.markdown('<div class="subsection-header">Feature Generation Parameters</div>', unsafe_allow_html=True)
         
         col3, col4 = st.columns(2)
         
         with col3:
-            intra_community_regime_similarity = st.slider(
-                "Intra-community regime similarity",
-                min_value=0.0,
-                max_value=1.0,
-                value=0.2,
+            cluster_count_factor = st.slider(
+                "Cluster count factor",
+                min_value=0.1,
+                max_value=4.0,
+                value=1.0,
                 step=0.1,
-                help="How similar regimes within same community should be"
+                help="Number of clusters relative to communities"
+            )
+            center_variance = st.slider(
+                "Center variance",
+                min_value=0.1,
+                max_value=2.0,
+                value=1.0,
+                step=0.1,
+                help="Separation between cluster centers"
             )
             
         with col4:
-            inter_community_regime_similarity = st.slider(
-                "Inter-community regime similarity",
+            cluster_variance = st.slider(
+                "Cluster variance",
+                min_value=0.01,
+                max_value=0.5,
+                value=0.1,
+                step=0.01,
+                help="Spread within each cluster"
+            )
+            assignment_skewness = st.slider(
+                "Assignment skewness",
                 min_value=0.0,
                 max_value=1.0,
-                value=0.8,
+                value=0.0,
                 step=0.1,
-                help="How similar regimes between communities should be"
+                help="If some clusters are used more frequently"
             )
             
-        regimes_per_community = st.slider(
-            "Regimes per community",
-            min_value=1,
-            max_value=5,
-            value=2,
-            help="Number of feature regimes per community"
+        community_exclusivity = st.slider(
+            "Community exclusivity",
+            min_value=0.0,
+            max_value=1.0,
+            value=1.0,
+            step=0.1,
+            help="How exclusively clusters map to communities"
         )
-    else:
-        intra_community_regime_similarity = 0.2
-        inter_community_regime_similarity = 0.8
-        regimes_per_community = 2
     
     # Add seed parameter
     seed = st.number_input("Random Seed", value=42, help="Seed for reproducibility")
     
     if st.button("Generate Universe"):
         with st.spinner("Generating universe..."):
-            # Create universe
+            # Create universe with all parameters
             universe = GraphUniverse(
                 K=K,
                 feature_dim=feature_dim,
-                intra_community_regime_similarity=intra_community_regime_similarity,
-                inter_community_regime_similarity=inter_community_regime_similarity,
                 edge_density=edge_density,
                 homophily=homophily,
                 randomness_factor=randomness_factor,
-                regimes_per_community=regimes_per_community,
+                # Feature generation parameters
+                cluster_count_factor=cluster_count_factor if feature_dim > 0 else 1.0,
+                center_variance=center_variance if feature_dim > 0 else 1.0,
+                cluster_variance=cluster_variance if feature_dim > 0 else 0.1,
+                assignment_skewness=assignment_skewness if feature_dim > 0 else 0.0,
+                community_exclusivity=community_exclusivity if feature_dim > 0 else 1.0,
                 seed=seed
             )
             
@@ -904,17 +922,22 @@ if page == "Universe Creation":
             fig = plot_community_matrix(universe.P, communities=range(K))
             st.pyplot(fig)
             
-            # Show feature regimes if enabled
+            # Show feature analysis if enabled
             if feature_dim > 0:
-                st.markdown('<div class="subsection-header">Feature Regimes</div>', unsafe_allow_html=True)
+                st.markdown('<div class="subsection-header">Feature Analysis</div>', unsafe_allow_html=True)
                 
-                # Plot regime prototypes
+                # Plot feature clusters
                 fig = plt.figure(figsize=(10, 6))
-                plt.imshow(universe.regime_prototypes, aspect='auto', cmap='viridis')
+                plt.imshow(universe.feature_generator.cluster_centers, aspect='auto', cmap='viridis')
                 plt.colorbar(label='Feature Value')
-                plt.title('Feature Regime Prototypes')
+                plt.title('Feature Cluster Centers')
                 plt.xlabel('Feature Dimension')
-                plt.ylabel('Regime')
+                plt.ylabel('Cluster')
+                st.pyplot(fig)
+                
+                # Show community-cluster assignments
+                st.subheader("Community-Cluster Assignments")
+                fig = visualize_community_cluster_assignments(universe.feature_generator)
                 st.pyplot(fig)
 
 # Graph Sampling Page
@@ -3383,11 +3406,12 @@ st.markdown("""
 
 def create_graph_dashboard(graph):
     # Create tabs for different visualizations
-    tab1, tab2, tab3, tab4 = st.tabs([
-        "Graph Visualization",
+    tab1, tab2, tab3, tab4, tab5 = st.tabs([
+        "Graph with Communities",
         "Community Distribution",
         "Parameter Analysis",
-        "Feature Analysis"
+        "Feature Analysis",
+        "Degree Analysis"
     ])
 
     with tab1:
@@ -3399,7 +3423,7 @@ def create_graph_dashboard(graph):
         st.subheader("Community Distribution")
         # Pass the graph object directly
         fig = plot_membership_matrix(graph)
-        st.pyplot(fig) 
+        st.pyplot(fig)
 
     with tab3:
         st.subheader("Parameter Analysis")
@@ -3408,5 +3432,100 @@ def create_graph_dashboard(graph):
 
     with tab4:
         st.subheader("Feature Analysis")
-        fig = plot_community_statistics(graph)
-        st.pyplot(fig)
+        if hasattr(graph, 'features') and graph.features is not None:
+            fig = plot_community_statistics(graph)
+            st.pyplot(fig)
+            
+            # Add feature regime analysis if available
+            if hasattr(graph, 'node_regimes') and graph.node_regimes is not None:
+                st.subheader("Feature Regime Analysis")
+                regime_analysis = graph.analyze_neighborhood_features()
+                st.write("Regime Distribution:", regime_analysis)
+                
+                # Add community-cluster visualization if feature generator is available
+                if hasattr(graph, 'universe') and hasattr(graph.universe, 'feature_generator'):
+                    st.subheader("Community-Cluster Assignments")
+                    
+                    # Add sliders for feature parameters
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        cluster_count_factor = st.slider(
+                            "Cluster Count Factor",
+                            min_value=0.1,
+                            max_value=4.0,
+                            value=1.0,
+                            step=0.1,
+                            help="Number of clusters relative to communities (0.1=few clusters, 1.0=same as communities, 4.0=many clusters)"
+                        )
+                        center_variance = st.slider(
+                            "Center Variance",
+                            min_value=0.1,
+                            max_value=2.0,
+                            value=1.0,
+                            step=0.1,
+                            help="Separation between cluster centers"
+                        )
+                    with col2:
+                        cluster_variance = st.slider(
+                            "Cluster Variance",
+                            min_value=0.01,
+                            max_value=0.5,
+                            value=0.1,
+                            step=0.01,
+                            help="Spread within each cluster"
+                        )
+                        assignment_skewness = st.slider(
+                            "Assignment Skewness",
+                            min_value=0.0,
+                            max_value=1.0,
+                            value=0.0,
+                            step=0.1,
+                            help="If some clusters are used more frequently (0.0=balanced, 1.0=highly skewed)"
+                        )
+                        community_exclusivity = st.slider(
+                            "Community Exclusivity",
+                            min_value=0.0,
+                            max_value=1.0,
+                            value=1.0,
+                            step=0.1,
+                            help="How exclusively clusters map to communities (0.0=shared, 1.0=exclusive)"
+                        )
+                    
+                    # Update feature generator with new parameters
+                    graph.universe.update_feature_generator(
+                        cluster_count_factor=cluster_count_factor,
+                        center_variance=center_variance,
+                        cluster_variance=cluster_variance,
+                        assignment_skewness=assignment_skewness,
+                        community_exclusivity=community_exclusivity
+                    )
+                    
+                    # Show the visualization
+                    fig = visualize_community_cluster_assignments(graph.universe.feature_generator)
+                    st.pyplot(fig)
+        else:
+            st.info("No feature analysis available for this graph")
+
+    with tab5:
+        st.subheader("Degree Analysis")
+        # Add degree distribution analysis
+        if hasattr(graph, 'degree_factors'):
+            st.write("Degree Distribution Parameters:")
+            st.write(f"- Distribution Type: {graph.degree_distribution}")
+            if graph.power_law_exponent is not None:
+                st.write(f"- Power Law Exponent: {graph.power_law_exponent:.2f}")
+            if graph.target_avg_degree is not None:
+                st.write(f"- Target Average Degree: {graph.target_avg_degree:.2f}")
+            
+            # Plot degree distribution
+            fig = plot_degree_distribution(graph)
+            st.pyplot(fig)
+            
+            # Show community-specific degree statistics
+            if hasattr(graph, 'community_degree_factors'):
+                st.subheader("Community Degree Statistics")
+                community_stats = graph.analyze_community_connections()
+                if 'degree_analysis' in community_stats:
+                    st.write(community_stats['degree_analysis'])
+        else:
+            st.info("No degree analysis available for this graph")

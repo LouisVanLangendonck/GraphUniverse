@@ -28,6 +28,8 @@ class GraphFamilyGenerator:
         intra_community_regime_similarity: float = 0.8,
         inter_community_regime_similarity: float = 0.2,
         regimes_per_community: int = 2,
+        shared_regime_ratio: float = 0.0,
+        shared_regime_mode: str = 'average',
         homophily_range: float = 0.0,
         density_range: float = 0.0,
         method_distribution: Optional[Dict[str, float]] = None,
@@ -57,6 +59,8 @@ class GraphFamilyGenerator:
             intra_community_regime_similarity: How similar regimes within same community should be (0-1)
             inter_community_regime_similarity: How similar regimes between communities should be (0-1)
             regimes_per_community: Number of feature regimes per community
+            shared_regime_ratio: Proportion of regimes shared between communities (0-1)
+            shared_regime_mode: How to merge shared regimes ('first', 'second', or 'average')
             homophily_range: Allowed deviation from universe homophily
             density_range: Allowed deviation from universe density
             method_distribution: Dictionary mapping method names to their probabilities
@@ -106,6 +110,8 @@ class GraphFamilyGenerator:
                 intra_community_regime_similarity=intra_community_regime_similarity,
                 inter_community_regime_similarity=inter_community_regime_similarity,
                 regimes_per_community=regimes_per_community,
+                shared_regime_ratio=shared_regime_ratio,
+                shared_regime_mode=shared_regime_mode,
                 seed=seed
             )
         else:

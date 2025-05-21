@@ -16,6 +16,36 @@ from sklearn.decomposition import PCA
 import seaborn as sns
 import pandas as pd
 
+__all__ = [
+    'visualize_graph_generation_process',
+    'plot_graph_communities',
+    'plot_membership_matrix',
+    'plot_community_matrix',
+    'plot_degree_distribution',
+    'plot_community_size_distribution',
+    'create_dashboard',
+    'plot_probability_matrix_comparison',
+    'plot_connectivity_analysis',
+    'plot_community_probability_heatmap',
+    'compare_graph_structures',
+    'plot_community_graph',
+    'plot_node_embeddings',
+    'plot_feature_heatmap',
+    'plot_community_overlap_distribution',
+    'plot_multiple_graphs',
+    'plot_membership_comparison',
+    'plot_transfer_performance',
+    'visualize_feature_subtypes',
+    'visualize_feature_similarity_matrix',
+    'visualize_feature_correlations',
+    'compare_feature_distributions',
+    'plot_community_degree_distributions',
+    'create_dccc_sbm_dashboard',
+    'plot_degree_community_interaction',
+    'add_dccc_visualization_to_app',
+    'visualize_community_cluster_assignments'
+]
+
 def visualize_graph_generation_process(
     graph: nx.Graph,
     community_labels: np.ndarray,
@@ -1632,106 +1662,76 @@ def visualize_feature_subtypes(
     figsize: Tuple[int, int] = (15, 10)
 ) -> plt.Figure:
     """
-    Visualize feature subtypes (clusters) for selected communities.
+    Visualize feature subtypes (clusters) and their relationship with communities.
     
     Args:
-        universe: GraphUniverse object with feature subtypes
-        communities_to_plot: List of community indices to visualize (if None, selects n_communities at random)
+        universe: GraphUniverse instance
+        communities_to_plot: Optional list of community indices to plot
         n_communities: Number of communities to plot if communities_to_plot is None
         figsize: Figure size
         
     Returns:
-        Matplotlib figure
+        plt.Figure: The visualization figure
     """
-    if not hasattr(universe, 'feature_subtypes') or universe.feature_subtypes is None:
-        raise ValueError("Universe does not have feature subtypes defined")
+    if universe.feature_generator is None:
+        raise ValueError("Universe has no feature generator")
+        
+    # Get cluster centers and community-cluster mapping
+    cluster_centers = universe.feature_generator._generate_cluster_centers()
+    community_cluster_mapping = universe.feature_generator._create_community_cluster_mapping()
     
     # Select communities to plot
     if communities_to_plot is None:
         communities_to_plot = np.random.choice(
-            universe.K, size=min(n_communities, universe.K), replace=False
-        ).tolist()
+            universe.K, 
+            min(n_communities, universe.K), 
+            replace=False
+        )
     
     # Create figure
-    fig = plt.figure(figsize=figsize)
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=figsize)
     
-    # Number of communities and feature dimensions
-    n_communities = len(communities_to_plot)
-    feature_dim = universe.feature_dim
-    max_subtypes = max(len(universe.feature_subtypes[c]) for c in communities_to_plot)
+    # Plot 1: Cluster Centers
+    # Use PCA to reduce to 2D for visualization
+    from sklearn.decomposition import PCA
+    pca = PCA(n_components=2)
+    centers_2d = pca.fit_transform(cluster_centers)
     
-    # Set up grid layout based on number of communities
-    n_rows = (n_communities + 2) // 3  # Approximately 3 communities per row
-    n_cols = min(3, n_communities)
+    # Plot cluster centers
+    scatter = ax1.scatter(
+        centers_2d[:, 0], 
+        centers_2d[:, 1],
+        c=np.arange(len(centers_2d)),
+        cmap='tab20',
+        s=100
+    )
     
-    # Set up color palette
-    colors = plt.cm.tab10.colors
+    # Add cluster labels
+    for i, (x, y) in enumerate(centers_2d):
+        ax1.annotate(f'C{i}', (x, y), xytext=(5, 5), textcoords='offset points')
     
-    # For each community, plot its feature subtypes
-    for i, community in enumerate(communities_to_plot):
-        # Get subtypes for this community
-        subtypes = universe.feature_subtypes[community]
-        n_subtypes = len(subtypes)
-        
-        # Create subplot
-        ax = fig.add_subplot(n_rows, n_cols, i+1)
-        
-        # Reduce dimensions to 2D for visualization using PCA
-        if feature_dim > 2:
-            pca = PCA(n_components=2)
-            subtypes_2d = pca.fit_transform(subtypes)
-            
-            # Also transform the community prototype for reference
-            prototype_2d = pca.transform(universe.feature_prototypes[community].reshape(1, -1))[0]
-        else:
-            subtypes_2d = subtypes
-            prototype_2d = universe.feature_prototypes[community]
-        
-        # Plot subtypes
-        for j in range(n_subtypes):
-            ax.scatter(
-                subtypes_2d[j, 0],
-                subtypes_2d[j, 1],
-                s=100,
-                color=colors[j % len(colors)],
-                alpha=0.7,
-                label=f"Subtype {j+1}"
-            )
-        
-        # Plot community prototype as a star
-        ax.scatter(
-            prototype_2d[0],
-            prototype_2d[1],
-            s=200,
-            color='black',
-            marker='*',
-            alpha=1.0,
-            label="Prototype"
-        )
-        
-        # Connect subtypes to prototype with lines
-        for j in range(n_subtypes):
-            ax.plot(
-                [prototype_2d[0], subtypes_2d[j, 0]],
-                [prototype_2d[1], subtypes_2d[j, 1]],
-                '--',
-                color=colors[j % len(colors)],
-                alpha=0.5
-            )
-        
-        # Set title and labels
-        ax.set_title(f"Community {community} Subtypes")
-        ax.set_xlabel("PCA 1")
-        ax.set_ylabel("PCA 2")
-        
-        # Add legend only for the first subplot to avoid clutter
-        if i == 0:
-            ax.legend(loc='upper right')
+    ax1.set_title('Cluster Centers (PCA projection)')
+    ax1.set_xlabel('PC1')
+    ax1.set_ylabel('PC2')
     
-    # Add overall title
-    fig.suptitle("Feature Subtypes Visualization", fontsize=16)
-    fig.tight_layout(rect=[0, 0.03, 1, 0.95])  # Make room for the title
+    # Plot 2: Community-Cluster Mapping
+    # Create a heatmap of the mapping
+    mapping_matrix = np.zeros((len(communities_to_plot), len(cluster_centers)))
+    for i, comm in enumerate(communities_to_plot):
+        mapping_matrix[i] = community_cluster_mapping[comm]
     
+    sns.heatmap(
+        mapping_matrix,
+        ax=ax2,
+        cmap='YlOrRd',
+        xticklabels=[f'C{i}' for i in range(len(cluster_centers))],
+        yticklabels=[f'Comm{i}' for i in communities_to_plot]
+    )
+    ax2.set_title('Community-Cluster Mapping')
+    ax2.set_xlabel('Cluster')
+    ax2.set_ylabel('Community')
+    
+    plt.tight_layout()
     return fig
 
 
@@ -2679,4 +2679,70 @@ def create_dashboard(graph, membership_matrix, communities, universe_P, figsize=
     plot_community_overlap_distribution(membership_matrix, ax=ax6)
     
     fig.tight_layout()
+    return fig
+
+def visualize_community_cluster_assignments(
+    feature_generator: 'SimplifiedFeatureGenerator',
+    figsize: Tuple[int, int] = (12, 8),
+    cmap: str = "viridis",
+    title: str = "Community-Cluster Assignments"
+) -> plt.Figure:
+    """
+    Visualize how communities are assigned to feature clusters.
+    
+    Args:
+        feature_generator: The SimplifiedFeatureGenerator instance
+        figsize: Figure size
+        cmap: Colormap for the heatmap
+        title: Plot title
+        
+    Returns:
+        Matplotlib figure showing the community-cluster assignments
+    """
+    # Create figure
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=figsize)
+    
+    # Plot 1: Community-Cluster Probability Matrix
+    probs = feature_generator.community_cluster_probs
+    im1 = ax1.imshow(probs, cmap=cmap, aspect='auto')
+    plt.colorbar(im1, ax=ax1, label="Assignment Probability")
+    
+    # Set labels
+    ax1.set_xlabel("Cluster Index")
+    ax1.set_ylabel("Community Index")
+    ax1.set_title("Community-Cluster Assignment Probabilities")
+    
+    # Add grid
+    ax1.set_xticks(np.arange(probs.shape[1]))
+    ax1.set_yticks(np.arange(probs.shape[0]))
+    ax1.grid(True, alpha=0.3)
+    
+    # Plot 2: Cluster Statistics
+    if hasattr(feature_generator, 'cluster_stats') and feature_generator.cluster_stats:
+        # Get cluster counts
+        cluster_counts = feature_generator.cluster_stats['cluster_counts']
+        
+        # Create bar plot
+        bars = ax2.bar(range(len(cluster_counts)), cluster_counts)
+        
+        # Add value labels on top of bars
+        for bar in bars:
+            height = bar.get_height()
+            ax2.text(bar.get_x() + bar.get_width()/2., height,
+                    f'{int(height)}',
+                    ha='center', va='bottom')
+        
+        ax2.set_xlabel("Cluster Index")
+        ax2.set_ylabel("Number of Nodes")
+        ax2.set_title("Node Distribution Across Clusters")
+        ax2.grid(True, alpha=0.3)
+    else:
+        ax2.text(0.5, 0.5, "No cluster statistics available yet.\nGenerate a graph to see distribution.",
+                ha='center', va='center', transform=ax2.transAxes)
+        ax2.set_title("Cluster Statistics")
+    
+    # Add overall title
+    fig.suptitle(title, fontsize=14)
+    fig.tight_layout(rect=[0, 0, 1, 0.96])  # Make room for suptitle
+    
     return fig

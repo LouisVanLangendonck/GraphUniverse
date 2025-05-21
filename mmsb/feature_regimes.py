@@ -19,307 +19,330 @@ import torch
 from torch_geometric.data import Data
 from torch_geometric.utils import to_undirected
 
-class FeatureRegimeGenerator:
+class SimplifiedFeatureGenerator:
     """
-    Handles feature regime generation for communities.
-    Each community has multiple feature regimes, with controlled similarity within and between communities.
+    Simplified feature generator using multivariate Gaussian clusters.
+    Features are generated with controllable inter-cluster and intra-cluster variance,
+    and flexible assignment of clusters to communities.
     """
     
     def __init__(
         self,
         universe_K: int,
         feature_dim: int,
-        regimes_per_community: int = 2,
-        intra_community_regime_similarity: float = 0.8,
-        inter_community_regime_similarity: float = 0.2,
-        feature_variance: float = 0.1,
+        cluster_count_factor: float = 1.0,  # Number of clusters relative to communities (0.1 to 4.0)
+        center_variance: float = 1.0,       # Separation between cluster centers 
+        cluster_variance: float = 0.1,      # Spread within each cluster
+        assignment_skewness: float = 0.0,   # If some clusters are used more frequently (0.0 to 1.0)
+        community_exclusivity: float = 1.0, # How exclusively clusters map to communities (0.0 to 1.0)
         seed: Optional[int] = None
     ):
         """
-        Initialize the feature regime generator.
+        Initialize the feature generator.
         
         Args:
             universe_K: Total number of communities in the universe
             feature_dim: Dimension of node features
-            regimes_per_community: Number of feature regimes per community
-            intra_community_regime_similarity: How similar regimes within same community should be (0-1)
-            inter_community_regime_similarity: How similar regimes between communities should be (0-1)
-            feature_variance: Variance of features within each regime
+            cluster_count_factor: Controls number of clusters relative to communities
+                                 (0.1 = few clusters, 1.0 = same as communities, 4.0 = many clusters)
+            center_variance: Controls separation between cluster centers
+            cluster_variance: Controls spread within each cluster
+            assignment_skewness: Controls if some clusters are used more frequently
+                                (0.0 = balanced, 1.0 = highly skewed)
+            community_exclusivity: Controls how exclusively clusters map to communities
+                                  (0.0 = shared across communities, 1.0 = exclusive to communities)
             seed: Random seed for reproducibility
         """
         self.universe_K = universe_K
         self.feature_dim = feature_dim
-        self.regimes_per_community = regimes_per_community
-        self.intra_similarity = intra_community_regime_similarity
-        self.inter_similarity = inter_community_regime_similarity
-        self.feature_variance = feature_variance
+        self.center_variance = center_variance
+        self.cluster_variance = cluster_variance
+        self.assignment_skewness = assignment_skewness
+        self.community_exclusivity = community_exclusivity
         
         # Set random seed if provided
         if seed is not None:
             np.random.seed(seed)
         
-        # Create the mapping from regime_id to (community_id, regime_idx)
-        self.regime_map = {}
-        regime_id = 0
-        for comm_id in range(universe_K):
-            for regime_idx in range(regimes_per_community):
-                self.regime_map[regime_id] = (comm_id, regime_idx)
-                regime_id += 1
+        # Determine number of clusters
+        self.n_clusters = max(1, int(universe_K * cluster_count_factor))
+        print(f"Creating {self.n_clusters} feature clusters for {universe_K} communities")
         
-        # Pre-compute base components for feature generation
-        self._precompute_feature_components()
+        # Generate cluster centers
+        self.cluster_centers = self._generate_cluster_centers()
         
-        # Generate regime prototypes
-        self.regime_prototypes = self._generate_regime_prototypes()
+        # Create community-cluster mapping
+        self.community_cluster_probs = self._create_community_cluster_mapping()
         
-        # Pre-compute feature distributions for each regime
-        self._precompute_feature_distributions()
+        # Track assignment statistics
+        self.cluster_stats = {}
     
-    def _precompute_feature_components(self):
-        """Pre-compute base components for feature generation."""
-        # Generate global base (shared across all communities)
-        self.global_base = np.random.normal(0, 1, size=self.feature_dim)
-        self.global_base = self.global_base / np.linalg.norm(self.global_base)
-        
-        # Generate community bases
-        self.community_bases = np.random.normal(0, 1, size=(self.universe_K, self.feature_dim))
-        self.community_bases = self.community_bases / np.linalg.norm(self.community_bases, axis=1, keepdims=True)
-        
-        # Calculate weights for components
-        self.global_weight = self.inter_similarity
-        remaining_weight = 1.0 - self.global_weight
-        self.community_weight = remaining_weight * self.intra_similarity
-        self.unique_weight = remaining_weight * (1.0 - self.intra_similarity)
-    
-    def _precompute_feature_distributions(self):
-        """Pre-compute feature distributions for each regime."""
-        total_regimes = self.universe_K * self.regimes_per_community
-        
-        # Store mean vectors and covariance matrices for each regime
-        self.regime_distributions = {}
-        
-        for regime_id in range(total_regimes):
-            comm_id, regime_idx = self.regime_map[regime_id]
-            
-            # Get prototype for this regime
-            prototype = self.regime_prototypes[regime_id]
-            
-            # Create covariance matrix based on feature variance
-            # We use a diagonal covariance matrix for efficiency
-            covariance = np.eye(self.feature_dim) * self.feature_variance
-            
-            self.regime_distributions[regime_id] = {
-                'mean': prototype,
-                'covariance': covariance
-            }
-    
-    def _generate_regime_prototypes(self) -> np.ndarray:
+    def _generate_cluster_centers(self) -> np.ndarray:
         """
-        Generate feature regimes with smooth control over similarities.
-        Uses pre-computed components for efficiency.
+        Generate cluster centers with controlled separation.
+        
+        Returns:
+            Matrix of cluster centers (n_clusters × feature_dim)
         """
-        total_regimes = self.universe_K * self.regimes_per_community
-        regime_prototypes = np.zeros((total_regimes, self.feature_dim))
+        # Generate centers from multivariate normal distribution
+        centers = np.random.normal(0, self.center_variance, size=(self.n_clusters, self.feature_dim))
         
-        regime_id = 0
-        for comm_id in range(self.universe_K):
-            comm_base = self.community_bases[comm_id]
-            
-            for _ in range(self.regimes_per_community):
-                # Generate unique component for this regime
-                unique_base = np.random.normal(0, 1, size=self.feature_dim)
-                unique_base = unique_base / np.linalg.norm(unique_base)
-                
-                # Combine components with pre-computed weights
-                prototype = (self.global_weight * self.global_base +
-                           self.community_weight * comm_base +
-                           self.unique_weight * unique_base)
-                
-                # Normalize the final prototype
-                prototype = prototype / np.linalg.norm(prototype)
-                regime_prototypes[regime_id] = prototype
-                regime_id += 1
+        # Normalize to unit sphere for consistent scaling
+        norms = np.linalg.norm(centers, axis=1, keepdims=True)
+        norms[norms == 0] = 1.0  # Avoid division by zero
+        centers = centers / norms
         
-        return regime_prototypes
+        return centers
     
-    def generate_node_features(
-        self,
-        node_regimes: np.ndarray
-    ) -> np.ndarray:
+    def _create_community_cluster_mapping(self) -> np.ndarray:
         """
-        Generate node features based on assigned regimes.
-        Uses pre-computed distributions for efficiency.
+        Create mapping probabilities between communities and clusters.
+        Handles both n_clusters >= n_communities and n_clusters < n_communities cases.
+        Ensures every community is assigned at least one cluster.
+        Skewness is applied to community popularity (number of clusters per community).
+        Returns:
+            Matrix of community-cluster probabilities (universe_K × n_clusters)
+        """
+        probs = np.zeros((self.universe_K, self.n_clusters))
+        base_prob = (1.0 - self.community_exclusivity) / self.n_clusters
+        probs.fill(base_prob)
+
+        # --- Determine how many clusters each community should get ---
+        min_clusters_per_community = 1
+        max_extra_clusters = max(0, self.n_clusters - self.universe_K)
+
+        # Skewed popularity: how many clusters each community wants
+        if self.assignment_skewness > 0:
+            alpha = 1.0 / self.assignment_skewness
+            raw_popularity = np.random.exponential(scale=alpha, size=self.universe_K)
+        else:
+            raw_popularity = np.ones(self.universe_K)
+        # Normalize to sum to 1
+        popularity = raw_popularity / np.sum(raw_popularity)
+
+        # Each community gets at least one cluster, distribute remaining clusters by popularity
+        extra_clusters = np.round(popularity * max_extra_clusters).astype(int) if max_extra_clusters > 0 else np.zeros(self.universe_K, dtype=int)
+        # Adjust to ensure sum is correct
+        while np.sum(extra_clusters) < max_extra_clusters:
+            extra_clusters[np.argmax(popularity)] += 1
+        while np.sum(extra_clusters) > max_extra_clusters:
+            extra_clusters[np.argmax(extra_clusters)] -= 1
+        clusters_per_community = min_clusters_per_community + extra_clusters
+
+        # --- Assignment matrix ---
+        # Case 1: More clusters than communities (assign clusters to communities)
+        if self.n_clusters >= self.universe_K:
+            available_clusters = list(range(self.n_clusters))
+            np.random.shuffle(available_clusters)
+            cluster_ptr = 0
+            for comm_idx in range(self.universe_K):
+                n_assign = clusters_per_community[comm_idx]
+                assigned = []
+                for _ in range(n_assign):
+                    if cluster_ptr >= self.n_clusters:
+                        # If we run out, assign randomly
+                        cluster = np.random.choice(range(self.n_clusters))
+                    else:
+                        cluster = available_clusters[cluster_ptr]
+                        cluster_ptr += 1
+                    assigned.append(cluster)
+                    probs[comm_idx, cluster] += self.community_exclusivity / n_assign
+        else:
+            # Case 2: Fewer clusters than communities (assign communities to clusters)
+            # Each community must be assigned to at least one cluster
+            # Distribute communities over clusters as evenly as possible, with skewness
+            # First, assign each community to a cluster (round-robin)
+            for comm_idx in range(self.universe_K):
+                cluster = comm_idx % self.n_clusters
+                probs[comm_idx, cluster] += self.community_exclusivity / clusters_per_community[comm_idx]
+            # Now, for communities that want more clusters, assign additional clusters
+            for comm_idx in range(self.universe_K):
+                n_assign = clusters_per_community[comm_idx]
+                already_assigned = {comm_idx % self.n_clusters}
+                if n_assign > 1:
+                    # Assign additional clusters randomly (but not the already assigned one)
+                    possible_clusters = list(set(range(self.n_clusters)) - already_assigned)
+                    if possible_clusters:
+                        chosen = np.random.choice(possible_clusters, size=n_assign-1, replace=len(possible_clusters)<(n_assign-1))
+                        for cluster in chosen:
+                            probs[comm_idx, cluster] += self.community_exclusivity / n_assign
+        # Normalize each community's probabilities to sum to 1
+        row_sums = np.sum(probs, axis=1, keepdims=True)
+        row_sums[row_sums == 0] = 1.0
+        probs = probs / row_sums
+        return probs
+    
+    def assign_node_clusters(self, community_assignments: np.ndarray) -> np.ndarray:
+        """
+        Assign nodes to feature clusters based on their community assignments.
         
         Args:
-            node_regimes: Array of regime IDs for each node
+            community_assignments: Array of community IDs for each node
+            
+        Returns:
+            Array of cluster IDs for each node
+        """
+        n_nodes = len(community_assignments)
+        node_clusters = np.zeros(n_nodes, dtype=int)
+        
+        # Reset cluster stats
+        self.cluster_stats = {
+            'cluster_counts': np.zeros(self.n_clusters, dtype=int),
+            'community_distribution': np.zeros((self.n_clusters, self.universe_K), dtype=int)
+        }
+        
+        # For each node
+        for i in range(n_nodes):
+            comm_id = community_assignments[i]
+            
+            # Sample cluster from community's distribution
+            node_clusters[i] = np.random.choice(
+                self.n_clusters,
+                p=self.community_cluster_probs[comm_id]
+            )
+            
+            # Track stats
+            cluster = node_clusters[i]
+            self.cluster_stats['cluster_counts'][cluster] += 1
+            self.cluster_stats['community_distribution'][cluster, comm_id] += 1
+        
+        # Log some basic statistics
+        print(f"Cluster assignment stats:")
+        print(f"  Most frequent cluster: {np.argmax(self.cluster_stats['cluster_counts'])} "
+              f"with {np.max(self.cluster_stats['cluster_counts'])} nodes")
+        print(f"  Least frequent cluster: {np.argmin(self.cluster_stats['cluster_counts'])} "
+              f"with {np.min(self.cluster_stats['cluster_counts'])} nodes")
+        
+        return node_clusters
+    
+    def generate_node_features(self, node_clusters: np.ndarray) -> np.ndarray:
+        """
+        Generate node features based on assigned clusters.
+        
+        Args:
+            node_clusters: Array of cluster IDs for each node
             
         Returns:
             Node feature matrix (n_nodes × feature_dim)
         """
-        n_nodes = len(node_regimes)
+        n_nodes = len(node_clusters)
         features = np.zeros((n_nodes, self.feature_dim))
         
-        # Generate features for all nodes of each regime at once for efficiency
-        for regime_id in np.unique(node_regimes):
-            # Get nodes with this regime
-            regime_mask = node_regimes == regime_id
-            n_regime_nodes = np.sum(regime_mask)
+        # Generate features for all nodes of each cluster at once
+        for cluster_id in np.unique(node_clusters):
+            # Get nodes with this cluster
+            cluster_mask = node_clusters == cluster_id
+            n_cluster_nodes = np.sum(cluster_mask)
             
-            if n_regime_nodes == 0:
+            if n_cluster_nodes == 0:
                 continue
             
-            # Get pre-computed distribution for this regime
-            dist = self.regime_distributions[regime_id]
+            # Get cluster center
+            center = self.cluster_centers[cluster_id]
             
-            # Generate features from distribution
-            regime_features = np.random.multivariate_normal(
-                mean=dist['mean'],
-                cov=dist['covariance'],
-                size=n_regime_nodes
+            # Covariance matrix
+            cov = np.eye(self.feature_dim) * self.cluster_variance
+            
+            # Generate features from multivariate normal
+            cluster_features = np.random.multivariate_normal(
+                mean=center,
+                cov=cov,
+                size=n_cluster_nodes
             )
             
-            # Normalize features
-            regime_features = regime_features / np.linalg.norm(regime_features, axis=1, keepdims=True)
-            
-            # Assign to nodes with this regime
-            features[regime_mask] = regime_features
+            # Assign to nodes with this cluster
+            features[cluster_mask] = cluster_features
         
         return features
     
-    def assign_node_regimes(
-        self,
-        community_assignments: np.ndarray,
-        regime_balance: float = 0.5
-    ) -> np.ndarray:
+    def analyze_cluster_community_relationship(self):
         """
-        Assign nodes to feature regimes based on their community assignments.
+        Analyze how clusters are distributed across communities.
         
-        Args:
-            community_assignments: Array of community IDs for each node
-            regime_balance: Controls how evenly regimes are distributed within communities (0-1)
-                0: One regime dominates
-                1: Even distribution across regimes
-                
         Returns:
-            Array of regime IDs for each node
+            Dictionary with analysis metrics
         """
-        n_nodes = len(community_assignments)
-        node_regimes = np.zeros(n_nodes, dtype=int)
+        if not hasattr(self, 'cluster_stats') or not self.cluster_stats:
+            return {"error": "No nodes have been assigned to clusters yet"}
         
-        # For each community, assign nodes to regimes
-        for comm_id in range(self.universe_K):
-            # Get nodes in this community
-            comm_nodes = np.where(community_assignments == comm_id)[0]
-            
-            if len(comm_nodes) == 0:
-                continue
-                
-            # Calculate probabilities for each regime
-            if regime_balance == 1.0:
-                # Perfect balance - equal probability
-                probs = np.ones(self.regimes_per_community) / self.regimes_per_community
-            else:
-                # Uneven distribution - one regime is more common
-                # Lower regime_balance means more skewed distribution
-                alpha = 1.0 / (1.0 - regime_balance) if regime_balance < 1.0 else 1.0
-                probs = np.random.dirichlet(np.ones(self.regimes_per_community) * alpha)
-            
-            # Assign regimes to nodes
-            regime_indices = np.random.choice(
-                self.regimes_per_community,
-                size=len(comm_nodes),
-                p=probs
-            )
-            
-            # Convert to global regime IDs
-            global_regime_ids = comm_id * self.regimes_per_community + regime_indices
-            node_regimes[comm_nodes] = global_regime_ids
+        community_dist = self.cluster_stats['community_distribution']
         
-        return node_regimes
-
-    def test_regime_continuity(
-        self,
-        n_steps: int = 100,
-        test_regime_pair: Tuple[int, int] = (0, 1)
-    ) -> np.ndarray:
-        """
-        Test the continuity of regime generation by measuring distances between regimes
-        as similarity parameters change.
+        # Calculate entropy for each cluster's community distribution
+        entropies = []
+        for cluster_idx in range(self.n_clusters):
+            dist = community_dist[cluster_idx]
+            if np.sum(dist) > 0:
+                # Normalize to probabilities
+                dist = dist / np.sum(dist)
+                # Calculate entropy (-sum(p*log(p)))
+                entropy = -np.sum(dist * np.log2(dist + 1e-10))
+                # Normalize by max possible entropy
+                max_entropy = np.log2(self.universe_K)
+                normalized_entropy = entropy / max_entropy if max_entropy > 0 else 0
+                entropies.append(normalized_entropy)
         
-        Args:
-            n_steps: Number of steps to test
-            test_regime_pair: Tuple of regime indices to compare
-            
-        Returns:
-            Array of distances between the test regimes at each step
-        """
-        distances = np.zeros((n_steps, n_steps))
+        # Overall metrics
+        avg_entropy = np.mean(entropies) if entropies else 0
+        exclusivity = 1.0 - avg_entropy  # High entropy = low exclusivity
         
-        # Test over range of both similarity parameters
-        inter_range = np.linspace(0, 1, n_steps)
-        intra_range = np.linspace(0, 1, n_steps)
+        # Calculate cluster balance
+        cluster_counts = self.cluster_stats['cluster_counts']
+        total_nodes = np.sum(cluster_counts)
+        expected_count = total_nodes / self.n_clusters
+        gini = 0.0
         
-        for i, inter_sim in enumerate(inter_range):
-            for j, intra_sim in enumerate(intra_range):
-                # Store current parameters
-                old_inter = self.inter_similarity
-                old_intra = self.intra_similarity
-                
-                # Set test parameters
-                self.inter_similarity = inter_sim
-                self.intra_similarity = intra_sim
-                
-                # Generate regimes
-                prototypes = self._generate_regime_prototypes()
-                
-                # Measure distance between test regimes
-                regime1, regime2 = test_regime_pair
-                dist = np.linalg.norm(prototypes[regime1] - prototypes[regime2])
-                distances[i, j] = dist
-                
-                # Restore parameters
-                self.inter_similarity = old_inter
-                self.intra_similarity = old_intra
+        if total_nodes > 0:
+            # Calculate Gini coefficient for cluster size inequality
+            cluster_fractions = cluster_counts / total_nodes
+            sorted_fractions = np.sort(cluster_fractions)
+            cumsum = np.cumsum(sorted_fractions)
+            # Gini formula
+            gini = 1 - 2 * np.sum((cumsum - sorted_fractions / 2) / self.n_clusters)
         
-        return distances
+        return {
+            "community_exclusivity": exclusivity,
+            "cluster_skewness": gini,
+            "cluster_entropies": entropies,
+            "cluster_counts": cluster_counts.tolist(),
+        }
 
 class NeighborhoodFeatureAnalyzer:
     """
-    Analyzes feature regimes in k-hop neighborhoods of nodes.
+    Analyzes feature distributions in k-hop neighborhoods.
     """
     
     def __init__(
         self,
         graph: nx.Graph,
-        node_regimes: np.ndarray,
-        total_regimes: int,
+        node_clusters: np.ndarray,
+        total_clusters: int,
         max_hops: int = 3
     ):
         """
-        Initialize the neighborhood analyzer.
+        Initialize the analyzer.
         
         Args:
             graph: NetworkX graph
-            node_regimes: Array of regime IDs for each node
-            total_regimes: Total number of regimes in the universe
+            node_clusters: Array of cluster IDs for each node
+            total_clusters: Total number of clusters
             max_hops: Maximum number of hops to analyze
         """
         self.graph = graph
-        self.node_regimes = node_regimes
-        self.total_regimes = total_regimes
+        self.node_clusters = node_clusters
+        self.total_clusters = total_clusters
         self.max_hops = max_hops
         
-        # Pre-compute neighborhoods for efficiency
+        # Compute neighborhoods
         self.neighborhoods = self._compute_neighborhoods()
         
-        # Pre-compute frequency vectors
+        # Compute frequency vectors for each hop
         self.frequency_vectors = {}
         for k in range(1, max_hops + 1):
             self.frequency_vectors[k] = self._compute_frequency_vectors(k)
     
     def _compute_neighborhoods(self) -> Dict[int, Dict[int, List[int]]]:
         """
-        Compute k-hop neighborhoods for all nodes and hop distances.
+        Compute k-hop neighborhoods for each node.
         
         Returns:
             Dictionary mapping hop distance to node neighborhoods
@@ -328,29 +351,19 @@ class NeighborhoodFeatureAnalyzer:
         
         # For each hop distance
         for k in range(1, self.max_hops + 1):
-            neighborhoods[k] = {}
+            node_neighbors = {}
             
             # For each node
             for node in self.graph.nodes():
-                # Use NetworkX to find k-hop neighborhood
-                if k == 1:
-                    # 1-hop is direct neighbors
-                    neighbors = list(self.graph.neighbors(node))
-                else:
-                    # k-hop uses shortest paths
-                    neighbors = []
-                    for other in self.graph.nodes():
-                        if other != node:
-                            try:
-                                path_length = nx.shortest_path_length(self.graph, node, other)
-                                if path_length == k:
-                                    neighbors.append(other)
-                            except nx.NetworkXNoPath:
-                                # No path exists
-                                pass
+                # Get k-hop neighbors using NetworkX
+                neighbors = set()
+                for nbr in nx.single_source_shortest_path_length(self.graph, node, cutoff=k).keys():
+                    if nbr != node:  # Exclude self
+                        neighbors.add(nbr)
+                node_neighbors[node] = sorted(list(neighbors))
                 
-                neighborhoods[k][node] = neighbors
-        
+            neighborhoods[k] = node_neighbors
+            
         return neighborhoods
     
     def _compute_frequency_vectors(self, k: int) -> np.ndarray:
@@ -361,27 +374,27 @@ class NeighborhoodFeatureAnalyzer:
             k: Hop distance
             
         Returns:
-            Matrix of frequency vectors (n_nodes × total_regimes)
+            Matrix of frequency vectors (n_nodes × total_clusters)
         """
-        n_nodes = self.graph.number_of_nodes()
-        frequencies = np.zeros((n_nodes, self.total_regimes))
+        n_nodes = len(self.graph)
+        freq_vectors = np.zeros((n_nodes, self.total_clusters))
         
         # For each node
-        for node in self.graph.nodes():
+        for node in range(n_nodes):
             # Get k-hop neighbors
             neighbors = self.neighborhoods[k][node]
             
             if not neighbors:
                 continue
                 
-            # Count regimes in neighborhood
-            regime_counts = Counter([self.node_regimes[nbr] for nbr in neighbors])
+            # Count cluster frequencies
+            cluster_counts = Counter([self.node_clusters[nbr] for nbr in neighbors])
             
             # Convert to frequency vector
-            for regime, count in regime_counts.items():
-                frequencies[node, regime] = count / len(neighbors)
-        
-        return frequencies
+            for cluster, count in cluster_counts.items():
+                freq_vectors[node, cluster] = count / len(neighbors)
+                
+        return freq_vectors
     
     def get_frequency_vector(
         self,
@@ -389,15 +402,18 @@ class NeighborhoodFeatureAnalyzer:
         k: int
     ) -> np.ndarray:
         """
-        Get the frequency vector for a node's k-hop neighborhood.
+        Get frequency vector for a specific node and hop distance.
         
         Args:
-            node: Node index
+            node: Node ID
             k: Hop distance
             
         Returns:
-            Frequency vector
+            Frequency vector for the node's k-hop neighborhood
         """
+        if k not in self.frequency_vectors:
+            raise ValueError(f"Frequency vectors not computed for hop distance {k}")
+            
         return self.frequency_vectors[k][node]
     
     def get_all_frequency_vectors(
@@ -405,19 +421,22 @@ class NeighborhoodFeatureAnalyzer:
         k: int
     ) -> np.ndarray:
         """
-        Get frequency vectors for all nodes at k hops.
+        Get frequency vectors for all nodes at a specific hop distance.
         
         Args:
             k: Hop distance
             
         Returns:
-            Matrix of frequency vectors
+            Matrix of frequency vectors (n_nodes × total_clusters)
         """
+        if k not in self.frequency_vectors:
+            raise ValueError(f"Frequency vectors not computed for hop distance {k}")
+            
         return self.frequency_vectors[k]
 
-class FeatureRegimeLabelGenerator:
+class FeatureClusterLabelGenerator:
     """
-    Generates node labels based on neighborhood feature regime distributions.
+    Generates balanced node labels based on feature cluster distributions in neighborhoods.
     """
     
     def __init__(
@@ -432,106 +451,134 @@ class FeatureRegimeLabelGenerator:
         Initialize the label generator.
         
         Args:
-            frequency_vectors: Matrix of neighborhood frequency vectors
-            n_labels: Number of node labels to generate
+            frequency_vectors: Matrix of cluster frequencies in neighborhoods (n_nodes × n_clusters)
+            n_labels: Number of label classes to generate
             balance_tolerance: Maximum allowed class imbalance (0-1)
-            max_iterations: Maximum clustering iterations to achieve balance
-            seed: Random seed
+            max_iterations: Maximum number of iterations for balancing
+            seed: Random seed for reproducibility
         """
         self.frequency_vectors = frequency_vectors
         self.n_labels = n_labels
         self.balance_tolerance = balance_tolerance
         self.max_iterations = max_iterations
-        self.seed = seed
         
-        # Set random seed
+        # Set random seed if provided
         if seed is not None:
             np.random.seed(seed)
-        
-        # Generate labels
-        self.node_labels, self.cluster_centers = self._generate_balanced_labels()
-        
-        # Extract interpretable rules
-        self.label_rules = self._extract_label_rules()
+            
+        # Generate balanced labels
+        self.labels, self.label_rules = self._generate_balanced_labels()
     
     def _generate_balanced_labels(self) -> Tuple[np.ndarray, np.ndarray]:
         """
-        Generate balanced labels using k-means clustering with iterations to improve balance.
+        Generate balanced node labels based on cluster frequencies.
         
         Returns:
-            Tuple of (node labels, cluster centers)
+            Tuple of (labels, label_rules)
         """
-        n_nodes = self.frequency_vectors.shape[0]
+        n_nodes = len(self.frequency_vectors)
         
-        # Scale features for better clustering
-        scaler = StandardScaler()
-        scaled_vectors = scaler.fit_transform(self.frequency_vectors)
+        # Initialize labels randomly
+        labels = np.random.randint(0, self.n_labels, size=n_nodes)
         
-        # Initialize with basic k-means
-        best_labels = None
-        best_balance = 0.0
-        best_centers = None
+        # Track label counts
+        label_counts = np.zeros(self.n_labels)
+        for label in labels:
+            label_counts[label] += 1
+            
+        # Target count per label
+        target_count = n_nodes / self.n_labels
         
-        for iteration in range(self.max_iterations):
-            # Run k-means with different initialization
-            kmeans = KMeans(
-                n_clusters=self.n_labels,
-                n_init=10,
-                random_state=self.seed + iteration if self.seed else None
-            )
-            labels = kmeans.fit_predict(scaled_vectors)
-            
-            # Calculate class balance
-            class_counts = np.bincount(labels, minlength=self.n_labels)
-            expected_count = n_nodes / self.n_labels
-            
-            # Calculate balance as 1 - (max deviation / expected)
-            max_deviation = np.max(np.abs(class_counts - expected_count))
-            balance = 1.0 - (max_deviation / expected_count)
-            
-            # Keep best result
-            if best_labels is None or balance > best_balance:
-                best_labels = labels
-                best_balance = balance
-                best_centers = kmeans.cluster_centers_
-            
-            # Stop if balance is good enough
-            if balance >= (1.0 - self.balance_tolerance):
+        # Iteratively balance labels
+        for _ in range(self.max_iterations):
+            # Check if balanced enough
+            max_deviation = np.max(np.abs(label_counts - target_count)) / target_count
+            if max_deviation <= self.balance_tolerance:
                 break
+                
+            # Find most imbalanced labels
+            deviations = np.abs(label_counts - target_count)
+            most_imbalanced = np.argsort(deviations)[-2:]  # Get 2 most imbalanced
+            
+            # Get nodes with these labels
+            nodes_to_swap = []
+            for label in most_imbalanced:
+                nodes = np.where(labels == label)[0]
+                nodes_to_swap.extend(nodes)
+                
+            # Try swapping labels between these nodes
+            for i in range(0, len(nodes_to_swap), 2):
+                if i + 1 >= len(nodes_to_swap):
+                    break
+                    
+                node1, node2 = nodes_to_swap[i], nodes_to_swap[i + 1]
+                label1, label2 = labels[node1], labels[node2]
+                
+                # Check if swap improves balance
+                old_deviation = np.abs(label_counts[label1] - target_count) + np.abs(label_counts[label2] - target_count)
+                
+                # Swap labels
+                labels[node1], labels[node2] = label2, label1
+                label_counts[label1] -= 1
+                label_counts[label2] -= 1
+                label_counts[label2] += 1
+                label_counts[label1] += 1
+                
+                # Check new deviation
+                new_deviation = np.abs(label_counts[label1] - target_count) + np.abs(label_counts[label2] - target_count)
+                
+                # Revert if no improvement
+                if new_deviation >= old_deviation:
+                    labels[node1], labels[node2] = label1, label2
+                    label_counts[label1] -= 1
+                    label_counts[label2] -= 1
+                    label_counts[label2] += 1
+                    label_counts[label1] += 1
         
-        # Transform the centers back to original scale
-        original_centers = scaler.inverse_transform(best_centers)
+        # Extract rules for each label
+        label_rules = self._extract_label_rules()
         
-        return best_labels, original_centers
+        return labels, label_rules
     
     def _extract_label_rules(self) -> List[str]:
         """
-        Extract interpretable rules for each label class.
+        Extract rules that characterize each label class.
         
         Returns:
-            List of rule strings for each label
+            List of rule descriptions
         """
         rules = []
         
+        # For each label
         for label in range(self.n_labels):
-            # Get center for this label
-            center = self.cluster_centers[label]
+            # Get nodes with this label
+            label_nodes = np.where(self.labels == label)[0]
             
-            # Find dominant regimes (top 2)
-            top_regimes = np.argsort(center)[-2:][::-1]
-            top_values = center[top_regimes]
+            if len(label_nodes) == 0:
+                rules.append(f"Label {label}: No nodes assigned")
+                continue
+                
+            # Get cluster frequencies for these nodes
+            label_freqs = self.frequency_vectors[label_nodes]
             
-            # Create rule
-            rule = f"Label {label}: "
+            # Find most distinctive clusters
+            mean_freqs = np.mean(label_freqs, axis=0)
+            std_freqs = np.std(label_freqs, axis=0)
+            
+            # Get clusters with high mean and low std
+            distinctive = np.where((mean_freqs > 0.3) & (std_freqs < 0.2))[0]
+            
+            if len(distinctive) == 0:
+                rules.append(f"Label {label}: No distinctive clusters found")
+                continue
+                
+            # Create rule description
             rule_parts = []
+            for cluster in distinctive:
+                rule_parts.append(f"cluster {cluster} ({mean_freqs[cluster]:.2f})")
+                
+            rules.append(f"Label {label}: High frequency of " + ", ".join(rule_parts))
             
-            for regime, value in zip(top_regimes, top_values):
-                if value > 0.1:  # Only include significant regime contributions
-                    rule_parts.append(f"Regime {regime} ({value:.0%})")
-            
-            rule += " + ".join(rule_parts)
-            rules.append(rule)
-        
         return rules
     
     def get_node_labels(self) -> np.ndarray:
@@ -541,7 +588,7 @@ class FeatureRegimeLabelGenerator:
         Returns:
             Array of node labels
         """
-        return self.node_labels
+        return self.labels
 
 class GenerativeRuleBasedLabeler:
     """
