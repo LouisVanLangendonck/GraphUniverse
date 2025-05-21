@@ -25,6 +25,7 @@ from mmsb.feature_regimes import (
     FeatureClusterLabelGenerator
 )
 import time
+import matplotlib.pyplot as plt
 
 def sample_connected_community_subset(
     P: np.ndarray,
@@ -2123,6 +2124,25 @@ class GraphSample:
         # Calculate deviation matrix for visualization
         deviation_matrix = np.abs(actual_matrix - self.P_sub)
         
+        # Calculate average degrees per community
+        avg_degrees = np.zeros(n_communities)
+        for i in range(n_communities):
+            # Get nodes in this community
+            community_nodes = np.where(self.community_labels == i)[0]
+            if len(community_nodes) > 0:
+                # Calculate average degree for nodes in this community
+                community_degrees = [self.graph.degree(node) for node in community_nodes]
+                avg_degrees[i] = np.mean(community_degrees)
+        
+        # Calculate community densities
+        densities = np.zeros(n_communities)
+        for i in range(n_communities):
+            n = community_sizes[i]
+            if n > 1:
+                # For each community, density is the ratio of actual edges to possible edges
+                # actual_matrix[i,i] already contains this ratio
+                densities[i] = actual_matrix[i, i]
+        
         # Basic degree analysis
         degrees = np.array([d for _, d in self.graph.degree()])
         degree_analysis = {
@@ -2148,6 +2168,33 @@ class GraphSample:
             print(f"Generation method: {self.generation_method}")
             print(f"Generation parameters: {self.generation_params}")
         
+        # Create visualization figure
+        import matplotlib.pyplot as plt
+        fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(18, 5))
+        
+        # Plot actual connection probabilities
+        im1 = ax1.imshow(actual_matrix, cmap='viridis')
+        ax1.set_title('Actual Connection Probabilities')
+        ax1.set_xlabel('Community')
+        ax1.set_ylabel('Community')
+        plt.colorbar(im1, ax=ax1)
+        
+        # Plot expected connection probabilities
+        im2 = ax2.imshow(self.P_sub, cmap='viridis')
+        ax2.set_title('Expected Connection Probabilities')
+        ax2.set_xlabel('Community')
+        ax2.set_ylabel('Community')
+        plt.colorbar(im2, ax=ax2)
+        
+        # Plot deviation matrix
+        im3 = ax3.imshow(deviation_matrix, cmap='RdBu_r')
+        ax3.set_title('Deviation Matrix')
+        ax3.set_xlabel('Community')
+        ax3.set_ylabel('Community')
+        plt.colorbar(im3, ax=ax3)
+        
+        plt.tight_layout()
+        
         return {
             "actual_matrix": actual_matrix,
             "expected_matrix": self.P_sub,
@@ -2160,7 +2207,10 @@ class GraphSample:
             "constraints": {  # Keep constraints in output for verification
                 "max_mean_deviation": self.max_mean_community_deviation,
                 "max_max_deviation": self.max_max_community_deviation
-            }
+            },
+            "figure": fig,  # Add the figure to the return dictionary
+            "avg_degrees": avg_degrees,  # Add average degrees per community
+            "densities": densities  # Add community densities
         }
 
     def _calculate_community_deviation(
@@ -2465,9 +2515,10 @@ class GraphSample:
         from scipy.spatial.distance import cosine
         from scipy.special import kl_div, rel_entr
         
-        # Get unique communities
+        # Get unique communities and create a mapping from label to index
         unique_communities = np.unique(self.community_labels)
         n_communities = len(unique_communities)
+        label_to_index = {label: idx for idx, label in enumerate(unique_communities)}
         
         # Initialize community-community edge probability matrix
         edge_probs = np.zeros((n_communities, n_communities))
@@ -2475,14 +2526,15 @@ class GraphSample:
         # Count nodes in each community
         community_sizes = np.zeros(n_communities, dtype=int)
         for label in self.community_labels:
-            community_sizes[label] += 1
+            community_sizes[label_to_index[label]] += 1
         
         # Count edges between communities
         for i, j in self.graph.edges():
-            comm_i = self.community_labels[i]
-            comm_j = self.community_labels[j]
+            comm_i = label_to_index[self.community_labels[i]]
+            comm_j = label_to_index[self.community_labels[j]]
             edge_probs[comm_i, comm_j] += 1
             edge_probs[comm_j, comm_i] += 1  # Undirected graph
+        
         
         # Calculate actual probabilities
         for i in range(n_communities):

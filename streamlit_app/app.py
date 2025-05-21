@@ -93,6 +93,53 @@ from utils.metapath_analysis import (
     khop_regime_prediction
 )
 
+def create_graph_dashboard(graph):
+    # Create tabs for different visualizations
+    tab1, tab2, tab3, tab4 = st.tabs([
+        "Graph with Communities",
+        "Community Distribution",
+        "Parameter Analysis",
+        "Feature Analysis"
+    ])
+
+    with tab1:
+        st.subheader("Graph with Communities")
+        fig = plot_graph_communities(graph)
+        st.pyplot(fig)
+
+    with tab2:
+        st.subheader("Community Distribution")
+        # Pass the graph object directly
+        fig = plot_membership_matrix(graph)
+        st.pyplot(fig)
+
+    with tab3:
+        st.subheader("Parameter Analysis")
+        # Convert parameters dictionary to DataFrame
+        params_dict = graph.extract_parameters()
+        params_df = pd.DataFrame([params_dict])
+        fig = create_parameter_dashboard(params_df)
+        st.pyplot(fig)
+
+    with tab4:
+        st.subheader("Feature Analysis")
+        if hasattr(graph, 'features') and graph.features is not None:
+            # Pass a list containing the single graph sample
+            fig = plot_community_statistics([graph])
+            st.pyplot(fig)
+            
+            # Add feature regime analysis if available
+            if hasattr(graph, 'node_regimes') and graph.node_regimes is not None:
+                st.subheader("Feature Regime Analysis")
+                regime_analysis = graph.analyze_neighborhood_features()
+                st.write("Regime Distribution:", regime_analysis)
+                
+                # Add community-cluster visualization if feature generator is available
+                if hasattr(graph, 'universe') and hasattr(graph.universe, 'feature_generator'):
+                    st.subheader("Community-Cluster Assignments")
+                    fig = visualize_community_cluster_assignments(graph.universe.feature_generator)
+                    st.pyplot(fig)
+
 def run_metapath_analysis(graph, theta, max_length, allow_loops, allow_backtracking, top_k, min_length):
     """Callback function to run metapath analysis"""
     try:
@@ -1031,6 +1078,11 @@ elif page == "Graph Sampling":
                 step=0.01,
                 help="Maximum allowed deviation in any community property"
             )
+            st.session_state.graph_params['disable_deviation_limiting'] = st.checkbox(
+                "Disable deviation limiting",
+                value=st.session_state.graph_params.get('disable_deviation_limiting', False),
+                help="If checked, community deviation limits will not be enforced during graph generation"
+            )
         
         # Method-specific parameters
         st.markdown('<div class="subsection-header">Method Parameters</div>', unsafe_allow_html=True)
@@ -1331,7 +1383,8 @@ elif page == "Graph Sampling":
                     dccc_global_degree_params=dccc_global_degree_params,
                     aggressive_separation=aggressive_separation,
                     alpha=alpha,
-                    degree_method=degree_method
+                    degree_method=degree_method,
+                    disable_deviation_limiting=st.session_state.graph_params.get('disable_deviation_limiting', False)
                 )
 
                 # Create the graph sample
@@ -1383,6 +1436,76 @@ elif page == "Graph Sampling":
                     'Density': connection_analysis['densities']
                 })
                 st.dataframe(stats_df)
+
+                # Create graph sample
+                graph = GraphSample(
+                    universe=st.session_state.universe,
+                    communities=communities,
+                    n_nodes=st.session_state.graph_params['n_nodes'],
+                    min_component_size=st.session_state.graph_params['min_component_size'],
+                    degree_heterogeneity=st.session_state.graph_params['method_params'].get('degree_heterogeneity', 0.0),
+                    edge_noise=st.session_state.graph_params['method_params'].get('edge_noise', 0.0),
+                    feature_regime_balance=0.5,
+                    target_homophily=None,
+                    target_density=None,
+                    use_configuration_model=use_configuration_model,
+                    degree_distribution=degree_distribution,
+                    power_law_exponent=power_law_exponent,
+                    target_avg_degree=st.session_state.graph_params['method_params'].get('target_avg_degree'),
+                    triangle_enhancement=st.session_state.graph_params['method_params'].get('triangle_enhancement', 0.0),
+                    max_mean_community_deviation=st.session_state.graph_params['max_mean_community_deviation'],
+                    max_max_community_deviation=st.session_state.graph_params['max_max_community_deviation'],
+                    max_parameter_search_attempts=st.session_state.graph_params['max_parameter_search_attempts'],
+                    parameter_search_range=st.session_state.graph_params['parameter_search_range'],
+                    min_edge_density=st.session_state.graph_params['min_edge_density'],
+                    max_retries=st.session_state.graph_params['max_retries'],
+                    seed=st.session_state.graph_params['seed'],
+                    config_model_params=config_model_params,
+                    use_dccc_sbm=use_dccc_sbm,
+                    community_imbalance=community_imbalance if use_dccc_sbm else 0.0,
+                    degree_distribution_overlap=degree_distribution_overlap if use_dccc_sbm else 0.5,
+                    dccc_global_degree_params=dccc_global_degree_params if use_dccc_sbm else None,
+                    aggressive_separation=aggressive_separation if degree_method == "gmda" else True,
+                    alpha=alpha if degree_method == "gmda" else 0.5,
+                    degree_method=degree_method,
+                    disable_deviation_limiting=st.session_state.graph_params.get('disable_deviation_limiting', False)
+                )
+                
+                # Store in session state
+                st.session_state.current_graph = graph
+                
+                st.success("Graph sampled successfully!")
+                
+                # Calculate and display signals
+                st.markdown("### Graph Signals")
+                col1, col2, col3 = st.columns(3)
+                
+                with col1:
+                    degree_signals = graph.calculate_degree_signal()
+                    mean_degree_signal = np.mean(list(degree_signals.values()))
+                    min_degree_signal = np.min(list(degree_signals.values()))
+                    max_degree_signal = np.max(list(degree_signals.values()))
+                    st.metric("Degree Signal", f"{mean_degree_signal:.3f}")
+                    st.caption(f"Min: {min_degree_signal:.3f}, Max: {max_degree_signal:.3f}")
+                
+                with col2:
+                    structure_signals = graph.calculate_structure_signal()
+                    mean_structure_signal = np.mean(list(structure_signals.values()))
+                    min_structure_signal = np.min(list(structure_signals.values()))
+                    max_structure_signal = np.max(list(structure_signals.values()))
+                    st.metric("Structure Signal", f"{mean_structure_signal:.3f}")
+                    st.caption(f"Min: {min_structure_signal:.3f}, Max: {max_structure_signal:.3f}")
+                
+                with col3:
+                    feature_signals = graph.calculate_feature_signal()
+                    mean_feature_signal = np.mean(list(feature_signals.values()))
+                    min_feature_signal = np.min(list(feature_signals.values()))
+                    max_feature_signal = np.max(list(feature_signals.values()))
+                    st.metric("Feature Signal", f"{mean_feature_signal:.3f}")
+                    st.caption(f"Min: {min_feature_signal:.3f}, Max: {max_feature_signal:.3f}")
+                
+                # Show graph dashboard
+                create_graph_dashboard(graph)
 
 # Parameter Space Analysis Page
 elif page == "Parameter Space Analysis":
@@ -3406,12 +3529,11 @@ st.markdown("""
 
 def create_graph_dashboard(graph):
     # Create tabs for different visualizations
-    tab1, tab2, tab3, tab4, tab5 = st.tabs([
+    tab1, tab2, tab3, tab4 = st.tabs([
         "Graph with Communities",
         "Community Distribution",
         "Parameter Analysis",
-        "Feature Analysis",
-        "Degree Analysis"
+        "Feature Analysis"
     ])
 
     with tab1:
@@ -3427,13 +3549,17 @@ def create_graph_dashboard(graph):
 
     with tab3:
         st.subheader("Parameter Analysis")
-        fig = create_parameter_dashboard(graph.extract_parameters())
+        # Convert parameters dictionary to DataFrame
+        params_dict = graph.extract_parameters()
+        params_df = pd.DataFrame([params_dict])
+        fig = create_parameter_dashboard(params_df)
         st.pyplot(fig)
 
     with tab4:
         st.subheader("Feature Analysis")
         if hasattr(graph, 'features') and graph.features is not None:
-            fig = plot_community_statistics(graph)
+            # Pass a list containing the single graph sample
+            fig = plot_community_statistics([graph])
             st.pyplot(fig)
             
             # Add feature regime analysis if available
@@ -3445,62 +3571,6 @@ def create_graph_dashboard(graph):
                 # Add community-cluster visualization if feature generator is available
                 if hasattr(graph, 'universe') and hasattr(graph.universe, 'feature_generator'):
                     st.subheader("Community-Cluster Assignments")
-                    
-                    # Add sliders for feature parameters
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        cluster_count_factor = st.slider(
-                            "Cluster Count Factor",
-                            min_value=0.1,
-                            max_value=4.0,
-                            value=1.0,
-                            step=0.1,
-                            help="Number of clusters relative to communities (0.1=few clusters, 1.0=same as communities, 4.0=many clusters)"
-                        )
-                        center_variance = st.slider(
-                            "Center Variance",
-                            min_value=0.1,
-                            max_value=2.0,
-                            value=1.0,
-                            step=0.1,
-                            help="Separation between cluster centers"
-                        )
-                    with col2:
-                        cluster_variance = st.slider(
-                            "Cluster Variance",
-                            min_value=0.01,
-                            max_value=0.5,
-                            value=0.1,
-                            step=0.01,
-                            help="Spread within each cluster"
-                        )
-                        assignment_skewness = st.slider(
-                            "Assignment Skewness",
-                            min_value=0.0,
-                            max_value=1.0,
-                            value=0.0,
-                            step=0.1,
-                            help="If some clusters are used more frequently (0.0=balanced, 1.0=highly skewed)"
-                        )
-                        community_exclusivity = st.slider(
-                            "Community Exclusivity",
-                            min_value=0.0,
-                            max_value=1.0,
-                            value=1.0,
-                            step=0.1,
-                            help="How exclusively clusters map to communities (0.0=shared, 1.0=exclusive)"
-                        )
-                    
-                    # Update feature generator with new parameters
-                    graph.universe.update_feature_generator(
-                        cluster_count_factor=cluster_count_factor,
-                        center_variance=center_variance,
-                        cluster_variance=cluster_variance,
-                        assignment_skewness=assignment_skewness,
-                        community_exclusivity=community_exclusivity
-                    )
-                    
-                    # Show the visualization
                     fig = visualize_community_cluster_assignments(graph.universe.feature_generator)
                     st.pyplot(fig)
         else:

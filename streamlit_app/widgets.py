@@ -49,13 +49,6 @@ def universe_parameters_widget() -> Dict[str, Any]:
             value=10,
             help="Total number of communities in the universe"
         )
-        feature_dim = st.slider(
-            "Feature dimension",
-            min_value=0,
-            max_value=100,
-            value=0,
-            help="Dimension of node features (0 for no features)"
-        )
     
     with col2:
         block_structure = st.selectbox(
@@ -73,46 +66,51 @@ def universe_parameters_widget() -> Dict[str, Any]:
         )
     
     # Feature Generation Parameters
-    if feature_dim > 0:
-        st.markdown("### Feature Generation Parameters")
-        col3, col4 = st.columns(2)
-        
-        with col3:
-            cluster_count_factor = st.slider(
-                "Cluster count factor",
-                min_value=0.1,
-                max_value=4.0,
-                value=1.0,
-                step=0.1,
-                help="Number of clusters relative to communities"
-            )
-            center_variance = st.slider(
-                "Center variance",
-                min_value=0.1,
-                max_value=2.0,
-                value=1.0,
-                step=0.1,
-                help="Separation between cluster centers"
-            )
-        
-        with col4:
-            cluster_variance = st.slider(
-                "Cluster variance",
-                min_value=0.01,
-                max_value=0.5,
-                value=0.1,
-                step=0.01,
-                help="Spread within each cluster"
-            )
-            assignment_skewness = st.slider(
-                "Assignment skewness",
-                min_value=0.0,
-                max_value=1.0,
-                value=0.0,
-                step=0.1,
-                help="If some clusters are used more frequently"
-            )
-        
+    st.markdown("### Feature Generation Parameters")
+    col3, col4 = st.columns(2)
+    
+    with col3:
+        feature_dim = st.slider(
+            "Feature dimension",
+            min_value=0,
+            max_value=100,
+            value=0,
+            help="Dimension of node features (0 for no features)"
+        )
+        cluster_count_factor = st.slider(
+            "Cluster count factor",
+            min_value=0.1,
+            max_value=4.0,
+            value=1.0,
+            step=0.1,
+            help="Number of clusters relative to communities"
+        )
+        center_variance = st.slider(
+            "Center variance",
+            min_value=0.1,
+            max_value=2.0,
+            value=1.0,
+            step=0.1,
+            help="Separation between cluster centers"
+        )
+    
+    with col4:
+        cluster_variance = st.slider(
+            "Cluster variance",
+            min_value=0.01,
+            max_value=0.5,
+            value=0.1,
+            step=0.01,
+            help="Spread within each cluster"
+        )
+        assignment_skewness = st.slider(
+            "Assignment skewness",
+            min_value=0.0,
+            max_value=1.0,
+            value=0.0,
+            step=0.1,
+            help="If some clusters are used more frequently"
+        )
         community_exclusivity = st.slider(
             "Community exclusivity",
             min_value=0.0,
@@ -423,6 +421,13 @@ def graph_parameters_widget(universe: GraphUniverse) -> Dict[str, Any]:
             help="Enhance triangle formation"
         )
     
+    # Add deviation limiting toggle
+    disable_deviation_limiting = st.checkbox(
+        "Disable deviation limiting",
+        value=False,
+        help="If checked, the graph will be generated without enforcing community deviation limits"
+    )
+    
     # Return all parameters
     params = {
         "n_communities": n_communities,
@@ -436,7 +441,8 @@ def graph_parameters_widget(universe: GraphUniverse) -> Dict[str, Any]:
         "degree_method": degree_method,
         "degree_distribution": degree_distribution,
         "target_avg_degree": target_avg_degree,
-        "use_dccc_sbm": use_dccc_sbm
+        "use_dccc_sbm": use_dccc_sbm,
+        "disable_deviation_limiting": disable_deviation_limiting
     }
     
     # Add conditional parameters
