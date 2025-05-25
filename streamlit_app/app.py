@@ -1107,40 +1107,14 @@ elif page == "Graph Sampling":
                     help="Controls how imbalanced community sizes are (0=balanced, 1=maximally imbalanced)"
                 )
                 
-                st.session_state.graph_params['method_params']['degree_distribution_overlap'] = st.slider(
-                    "Degree distribution overlap",
+                st.session_state.graph_params['method_params']['degree_separation'] = st.slider(
+                    "Degree separation",
                     min_value=0.0,
                     max_value=1.0,
-                    value=st.session_state.graph_params['method_params'].get('degree_distribution_overlap', 0.5),
+                    value=st.session_state.graph_params['method_params'].get('degree_separation', 0.5),
                     step=0.1,
-                    help="Controls how much degree distributions overlap between communities (0=disjoint, 1=complete overlap)"
+                    help="Controls how much degree distributions are separated between communities (0=overlapping, 1=well separated)"
                 )
-                
-                # Add new parameters for improved DCCC-SBM
-                st.session_state.graph_params['method_params']['aggressive_separation'] = st.checkbox(
-                    "Aggressive degree separation",
-                    value=st.session_state.graph_params['method_params'].get('aggressive_separation', True),
-                    help="Uses a more aggressive approach to separate degree distributions between communities"
-                )
-
-                # Add degree method selection for DCCC-SBM
-                degree_method = st.selectbox(
-                    "Degree generation method",
-                    options=["standard", "gmda"],
-                    index=["standard", "gmda"].index(
-                        st.session_state.graph_params['method_params'].get('degree_method', "standard")
-                    ),
-                    help="Method for generating community-specific degree distributions (standard=bin-based approach, gmda=Gaussian Mixture Degree Allocation)"
-                )
-                st.session_state.graph_params['method_params']['degree_method'] = degree_method
-                
-                # Help text to explain the different methods
-                if degree_method == "gmda":
-                    st.info("""
-                    **Gaussian Mixture Degree Allocation (GMDA)** places each community's degree distribution 
-                    as a Gaussian component in quantile space. This creates more natural-looking, smoothly separated 
-                    degree distributions between communities.
-                    """)
                 
                 st.session_state.graph_params['method_params']['alpha'] = st.slider(
                     "Community-degree balance (α)",
@@ -1149,6 +1123,12 @@ elif page == "Graph Sampling":
                     value=st.session_state.graph_params['method_params'].get('alpha', 0.5),
                     step=0.1,
                     help="Controls the balance between community structure and degree factors (0=only degrees matter, 1=only community structure matters)"
+                )
+                
+                st.session_state.graph_params['method_params']['disable_avg_degree_scaling'] = st.checkbox(
+                    "Disable average degree scaling",
+                    value=st.session_state.graph_params['method_params'].get('disable_avg_degree_scaling', False),
+                    help="If checked, the average degree will not be scaled to match the target average degree"
                 )
                 
                 degree_dist_type = st.selectbox(
@@ -1296,11 +1276,10 @@ elif page == "Graph Sampling":
                     # Setup for DCCC-SBM
                     use_dccc_sbm = True
                     community_imbalance = st.session_state.graph_params['method_params'].get('community_imbalance', 0.3)
-                    degree_distribution_overlap = st.session_state.graph_params['method_params'].get('degree_distribution_overlap', 0.5)
+                    degree_separation = st.session_state.graph_params['method_params'].get('degree_separation', 0.5)
                     degree_distribution = st.session_state.graph_params['method_params'].get('degree_distribution_type', 'power_law')
-                    aggressive_separation = st.session_state.graph_params['method_params'].get('aggressive_separation', True)
                     alpha = st.session_state.graph_params['method_params'].get('alpha', 0.5)
-                    degree_method = st.session_state.graph_params['method_params'].get('degree_method', 'standard')
+                    disable_avg_degree_scaling = st.session_state.graph_params['method_params'].get('disable_avg_degree_scaling', False)
                     
                     # Distribution-specific parameters
                     dccc_global_degree_params = {}
@@ -1327,11 +1306,10 @@ elif page == "Graph Sampling":
                     # Setup for other methods
                     use_dccc_sbm = False
                     community_imbalance = 0.0
-                    degree_distribution_overlap = 0.0
+                    degree_separation = 0.5
                     dccc_global_degree_params = None
-                    aggressive_separation = False  # Default value for non-DCCC-SBM methods
                     alpha = 0.5  # Default value for non-DCCC-SBM methods
-                    degree_method = 'standard'  # Default value for non-DCCC-SBM methods
+                    disable_avg_degree_scaling = False  # Default value for non-DCCC-SBM methods
                     
                     # Configuration model parameters 
                     use_configuration_model = st.session_state.graph_params['method'] != "Standard"
@@ -1378,12 +1356,11 @@ elif page == "Graph Sampling":
                     config_model_params=config_model_params,
                     # New DCCC-SBM parameters
                     use_dccc_sbm=use_dccc_sbm,
-                    community_imbalance=community_imbalance,
-                    degree_distribution_overlap=degree_distribution_overlap,
-                    dccc_global_degree_params=dccc_global_degree_params,
-                    aggressive_separation=aggressive_separation,
-                    alpha=alpha,
-                    degree_method=degree_method,
+                    community_imbalance=community_imbalance if use_dccc_sbm else 0.0,
+                    degree_separation=degree_separation if use_dccc_sbm else 0.5,
+                    dccc_global_degree_params=dccc_global_degree_params if use_dccc_sbm else None,
+                    alpha=alpha if use_dccc_sbm else 0.5,
+                    disable_avg_degree_scaling=disable_avg_degree_scaling if use_dccc_sbm else False,
                     disable_deviation_limiting=st.session_state.graph_params.get('disable_deviation_limiting', False)
                 )
 
@@ -1463,11 +1440,10 @@ elif page == "Graph Sampling":
                     config_model_params=config_model_params,
                     use_dccc_sbm=use_dccc_sbm,
                     community_imbalance=community_imbalance if use_dccc_sbm else 0.0,
-                    degree_distribution_overlap=degree_distribution_overlap if use_dccc_sbm else 0.5,
+                    degree_separation=degree_separation if use_dccc_sbm else 0.5,
                     dccc_global_degree_params=dccc_global_degree_params if use_dccc_sbm else None,
-                    aggressive_separation=aggressive_separation if degree_method == "gmda" else True,
-                    alpha=alpha if degree_method == "gmda" else 0.5,
-                    degree_method=degree_method,
+                    alpha=alpha if use_dccc_sbm else 0.5,
+                    disable_avg_degree_scaling=disable_avg_degree_scaling if use_dccc_sbm else False,
                     disable_deviation_limiting=st.session_state.graph_params.get('disable_deviation_limiting', False)
                 )
                 
@@ -1504,8 +1480,53 @@ elif page == "Graph Sampling":
                     st.metric("Feature Signal", f"{mean_feature_signal:.3f}")
                     st.caption(f"Min: {min_feature_signal:.3f}, Max: {max_feature_signal:.3f}")
                 
-                # Show graph dashboard
-                create_graph_dashboard(graph)
+                # Add new classifier-based signals section
+                st.markdown("### Classifier-Based Signals")
+                st.markdown("These signals use machine learning classifiers to measure community separation.")
+                
+                # Calculate classifier-based signals
+                classifier_signals = graph.calculate_community_classifier_signals(
+                    structure_method="spectral",  # Changed from "louvain" to "spectral" as fallback
+                    feature_method="kmeans",
+                    metric="nmi"
+                )
+                
+                # Display classifier-based signals in columns
+                col1, col2, col3 = st.columns(3)
+                
+                with col1:
+                    st.metric("Structure Signal (Classifier)", f"{classifier_signals['structure_signal']:.3f}")
+                    st.caption("Using Spectral Clustering")  # Updated caption
+                
+                with col2:
+                    if classifier_signals['feature_signal'] is not None:
+                        st.metric("Feature Signal (Classifier)", f"{classifier_signals['feature_signal']:.3f}")
+                        st.caption("Using K-means clustering")
+                    else:
+                        st.metric("Feature Signal (Classifier)", "N/A")
+                        st.caption("No features available")
+                
+                with col3:
+                    st.metric("Degree Signal (Classifier)", f"{classifier_signals['degree_signal']:.3f}")
+                    st.caption("Using Naive Bayes classification")
+                
+                # Display summary statistics
+                st.markdown("#### Signal Summary")
+                summary_df = pd.DataFrame({
+                    'Metric': ['Mean', 'Min', 'Max', 'Std'],
+                    'Value': [
+                        classifier_signals['mean_signal'],
+                        classifier_signals['min_signal'],
+                        classifier_signals['max_signal'],
+                        classifier_signals['std_signal']
+                    ]
+                })
+                st.dataframe(summary_df)
+                
+                # Display method information
+                st.markdown("#### Method Information")
+                method_info = classifier_signals['method_info']
+                st.json(method_info)
 
 # Parameter Space Analysis Page
 elif page == "Parameter Space Analysis":

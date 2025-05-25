@@ -26,6 +26,13 @@ from mmsb.feature_regimes import (
 )
 import time
 import matplotlib.pyplot as plt
+from sklearn.cluster import KMeans, SpectralClustering
+from sklearn.mixture import GaussianMixture
+from sklearn.metrics import normalized_mutual_info_score, adjusted_rand_score
+from sklearn.naive_bayes import GaussianNB
+from sklearn.model_selection import cross_val_score, StratifiedKFold
+import community as community_louvain
+import warnings
 
 def sample_connected_community_subset(
     P: np.ndarray,
@@ -604,14 +611,12 @@ class GraphSample:
         # DCCC-SBM parameters
         use_dccc_sbm: bool = False,
         community_imbalance: float = 0.0,
-        degree_distribution_overlap: float = 0.5,
+        degree_separation: float = 0.5,
         dccc_global_degree_params: Optional[dict] = None,
-        # New parameters
         aggressive_separation: bool = True,
         alpha: float = 0.5,
-        # New GMDA parameter
         degree_method: str = "standard",
-        # New parameter to disable deviation limiting
+        disable_avg_degree_scaling: bool = False,
         disable_deviation_limiting: bool = False
     ):
         """
@@ -626,7 +631,7 @@ class GraphSample:
         # Store additional DCCC-SBM parameters
         self.use_dccc_sbm = use_dccc_sbm
         self.community_imbalance = community_imbalance
-        self.degree_distribution_overlap = degree_distribution_overlap
+        self.degree_separation = degree_separation
         self.dccc_global_degree_params = dccc_global_degree_params or {}
         self.aggressive_separation = aggressive_separation
         self.alpha = alpha
@@ -672,14 +677,15 @@ class GraphSample:
         
         # If DCCC-SBM is enabled, update generation method
         if use_dccc_sbm:
+            self.disable_avg_degree_scaling = disable_avg_degree_scaling
             self.generation_method = "dccc_sbm"
             self.generation_params.update({
                 "community_imbalance": community_imbalance,
-                "degree_distribution_overlap": degree_distribution_overlap,
+                "degree_separation": degree_separation,
                 "degree_distribution_type": degree_distribution,
                 "aggressive_separation": aggressive_separation,
                 "alpha": alpha,
-                "degree_method": degree_method
+                "disable_avg_degree_scaling": disable_avg_degree_scaling
             })
             if degree_distribution == "power_law":
                 self.generation_params["power_law_exponent"] = power_law_exponent
@@ -768,26 +774,15 @@ class GraphSample:
             # Store the degree method
             self.degree_method = degree_method
             
-            # Choose degree generation method based on parameter
-            if degree_method == "gmda":
-                # Generate community-specific degree factors using Gaussian Mixture method
-                self.degree_factors = self._generate_community_degree_factors_gmda(
-                    self.community_labels,
-                    degree_distribution,
-                    degree_distribution_overlap,  # Reuse the overlap parameter as separation
-                    global_degree_params,
-                    target_avg_degree or (self.target_density * (n_nodes - 1))
-                )
-            else:
-                # Generate community-specific degree factors using improved method
-                self.degree_factors = self._generate_community_degree_factors_improved(
-                    self.community_labels,
-                    degree_distribution,
-                    degree_distribution_overlap,
-                    global_degree_params,
-                    target_avg_degree or (self.target_density * (n_nodes - 1)),
-                    aggressive_separation
-                )
+            # Generate community-specific degree factors using improved method
+            self.degree_factors = self._generate_community_degree_factors_improved(
+                self.community_labels,
+                degree_distribution,
+                degree_separation,  # Changed from degree_distribution_overlap
+                global_degree_params,
+                target_avg_degree or (self.target_density * (n_nodes - 1)),
+                aggressive_separation
+            )
         elif self.use_configuration_model:
             self.degree_factors = self._generate_degree_factors_configuration(
                 n_nodes,
@@ -1072,173 +1067,22 @@ class GraphSample:
         self,
         community_labels: np.ndarray,
         degree_distribution_type: str,
-        degree_distribution_overlap: float,
+        degree_separation: float,
         global_degree_params: dict,
         target_avg_degree: float,
-        aggressive_separation: bool = True
+        aggressive_separation: bool = True  # Ignored, kept for compatibility
     ) -> np.ndarray:
         """
-        Generate degree factors with more aggressive community-based differentiation.
+        Generate degree factors with smooth control over community separation.
+        Uses a single method with degree_separation as a continuous slider from 0 to 1.
         
         Args:
-            community_labels: Array of community labels
-            degree_distribution_type: Type of distribution
-            degree_distribution_overlap: How much distributions overlap (0-1)
-            global_degree_params: Parameters for global distribution
-            target_avg_degree: Target average degree
-            aggressive_separation: Whether to use more aggressive separation between communities
-            
-        Returns:
-            Array of degree factors
+            degree_separation: 0 = all communities share same distribution
+                            1 = maximum separation between communities
         """
         n_communities = len(np.unique(community_labels))
         n_nodes = len(community_labels)
         degree_factors = np.zeros(n_nodes)
-        rho = degree_distribution_overlap  # Overlap parameter (0-1)
-        
-        # Define the global quantile function based on the distribution type
-        if degree_distribution_type == "power_law":
-            exponent = global_degree_params.get("exponent", 2.5)
-            x_min = global_degree_params.get("x_min", 1.0)
-            
-            def global_quantile_func(p):
-                # Inverse CDF for power law: x_min * (1-p)^(-1/alpha)
-                return x_min * np.power(1 - p, -1/exponent)
-        
-        elif degree_distribution_type == "exponential":
-            rate = global_degree_params.get("rate", 1.0)
-            
-            def global_quantile_func(p):
-                # Inverse CDF for exponential: -ln(1-p)/rate
-                return -np.log(1 - p) / rate
-        
-        elif degree_distribution_type == "uniform":
-            min_degree = global_degree_params.get("min_degree", 1.0)
-            max_degree = global_degree_params.get("max_degree", 10.0)
-            
-            def global_quantile_func(p):
-                # Inverse CDF for uniform: min + p * (max - min)
-                return min_degree + p * (max_degree - min_degree)
-        
-        else:
-            raise ValueError(f"Unknown degree distribution type: {degree_distribution_type}")
-        
-        if aggressive_separation and rho < 0.5:
-            # APPROACH 1: "Bin-based" approach - assign different percentile ranges to different communities
-            # This creates much more distinct degree distributions when overlap is low
-            
-            # Create community-specific percentile ranges
-            percentile_ranges = []
-            range_size = 1.0 / n_communities
-            
-            for i in range(n_communities):
-                # Calculate base range for this community
-                base_start = i * range_size
-                base_end = (i + 1) * range_size
-                
-                # Apply overlap - when rho=0, ranges are disjoint; when rho=1, all communities use full range [0,1]
-                # Linear interpolation between disjoint ranges and full range
-                start = base_start * (1 - rho)
-                end = (base_end * (1 - rho)) + rho
-                
-                percentile_ranges.append((start, end))
-            
-            # Process each community
-            for i in range(n_communities):
-                # Get nodes in this community
-                comm_mask = (community_labels == i)
-                comm_size = np.sum(comm_mask)
-                
-                if comm_size == 0:
-                    continue
-                
-                # Get percentile range for this community
-                p_start, p_end = percentile_ranges[i]
-                
-                # Generate uniform random samples within the community's percentile range
-                p_samples = np.random.uniform(p_start, p_end, comm_size)
-                
-                # Apply global quantile function to get degrees
-                community_degrees = global_quantile_func(p_samples)
-                
-                # Ensure valid degrees (positive)
-                community_degrees = np.maximum(1, community_degrees)
-                
-                # Assign to nodes in this community
-                degree_factors[comm_mask] = community_degrees
-        else:
-            # APPROACH 2: Enhanced quantile transformation approach with more extreme parameters
-            # Generate more extreme a_values and b_values for stronger differentiation
-            if aggressive_separation:
-                # Much wider ranges for aggressive separation
-                a_values = np.linspace(0.2, 2.0, n_communities)  # Wider range for scale
-                b_values = np.linspace(-5, 5, n_communities)     # Wider range for shift
-            else:
-                # Original ranges
-                a_values = np.linspace(0.7, 1.3, n_communities)
-                b_values = np.linspace(-2, 2, n_communities)
-            
-            # Process each community
-            for i in range(n_communities):
-                # Get nodes in this community
-                comm_mask = (community_labels == i)
-                comm_size = np.sum(comm_mask)
-                
-                if comm_size == 0:
-                    continue
-                
-                # Generate uniform random samples for quantile transformation
-                p_samples = np.random.uniform(0, 1, comm_size)
-                
-                # Apply quantile transformation with overlap parameter
-                # T_i(p) = (1 - (1-ρ) * a_i) * Q_global(p) + (1-ρ) * b_i
-                community_degrees = (1 - (1-rho) * a_values[i]) * global_quantile_func(p_samples) + (1-rho) * b_values[i]
-                
-                # Ensure valid degrees (positive)
-                community_degrees = np.maximum(1, community_degrees)
-                
-                # Assign to nodes in this community
-                degree_factors[comm_mask] = community_degrees
-        
-        # Scale to match target average degree if specified
-        if target_avg_degree is not None:
-            current_avg = np.mean(degree_factors)
-            scaling_factor = target_avg_degree / current_avg
-            degree_factors *= scaling_factor
-        
-        return degree_factors
-
-    def _generate_community_degree_factors_gmda(
-        self,
-        community_labels: np.ndarray,
-        degree_distribution_type: str,
-        degree_distribution_overlap: float,
-        global_degree_params: dict,
-        target_avg_degree: float
-    ) -> np.ndarray:
-        """
-        Generate degree factors using Gaussian Mixture Degree Allocation with strict bin assignments.
-        
-        Args:
-            community_labels: Array of community labels
-            degree_distribution_type: Type of global distribution
-            degree_distribution_overlap: How much distributions overlap (0-1)
-            global_degree_params: Parameters for global distribution
-            target_avg_degree: Target average degree
-            
-        Returns:
-            Array of degree factors
-        """
-        n_nodes = len(community_labels)
-        n_communities = len(np.unique(community_labels))
-        degree_factors = np.zeros(n_nodes)
-        
-        # Calculate community sizes and relative mass
-        community_sizes = np.zeros(n_communities, dtype=int)
-        for label in community_labels:
-            community_sizes[label] += 1
-        
-        community_mass = community_sizes / np.sum(community_sizes)
         
         # Define the global quantile function based on distribution type
         if degree_distribution_type == "power_law":
@@ -1264,70 +1108,53 @@ class GraphSample:
         else:
             raise ValueError(f"Unknown degree distribution type: {degree_distribution_type}")
         
-        # Determine if we should use strict bin assignment (overlap < 0.1)
-        use_strict_bins = degree_distribution_overlap < 0.1
+        # Step 1: Compute percentile ranges for each community
+        if degree_separation == 0.0:
+            # No separation: all communities use full distribution
+            percentile_ranges = [(0.0, 1.0) for _ in range(n_communities)]
+        else:
+            # Divide the percentile space among communities with controlled overlap
+            base_width = 1.0 / n_communities
+            overlap = (1.0 - degree_separation) * 0.5  # Overlap decreases with separation
+            
+            percentile_ranges = []
+            for i in range(n_communities):
+                # Base range for this community
+                base_start = i * base_width
+                base_end = (i + 1) * base_width
+                
+                # Expand range based on overlap
+                start = max(0.0, base_start - overlap * base_width)
+                end = min(1.0, base_end + overlap * base_width)
+                
+                percentile_ranges.append((start, end))
         
-        # Calculate bin positions accounting for community size
-        bin_positions = np.zeros(n_communities + 1)
-        current_pos = 0.0
-        for i in range(n_communities):
-            bin_positions[i] = current_pos
-            # If using strict bins, allocate space proportional to community size
-            # Otherwise use equal-sized bins
-            if use_strict_bins:
-                bin_width = community_mass[i]
-            else:
-                bin_width = 1.0 / n_communities
-            current_pos += bin_width
-        bin_positions[n_communities] = 1.0  # Add end boundary
-        
-        # Calculate bin centers
-        bin_centers = [(bin_positions[i] + bin_positions[i+1])/2 for i in range(n_communities)]
-        
-        # Calculate variance scaling factor: near zero at low overlap, increasing with overlap
-        # At overlap=0, variance=0 (just use means)
-        # At overlap=1, variance=max (full distribution)
-        variance_scale = degree_distribution_overlap ** 2  # Square to make it more dramatic
-        
-        # Process each community
+        # Step 2: Generate degree factors for each community
         for comm_idx in range(n_communities):
-            # Get nodes in this community
             comm_mask = (community_labels == comm_idx)
             comm_size = np.sum(comm_mask)
             
             if comm_size == 0:
                 continue
             
-            # Determine bin boundaries
-            bin_start = bin_positions[comm_idx]
-            bin_end = bin_positions[comm_idx + 1]
-            bin_center = bin_centers[comm_idx]
-            bin_width = bin_end - bin_start
+            # Get percentile range for this community
+            p_start, p_end = percentile_ranges[comm_idx]
             
-            if use_strict_bins:
-                # Strict bin approach: assign all nodes to their community's section
-                # With jitter proportional to the overlap
-                if degree_distribution_overlap < 0.001:
-                    # Almost no overlap: assign all nodes to the exact center
-                    quantiles = np.ones(comm_size) * bin_center
-                else:
-                    # Small overlap: uniformly distribute within bin with small margin 
-                    # The margin narrows as overlap approaches zero
-                    margin = bin_width * variance_scale
-                    q_start = max(0.001, bin_start + margin/10)
-                    q_end = min(0.999, bin_end - margin/10)
-                    quantiles = np.random.uniform(q_start, q_end, comm_size)
-            else:
-                # Standard Gaussian approach with controlled variance
-                # Variance scales with overlap and bin width
-                std_dev = bin_width * variance_scale
-                # Generate quantiles centered on bin center with controlled variance
-                quantiles = np.random.normal(bin_center, std_dev, comm_size)
-                # Clip to valid range
-                quantiles = np.clip(quantiles, 0.001, 0.999)
+            # Sample uniformly from community's percentile range
+            percentiles = np.random.uniform(p_start, p_end, comm_size)
             
-            # Apply global quantile function to get degrees
-            community_degrees = global_quantile_func(quantiles)
+            # Convert percentiles to degrees using global distribution
+            community_degrees = global_quantile_func(percentiles)
+            
+            # Step 3: Apply exponential scaling based on community index
+            # This creates consistent separation between communities
+            if degree_separation > 0:
+                # Scale factor increases/decreases exponentially with community index
+                # Communities are ordered from low to high degree
+                scale_strength = degree_separation * 3.0  # Scaling intensity
+                relative_position = (comm_idx - (n_communities - 1) / 2) / ((n_communities - 1) / 2)
+                scale_factor = np.exp(relative_position * scale_strength)
+                community_degrees *= scale_factor
             
             # Ensure positive degrees
             community_degrees = np.maximum(1.0, community_degrees)
@@ -1335,8 +1162,13 @@ class GraphSample:
             # Assign to nodes in this community
             degree_factors[comm_mask] = community_degrees
         
-        # First, just preserve the distribution shape - don't scale to target yet
-        # We'll handle the scaling at edge generation time
+        # Step 4: Scale to match target average degree
+        if target_avg_degree is not None:
+            current_avg = np.mean(degree_factors)
+            if current_avg > 0:
+                scaling_factor = target_avg_degree / current_avg
+                degree_factors *= scaling_factor
+        
         return degree_factors
 
     def _generate_edges_with_alpha(
@@ -1351,8 +1183,7 @@ class GraphSample:
         target_avg_degree: Optional[float] = None
     ) -> sp.spmatrix:
         """
-        Generate edges with a parameter controlling importance of degrees vs. community structure,
-        while properly scaling to achieve target average degree.
+        Generate edges with alpha-weighted combination of community and degree effects.
         
         Args:
             community_labels: Node community assignments
@@ -1362,19 +1193,12 @@ class GraphSample:
             noise: Edge noise level
             min_edge_density: Minimum acceptable edge density
             max_retries: Maximum number of retries if graph is too sparse
-            target_avg_degree: Target average degree (if None, calculated from degree_factors)
+            target_avg_degree: Target average degree (optional)
             
         Returns:
             Sparse adjacency matrix
         """
         n_nodes = len(community_labels)
-        
-        if target_avg_degree is None:
-            # Use the stored target_avg_degree if available
-            target_avg_degree = self.target_avg_degree
-            if target_avg_degree is None:
-                # Calculate from density if neither is specified
-                target_avg_degree = self.target_density * (n_nodes - 1)
         
         for attempt in range(max_retries):
             # Create node pairs
@@ -1387,39 +1211,38 @@ class GraphSample:
             # Get base community probabilities
             community_probs = P_sub[comm_i, comm_j]
             
-            # Calculate degree contribution (shape only)
-            relative_degrees = degree_factors / np.mean(degree_factors)
-            degree_contrib = relative_degrees[i_nodes] * relative_degrees[j_nodes]
+            # Calculate normalized degree contribution
+            # Normalize degree factors to [0, 1] range for proper weighting
+            max_degree = np.max(degree_factors)
+            if max_degree > 0:
+                normalized_degrees = degree_factors / max_degree
+                degree_contrib = normalized_degrees[i_nodes] * normalized_degrees[j_nodes]
+            else:
+                degree_contrib = np.ones(len(i_nodes))
             
-            # Normalize degree contribution to similar range as community_probs
-            max_degree_contrib = np.max(degree_contrib)
-            if max_degree_contrib > 0:
-                degree_contrib = degree_contrib / max_degree_contrib
-            
-            # Combine with alpha parameter
+            # Alpha-weighted combination
             raw_probs = alpha * community_probs + (1 - alpha) * degree_contrib
             
             # Add noise if specified
             if noise > 0:
-                raw_probs *= (1 + np.random.uniform(-noise, noise, size=len(raw_probs)))
+                noise_factor = 1 + np.random.uniform(-noise, noise, size=len(raw_probs))
+                raw_probs *= noise_factor
                 raw_probs = np.clip(raw_probs, 0, 1)
             
-            # Calculate the expected number of edges with current probabilities
-            expected_edges = np.sum(raw_probs)
-            
-            # Calculate target number of edges from target average degree
-            target_edges = (n_nodes * target_avg_degree) / 2
-            
-            # Calculate scaling factor to achieve target edges
-            if expected_edges > 0:
-                scaling_factor = target_edges / expected_edges
-                edge_probs = raw_probs * scaling_factor
-                # Clip to valid probability range
-                edge_probs = np.clip(edge_probs, 0, 1)
+            # Optional scaling to target average degree
+            if target_avg_degree is not None and not self.disable_avg_degree_scaling:  # ADD CONDITION
+                expected_edges = np.sum(raw_probs)
+                target_edges = (n_nodes * target_avg_degree) / 2
+                
+                if expected_edges > 0:
+                    scaling_factor = target_edges / expected_edges
+                    edge_probs = raw_probs * scaling_factor
+                    edge_probs = np.clip(edge_probs, 0, 1)
+                else:
+                    edge_probs = raw_probs
             else:
                 edge_probs = raw_probs
-                scaling_factor = 1.0
-            
+                
             # Sample edges
             edges = np.random.random(len(edge_probs)) < edge_probs
             
@@ -1433,27 +1256,15 @@ class GraphSample:
             
             # Calculate actual edge density
             actual_edges = len(rows)
-            actual_avg_degree = (2 * actual_edges) / n_nodes
-            actual_density = actual_edges / (n_nodes * (n_nodes - 1) / 2)
-            
-            # Print debugging info
-            print(f"Target avg degree: {target_avg_degree:.2f}, Actual: {actual_avg_degree:.2f}")
-            print(f"Target edges: {target_edges:.1f}, Expected edges: {expected_edges:.1f}, Actual edges: {actual_edges}")
-            print(f"Scaling factor: {scaling_factor:.4f}, Actual density: {actual_density:.4f}")
+            actual_density = actual_edges / (n_nodes * (n_nodes - 1) / 2) if n_nodes > 1 else 0
             
             if actual_density >= min_edge_density:
                 return adj
             
-            # Retry with adjusted parameters if needed
+            # Retry with slightly higher base probabilities
             if attempt < max_retries - 1:
-                print(f"Attempt {attempt + 1}: Graph too sparse. Retrying with adjusted probabilities...")
-                if alpha > 0.5:
-                    P_sub = P_sub * 1.5  # Increase community probabilities
-                else:
-                    degree_factors = degree_factors * 1.5  # Increase degree factors
+                P_sub = P_sub * 1.2
         
-        # If we get here, we couldn't generate a graph with sufficient density
-        print(f"Warning: Could not achieve minimum edge density after {max_retries} attempts.")
         return adj
 
     def _generate_edges(
@@ -2700,6 +2511,316 @@ class GraphSample:
                 degree_signals[int(community)] = 0.0
         
         return degree_signals
+
+    def calculate_structure_signal_new(self, 
+                                    method: str = "louvain",
+                                    metric: str = "nmi", 
+                                    resolution: float = 1.0,
+                                    n_clusters: Optional[int] = None) -> float:
+        """
+        NEW: Calculate structure signal using community detection + NMI/ARI.
+        Replaces the old calculate_structure_signal method.
+        
+        Args:
+            method: Community detection method ("louvain", "spectral")
+            metric: Evaluation metric ("nmi", "ari", "accuracy")
+            resolution: Resolution parameter for Louvain
+            n_clusters: Number of clusters for spectral (if None, auto-detect)
+            
+        Returns:
+            Structure signal ∈ [0, 1]
+        """
+        if self.graph.number_of_nodes() == 0:
+            return 0.0
+        
+        # Determine number of clusters if not provided
+        if n_clusters is None:
+            n_clusters = len(np.unique(self.community_labels))
+        
+        # Apply community detection algorithm
+        if method == "louvain":
+            partition = community_louvain.best_partition(self.graph, resolution=resolution)
+            # Create prediction array aligned with self.community_labels
+            predicted_communities = np.array([partition.get(i, 0) for i in range(len(self.community_labels))])
+            
+        elif method == "spectral":
+            try:
+                adjacency = nx.adjacency_matrix(self.graph).toarray()
+                spectral = SpectralClustering(
+                    n_clusters=n_clusters, 
+                    affinity='precomputed',
+                    assign_labels='discretize',
+                    random_state=42
+                )
+                predicted_communities = spectral.fit_predict(adjacency)
+            except Exception as e:
+                warnings.warn(f"Spectral clustering failed: {e}. Using Louvain fallback.")
+                partition = community_louvain.best_partition(self.graph)
+                predicted_communities = np.array([partition.get(i, 0) for i in range(len(self.community_labels))])
+        
+        else:
+            raise ValueError(f"Unknown community detection method: {method}")
+        
+        # Ensure arrays have same length
+        min_len = min(len(predicted_communities), len(self.community_labels))
+        predicted_communities = predicted_communities[:min_len]
+        ground_truth = self.community_labels[:min_len]
+        
+        # Calculate evaluation metric
+        if metric == "nmi":
+            return normalized_mutual_info_score(ground_truth, predicted_communities)
+        elif metric == "ari":
+            return adjusted_rand_score(ground_truth, predicted_communities)
+        elif metric == "accuracy":
+            return self._calculate_best_accuracy(ground_truth, predicted_communities)
+        else:
+            raise ValueError(f"Unknown evaluation metric: {metric}")
+
+    def calculate_feature_signal_new(self,
+                                method: str = "kmeans",
+                                metric: str = "nmi",
+                                n_clusters: Optional[int] = None,
+                                random_state: int = 42) -> float:
+        """
+        NEW: Calculate feature signal using k-means/GMM + NMI/ARI.
+        Replaces the old calculate_feature_signal method.
+        
+        Args:
+            method: Clustering method ("kmeans", "gmm")
+            metric: Evaluation metric ("nmi", "ari", "accuracy")
+            n_clusters: Number of clusters (if None, auto-detect)
+            random_state: Random seed
+            
+        Returns:
+            Feature signal ∈ [0, 1], or 0.0 if no features available
+        """
+        if self.features is None or len(self.features) == 0:
+            return 0.0
+        
+        # Determine number of clusters if not provided
+        if n_clusters is None:
+            n_clusters = len(np.unique(self.community_labels))
+        
+        # Apply clustering algorithm
+        if method == "kmeans":
+            clusterer = KMeans(n_clusters=n_clusters, random_state=random_state, n_init=10)
+            predicted_clusters = clusterer.fit_predict(self.features)
+            
+        elif method == "gmm":
+            clusterer = GaussianMixture(n_components=n_clusters, random_state=random_state)
+            predicted_clusters = clusterer.fit_predict(self.features)
+            
+        else:
+            raise ValueError(f"Unknown clustering method: {method}")
+        
+        # Ensure arrays have same length
+        min_len = min(len(predicted_clusters), len(self.community_labels))
+        predicted_clusters = predicted_clusters[:min_len]
+        ground_truth = self.community_labels[:min_len]
+        
+        # Calculate evaluation metric
+        if metric == "nmi":
+            return normalized_mutual_info_score(ground_truth, predicted_clusters)
+        elif metric == "ari":
+            return adjusted_rand_score(ground_truth, predicted_clusters)
+        elif metric == "accuracy":
+            return self._calculate_best_accuracy(ground_truth, predicted_clusters)
+        else:
+            raise ValueError(f"Unknown evaluation metric: {metric}")
+
+    def calculate_degree_signal_new(self,
+                                method: str = "naive_bayes",
+                                metric: str = "accuracy", 
+                                cv_folds: int = 5,
+                                random_state: int = 42) -> float:
+        """
+        NEW: Calculate degree signal using degree-based classification.
+        Replaces the old calculate_degree_signal method.
+        
+        Args:
+            method: Classification method ("naive_bayes", "quantile_binning", "cross_validation")
+            metric: Evaluation metric ("accuracy", "nmi", "ari")
+            cv_folds: Number of cross-validation folds
+            random_state: Random seed
+            
+        Returns:
+            Degree signal ∈ [0, 1]
+        """
+        if self.graph.number_of_nodes() == 0:
+            return 0.0
+        
+        # Get node degrees - ensure proper ordering
+        degrees = np.array([self.graph.degree(i) for i in range(self.graph.number_of_nodes())])
+        
+        # Ensure we have the right number of community labels
+        min_len = min(len(degrees), len(self.community_labels))
+        degrees = degrees[:min_len]
+        ground_truth = self.community_labels[:min_len]
+        
+        # Reshape degrees for sklearn
+        degrees_reshaped = degrees.reshape(-1, 1)
+        
+        if method == "naive_bayes":
+            classifier = GaussianNB()
+            
+            if metric == "accuracy":
+                scores = cross_val_score(
+                    classifier, degrees_reshaped, ground_truth, 
+                    cv=cv_folds, scoring='accuracy'
+                )
+                return np.mean(scores)
+            else:
+                # For NMI/ARI, use cross-validation with custom scoring
+                scores = []
+                skf = StratifiedKFold(n_splits=cv_folds, shuffle=True, random_state=random_state)
+                
+                for train_idx, test_idx in skf.split(degrees_reshaped, ground_truth):
+                    classifier.fit(degrees_reshaped[train_idx], ground_truth[train_idx])
+                    predicted = classifier.predict(degrees_reshaped[test_idx])
+                    
+                    if metric == "nmi":
+                        score = normalized_mutual_info_score(ground_truth[test_idx], predicted)
+                    elif metric == "ari":
+                        score = adjusted_rand_score(ground_truth[test_idx], predicted)
+                    
+                    scores.append(score)
+                
+                return np.mean(scores)
+        
+        elif method == "quantile_binning":
+            n_communities = len(np.unique(ground_truth))
+            
+            # Create quantile bins based on degree distribution
+            quantiles = np.linspace(0, 1, n_communities + 1)
+            bin_edges = np.quantile(degrees, quantiles)
+            
+            # Handle edge case where all degrees are the same
+            if len(np.unique(bin_edges)) == 1:
+                return 0.0
+            
+            # Assign degrees to bins
+            predicted_bins = np.digitize(degrees, bin_edges) - 1
+            predicted_bins = np.clip(predicted_bins, 0, n_communities - 1)
+            
+            if metric == "accuracy":
+                return self._calculate_best_accuracy(ground_truth, predicted_bins)
+            elif metric == "nmi":
+                return normalized_mutual_info_score(ground_truth, predicted_bins)
+            elif metric == "ari":
+                return adjusted_rand_score(ground_truth, predicted_bins)
+        
+        else:
+            raise ValueError(f"Unknown degree classification method: {method}")
+
+    def calculate_community_classifier_signals(self,
+                                    structure_method: str = "louvain",
+                                    feature_method: str = "kmeans",
+                                    degree_method: str = "naive_bayes",
+                                    metric: str = "nmi",
+                                    resolution: float = 1.0,
+                                    cv_folds: int = 5,
+                                    random_state: int = 42) -> Dict[str, float]:
+        """
+        NEW: Calculate all three signals using classifier-based approaches.
+        This replaces the old calculate_community_signals method.
+        
+        Args:
+            structure_method: Method for structure signal ("louvain", "spectral")
+            feature_method: Method for feature signal ("kmeans", "gmm")
+            degree_method: Method for degree signal ("naive_bayes", "quantile_binning")
+            metric: Evaluation metric for all signals ("nmi", "ari", "accuracy")
+            resolution: Resolution parameter for Louvain
+            cv_folds: Cross-validation folds for degree signal
+            random_state: Random seed
+            
+        Returns:
+            Dictionary with signal values and summary statistics
+        """
+        signals = {}
+        
+        # Structure signal
+        try:
+            signals['structure_signal'] = self.calculate_structure_signal_new(
+                method=structure_method, metric=metric, resolution=resolution
+            )
+        except Exception as e:
+            warnings.warn(f"Failed to calculate structure signal: {e}")
+            signals['structure_signal'] = 0.0
+        
+        # Feature signal (only if features are available)
+        if self.features is not None and len(self.features) > 0:
+            try:
+                signals['feature_signal'] = self.calculate_feature_signal_new(
+                    method=feature_method, metric=metric, random_state=random_state
+                )
+            except Exception as e:
+                warnings.warn(f"Failed to calculate feature signal: {e}")
+                signals['feature_signal'] = 0.0
+        else:
+            signals['feature_signal'] = None
+        
+        # Degree signal
+        try:
+            signals['degree_signal'] = self.calculate_degree_signal_new(
+                method=degree_method, metric=metric, cv_folds=cv_folds, random_state=random_state
+            )
+        except Exception as e:
+            warnings.warn(f"Failed to calculate degree signal: {e}")
+            signals['degree_signal'] = 0.0
+        
+        # Calculate summary statistics (excluding None values)
+        valid_signals = [v for v in signals.values() if v is not None]
+        if valid_signals:
+            signals['mean_signal'] = float(np.mean(valid_signals))
+            signals['min_signal'] = float(np.min(valid_signals))
+            signals['max_signal'] = float(np.max(valid_signals))
+            signals['std_signal'] = float(np.std(valid_signals))
+        
+        # Add metadata
+        signals['method_info'] = {
+            'structure_method': structure_method,
+            'feature_method': feature_method,
+            'degree_method': degree_method,
+            'metric': metric,
+            'classifier_based': True
+        }
+        
+        return signals
+
+    def _calculate_best_accuracy(self, true_labels: np.ndarray, predicted_labels: np.ndarray) -> float:
+        """
+        Helper method: Calculate best possible accuracy by finding optimal label mapping.
+        
+        Args:
+            true_labels: Ground truth labels
+            predicted_labels: Predicted labels
+            
+        Returns:
+            Best achievable accuracy ∈ [0, 1]
+        """
+        from scipy.optimize import linear_sum_assignment
+        
+        # Get unique labels
+        true_unique = np.unique(true_labels)
+        pred_unique = np.unique(predicted_labels)
+        
+        # Create confusion matrix
+        confusion_matrix = np.zeros((len(pred_unique), len(true_unique)))
+        
+        for i, pred_label in enumerate(pred_unique):
+            for j, true_label in enumerate(true_unique):
+                confusion_matrix[i, j] = np.sum(
+                    (predicted_labels == pred_label) & (true_labels == true_label)
+                )
+        
+        # Find optimal assignment using Hungarian algorithm
+        row_idx, col_idx = linear_sum_assignment(-confusion_matrix)
+        
+        # Calculate accuracy with optimal mapping
+        correct_assignments = confusion_matrix[row_idx, col_idx].sum()
+        total_assignments = len(true_labels)
+        
+        return correct_assignments / total_assignments if total_assignments > 0 else 0.0
 
     def update_feature_generator(
         self,
