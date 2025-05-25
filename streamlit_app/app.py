@@ -831,7 +831,7 @@ of graphs with similar characteristics from a common universe.
 st.sidebar.title("Navigation")
 page = st.sidebar.radio(
     "Select a page",
-    ["Universe Creation", "Graph Sampling", "Graph Family Generation", "Graph Family Analysis", "Parameter Space Analysis", "Motif and Role Analysis", "Neighborhood Analysis", "Metapath Analysis"]
+    ["Universe Creation", "Graph Sampling", "Graph Family Generation", "Metapath Analysis"]
 )
 
 # Universe Creation Page
@@ -1578,1030 +1578,597 @@ elif page == "Graph Sampling":
                     })
                 st.dataframe(pd.DataFrame(stats_data))
 
-# Parameter Space Analysis Page
-elif page == "Parameter Space Analysis":
-    st.markdown('<div class="section-header">Parameter Space Analysis</div>', unsafe_allow_html=True)
-    
-    # Check if we have graphs to analyze
-    has_current = st.session_state.current_graph is not None
-    has_family = len(st.session_state.graph_family) > 0
-    
-    if not (has_current or has_family):
-        st.warning("Please generate a graph or graph family first in the previous pages.")
-    else:
-        st.markdown("""
-        <div class="info-box">
-        Parameter space analysis helps visualize where your graphs fall in the space of key graph properties:
-        <ul>
-            <li><strong>Homophily level</strong>: Extent to which edges connect similar nodes (within same community)</li>
-            <li><strong>Power law exponent</strong>: Characterizes the degree distribution's tail behavior</li>
-            <li><strong>Clustering coefficient</strong>: Measures how nodes tend to cluster together</li>
-            <li><strong>Triangle count/density</strong>: Number and density of triangles in the graph</li>
-            <li><strong>Node/edge statistics</strong>: Basic graph properties like average degree</li>
-            <li><strong>Community overlap</strong>: How many communities nodes belong to on average</li>
-        </ul>
-        </div>
-        """, unsafe_allow_html=True)
-        
-        # Options for analysis
-        st.markdown('<div class="subsection-header">Analysis Options</div>', unsafe_allow_html=True)
-        
-        # Select which graphs to analyze
-        st.markdown("### Select Graphs to Analyze")
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            analyze_current = st.checkbox("Current Graph", value=has_current)
-        
-        with col2:
-            analyze_family = st.checkbox("Graph Family", value=has_family)
-        
-        # Parameters to analyze
-        st.markdown("### Select Parameters")
-        
-        param_options = [
-            "homophily",
-            "power_law_exponent",
-            "clustering_coefficient",
-            "triangle_density",
-            "node_count",
-            "avg_degree",
-            "density",
-            "connected_components",
-            "largest_component_size"
-        ]
-        
-        selected_params = st.multiselect(
-            "Parameters to analyze",
-            param_options,
-            default=["homophily", "clustering_coefficient", "avg_degree"]
-        )
-        
-        # Initialize session state for analysis results if not exists
-        if 'parameter_analysis_results' not in st.session_state:
-            st.session_state.parameter_analysis_results = None
-        
-        # Analyze button
-        if st.button("Run Analysis"):
-            with st.spinner("Analyzing graph parameters..."):
-                # Container for family DataFrames
-                family_dfs = {}
-                
-                # Analyze current graph if selected
-                if analyze_current and st.session_state.current_graph is not None:
-                    current_graph = st.session_state.current_graph
-                    current_df = analyze_graph_family([current_graph])
-                    family_dfs["Current Graph"] = current_df
-                
-                # Analyze graph family if selected
-                if analyze_family and st.session_state.graph_family:
-                    family_df = analyze_graph_family(st.session_state.graph_family)
-                    family_dfs["Graph Family"] = family_df
-                
-                # Store results in session state
-                st.session_state.parameter_analysis_results = {
-                    'family_dfs': family_dfs,
-                    'selected_params': selected_params
-                }
-        
-        # Display results if available
-        if st.session_state.parameter_analysis_results is not None:
-            family_dfs = st.session_state.parameter_analysis_results['family_dfs']
-            selected_params = st.session_state.parameter_analysis_results['selected_params']
-            
-            # Compute statistics for each family
-            family_stats = {}
-            for name, df in family_dfs.items():
-                family_stats[name] = compute_statistics(df)
-            
-            # Display table of statistics
-            st.markdown("### Parameter Statistics")
-            
-            # Create comparison DataFrame
-            comparison_df = compare_graph_families(family_dfs, selected_params)
-            
-            # Display as table
-            pivoted = comparison_df.pivot(index='parameter', columns='family', values=['mean', 'std'])
-            st.dataframe(pivoted)
-            
-            # Create parameter visualizations
-            st.markdown("### Parameter Distributions")
-            
-            # For each selected parameter, create distribution plot
-            for param in selected_params:
-                param_available = any(param in df.columns and not df[param].isna().all() for df in family_dfs.values())
-                
-                if param_available:
-                    st.markdown(f"#### {param.replace('_', ' ').title()}")
-                    
-                    # Create distribution comparison
-                    fig = compare_parameter_distributions(family_dfs, param)
-                    st.pyplot(fig)
-            
-            # Parameter space visualizations (scatter plots)
-            if len(selected_params) >= 2:
-                st.markdown("### Parameter Space Visualization")
-                
-                # Let user select which parameters to plot
-                col1, col2 = st.columns(2)
-                
-                with col1:
-                    x_param = st.selectbox(
-                        "X-axis parameter",
-                        options=selected_params,
-                        index=0
-                    )
-                
-                with col2:
-                    y_param = st.selectbox(
-                        "Y-axis parameter",
-                        options=selected_params,
-                        index=min(1, len(selected_params)-1)
-                    )
-                
-                # Create parameter space plot
-                if x_param != y_param:
-                    fig = plot_parameter_space(family_dfs, x_param, y_param)
-                    st.pyplot(fig)
-                    
-                    # Add explanation
-                    st.markdown("""
-                    This plot shows where different graphs lie in parameter space. 
-                    Each point represents a graph, and the ellipses show the 95% confidence regions for each family.
-                    
-                    - **Separated ellipses** indicate distinct graph families with different characteristics
-                    - **Overlapping ellipses** indicate similar graph families
-                    - **Large ellipses** indicate high variability within a family
-                    - **Small ellipses** indicate consistent graph properties within a family
-                    """)
-            
-            # Comprehensive dashboard
-            st.markdown("### Parameter Dashboards")
-            
-            # For each family, create a dashboard
-            for name, df in family_dfs.items():
-                st.markdown(f"#### {name} Dashboard")
-                
-                fig = create_parameter_dashboard(df)
-                st.pyplot(fig)
-
-# Motif and Role Analysis Page
-elif page == "Motif and Role Analysis":
-    add_motif_role_analysis_page()
-
-# Neighborhood Analysis Page
-elif page == "Neighborhood Analysis":
-    st.markdown('<div class="section-header">Neighborhood Feature Analysis & Label Generation</div>', unsafe_allow_html=True)
-    
-    if st.session_state.universe is None:
-        st.warning("Please generate a universe first in the 'Universe Creation' page.")
-    elif st.session_state.current_graph is None and not st.session_state.graph_family:
-        st.warning("Please generate a graph in the 'Graph Sampling' page or a graph family in the 'Graph Family Generation' page.")
-    else:
-        st.markdown("""
-        <div class="info-box">
-        This page analyzes how feature regimes distribute in node neighborhoods and generates balanced labels based on these distributions.
-        The analysis helps understand:
-        - How feature regimes cluster in different parts of the graph
-        - What patterns emerge in k-hop neighborhoods
-        - How to create meaningful node classification tasks
-        </div>
-        """, unsafe_allow_html=True)
-        
-        # Select graph to analyze
-        if st.session_state.graph_family:
-            graph_idx = st.selectbox(
-                "Select graph from family",
-                range(len(st.session_state.graph_family)),
-                format_func=lambda x: f"Graph {x+1}"
-            )
-            graph = st.session_state.graph_family[graph_idx]
-        else:
-            graph = st.session_state.current_graph
-            
-        if graph.universe.feature_dim > 0:
-            # Neighborhood Analysis Parameters
-            st.markdown('<div class="subsection-header">Neighborhood Analysis Parameters</div>', unsafe_allow_html=True)
-            
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                n_labels = st.slider("Number of labels", min_value=2, max_value=10, value=4,
-                                help="Number of distinct classes to generate")
-            
-            # Add labeling method selection
-            labeling_method = st.radio(
-                "Labeling Method",
-                ["Clustering-based", "Rule-based"],
-                help="""
-                Clustering-based: Groups nodes based on similarity of neighborhood features
-                Rule-based: Generates explicit, transferable rules based on feature regime frequencies
-                """
-            )
-            
-            if labeling_method == "Clustering-based":
-                balance_tolerance = st.slider("Balance tolerance", min_value=0.0, max_value=0.5, value=0.1,
-                                            help="How much imbalance to allow between classes (0=perfectly balanced)")
-            else:
-                # Rule-based parameters
-                st.markdown("##### Rule Generation Parameters")
-                
-                # Let user define max hop range with reasonable limits
-                max_allowed_hops = 5  # Maximum allowed for computational reasons
-                
-                # Get graph diameter if available
-                if hasattr(graph, 'graph'):
-                    try:
-                        # Sample a few nodes for efficiency in large graphs
-                        sample_size = min(100, graph.graph.number_of_nodes())
-                        sample_nodes = np.random.choice(list(graph.graph.nodes()), size=sample_size, replace=False)
-                        max_path = 0
-                        for u in sample_nodes:
-                            for v in sample_nodes:
-                                try:
-                                    path_len = nx.shortest_path_length(graph.graph, u, v)
-                                    max_path = max(max_path, path_len)
-                                except nx.NetworkXNoPath:
-                                    continue
-                        suggested_max = min(max_path, max_allowed_hops)
-                    except:
-                        suggested_max = 3  # Default if calculation fails
-                else:
-                    suggested_max = 3
-                
-                # Let user choose max_hops with guidance
-                max_hops = st.slider(
-                    "Maximum hop distance",
-                    min_value=1,
-                    max_value=max_allowed_hops,
-                    value=min(suggested_max, 3),
-                    help=f"Maximum number of hops to analyze. Suggested maximum based on graph structure: {suggested_max}"
-                )
-                
-                # Hop range selection
-                col1, col2 = st.columns(2)
-                with col1:
-                    min_hop = st.slider("Minimum hop distance", min_value=1, max_value=max_hops, value=1,
-                                    help="Minimum hop distance to consider for rules")
-                with col2:
-                    max_hop = st.slider("Maximum hop distance", min_value=min_hop, max_value=max_hops, value=max_hops,
-                                    help="Maximum hop distance to consider for rules")
-            
-            # Other rule parameters
-            col1, col2 = st.columns(2)
-            with col1:
-                min_support = st.slider("Minimum rule support", min_value=0.05, max_value=0.3, value=0.1,
-                                        help="Minimum fraction of nodes a rule should apply to")
-            with col2:
-                max_rules_per_label = st.slider("Max rules per label", min_value=1, max_value=5, value=3,
-                                                help="Maximum number of rules to generate per label")
-            
-            st.info(f"Note: Label {n_labels-1} will be reserved as the 'rest' class for nodes that don't match any rules.")
-
-            # Run Analysis button
-            if st.button("Run Neighborhood Analysis"):
-                with st.spinner("Analyzing neighborhoods and generating labels..."):
-                    # Initialize neighborhood analyzer if not already done or if max_hops changed
-                    if labeling_method == "Rule-based":
-                        if (graph.neighborhood_analyzer is None or 
-                            graph.neighborhood_analyzer.max_hops < max_hops):
-                            graph.neighborhood_analyzer = NeighborhoodFeatureAnalyzer(
-                                graph=graph.graph,
-                                node_regimes=graph.node_regimes,
-                                total_regimes=len(graph.communities) * graph.universe.regimes_per_community,
-                                max_hops=max_hops
-                            )
-                        
-                        # Get frequency vectors for visualization
-                        freq_vectors = {}
-                        for k in range(1, max_hops + 1):
-                            freq_vectors[k] = graph.neighborhood_analyzer.get_all_frequency_vectors(k)
-                        
-                        # Generate labels based on rules
-                        rule_generator = GenerativeRuleBasedLabeler(
-                            n_labels=n_labels,
-                            min_support=min_support,
-                            max_rules_per_label=max_rules_per_label,
-                            min_hop=min_hop,
-                            max_hop=max_hop,
-                            seed=42
-                        )
-                        rules = rule_generator.generate_rules(freq_vectors)
-                        labels, applied_rules = rule_generator.apply_rules(freq_vectors)
-                    else:
-                        # Clustering-based labeling
-                        graph.compute_neighborhood_features(max_hops=1)
-                        freq_vectors = {1: graph.neighborhood_analyzer.get_all_frequency_vectors(1)}
-                        
-                        label_generator = FeatureRegimeLabelGenerator(
-                            frequency_vectors=freq_vectors[1],  # Use 1-hop for initial labels
-                            n_labels=n_labels,
-                            balance_tolerance=balance_tolerance,
-                            seed=42
-                        )
-                        labels = label_generator.get_node_labels()
-                        rules = label_generator._extract_label_rules()
-                        applied_rules = None
-                    
-                    # Visualizations
-                    st.markdown('<div class="subsection-header">Analysis Results</div>', unsafe_allow_html=True)
-                    
-                    # 1. Neighborhood Feature Distribution
-                    st.markdown("#### Feature Regime Distribution by Hop Distance")
-                    
-                    # Only create tabs for the selected hop range
-                    hop_range = list(range(min_hop, max_hop + 1)) if labeling_method == "Rule-based" else [1]
-                    tabs = st.tabs([f"{k}-hop" for k in hop_range])
-                    
-                    for k_idx, k in enumerate(hop_range):
-                        with tabs[k_idx]:
-                            fig, ax = plt.subplots(figsize=(10, 6))
-                            
-                            # Plot average frequency for each regime
-                            avg_freq = np.mean(freq_vectors[k], axis=0)
-                            ax.bar(range(len(avg_freq)), avg_freq)
-                            
-                            ax.set_xlabel("Feature Regime")
-                            ax.set_ylabel("Average Frequency")
-                            ax.set_title(f"Average Feature Regime Distribution in {k}-hop Neighborhoods")
-                            
-                            st.pyplot(fig)
-                    
-                    # 2. Label Distribution and Graph Visualization
-                    st.markdown("#### Generated Label Distribution")
-                    
-                    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 5))
-                    
-                    # Label counts
-                    unique_labels, counts = np.unique(labels, return_counts=True)
-                    ax1.bar(unique_labels, counts)
-                    ax1.set_xlabel("Label")
-                    ax1.set_ylabel("Count")
-                    ax1.set_title("Label Distribution")
-                    
-                    # Graph visualization with labels
-                    pos = nx.spring_layout(graph.graph)
-                    nx.draw(graph.graph, pos, node_color=labels, cmap='tab20', 
-                        node_size=50, ax=ax2)
-                    ax2.set_title("Graph Colored by Generated Labels")
-                    
-                    st.pyplot(fig)
-                    
-                    # 3. Rules
-                    st.markdown("#### Generated Rules")
-                    if labeling_method == "Clustering-based":
-                        for rule in rules:
-                            st.markdown(f"- {rule}")
-                    else:
-                        # Unpack all 4 values from the rules
-                        for rule_fn, label, rule_str, hop in rules:
-                            st.markdown(f"- Label {label}: {rule_str}")
-                        
-                        # Show rule coverage statistics
-                        rule_coverage = Counter(r for r in applied_rules if r is not None)
-                        st.markdown("#### Rule Coverage Statistics")
-                        for rule, count in rule_coverage.items():
-                            st.markdown(f"- {rule}: Applied to {count} nodes ({count/len(labels):.1%})")
-                    
-                    # 4. Feature Analysis
-                    st.markdown("#### Feature Analysis by Label")
-                    
-                    # Create PCA visualization of frequency vectors colored by label
-                    pca = PCA(n_components=2)
-                    freq_2d = pca.fit_transform(freq_vectors[1])
-                    
-                    fig, ax = plt.subplots(figsize=(10, 6))
-                    scatter = ax.scatter(freq_2d[:, 0], freq_2d[:, 1], c=labels, 
-                                    cmap='tab20', alpha=0.6)
-                    ax.set_xlabel("PCA 1")
-                    ax.set_ylabel("PCA 2")
-                    ax.set_title("Neighborhood Feature Vectors by Label")
-                    plt.colorbar(scatter, label="Label")
-                    
-                    st.pyplot(fig)
-                    
-                    # Store results in graph object
-                    graph.node_labels = labels
-                    if labeling_method == "Clustering-based":
-                        graph.label_rules = rules
-                    else:
-                        # Store rule strings with their associated labels and hops
-                        graph.label_rules = [f"Label {label} ({hop}-hop): {rule_str}" for rule_fn, label, rule_str, hop in rules]
-                        graph.applied_rules = applied_rules
-                    
-                    st.success("Analysis complete! Labels have been generated and stored in the graph object.")
-        else:
-            st.warning("Neighborhood analysis is not available for graphs without features.")
-
 # Graph Family Generation Page
 elif page == "Graph Family Generation":
     st.markdown('<div class="section-header">Graph Family Generation</div>', unsafe_allow_html=True)
     
-    st.markdown("""
-    <div class="info-box">
-    Generate families of graphs with controlled properties. <b>All graphs in a family will use the same distribution type.</b> Each family will have:
-    <ul>
-        <li>Multiple graphs with similar characteristics</li>
-        <li>Controlled community structure</li>
-        <li>Consistent parameter distributions</li>
-        <li>Feature vectors (if enabled)</li>
-    </ul>
-    </div>
-    """, unsafe_allow_html=True)
-    
-    # Family name input
-    family_name = st.text_input("Family Name", value="Family 1", help="Name for this graph family")
-    
-    # Basic parameters
-    st.markdown('<div class="subsection-header">Basic Parameters</div>', unsafe_allow_html=True)
-    col1, col2 = st.columns(2)
-    with col1:
-        n_graphs = st.slider("Number of graphs", 1, 100, 10)
-        min_nodes = st.slider("Minimum nodes", 10, 1000, 30)
-        max_nodes = st.slider("Maximum nodes", 10, 1000, 150)
-    with col2:
-        min_communities = st.slider("Minimum communities", 2, 20, 3)
-        max_communities = st.slider("Maximum communities", 2, 20, 7)
-        sampling_method = st.selectbox(
-            "Community sampling method",
-            ["random", "similar", "diverse", "correlated"],
-            help="Method for selecting community subsets"
-        )
-    
-    # Global generation parameters
-    st.markdown('<div class="subsection-header">Global Generation Parameters</div>', unsafe_allow_html=True)
-    st.markdown("These parameters apply to all generation methods:")
-    
-    col1, col2 = st.columns(2)
-    with col1:
-        max_mean_community_deviation = st.slider(
-            "Max mean community deviation",
-            min_value=0.01,
-            max_value=0.5,
-            value=0.05,
-            help="Maximum allowed mean deviation from community structure"
-        )
-        max_max_community_deviation = st.slider(
-            "Max max community deviation",
-            min_value=0.01,
-            max_value=0.5,
-            value=0.10,
-            help="Maximum allowed maximum deviation from community structure"
-        )
-        parameter_search_range = st.slider(
-            "Parameter search range",
-            min_value=0.05,
-            max_value=1.0,
-            value=0.4,
-            help="How aggressively to search parameter space"
-        )
-    
-    with col2:
-        max_parameter_search_attempts = st.slider(
-            "Max parameter search attempts",
-            min_value=5,
-            max_value=50,
-            value=40,
-            help="Maximum number of parameter combinations to try"
-        )
-        min_edge_density = st.slider(
-            "Min edge density",
-            min_value=0.001,
-            max_value=0.1,
-            value=0.005,
-            help="Minimum acceptable edge density"
-        )
-        max_retries = st.slider(
-            "Max retries",
-            min_value=1,
-            max_value=20,
-            value=10,
-            help="Maximum number of retries for edge generation"
-        )
-    
-    min_component_size = st.slider(
-        "Minimum component size",
-        min_value=1,
-        max_value=50,
-        value=3,
-        help="Minimum size for connected components (all smaller components will be filtered out)"
-    )
-    
-    # --- NEW: Single distribution type selection ---
-    st.markdown('<div class="subsection-header">Distribution Type</div>', unsafe_allow_html=True)
-    dist_type = st.selectbox(
-        "Select distribution type for this family",
-        ["Standard", "Power Law", "Exponential", "Uniform"],
-        help="All graphs in this family will use the selected distribution type."
-    )
-    
-    # --- Only show relevant method-specific parameters ---
-    if dist_type == "Standard":
-        st.markdown("#### Standard Method Parameters")
-        col1, col2 = st.columns(2)
-        with col1:
-            degree_heterogeneity = st.slider(
-                "Degree heterogeneity",
-                min_value=0.0,
-                max_value=1.0,
-                value=0.5,
-                help="How much node degrees should vary"
-            )
-        with col2:
-            edge_noise = st.slider(
-                "Edge noise",
-                min_value=0.0,
-                max_value=0.5,
-                value=0.0,
-                help="Amount of random noise in edge generation"
-            )
-        method_params = {
-            'degree_heterogeneity': degree_heterogeneity,
-            'edge_noise': edge_noise
-        }
-        config_model_params = {}
-    elif dist_type == "Power Law":
-        st.markdown("#### Power Law Parameters")
-        col1, col2 = st.columns(2)
-        with col1:
-            power_law_exponent_min = st.slider("Min power law exponent", min_value=1.0, max_value=4.0, value=1.5)
-            power_law_exponent_max = st.slider("Max power law exponent", min_value=1.0, max_value=4.0, value=3.0)
-        with col2:
-            target_avg_degree_min = st.slider("Min target average degree", min_value=1.0, max_value=50.0, value=2.0)
-            target_avg_degree_max = st.slider("Max target average degree", min_value=1.0, max_value=50.0, value=5.0)
-        method_params = {
-            'degree_heterogeneity': 0.0,
-            'edge_noise': 0.0
-        }
-        config_model_params = {
-            "power_law": {
-                "exponent_min": power_law_exponent_min,
-                "exponent_max": power_law_exponent_max,
-                "target_avg_degree_min": target_avg_degree_min,
-                "target_avg_degree_max": target_avg_degree_max
-            }
-        }
-    elif dist_type == "Exponential":
-        st.markdown("#### Exponential Parameters")
-        col1, col2 = st.columns(2)
-        with col1:
-            rate_min = st.slider("Min rate", min_value=0.1, max_value=2.0, value=0.1)
-            rate_max = st.slider("Max rate", min_value=0.1, max_value=2.0, value=1.0)
-        with col2:
-            target_avg_degree_min = st.slider("Min target average degree", min_value=1.0, max_value=50.0, value=2.0)
-            target_avg_degree_max = st.slider("Max target average degree", min_value=1.0, max_value=50.0, value=5.0)
-        method_params = {
-            'degree_heterogeneity': 0.0,
-            'edge_noise': 0.0
-        }
-        config_model_params = {
-            "exponential": {
-                "rate_min": rate_min,
-                "rate_max": rate_max,
-                "target_avg_degree_min": target_avg_degree_min,
-                "target_avg_degree_max": target_avg_degree_max
-            }
-        }
-    elif dist_type == "Uniform":
-        st.markdown("#### Uniform Parameters")
-        col1, col2 = st.columns(2)
-        with col1:
-            min_factor = st.slider("Min factor", min_value=0.1, max_value=1.0, value=0.5)
-            max_factor = st.slider("Max factor", min_value=1.0, max_value=2.0, value=1.5)
-        with col2:
-            target_avg_degree_min = st.slider("Min target average degree", min_value=1.0, max_value=50.0, value=2.0)
-            target_avg_degree_max = st.slider("Max target average degree", min_value=1.0, max_value=50.0, value=5.0)
-        method_params = {
-            'degree_heterogeneity': 0.0,
-            'edge_noise': 0.0
-        }
-        config_model_params = {
-            "uniform": {
-                "min_factor": min_factor,
-                "max_factor": max_factor,
-                "target_avg_degree_min": target_avg_degree_min,
-                "target_avg_degree_max": target_avg_degree_max
-            }
-        }
-    # --- Set method_distribution for single type ---
-    method_distribution = {
-        dist_type.lower().replace(" ", "_"): 1.0
-    }
-    
-    # Generate button
-    if st.button("Generate Graph Family"):
-        # Create progress bar
-        progress_bar = st.progress(0)
-        status_text = st.empty()
-        
-        # Initialize generator
-        generator = GraphFamilyGenerator(
-            K=st.session_state.universe.K,
-            feature_dim=st.session_state.universe.feature_dim,
-            block_structure="assortative",
-            edge_density=st.session_state.universe.edge_density,
-            homophily=st.session_state.universe.homophily,
-            randomness_factor=st.session_state.universe.randomness_factor,
-            intra_community_regime_similarity=st.session_state.universe.intra_community_regime_similarity,
-            inter_community_regime_similarity=st.session_state.universe.inter_community_regime_similarity,
-            regimes_per_community=st.session_state.universe.regimes_per_community,
-            method_distribution=method_distribution,
-            standard_method_params=method_params if dist_type == "Standard" else {},
-            config_model_params=config_model_params,
-            max_mean_community_deviation=max_mean_community_deviation,
-            max_max_community_deviation=max_max_community_deviation,
-            max_parameter_search_attempts=max_parameter_search_attempts,
-            parameter_search_range=parameter_search_range,
-            min_edge_density=min_edge_density,
-            max_retries=max_retries
-        )
-        
-        # Generate graphs with progress updates
-        status_text.text("Generating graphs...")
-        graph_family = []
-        parameter_samples = defaultdict(list)
-        attempts = 0
-        max_attempts = n_graphs * 3
-        
-        while len(graph_family) < n_graphs and attempts < max_attempts:
-            try:
-                # Generate a single graph
-                new_graphs = generator.generate(
-                    n_graphs=1,
-                    min_communities=min_communities,
-                    max_communities=max_communities,
-                    min_nodes=min_nodes,
-                    max_nodes=max_nodes,
-                    sampling_method=sampling_method,
-                    min_component_size=min_component_size
-                )
-                
-                if new_graphs:
-                    graph_obj = new_graphs[0]
-                    # If it's a tuple, extract the first element
-                    if isinstance(graph_obj, tuple):
-                        graph_obj = graph_obj[0]
-                    graph_family.append(graph_obj)
-                    
-                    # Store parameter samples
-                    params = graph_obj.extract_parameters()
-                    for param_name, value in params.items():
-                        parameter_samples[param_name].append(value)
-                    
-                    progress = len(graph_family) / n_graphs
-                    progress_bar.progress(progress)
-                    status_text.text(f"Generated {len(graph_family)} out of {n_graphs} graphs")
-                
-            except Exception as e:
-                st.warning(f"Failed to generate graph {len(graph_family) + 1}: {str(e)}")
-            
-            attempts += 1
-        
-        if len(graph_family) < n_graphs:
-            st.warning(f"Could only generate {len(graph_family)} out of {n_graphs} graphs after {attempts} attempts")
-        
-        # Store in session state
-        if graph_family:
-            # Store in both places
-            st.session_state.graph_families[family_name] = {
-                'graphs': graph_family,
-                'parameters': dict(parameter_samples)
-            }
-            st.session_state.graph_family = graph_family  # For Parameter Space Analysis
-            
-            # Store current family for visualization
-            st.session_state.current_family_graphs = graph_family
-            st.session_state.current_family_params = dict(parameter_samples)
-            
-            st.success(f"Successfully generated {len(graph_family)} graphs for family '{family_name}'!")
-    
-    # Display visualization if we have a current family
-    if st.session_state.current_family_graphs is not None:
-        # Display basic statistics
-        st.markdown('<div class="subsection-header">Graph Family Statistics</div>', unsafe_allow_html=True)
-        stats = {
-            "Number of graphs": len(st.session_state.current_family_graphs),
-            "Average nodes": np.mean([g[0].n_nodes if isinstance(g, tuple) else g.n_nodes for g in st.session_state.current_family_graphs]),
-            "Average edges": np.mean([g[0].graph.number_of_edges() if isinstance(g, tuple) else g.graph.number_of_edges() for g in st.session_state.current_family_graphs]),
-            "Average density": np.mean([nx.density(g[0].graph) if isinstance(g, tuple) else nx.density(g.graph) for g in st.session_state.current_family_graphs]),
-            "Average clustering": np.mean([nx.average_clustering(g[0].graph) if isinstance(g, tuple) else nx.average_clustering(g.graph) for g in st.session_state.current_family_graphs])
-        }
-        
-        # Display statistics in a table
-        st.table(pd.DataFrame([stats]))
-        
-        # Create tabs for different visualizations
-        tab1, tab2, tab3, tab4 = st.tabs([
-            "Graph Visualization",
-            "Degree Distribution",
-            "Community Analysis",
-            "Community Deviation Analysis"
-        ])
-        
-        with tab1:
-            # Select a graph to visualize with a unique key
-            graph_idx = st.selectbox(
-                "Select graph to visualize",
-                range(len(st.session_state.current_family_graphs)),
-                key=f"family_viz_{family_name}"
-            )
-            g = st.session_state.current_family_graphs[graph_idx]
-            if isinstance(g, tuple):
-                g = g[0]
-            # Get generation method and parameters for title
-            generation_info = "Method: Unknown"
-            if hasattr(g, 'generation_method'):
-                method = g.generation_method
-                params = g.generation_params
-                if method == "standard":
-                    generation_info = f"Method: Standard (heterogeneity={params.get('degree_heterogeneity', 'N/A'):.2f}, noise={params.get('edge_noise', 'N/A'):.2f})"
-                elif method == "power_law":
-                    generation_info = f"Method: Power Law (exponent={params.get('power_law_exponent', 'N/A'):.2f}, avg_degree={params.get('target_avg_degree', 'N/A'):.2f})"
-                elif method == "exponential":
-                    generation_info = f"Method: Exponential (rate={params.get('rate', 'N/A'):.2f}, avg_degree={params.get('target_avg_degree', 'N/A'):.2f})"
-                elif method == "uniform":
-                    generation_info = f"Method: Uniform (min={params.get('min_factor', 'N/A'):.2f}, max={params.get('max_factor', 'N/A'):.2f}, avg_degree={params.get('target_avg_degree', 'N/A'):.2f})"
-            st.markdown(f"#### Graph {graph_idx + 1}")
-            st.markdown(f"*{generation_info}*")
-            fig = plot_graph_communities(g)
-            st.pyplot(fig)
-        
-        with tab2:
-            graph_idx = st.selectbox(
-                "Select graph for degree distribution",
-                range(len(st.session_state.current_family_graphs)),
-                key=f"family_degree_{family_name}"
-            )
-            g = st.session_state.current_family_graphs[graph_idx]
-            if isinstance(g, tuple):
-                g = g[0]
-            generation_info = "Method: Unknown"
-            if hasattr(g, 'generation_method'):
-                method = g.generation_method
-                params = g.generation_params
-                if method == "standard":
-                    generation_info = f"Method: Standard (heterogeneity={params.get('degree_heterogeneity', 'N/A'):.2f}, noise={params.get('edge_noise', 'N/A'):.2f})"
-                elif method == "power_law":
-                    generation_info = f"Method: Power Law (exponent={params.get('power_law_exponent', 'N/A'):.2f}, avg_degree={params.get('target_avg_degree', 'N/A'):.2f})"
-                elif method == "exponential":
-                    generation_info = f"Method: Exponential (rate={params.get('rate', 'N/A'):.2f}, avg_degree={params.get('target_avg_degree', 'N/A'):.2f})"
-                elif method == "uniform":
-                    generation_info = f"Method: Uniform (min={params.get('min_factor', 'N/A'):.2f}, max={params.get('max_factor', 'N/A'):.2f}, avg_degree={params.get('target_avg_degree', 'N/A'):.2f})"
-            st.markdown(f"#### Graph {graph_idx + 1}")
-            st.markdown(f"*{generation_info}*")
-            fig = plot_degree_distribution(g.graph)
-            st.pyplot(fig)
-        
-        with tab3:
-            graph_idx = st.selectbox(
-                "Select graph for community analysis",
-                range(len(st.session_state.current_family_graphs)),
-                key=f"family_community_{family_name}"
-            )
-            g = st.session_state.current_family_graphs[graph_idx]
-            if isinstance(g, tuple):
-                g = g[0]
-            generation_info = "Method: Unknown"
-            if hasattr(g, 'generation_method'):
-                method = g.generation_method
-                params = g.generation_params
-                if method == "standard":
-                    generation_info = f"Method: Standard (heterogeneity={params.get('degree_heterogeneity', 'N/A'):.2f}, noise={params.get('edge_noise', 'N/A'):.2f})"
-                elif method == "power_law":
-                    generation_info = f"Method: Power Law (exponent={params.get('power_law_exponent', 'N/A'):.2f}, avg_degree={params.get('target_avg_degree', 'N/A'):.2f})"
-                elif method == "exponential":
-                    generation_info = f"Method: Exponential (rate={params.get('rate', 'N/A'):.2f}, avg_degree={params.get('target_avg_degree', 'N/A'):.2f})"
-                elif method == "uniform":
-                    generation_info = f"Method: Uniform (min={params.get('min_factor', 'N/A'):.2f}, max={params.get('max_factor', 'N/A'):.2f}, avg_degree={params.get('target_avg_degree', 'N/A'):.2f})"
-            st.markdown(f"#### Graph {graph_idx + 1}")
-            st.markdown(f"*{generation_info}*")
-            fig = plot_membership_matrix(g)
-            st.pyplot(fig)
-        
-        with tab4:
-            graph_idx = st.selectbox(
-                "Select graph for deviation analysis",
-                range(len(st.session_state.current_family_graphs)),
-                key=f"family_deviation_{family_name}"
-            )
-            g = st.session_state.current_family_graphs[graph_idx]
-            if isinstance(g, tuple):
-                g = g[0]
-            generation_info = "Method: Unknown"
-            if hasattr(g, 'generation_method'):
-                method = g.generation_method
-                params = g.generation_params
-                if method == "standard":
-                    generation_info = f"Method: Standard (heterogeneity={params.get('degree_heterogeneity', 'N/A'):.2f}, noise={params.get('edge_noise', 'N/A'):.2f})"
-                elif method == "power_law":
-                    generation_info = f"Method: Power Law (exponent={params.get('power_law_exponent', 'N/A'):.2f}, avg_degree={params.get('target_avg_degree', 'N/A'):.2f})"
-                elif method == "exponential":
-                    generation_info = f"Method: Exponential (rate={params.get('rate', 'N/A'):.2f}, avg_degree={params.get('target_avg_degree', 'N/A'):.2f})"
-                elif method == "uniform":
-                    generation_info = f"Method: Uniform (min={params.get('min_factor', 'N/A'):.2f}, max={params.get('max_factor', 'N/A'):.2f}, avg_degree={params.get('target_avg_degree', 'N/A'):.2f})"
-            st.markdown(f"#### Graph {graph_idx + 1}")
-            st.markdown(f"*{generation_info}*")
-            connection_analysis = g.analyze_community_connections()
-            subtab1, subtab2, subtab3 = st.tabs([
-                "Connection Matrices",
-                "Deviation Analysis",
-                "Community Statistics"
-            ])
-            with subtab1:
-                col1, col2 = st.columns(2)
-                with col1:
-                    st.markdown("##### Expected Probabilities (Universe)")
-                    fig = plt.figure(figsize=(6, 5))
-                    plt.imshow(connection_analysis["expected_matrix"], cmap='viridis')
-                    plt.colorbar(label='Probability')
-                    plt.title('Expected Community Connections')
-                    plt.xlabel('Community')
-                    plt.ylabel('Community')
-                    st.pyplot(fig)
-                with col2:
-                    st.markdown("##### Actual Probabilities (Graph)")
-                    fig = plt.figure(figsize=(6, 5))
-                    plt.imshow(connection_analysis["actual_matrix"], cmap='viridis')
-                    plt.colorbar(label='Probability')
-                    plt.title('Actual Community Connections')
-                    plt.xlabel('Community')
-                    plt.ylabel('Community')
-                    st.pyplot(fig)
-            with subtab2:
-                st.markdown("##### Deviation Analysis")
-                col1, col2 = st.columns(2)
-                with col1:
-                    fig = plt.figure(figsize=(6, 5))
-                    plt.imshow(connection_analysis["deviation_matrix"], cmap='Reds')
-                    plt.colorbar(label='Absolute Deviation')
-                    plt.title('Deviation from Expected Probabilities')
-                    plt.xlabel('Community')
-                    plt.ylabel('Community')
-                    st.pyplot(fig)
-                with col2:
-                    st.markdown("##### Deviation Statistics")
-                    st.metric("Mean Absolute Deviation", f"{connection_analysis['mean_deviation']:.4f}")
-                    st.metric("Maximum Absolute Deviation", f"{connection_analysis['max_deviation']:.4f}")
-                    fig = plt.figure(figsize=(6, 4))
-                    plt.hist(connection_analysis["deviation_matrix"].flatten(), bins=20)
-                    plt.title('Distribution of Deviations')
-                    plt.xlabel('Absolute Deviation')
-                    plt.ylabel('Count')
-                    st.pyplot(fig)
-                if "degree_analysis" in connection_analysis:
-                    st.markdown("##### Degree Distribution Analysis")
-                    degree_analysis = connection_analysis["degree_analysis"]
-                    used_params = degree_analysis["used_parameters"]
-                    st.write("##### Distribution Parameters Used")
-                    col1, col2, col3 = st.columns(3)
-                    with col1:
-                        if "power_law_exponent" in used_params and used_params["power_law_exponent"] is not None:
-                            st.metric("Power Law Exponent", f"{used_params['power_law_exponent']:.2f}")
-                        elif "rate" in used_params and used_params["rate"] is not None:
-                            st.metric("Rate", f"{used_params['rate']:.2f}")
-                        elif "min_factor" in used_params and used_params["min_factor"] is not None:
-                            st.metric("Min Factor", f"{used_params['min_factor']:.2f}")
-                    with col2:
-                        if "target_avg_degree" in used_params and used_params["target_avg_degree"] is not None:
-                            st.metric("Target Average Degree", f"{used_params['target_avg_degree']:.2f}")
-                    with col3:
-                        if "scale_factor" in used_params and used_params["scale_factor"] is not None and used_params["scale_factor"] != 1.0:
-                            st.metric("Scale Factor", f"{used_params['scale_factor']:.2f}")
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        st.write("##### Actual Degree Statistics")
-                        mean_actual = degree_analysis.get('mean_actual_degree')
-                        std_actual = degree_analysis.get('std_actual_degree')
-                        if mean_actual is not None:
-                            st.write(f"Mean: {mean_actual:.2f}")
-                        if std_actual is not None:
-                            st.write(f"Std Dev: {std_actual:.2f}")
-                    with col2:
-                        st.write("##### Target Degree Statistics")
-                        mean_target = degree_analysis.get('mean_target_degree')
-                        std_target = degree_analysis.get('std_target_degree')
-                        if mean_target is not None:
-                            st.write(f"Mean: {mean_target:.2f}")
-                        if std_target is not None:
-                            st.write(f"Std Dev: {std_target:.2f}")
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        deviation = degree_analysis.get('degree_deviation')
-                        if deviation is not None:
-                            st.metric("Degree Deviation", f"{deviation:.4f}")
-                    with col2:
-                        correlation = degree_analysis.get('degree_correlation')
-                        if correlation is not None:
-                            st.metric("Degree Correlation", f"{correlation:.4f}")
-            with subtab3:
-                st.markdown("##### Community Statistics")
-                col1, col2 = st.columns(2)
-                with col1:
-                    st.markdown("##### Community Sizes")
-                    fig = plt.figure(figsize=(6, 4))
-                    plt.bar(range(len(connection_analysis["community_sizes"])), 
-                           connection_analysis["community_sizes"])
-                    plt.title('Number of Nodes per Community')
-                    plt.xlabel('Community')
-                    plt.ylabel('Number of Nodes')
-                    st.pyplot(fig)
-                with col2:
-                    fig = plt.figure(figsize=(6, 5))
-                    plt.imshow(connection_analysis["connection_counts"], cmap='Blues')
-                    plt.colorbar(label='Number of Edges')
-                    plt.title('Raw Edge Counts Between Communities')
-                    plt.xlabel('Community')
-                    plt.ylabel('Community')
-                    st.pyplot(fig)
-
-# Graph Family Analysis Page
-elif page == "Graph Family Analysis":
-    st.markdown('<div class="section-header">Graph Family Analysis</div>', unsafe_allow_html=True)
-    
-    st.markdown("""
-    <div class="info-box">
-    Analyze and compare graph families to understand their properties and relationships.
-    Features include:
-    <ul>
-        <li>Comprehensive family dashboards</li>
-        <li>Parameter distribution analysis</li>
-        <li>Graph statistics comparison</li>
-        <li>Community structure analysis</li>
-        <li>Cross-family comparisons</li>
-    </ul>
-    </div>
-    """, unsafe_allow_html=True)
-    
-    # Check if any families are available
-    if not st.session_state.graph_families:
-        st.warning("No graph families available for analysis. Please generate some families first.")
+    if st.session_state.universe is None:
+        st.warning("Please generate a universe first in the 'Universe Creation' page.")
     else:
-        # Family selection
-        selected_families = st.multiselect(
-            "Select families to analyze",
-            options=list(st.session_state.graph_families.keys()),
-            default=list(st.session_state.graph_families.keys())[:1]
-        )
+        st.markdown("""
+        <div class="info-box">
+        Generate families of graphs from the same universe with varying parameters.
+        This allows you to explore how different parameter ranges affect graph properties
+        while maintaining the same underlying community structure.
+        </div>
+        """, unsafe_allow_html=True)
         
-        if selected_families:
-            # Analysis type selection
-            analysis_type = st.selectbox(
-                "Select analysis type",
-                [
-                    "Comprehensive Dashboard",
-                    "Parameter Distributions",
-                    "Graph Statistics",
-                    "Community Statistics",
-                    "Family Comparison"
-                ]
+        # Initialize session state for family parameters if not exists
+        if 'family_params' not in st.session_state:
+            st.session_state.family_params = {
+                'n_graphs': 20,
+                'min_n_nodes': 50,
+                'max_n_nodes': 150,
+                'min_communities': 3,
+                'max_communities': 6,
+                'min_component_size': 5,
+                'homophily_range': (-0.1, 0.1),
+                'density_range': (-0.02, 0.02),
+                'use_dccc_sbm': False,
+                'community_imbalance_range': (0.0, 0.5),
+                'degree_separation_range': (0.3, 0.8),
+                'degree_distribution': 'power_law',
+                'power_law_exponent_range': (2.1, 2.9),
+                'exponential_rate_range': (0.3, 1.0),
+                'uniform_min_factor_range': (0.3, 0.7),
+                'uniform_max_factor_range': (1.3, 2.0),
+                'disable_deviation_limiting': False,
+                'seed': 42
+            }
+        
+        # Family Generation Parameters
+        st.markdown('<div class="subsection-header">Family Generation Parameters</div>', unsafe_allow_html=True)
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.session_state.family_params['n_graphs'] = st.number_input(
+                "Number of graphs in family",
+                min_value=5,
+                max_value=100,
+                value=st.session_state.family_params['n_graphs'],
+                help="Total number of graphs to generate in the family"
             )
             
-            if analysis_type == "Comprehensive Dashboard":
-                # Create dashboard for each selected family
-                for family_name in selected_families:
-                    st.markdown(f'<div class="subsection-header">{family_name} Dashboard</div>', unsafe_allow_html=True)
+            st.session_state.family_params['min_n_nodes'] = st.number_input(
+                "Minimum nodes per graph",
+                min_value=20,
+                max_value=500,
+                value=st.session_state.family_params['min_n_nodes'],
+                help="Minimum number of nodes in any graph"
+            )
+            
+            st.session_state.family_params['max_n_nodes'] = st.number_input(
+                "Maximum nodes per graph",
+                min_value=st.session_state.family_params['min_n_nodes'],
+                max_value=1000,
+                value=st.session_state.family_params['max_n_nodes'],
+                help="Maximum number of nodes in any graph"
+            )
+            
+        with col2:
+            st.session_state.family_params['min_communities'] = st.number_input(
+                "Minimum communities per graph",
+                min_value=2,
+                max_value=st.session_state.universe.K,
+                value=st.session_state.family_params['min_communities'],
+                help="Minimum number of communities to sample"
+            )
+            
+            st.session_state.family_params['max_communities'] = st.number_input(
+                "Maximum communities per graph",
+                min_value=st.session_state.family_params['min_communities'],
+                max_value=st.session_state.universe.K,
+                value=min(st.session_state.family_params['max_communities'], st.session_state.universe.K),
+                help="Maximum number of communities to sample"
+            )
+            
+            st.session_state.family_params['min_component_size'] = st.number_input(
+                "Minimum component size",
+                min_value=1,
+                max_value=20,
+                value=st.session_state.family_params['min_component_size'],
+                help="Minimum size for connected components"
+            )
+        
+        # Parameter Range Configuration
+        st.markdown('<div class="subsection-header">Parameter Ranges</div>', unsafe_allow_html=True)
+        st.markdown("Configure the ranges for sampling different graph parameters:")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.markdown("**Structural Parameters**")
+            
+            # Homophily range
+            homophily_min, homophily_max = st.slider(
+                "Homophily range (offset from universe)",
+                min_value=-0.3,
+                max_value=0.3,
+                value=st.session_state.family_params['homophily_range'],
+                step=0.05,
+                help="Range of homophily offsets relative to universe homophily"
+            )
+            st.session_state.family_params['homophily_range'] = (homophily_min, homophily_max)
+            
+            # Density range
+            density_min, density_max = st.slider(
+                "Density range (offset from universe)",
+                min_value=-0.1,
+                max_value=0.1,
+                value=st.session_state.family_params['density_range'],
+                step=0.01,
+                help="Range of density offsets relative to universe density"
+            )
+            st.session_state.family_params['density_range'] = (density_min, density_max)
+            
+        with col2:
+            st.markdown("**Generation Options**")
+            
+            st.session_state.family_params['use_dccc_sbm'] = st.checkbox(
+                "Use DCCC-SBM",
+                value=st.session_state.family_params['use_dccc_sbm'],
+                help="Use Distribution-Community-Coupled Corrected SBM"
+            )
+            
+            st.session_state.family_params['disable_deviation_limiting'] = st.checkbox(
+                "Disable deviation limiting",
+                value=st.session_state.family_params['disable_deviation_limiting'],
+                help="Allow graphs that exceed community deviation limits"
+            )
+        
+        # DCCC-SBM specific parameters
+        if st.session_state.family_params['use_dccc_sbm']:
+            st.markdown('<div class="subsection-header">DCCC-SBM Parameters</div>', unsafe_allow_html=True)
+            
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                # Community imbalance range
+                imbalance_min, imbalance_max = st.slider(
+                    "Community imbalance range",
+                    min_value=0.0,
+                    max_value=1.0,
+                    value=st.session_state.family_params['community_imbalance_range'],
+                    step=0.1,
+                    help="Range for community size imbalance (0=balanced, 1=maximally imbalanced)"
+                )
+                st.session_state.family_params['community_imbalance_range'] = (imbalance_min, imbalance_max)
+                
+                # Degree separation range
+                separation_min, separation_max = st.slider(
+                    "Degree separation range",
+                    min_value=0.0,
+                    max_value=1.0,
+                    value=st.session_state.family_params['degree_separation_range'],
+                    step=0.1,
+                    help="Range for degree distribution separation (0=overlapping, 1=well separated)"
+                )
+                st.session_state.family_params['degree_separation_range'] = (separation_min, separation_max)
+                
+            with col2:
+                # Degree distribution type
+                st.session_state.family_params['degree_distribution'] = st.selectbox(
+                    "Degree distribution type",
+                    options=['power_law', 'exponential', 'uniform'],
+                    index=['power_law', 'exponential', 'uniform'].index(st.session_state.family_params['degree_distribution']),
+                    help="Type of degree distribution to use"
+                )
+                
+                # Distribution-specific parameter ranges
+                if st.session_state.family_params['degree_distribution'] == 'power_law':
+                    exp_min, exp_max = st.slider(
+                        "Power law exponent range",
+                        min_value=2.0,
+                        max_value=4.0,
+                        value=st.session_state.family_params['power_law_exponent_range'],
+                        step=0.1,
+                        help="Range for power law exponents"
+                    )
+                    st.session_state.family_params['power_law_exponent_range'] = (exp_min, exp_max)
                     
-                    family_data = st.session_state.graph_families[family_name]
-                    graphs = family_data['graphs']
-                    parameters = family_data['parameters']
+                elif st.session_state.family_params['degree_distribution'] == 'exponential':
+                    rate_min, rate_max = st.slider(
+                        "Exponential rate range",
+                        min_value=0.1,
+                        max_value=2.0,
+                        value=st.session_state.family_params['exponential_rate_range'],
+                        step=0.1,
+                        help="Range for exponential distribution rates"
+                    )
+                    st.session_state.family_params['exponential_rate_range'] = (rate_min, rate_max)
                     
-                    # Create dashboard
-                    fig = create_graph_family_dashboard(graphs, parameters)
+                elif st.session_state.family_params['degree_distribution'] == 'uniform':
+                    min_factor_min, min_factor_max = st.slider(
+                        "Uniform min factor range",
+                        min_value=0.1,
+                        max_value=1.0,
+                        value=st.session_state.family_params['uniform_min_factor_range'],
+                        step=0.1,
+                        help="Range for uniform distribution minimum factors"
+                    )
+                    st.session_state.family_params['uniform_min_factor_range'] = (min_factor_min, min_factor_max)
+                    
+                    max_factor_min, max_factor_max = st.slider(
+                        "Uniform max factor range",
+                        min_value=1.0,
+                        max_value=3.0,
+                        value=st.session_state.family_params['uniform_max_factor_range'],
+                        step=0.1,
+                        help="Range for uniform distribution maximum factors"
+                    )
+                    st.session_state.family_params['uniform_max_factor_range'] = (max_factor_min, max_factor_max)
+        
+        # Advanced parameters
+        with st.expander("Advanced Parameters"):
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.session_state.family_params['max_mean_community_deviation'] = st.slider(
+                    "Max mean community deviation",
+                    min_value=0.05,
+                    max_value=0.3,
+                    value=0.15,
+                    step=0.01,
+                    help="Maximum allowed mean deviation from expected community properties"
+                )
+                
+                st.session_state.family_params['max_max_community_deviation'] = st.slider(
+                    "Max maximum community deviation",
+                    min_value=0.1,
+                    max_value=0.5,
+                    value=0.3,
+                    step=0.01,
+                    help="Maximum allowed deviation for any single community"
+                )
+                
+            with col2:
+                st.session_state.family_params['min_edge_density'] = st.slider(
+                    "Minimum edge density",
+                    min_value=0.001,
+                    max_value=0.05,
+                    value=0.005,
+                    step=0.001,
+                    help="Minimum edge density to ensure connected graphs"
+                )
+                
+                st.session_state.family_params['max_retries'] = st.number_input(
+                    "Max retries per graph",
+                    min_value=1,
+                    max_value=10,
+                    value=5,
+                    help="Maximum attempts to generate each graph"
+                )
+        
+        # Seed
+        st.session_state.family_params['seed'] = st.number_input(
+            "Random seed",
+            min_value=0,
+            max_value=10000,
+            value=st.session_state.family_params['seed'],
+            help="Random seed for reproducibility"
+        )
+        
+        # Generate Family Button
+        if st.button("Generate Graph Family", key="generate_family"):
+            with st.spinner("Generating graph family..."):
+                try:
+                    # Create family generator
+                    family_generator = GraphFamilyGenerator(
+                        universe=st.session_state.universe,
+                        n_graphs=st.session_state.family_params['n_graphs'],
+                        min_n_nodes=st.session_state.family_params['min_n_nodes'],
+                        max_n_nodes=st.session_state.family_params['max_n_nodes'],
+                        min_communities=st.session_state.family_params['min_communities'],
+                        max_communities=st.session_state.family_params['max_communities'],
+                        min_component_size=st.session_state.family_params['min_component_size'],
+                        homophily_range=st.session_state.family_params['homophily_range'],
+                        density_range=st.session_state.family_params['density_range'],
+                        use_dccc_sbm=st.session_state.family_params['use_dccc_sbm'],
+                        community_imbalance_range=st.session_state.family_params['community_imbalance_range'],
+                        degree_separation_range=st.session_state.family_params['degree_separation_range'],
+                        degree_distribution=st.session_state.family_params['degree_distribution'],
+                        power_law_exponent_range=st.session_state.family_params['power_law_exponent_range'],
+                        exponential_rate_range=st.session_state.family_params['exponential_rate_range'],
+                        uniform_min_factor_range=st.session_state.family_params['uniform_min_factor_range'],
+                        uniform_max_factor_range=st.session_state.family_params['uniform_max_factor_range'],
+                        disable_deviation_limiting=st.session_state.family_params['disable_deviation_limiting'],
+                        max_mean_community_deviation=st.session_state.family_params['max_mean_community_deviation'],
+                        max_max_community_deviation=st.session_state.family_params['max_max_community_deviation'],
+                        min_edge_density=st.session_state.family_params['min_edge_density'],
+                        max_retries=st.session_state.family_params['max_retries'],
+                        seed=st.session_state.family_params['seed']
+                    )
+                    
+                    # Generate the family
+                    graphs = family_generator.generate_family(
+                        show_progress=True,
+                        collect_stats=True,
+                        max_attempts_per_graph=5
+                    )
+                    
+                    # Store in session state
+                    st.session_state.current_family_graphs = graphs
+                    st.session_state.current_family_generator = family_generator
+                    
+                    st.success(f"Successfully generated {len(graphs)} graphs!")
+                    
+                    # Display generation statistics
+                    stats = family_generator.generation_stats
+                    
+                    st.markdown('<div class="subsection-header">Generation Statistics</div>', unsafe_allow_html=True)
+                    
+                    col1, col2, col3, col4 = st.columns(4)
+                    
+                    with col1:
+                        st.metric("Success Rate", f"{stats['success_rate']:.1%}")
+                    with col2:
+                        st.metric("Total Time", f"{stats['total_time']:.1f}s")
+                    with col3:
+                        st.metric("Avg Time/Graph", f"{stats['avg_time_per_graph']:.2f}s")
+                    with col4:
+                        st.metric("Failed Graphs", stats['failed_graphs'])
+                    
+                    # Display family summary
+                    st.markdown('<div class="subsection-header">Family Summary</div>', unsafe_allow_html=True)
+                    
+                    summary_df = family_generator.get_family_summary()
+                    st.dataframe(summary_df)
+                    
+                    # Display diversity analysis
+                    st.markdown('<div class="subsection-header">Family Diversity Analysis</div>', unsafe_allow_html=True)
+                    
+                    diversity = family_generator.analyze_family_diversity()
+                    
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
+                        st.markdown("**Parameter Ranges**")
+                        st.write(f"Node count range: {diversity['node_count_range']}")
+                        st.write(f"Edge count range: {diversity['edge_count_range']}")
+                        st.write(f"Community count range: {diversity['community_count_range']}")
+                        
+                    with col2:
+                        st.markdown("**Diversity Metrics (CV)**")
+                        st.write(f"Node count CV: {diversity['node_count_cv']:.3f}")
+                        st.write(f"Edge count CV: {diversity['edge_count_cv']:.3f}")
+                        st.write(f"Community count CV: {diversity['community_count_cv']:.3f}")
+                    
+                    st.markdown("**Community Usage**")
+                    st.write(f"Total unique communities: {diversity['total_unique_communities']}")
+                    st.write(f"Average communities per graph: {diversity['avg_communities_per_graph']:.1f}")
+                    st.write(f"Community reuse rate: {diversity['community_reuse_rate']:.1%}")
+                    
+                except Exception as e:
+                    st.error(f"Error generating graph family: {str(e)}")
+                    import traceback
+                    st.code(traceback.format_exc())
+        
+        # Display results if family exists
+        if st.session_state.current_family_graphs is not None and len(st.session_state.current_family_graphs) > 0:
+            st.markdown('<div class="section-header">Family Analysis</div>', unsafe_allow_html=True)
+            
+            # Create tabs for different analyses
+            tab1, tab2, tab3, tab4 = st.tabs([
+                "Family Overview",
+                "Parameter Distributions", 
+                "Graph Statistics",
+                "Individual Graphs"
+            ])
+            
+            with tab1:
+                st.markdown("### Family Overview")
+                
+                # Use existing graph family visualization functions
+                try:
+                    # Create a family dictionary for the visualization functions
+                    family_dict = {"Current Family": st.session_state.current_family_graphs}
+                    
+                    # Try to use the imported visualization functions
+                    fig = plot_parameter_distributions(family_dict, ["Current Family"])
+                    st.pyplot(fig)
+                except Exception as e:
+                    st.info("Using built-in family overview visualization")
+                    
+                    # Fallback: Create our own summary visualization
+                    summary_df = st.session_state.current_family_generator.get_family_summary()
+                    
+                    if not summary_df.empty:
+                        # Create a simple overview plot
+                        fig, axes = plt.subplots(2, 2, figsize=(12, 8))
+                        
+                        # Node count vs edge count
+                        axes[0, 0].scatter(summary_df['n_nodes'], summary_df['n_edges'], alpha=0.6)
+                        axes[0, 0].set_xlabel('Number of Nodes')
+                        axes[0, 0].set_ylabel('Number of Edges')
+                        axes[0, 0].set_title('Nodes vs Edges')
+                        
+                        # Community count distribution
+                        axes[0, 1].hist(summary_df['n_communities'], bins=10, alpha=0.7)
+                        axes[0, 1].set_xlabel('Number of Communities')
+                        axes[0, 1].set_ylabel('Frequency')
+                        axes[0, 1].set_title('Community Count Distribution')
+                        
+                        # Density distribution
+                        axes[1, 0].hist(summary_df['density'], bins=15, alpha=0.7)
+                        axes[1, 0].set_xlabel('Edge Density')
+                        axes[1, 0].set_ylabel('Frequency')
+                        axes[1, 0].set_title('Density Distribution')
+                        
+                        # Generation attempts
+                        axes[1, 1].hist(summary_df['attempts'], bins=10, alpha=0.7)
+                        axes[1, 1].set_xlabel('Generation Attempts')
+                        axes[1, 1].set_ylabel('Frequency')
+                        axes[1, 1].set_title('Generation Attempts Distribution')
+                        
+                        plt.tight_layout()
+                        st.pyplot(fig)
+                
+                try:
+                    fig = plot_graph_statistics(st.session_state.current_family_graphs)
+                    st.pyplot(fig)
+                except Exception as e:
+                    st.info("Graph statistics visualization not available")
+            
+            with tab2:
+                st.markdown("### Parameter Distributions")
+                
+                # Create parameter distribution plots
+                summary_df = st.session_state.current_family_generator.get_family_summary()
+                
+                if not summary_df.empty:
+                    # Plot parameter distributions
+                    fig, axes = plt.subplots(2, 3, figsize=(15, 10))
+                    
+                    # Node count distribution
+                    axes[0, 0].hist(summary_df['n_nodes'], bins=20, alpha=0.7)
+                    axes[0, 0].set_title('Node Count Distribution')
+                    axes[0, 0].set_xlabel('Number of Nodes')
+                    
+                    # Edge count distribution
+                    axes[0, 1].hist(summary_df['n_edges'], bins=20, alpha=0.7)
+                    axes[0, 1].set_title('Edge Count Distribution')
+                    axes[0, 1].set_xlabel('Number of Edges')
+                    
+                    # Community count distribution
+                    axes[0, 2].hist(summary_df['n_communities'], bins=20, alpha=0.7)
+                    axes[0, 2].set_title('Community Count Distribution')
+                    axes[0, 2].set_xlabel('Number of Communities')
+                    
+                    # Density distribution
+                    axes[1, 0].hist(summary_df['density'], bins=20, alpha=0.7)
+                    axes[1, 0].set_title('Density Distribution')
+                    axes[1, 0].set_xlabel('Edge Density')
+                    
+                    # Homophily distribution (if available)
+                    if 'target_homophily' in summary_df.columns:
+                        axes[1, 1].hist(summary_df['target_homophily'].dropna(), bins=20, alpha=0.7)
+                        axes[1, 1].set_title('Target Homophily Distribution')
+                        axes[1, 1].set_xlabel('Homophily')
+                    
+                    # Generation time distribution
+                    if 'total_generation_time' in summary_df.columns:
+                        axes[1, 2].hist(summary_df['total_generation_time'].dropna(), bins=20, alpha=0.7)
+                        axes[1, 2].set_title('Generation Time Distribution')
+                        axes[1, 2].set_xlabel('Time (seconds)')
+                    
+                    plt.tight_layout()
                     st.pyplot(fig)
             
-            elif analysis_type == "Parameter Distributions":
-                # Plot parameter distributions for selected families
-                fig = plot_parameter_distributions(
-                    [st.session_state.graph_families[f]['parameters'] for f in selected_families],
-                    selected_families
-                )
-                st.pyplot(fig)
+            with tab3:
+                st.markdown("### Graph Statistics")
+                
+                # Calculate and display aggregate statistics
+                summary_df = st.session_state.current_family_generator.get_family_summary()
+                
+                if not summary_df.empty:
+                    # Summary statistics table
+                    stats_summary = summary_df[['n_nodes', 'n_edges', 'n_communities', 'density']].describe()
+                    st.dataframe(stats_summary)
+                    
+                    # Correlation matrix
+                    st.markdown("#### Parameter Correlations")
+                    numeric_cols = ['n_nodes', 'n_edges', 'n_communities', 'density']
+                    if 'target_homophily' in summary_df.columns:
+                        numeric_cols.append('target_homophily')
+                    
+                    corr_matrix = summary_df[numeric_cols].corr()
+                    
+                    fig, ax = plt.subplots(figsize=(8, 6))
+                    im = ax.imshow(corr_matrix, cmap='coolwarm', aspect='auto')
+                    ax.set_xticks(range(len(numeric_cols)))
+                    ax.set_yticks(range(len(numeric_cols)))
+                    ax.set_xticklabels(numeric_cols, rotation=45)
+                    ax.set_yticklabels(numeric_cols)
+                    
+                    # Add correlation values
+                    for i in range(len(numeric_cols)):
+                        for j in range(len(numeric_cols)):
+                            text = ax.text(j, i, f'{corr_matrix.iloc[i, j]:.2f}', 
+                                         ha="center", va="center", color="black")
+                    
+                    plt.colorbar(im)
+                    plt.title('Parameter Correlation Matrix')
+                    plt.tight_layout()
+                    st.pyplot(fig)
             
-            elif analysis_type == "Graph Statistics":
-                # Plot graph statistics for selected families
-                fig = plot_graph_statistics(
-                    [st.session_state.graph_families[f]['graphs'] for f in selected_families],
-                    selected_families
+            with tab4:
+                st.markdown("### Individual Graphs")
+                
+                # Graph selector
+                graph_idx = st.selectbox(
+                    "Select a graph to examine",
+                    range(len(st.session_state.current_family_graphs)),
+                    format_func=lambda i: f"Graph {i} ({st.session_state.current_family_graphs[i].n_nodes} nodes, {st.session_state.current_family_graphs[i].graph.number_of_edges()} edges)"
                 )
-                st.pyplot(fig)
+                
+                selected_graph = st.session_state.current_family_graphs[graph_idx]
+                
+                # Set as current graph for other analyses
+                if st.button("Set as Current Graph"):
+                    st.session_state.current_graph = selected_graph
+                    st.success("Graph set as current graph for analysis!")
+                
+                # Display graph properties
+                st.markdown(f"#### Graph {graph_idx} Properties")
+                
+                # Basic properties
+                col1, col2, col3, col4 = st.columns(4)
+                
+                with col1:
+                    st.metric("Nodes", selected_graph.n_nodes)
+                with col2:
+                    st.metric("Edges", selected_graph.graph.number_of_edges())
+                with col3:
+                    st.metric("Communities", len(selected_graph.communities))
+                with col4:
+                    density = selected_graph.graph.number_of_edges() / (selected_graph.n_nodes * (selected_graph.n_nodes - 1) / 2) if selected_graph.n_nodes > 1 else 0
+                    st.metric("Density", f"{density:.4f}")
+                
+                # Visualizations
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    st.markdown("##### Community Structure")
+                    fig = plot_graph_communities(selected_graph)
+                    st.pyplot(fig)
+                
+                with col2:
+                    st.markdown("##### Degree Distribution")
+                    fig = plot_degree_distribution(selected_graph.graph)
+                    st.pyplot(fig)
+                
+                # Community analysis
+                st.markdown("##### Community Analysis")
+                connection_analysis = selected_graph.analyze_community_connections()
+                st.pyplot(connection_analysis['figure'])
             
-            elif analysis_type == "Community Statistics":
-                # Plot community statistics for selected families
-                fig = plot_community_statistics(
-                    [st.session_state.graph_families[f]['graphs'] for f in selected_families],
-                    selected_families
-                )
-                st.pyplot(fig)
+            # Download family data
+            st.markdown('<div class="subsection-header">Export Family Data</div>', unsafe_allow_html=True)
             
-            elif analysis_type == "Family Comparison":
-                # Compare statistics across families
-                fig = plot_graph_family_comparison(
-                    [st.session_state.graph_families[f]['graphs'] for f in selected_families],
-                    selected_families
-                )
-                st.pyplot(fig)
-
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                # Download summary CSV
+                summary_df = st.session_state.current_family_generator.get_family_summary()
+                if not summary_df.empty:
+                    csv = summary_df.to_csv(index=False)
+                    st.download_button(
+                        "Download Family Summary (CSV)",
+                        csv,
+                        "graph_family_summary.csv",
+                        "text/csv"
+                    )
+            
+            with col2:
+                # Save family with graphs
+                if st.button("Save Family with Graphs"):
+                    st.session_state.current_family_generator.save_family(
+                        "graph_family.pkl", 
+                        include_graphs=True
+                    )
+                    st.success("Family saved to graph_family.pkl!")
+                    
 # Metapath Analysis Page
 elif page == "Metapath Analysis":
     st.markdown('<div class="section-header">Metapath Analysis</div>', unsafe_allow_html=True)
