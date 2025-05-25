@@ -13,6 +13,10 @@ from mmsb.model import GraphUniverse, GraphSample
 from tqdm import tqdm
 import time
 import warnings
+import matplotlib.pyplot as plt
+import seaborn as sns
+from scipy.stats import spearmanr, pearsonr
+from itertools import combinations
 
 class GraphFamilyGenerator:
     """
@@ -578,3 +582,531 @@ class GraphFamilyGenerator:
     def __iter__(self):
         """Iterate over graphs in the family."""
         return iter(self.graphs)
+
+class FamilyConsistencyAnalyzer:
+    """
+    Analyzes consistency focusing on structural patterns rather than absolute values.
+    
+    This class provides three main consistency metrics:
+    1. Pattern Preservation: How well rank ordering of connections is preserved vs universe
+    2. Cross-Graph Similarity: How similar graphs are to each other within the family
+    3. Generation Fidelity: How well graphs match their intended generation targets
+    """
+    
+    def __init__(self, family_graphs: List, universe):
+        """
+        Initialize the consistency analyzer.
+        
+        Args:
+            family_graphs: List of GraphSample objects from the same family
+            universe: GraphUniverse object that generated the family
+        """
+        self.family_graphs = family_graphs
+        self.universe = universe
+        self.results = None
+    
+    def analyze_consistency(self) -> Dict[str, Any]:
+        """
+        Comprehensive consistency analysis.
+        
+        Returns:
+            Dictionary with consistency metrics and interpretations
+        """
+        if not self.family_graphs:
+            return {'error': 'No graphs provided for analysis'}
+        
+        results = {}
+        
+        # 1. Pattern preservation (vs universe structure)
+        try:
+            pattern_consistency, pattern_corrs = self._calculate_pattern_consistency()
+            results['pattern_preservation'] = {
+                'score': pattern_consistency,
+                'individual_correlations': pattern_corrs,
+                'std': np.std(pattern_corrs) if pattern_corrs else 0.0,
+                'interpretation': self._interpret_score(pattern_consistency, 'pattern'),
+                'description': 'How well rank ordering of community connections is preserved relative to universe'
+            }
+        except Exception as e:
+            results['pattern_preservation'] = {'error': str(e)}
+        
+        # 2. Generation fidelity (actual vs intended)
+        try:
+            generation_consistency, gen_scores = self._calculate_generation_fidelity()
+            results['generation_fidelity'] = {
+                'score': generation_consistency,
+                'individual_scores': gen_scores,
+                'std': np.std(gen_scores) if gen_scores else 0.0,
+                'interpretation': self._interpret_score(generation_consistency, 'fidelity'),
+                'description': 'How well graphs match their scaled probability targets (P_sub)'
+            }
+        except Exception as e:
+            results['generation_fidelity'] = {'error': str(e)}
+        
+        # 3. Degree consistency
+        try:
+            degree_consistency, degree_scores = self._calculate_degree_consistency()
+            results['degree_consistency'] = {
+                'score': degree_consistency,
+                'individual_scores': degree_scores,
+                'std': np.std(degree_scores) if degree_scores else 0.0,
+                'interpretation': self._interpret_score(degree_consistency, 'degree'),
+                'description': 'How well actual node degrees correlate with universe degree centers'
+            }
+        except Exception as e:
+            results['degree_consistency'] = {'error': str(e)}
+        
+        # 4. Overall consistency (weighted average of successful metrics)
+        try:
+            overall_score = self._calculate_overall_consistency(results)
+            results['overall'] = {
+                'score': overall_score,
+                'interpretation': self._interpret_score(overall_score, 'overall'),
+                'description': 'Weighted average of all consistency metrics'
+            }
+        except Exception as e:
+            results['overall'] = {'error': str(e)}
+        
+        # 5. Community coverage analysis
+        try:
+            results['community_coverage'] = self._analyze_community_coverage()
+        except Exception as e:
+            results['community_coverage'] = {'error': str(e)}
+        
+        self.results = results
+        return results
+    
+    def _calculate_pattern_consistency(self) -> Tuple[float, List[float]]:
+        """
+        Measure whether relative community connection patterns are preserved.
+        Uses rank correlation to focus on structural patterns rather than absolute values.
+        """
+        pattern_correlations = []
+        universe_P = self.universe.P
+        
+        for graph in self.family_graphs:
+            try:
+                # Extract relevant submatrix from universe
+                community_indices = graph.communities
+                universe_submatrix = universe_P[np.ix_(community_indices, community_indices)]
+                
+                # Get actual connections
+                actual_analysis = graph.analyze_community_connections()
+                actual_matrix = actual_analysis['actual_matrix']
+                
+                # Compare rank orderings (upper triangle only to avoid redundancy)
+                k = len(community_indices)
+                if k < 2:
+                    continue
+                    
+                triu_indices = np.triu_indices(k, k=0)  # Include diagonal
+                
+                universe_pattern = universe_submatrix[triu_indices]
+                actual_pattern = actual_matrix[triu_indices]
+                
+                # Calculate rank correlation
+                if len(universe_pattern) > 1 and np.std(universe_pattern) > 0 and np.std(actual_pattern) > 0:
+                    correlation, _ = spearmanr(universe_pattern, actual_pattern)
+                    if not np.isnan(correlation):
+                        pattern_correlations.append(correlation)
+            except Exception as e:
+                warnings.warn(f"Error in pattern consistency calculation for graph: {e}")
+                continue
+        
+        if not pattern_correlations:
+            return 0.0, []
+        
+        return np.mean(pattern_correlations), pattern_correlations
+    
+    def _calculate_generation_fidelity(self) -> Tuple[float, List[float]]:
+        """
+        Measure how well graphs match their scaled probability targets (P_sub).
+        """
+        fidelity_scores = []
+        
+        for graph in self.family_graphs:
+            try:
+                # Use the graph's own scaled P_sub as reference
+                expected_matrix = graph.P_sub
+                
+                # Get actual connections
+                actual_analysis = graph.analyze_community_connections()
+                actual_matrix = actual_analysis['actual_matrix']
+                
+                # Calculate correlation between expected and actual
+                expected_flat = expected_matrix.flatten()
+                actual_flat = actual_matrix.flatten()
+                
+                if len(expected_flat) > 1:
+                    if np.std(expected_flat) > 0 and np.std(actual_flat) > 0:
+                        correlation, _ = pearsonr(expected_flat, actual_flat)
+                        if not np.isnan(correlation):
+                            fidelity_scores.append(correlation)
+            except Exception as e:
+                warnings.warn(f"Error in generation fidelity calculation for graph: {e}")
+                continue
+        
+        if not fidelity_scores:
+            return 0.0, []
+        
+        return np.mean(fidelity_scores), fidelity_scores
+    
+    def _calculate_degree_consistency(self) -> Tuple[float, List[float]]:
+        """
+        Compare actual node degrees to expected degrees based on universe degree centers.
+        """
+        consistency_scores = []
+        
+        for graph in self.family_graphs:
+            try:
+                # Get actual degrees
+                actual_degrees = np.array([d for _, d in graph.graph.degree()])
+                
+                # Get expected degrees based on universe centers
+                expected_degrees = []
+                for node_idx in range(graph.n_nodes):
+                    community_local_idx = graph.community_labels[node_idx]
+                    universe_community = graph.communities[community_local_idx]
+                    expected_degree = self.universe.degree_centers[universe_community]
+                    expected_degrees.append(expected_degree)
+                
+                expected_degrees = np.array(expected_degrees)
+                
+                # Calculate correlation
+                if len(actual_degrees) > 1:
+                    if np.std(actual_degrees) > 0 and np.std(expected_degrees) > 0:
+                        correlation, _ = pearsonr(actual_degrees, expected_degrees)
+                        if not np.isnan(correlation):
+                            consistency_scores.append(correlation)
+            except Exception as e:
+                warnings.warn(f"Error in degree consistency calculation for graph: {e}")
+                continue
+        
+        if not consistency_scores:
+            return 0.0, []
+        
+        return np.mean(consistency_scores), consistency_scores
+    
+    def _calculate_overall_consistency(self, results: Dict) -> float:
+        """Calculate weighted average of all successful consistency metrics."""
+        scores = []
+        weights = []
+        
+        # Define weights for different metrics
+        metric_weights = {
+            'pattern_preservation': 0.4,
+            'generation_fidelity': 0.4,
+            'degree_consistency': 0.2
+        }
+        
+        for metric, weight in metric_weights.items():
+            if metric in results and 'score' in results[metric]:
+                score = results[metric]['score']
+                if not np.isnan(score):
+                    scores.append(score)
+                    weights.append(weight)
+        
+        if not scores:
+            return 0.0
+        
+        # Normalize weights
+        weights = np.array(weights)
+        weights = weights / np.sum(weights)
+        
+        return np.average(scores, weights=weights)
+    
+    def _analyze_community_coverage(self) -> Dict[str, Any]:
+        """Analyze how communities are distributed across the family."""
+        if not self.family_graphs:
+            return {}
+        
+        # Count community usage
+        community_usage = {}
+        all_communities = set()
+        
+        for graph in self.family_graphs:
+            all_communities.update(graph.communities)
+            for comm in graph.communities:
+                community_usage[comm] = community_usage.get(comm, 0) + 1
+        
+        total_graphs = len(self.family_graphs)
+        
+        # Calculate statistics
+        usage_counts = list(community_usage.values())
+        
+        return {
+            'total_unique_communities': len(all_communities),
+            'universe_communities': self.universe.K,
+            'coverage_fraction': len(all_communities) / self.universe.K,
+            'community_usage': community_usage,
+            'avg_usage_per_community': np.mean(usage_counts) if usage_counts else 0,
+            'usage_std': np.std(usage_counts) if usage_counts else 0,
+            'min_usage': min(usage_counts) if usage_counts else 0,
+            'max_usage': max(usage_counts) if usage_counts else 0,
+            'communities_in_all_graphs': [comm for comm, count in community_usage.items() if count == total_graphs],
+            'rarely_used_communities': [comm for comm, count in community_usage.items() if count == 1]
+        }
+    
+    def _interpret_score(self, score: float, metric_type: str) -> str:
+        """Provide human-readable interpretation of consistency scores."""
+        if np.isnan(score):
+            return "Unable to calculate - insufficient data"
+        
+        interpretations = {
+            'pattern': {
+                0.8: "Excellent pattern preservation - rank ordering strongly maintained",
+                0.6: "Good pattern preservation - structural relationships mostly maintained", 
+                0.4: "Moderate pattern preservation - some structural similarity remains",
+                0.2: "Poor pattern preservation - limited structural similarity",
+                0.0: "Very poor pattern preservation - little structural relationship"
+            },
+            'fidelity': {
+                0.8: "Excellent generation fidelity - graphs closely match targets",
+                0.6: "Good generation fidelity - graphs reasonably match targets",
+                0.4: "Moderate generation fidelity - some deviation from targets",
+                0.2: "Poor generation fidelity - significant deviation from targets", 
+                0.0: "Very poor generation fidelity - graphs don't match targets"
+            },
+            'degree': {
+                0.8: "Strong degree-community relationship - degrees follow universe centers well",
+                0.6: "Moderate degree-community relationship - some correlation with centers",
+                0.4: "Weak degree-community relationship - limited correlation with centers",
+                0.2: "Very weak degree-community relationship - little correlation with centers",
+                0.0: "No degree-community relationship - no correlation with centers"
+            },
+            'overall': {
+                0.8: "High overall consistency - family preserves universe structure well",
+                0.6: "Moderate overall consistency - family shows some structural preservation",
+                0.4: "Low overall consistency - family shows significant structural variation",
+                0.2: "Very low overall consistency - family shows high structural diversity",
+                0.0: "Minimal overall consistency - family shows very high structural diversity"
+            }
+        }
+        
+        thresholds = [0.8, 0.6, 0.4, 0.2, 0.0]
+        for threshold in thresholds:
+            if score >= threshold:
+                return interpretations[metric_type][threshold]
+        
+        return "Score out of expected range"
+    
+    def create_consistency_dashboard(self, figsize: Tuple[int, int] = (15, 10)) -> plt.Figure:
+        """
+        Create a comprehensive visualization dashboard of consistency metrics.
+        
+        Args:
+            figsize: Figure size for the dashboard
+            
+        Returns:
+            Matplotlib figure object
+        """
+        if self.results is None:
+            raise ValueError("Must run analyze_consistency() first")
+        
+        fig = plt.figure(figsize=figsize)
+        
+        # Create grid layout
+        gs = fig.add_gridspec(3, 2, hspace=0.3, wspace=0.3)
+        
+        # 1. Overall consistency scores (top left)
+        ax1 = fig.add_subplot(gs[0, 0])
+        self._plot_consistency_scores(ax1)
+        
+        # 2. Individual score distributions (top right)
+        ax2 = fig.add_subplot(gs[0, 1])
+        self._plot_score_distributions(ax2)
+        
+        # 3. Community coverage (middle left)
+        ax3 = fig.add_subplot(gs[1, 0])
+        self._plot_community_coverage(ax3)
+        
+        # 4. Pattern preservation details (middle right)
+        ax4 = fig.add_subplot(gs[1, 1])
+        self._plot_individual_scores(ax4, 'pattern_preservation', 'Pattern Preservation')
+        
+        # 5. Generation fidelity details (bottom left)
+        ax5 = fig.add_subplot(gs[2, 0])
+        self._plot_individual_scores(ax5, 'generation_fidelity', 'Generation Fidelity')
+        
+        # 6. Degree consistency details (bottom right)
+        ax6 = fig.add_subplot(gs[2, 1])
+        self._plot_individual_scores(ax6, 'degree_consistency', 'Degree Consistency')
+        
+        plt.suptitle('Graph Family Consistency Analysis Dashboard', fontsize=16, fontweight='bold')
+        
+        return fig
+    
+    def _plot_consistency_scores(self, ax):
+        """Plot overall consistency scores as a bar chart."""
+        scores = []
+        labels = []
+        colors = []
+        
+        metrics = ['pattern_preservation', 'generation_fidelity', 'degree_consistency', 'overall']
+        metric_labels = ['Pattern\nPreservation', 'Generation\nFidelity', 'Degree\nConsistency', 'Overall']
+        
+        for i, metric in enumerate(metrics):
+            if metric in self.results and 'score' in self.results[metric]:
+                score = self.results[metric]['score']
+                if not np.isnan(score):
+                    scores.append(score)
+                    labels.append(metric_labels[i])
+                    # Color based on score
+                    if score >= 0.8:
+                        colors.append('green')
+                    elif score >= 0.6:
+                        colors.append('orange')
+                    else:
+                        colors.append('red')
+        
+        if scores:
+            bars = ax.bar(labels, scores, color=colors, alpha=0.7)
+            ax.set_ylim(0, 1)
+            ax.set_ylabel('Consistency Score')
+            ax.set_title('Consistency Metrics Overview')
+            ax.tick_params(axis='x', rotation=45)
+            
+            # Add value labels on bars
+            for bar, score in zip(bars, scores):
+                height = bar.get_height()
+                ax.text(bar.get_x() + bar.get_width()/2., height + 0.01,
+                       f'{score:.3f}', ha='center', va='bottom')
+        else:
+            ax.text(0.5, 0.5, 'No data available', ha='center', va='center', transform=ax.transAxes)
+    
+    def _plot_score_distributions(self, ax):
+        """Plot distributions of individual scores."""
+        all_scores = []
+        labels = []
+        
+        metrics = ['pattern_preservation', 'generation_fidelity', 'degree_consistency']
+        
+        for metric in metrics:
+            if metric in self.results and 'individual_correlations' in self.results[metric]:
+                scores = self.results[metric]['individual_correlations']
+            elif metric in self.results and 'individual_scores' in self.results[metric]:
+                scores = self.results[metric]['individual_scores']
+            else:
+                continue
+            
+            if scores:
+                all_scores.extend(scores)
+                labels.extend([metric.replace('_', ' ').title()] * len(scores))
+        
+        if all_scores:
+            # Create violin plot
+            data_dict = {}
+            for score, label in zip(all_scores, labels):
+                if label not in data_dict:
+                    data_dict[label] = []
+                data_dict[label].append(score)
+            
+            positions = []
+            data_for_violin = []
+            tick_labels = []
+            
+            for i, (label, scores) in enumerate(data_dict.items()):
+                positions.append(i)
+                data_for_violin.append(scores)
+                tick_labels.append(label)
+            
+            parts = ax.violinplot(data_for_violin, positions=positions)
+            ax.set_xticks(positions)
+            ax.set_xticklabels(tick_labels, rotation=45, ha='right')
+            ax.set_ylabel('Individual Scores')
+            ax.set_title('Score Distributions')
+            ax.set_ylim(-1, 1)
+        else:
+            ax.text(0.5, 0.5, 'No individual scores available', ha='center', va='center', transform=ax.transAxes)
+    
+    def _plot_community_coverage(self, ax):
+        """Plot community coverage statistics."""
+        if 'community_coverage' in self.results:
+            coverage = self.results['community_coverage']
+            
+            # Create pie chart of community usage
+            if 'community_usage' in coverage:
+                usage_counts = list(coverage['community_usage'].values())
+                if usage_counts:
+                    # Group by usage frequency
+                    usage_freq = {}
+                    for count in usage_counts:
+                        usage_freq[count] = usage_freq.get(count, 0) + 1
+                    
+                    if len(usage_freq) > 1:
+                        labels = [f'Used {k} times' for k in usage_freq.keys()]
+                        sizes = list(usage_freq.values())
+                        ax.pie(sizes, labels=labels, autopct='%1.1f%%')
+                        ax.set_title('Community Usage Distribution')
+                    else:
+                        ax.text(0.5, 0.5, f'All communities used\n{list(usage_freq.keys())[0]} times', 
+                               ha='center', va='center', transform=ax.transAxes)
+            
+            # Add coverage statistics as text
+            coverage_text = f"Coverage: {coverage.get('coverage_fraction', 0):.1%}\n"
+            coverage_text += f"Unique communities: {coverage.get('total_unique_communities', 0)}\n"
+            coverage_text += f"Universe total: {coverage.get('universe_communities', 0)}"
+            
+            ax.text(0.02, 0.98, coverage_text, transform=ax.transAxes, 
+                   verticalalignment='top', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+        else:
+            ax.text(0.5, 0.5, 'No coverage data available', ha='center', va='center', transform=ax.transAxes)
+    
+    def _plot_individual_scores(self, ax, metric_key, title):
+        """Plot individual scores for a specific metric."""
+        if metric_key in self.results:
+            result = self.results[metric_key]
+            
+            # Get individual scores
+            scores = None
+            if 'individual_correlations' in result:
+                scores = result['individual_correlations']
+            elif 'individual_scores' in result:
+                scores = result['individual_scores'] 
+            elif 'pairwise_correlations' in result:
+                scores = result['pairwise_correlations']
+            
+            if scores:
+                x_values = range(len(scores))
+                ax.plot(x_values, scores, 'o-', alpha=0.7)
+                ax.axhline(y=np.mean(scores), color='red', linestyle='--', alpha=0.7, label=f'Mean: {np.mean(scores):.3f}')
+                ax.set_xlabel('Graph/Pair Index')
+                ax.set_ylabel('Score')
+                ax.set_title(f'{title}\n(Mean: {np.mean(scores):.3f}, Std: {np.std(scores):.3f})')
+                ax.legend()
+                ax.grid(True, alpha=0.3)
+            else:
+                ax.text(0.5, 0.5, f'No {title.lower()} data', ha='center', va='center', transform=ax.transAxes)
+    
+    def get_summary_report(self) -> str:
+        """
+        Generate a text summary report of the consistency analysis.
+        
+        Returns:
+            Formatted string report
+        """
+        if self.results is None:
+            return "No analysis results available. Run analyze_consistency() first."
+        
+        report = "GRAPH FAMILY CONSISTENCY ANALYSIS REPORT\n"
+        report += "=" * 50 + "\n\n"
+        
+        # Overall summary
+        if 'overall' in self.results:
+            overall = self.results['overall']
+            report += f"OVERALL CONSISTENCY: {overall['score']:.3f}\n"
+            report += f"Interpretation: {overall['interpretation']}\n\n"
+        
+        # Individual metrics
+        metrics = ['pattern_preservation', 'generation_fidelity', 'degree_consistency']
+        metric_names = ['Pattern Preservation', 'Generation Fidelity', 'Degree Consistency']
+        
+        for metric, name in zip(metrics, metric_names):
+            if metric in self.results and 'score' in self.results[metric]:
+                result = self.results[metric]
+                report += f"{name.upper()}:\n"
+                report += f"  Score: {result['score']:.3f} (±{result.get('std', 0):.3f})\n"
+                report += f"  {result['description']}\n"
+                report += f"  Interpretation: {result['interpretation']}\n\n"
+        
+        return report

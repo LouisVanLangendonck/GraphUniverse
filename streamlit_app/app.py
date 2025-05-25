@@ -30,7 +30,7 @@ if parent_dir not in sys.path:
 
 # Import MMSB modules
 from mmsb.model import GraphUniverse, GraphSample
-from mmsb.graph_family import GraphFamilyGenerator
+from mmsb.graph_family import GraphFamilyGenerator, FamilyConsistencyAnalyzer
 from mmsb.feature_regimes import (
     SimplifiedFeatureGenerator,
     NeighborhoodFeatureAnalyzer, 
@@ -831,7 +831,7 @@ of graphs with similar characteristics from a common universe.
 st.sidebar.title("Navigation")
 page = st.sidebar.radio(
     "Select a page",
-    ["Universe Creation", "Graph Sampling", "Graph Family Generation", "Metapath Analysis"]
+    ["Universe Creation", "Graph Sampling", "Graph Family Generation", "Graph Family Analysis", "Metapath Analysis"]
 )
 
 # Universe Creation Page
@@ -858,7 +858,7 @@ if page == "Universe Creation":
     col1, col2 = st.columns(2)
     
     with col1:
-        K = st.slider("Number of communities", min_value=10, max_value=100, value=50)
+        K = st.slider("Number of communities", min_value=3, max_value=50, value=10)
         feature_dim = st.slider("Feature dimension", min_value=0, max_value=128, value=64)
         
     with col2:
@@ -2168,7 +2168,485 @@ elif page == "Graph Family Generation":
                         include_graphs=True
                     )
                     st.success("Family saved to graph_family.pkl!")
+
+# Graph Family Analysis Page
+elif page == "Graph Family Analysis":
+    st.markdown('<div class="section-header">Graph Family Consistency Analysis</div>', unsafe_allow_html=True)
+    
+    if st.session_state.current_family_graphs is None or len(st.session_state.current_family_graphs) == 0:
+        st.warning("Please generate a graph family first in the 'Graph Family Generation' page.")
+    else:
+        st.markdown("""
+        <div class="info-box">
+        Analyze the topological consistency of your graph family. This analysis measures how well 
+        the family preserves structural patterns from the universe and how similar graphs are to each other.
+        <br><br>
+        <b>Key Metrics:</b>
+        <ul>
+            <li><b>Pattern Preservation</b>: How well rank ordering of community connections is maintained vs universe</li>
+            <li><b>Cross-Graph Similarity</b>: How similar community patterns are across graphs in the family</li>
+            <li><b>Generation Fidelity</b>: How well graphs match their intended generation targets</li>
+            <li><b>Degree Consistency</b>: How well node degrees correlate with universe degree centers</li>
+        </ul>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        # Initialize consistency analyzer in session state if not exists
+        if 'consistency_analyzer' not in st.session_state:
+            st.session_state.consistency_analyzer = None
+        if 'consistency_results' not in st.session_state:
+            st.session_state.consistency_results = None
+        
+        # Analysis Controls
+        st.markdown('<div class="subsection-header">Analysis Controls</div>', unsafe_allow_html=True)
+        
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            st.markdown("**Current Family Info**")
+            st.write(f"Number of graphs: {len(st.session_state.current_family_graphs)}")
+            if hasattr(st.session_state, 'current_family_generator'):
+                stats = st.session_state.current_family_generator.generation_stats
+                st.write(f"Success rate: {stats.get('success_rate', 0):.1%}")
+                st.write(f"Generation time: {stats.get('total_time', 0):.1f}s")
+        
+        with col2:
+            st.markdown("**Universe Info**")
+            if st.session_state.universe:
+                st.write(f"Total communities: {st.session_state.universe.K}")
+                st.write(f"Universe homophily: {st.session_state.universe.homophily:.3f}")
+                st.write(f"Universe density: {st.session_state.universe.edge_density:.3f}")
+        
+        with col3:
+            st.markdown("**Analysis Options**")
+            show_warnings = st.checkbox(
+                "Show calculation warnings", 
+                value=False,
+                help="Display warnings about calculation issues"
+            )
+            
+            detailed_plots = st.checkbox(
+                "Show detailed plots",
+                value=True,
+                help="Include individual score plots in dashboard"
+            )
+        
+        # Run Analysis Button
+        if st.button("Run Consistency Analysis", key="run_consistency"):
+            with st.spinner("Analyzing family consistency..."):
+                try:
+                    # Create consistency analyzer
+                    analyzer = FamilyConsistencyAnalyzer(
+                        st.session_state.current_family_graphs,
+                        st.session_state.universe
+                    )
                     
+                    # Run analysis
+                    if not show_warnings:
+                        import warnings
+                        warnings.filterwarnings('ignore')
+                    
+                    results = analyzer.analyze_consistency()
+                    
+                    # Store results
+                    st.session_state.consistency_analyzer = analyzer
+                    st.session_state.consistency_results = results
+                    
+                    st.success("Consistency analysis completed!")
+                    
+                except Exception as e:
+                    st.error(f"Error during consistency analysis: {str(e)}")
+                    import traceback
+                    st.code(traceback.format_exc())
+        
+        # Display Results if Analysis has been run
+        if st.session_state.consistency_results is not None:
+            results = st.session_state.consistency_results
+            
+            # Create tabs for different views
+            tab1, tab2, tab3, tab4, tab5 = st.tabs([
+                "Overview Dashboard",
+                "Detailed Metrics", 
+                "Community Coverage",
+                "Text Report",
+                "Export & Advanced"
+            ])
+            
+            with tab1:
+                st.markdown("### Consistency Dashboard")
+                
+                # Display overall consistency first
+                if 'overall' in results and 'score' in results['overall']:
+                    overall_score = results['overall']['score']
+                    interpretation = results['overall']['interpretation']
+                    
+                    # Large metric display
+                    col1, col2, col3 = st.columns([1, 2, 1])
+                    with col2:
+                        st.metric(
+                            "Overall Consistency Score", 
+                            f"{overall_score:.3f}",
+                            help="Weighted average of all consistency metrics"
+                        )
+                        
+                        # Color-coded interpretation
+                        if overall_score >= 0.8:
+                            st.success(f"✅ {interpretation}")
+                        elif overall_score >= 0.6:
+                            st.warning(f"⚠️ {interpretation}")
+                        else:
+                            st.error(f"❌ {interpretation}")
+                
+                # Quick metrics overview
+                st.markdown("#### Quick Metrics Overview")
+                
+                metrics_data = []
+                metric_names = ['Pattern Preservation', 'Generation Fidelity', 'Degree Consistency']
+                metric_keys = ['pattern_preservation', 'generation_fidelity', 'degree_consistency']
+                
+                for name, key in zip(metric_names, metric_keys):
+                    if key in results and 'score' in results[key]:
+                        score = results[key]['score']
+                        std = results[key].get('std', 0)
+                        metrics_data.append({
+                            'Metric': name,
+                            'Score': f"{score:.3f}",
+                            'Std Dev': f"{std:.3f}",
+                            'Status': '🟢' if score >= 0.8 else '🟡' if score >= 0.6 else '🔴'
+                        })
+                
+                if metrics_data:
+                    st.dataframe(pd.DataFrame(metrics_data), use_container_width=True)
+                
+                # Generate and display dashboard
+                try:
+                    if detailed_plots:
+                        st.markdown("#### Detailed Dashboard")
+                        fig = st.session_state.consistency_analyzer.create_consistency_dashboard()
+                        st.pyplot(fig)
+                    else:
+                        st.info("Enable 'Show detailed plots' to see the full dashboard")
+                except Exception as e:
+                    st.error(f"Error creating dashboard: {str(e)}")
+            
+            with tab2:
+                st.markdown("### Detailed Consistency Metrics")
+                
+                # Pattern Preservation
+                if 'pattern_preservation' in results:
+                    st.markdown("#### 🔄 Pattern Preservation")
+                    pattern_result = results['pattern_preservation']
+                    
+                    if 'score' in pattern_result:
+                        col1, col2 = st.columns(2)
+                        
+                        with col1:
+                            st.metric("Score", f"{pattern_result['score']:.3f}")
+                            st.caption(pattern_result['description'])
+                        
+                        with col2:
+                            if 'individual_correlations' in pattern_result:
+                                correlations = pattern_result['individual_correlations']
+                                if correlations:
+                                    st.metric("Std Dev", f"{pattern_result['std']:.3f}")
+                                    st.caption(f"Based on {len(correlations)} graphs")
+                        
+                        st.markdown(f"**Interpretation:** {pattern_result['interpretation']}")
+                        
+                        # Plot individual correlations
+                        if 'individual_correlations' in pattern_result and pattern_result['individual_correlations']:
+                            fig, ax = plt.subplots(figsize=(10, 4))
+                            correlations = pattern_result['individual_correlations']
+                            ax.plot(range(len(correlations)), correlations, 'o-', alpha=0.7)
+                            ax.axhline(y=np.mean(correlations), color='red', linestyle='--', 
+                                     label=f'Mean: {np.mean(correlations):.3f}')
+                            ax.set_xlabel('Graph Index')
+                            ax.set_ylabel('Rank Correlation')
+                            ax.set_title('Pattern Preservation: Individual Graph Correlations')
+                            ax.legend()
+                            ax.grid(True, alpha=0.3)
+                            st.pyplot(fig)
+                    else:
+                        st.error(f"Error: {pattern_result.get('error', 'Unknown error')}")
+                
+                st.divider()
+                
+                # Generation Fidelity
+                if 'generation_fidelity' in results:
+                    st.markdown("#### 🎯 Generation Fidelity")
+                    fidelity_result = results['generation_fidelity']
+                    
+                    if 'score' in fidelity_result:
+                        col1, col2 = st.columns(2)
+                        
+                        with col1:
+                            st.metric("Score", f"{fidelity_result['score']:.3f}")
+                            st.caption(fidelity_result['description'])
+                        
+                        with col2:
+                            if 'individual_scores' in fidelity_result:
+                                scores = fidelity_result['individual_scores']
+                                if scores:
+                                    st.metric("Std Dev", f"{fidelity_result['std']:.3f}")
+                                    st.caption(f"Based on {len(scores)} graphs")
+                        
+                        st.markdown(f"**Interpretation:** {fidelity_result['interpretation']}")
+                    else:
+                        st.error(f"Error: {fidelity_result.get('error', 'Unknown error')}")
+                
+                st.divider()
+                
+                # Degree Consistency
+                if 'degree_consistency' in results:
+                    st.markdown("#### 📊 Degree Consistency")
+                    degree_result = results['degree_consistency']
+                    
+                    if 'score' in degree_result:
+                        col1, col2 = st.columns(2)
+                        
+                        with col1:
+                            st.metric("Score", f"{degree_result['score']:.3f}")
+                            st.caption(degree_result['description'])
+                        
+                        with col2:
+                            if 'individual_scores' in degree_result:
+                                scores = degree_result['individual_scores']
+                                if scores:
+                                    st.metric("Std Dev", f"{degree_result['std']:.3f}")
+                                    st.caption(f"Based on {len(scores)} graphs")
+                        
+                        st.markdown(f"**Interpretation:** {degree_result['interpretation']}")
+                        
+                        # Plot degree consistency scores
+                        if 'individual_scores' in degree_result and degree_result['individual_scores']:
+                            fig, ax = plt.subplots(figsize=(10, 4))
+                            scores = degree_result['individual_scores']
+                            ax.plot(range(len(scores)), scores, 'o-', alpha=0.7)
+                            ax.axhline(y=np.mean(scores), color='red', linestyle='--', 
+                                     label=f'Mean: {np.mean(scores):.3f}')
+                            ax.set_xlabel('Graph Index')
+                            ax.set_ylabel('Degree Correlation')
+                            ax.set_title('Degree Consistency: Individual Graph Correlations')
+                            ax.legend()
+                            ax.grid(True, alpha=0.3)
+                            st.pyplot(fig)
+                    else:
+                        st.error(f"Error: {degree_result.get('error', 'Unknown error')}")
+            
+            with tab3:
+                st.markdown("### Community Coverage Analysis")
+                
+                if 'community_coverage' in results:
+                    coverage = results['community_coverage']
+                    
+                    # Overall coverage metrics
+                    col1, col2, col3, col4 = st.columns(4)
+                    
+                    with col1:
+                        st.metric(
+                            "Universe Coverage", 
+                            f"{coverage.get('coverage_fraction', 0):.1%}",
+                            help="Fraction of universe communities used"
+                        )
+                    
+                    with col2:
+                        st.metric(
+                            "Unique Communities", 
+                            coverage.get('total_unique_communities', 0),
+                            help="Number of distinct communities used"
+                        )
+                    
+                    with col3:
+                        st.metric(
+                            "Avg Usage", 
+                            f"{coverage.get('avg_usage_per_community', 0):.1f}",
+                            help="Average times each community was used"
+                        )
+                    
+                    with col4:
+                        st.metric(
+                            "Common Communities", 
+                            len(coverage.get('communities_in_all_graphs', [])),
+                            help="Communities that appear in ALL graphs"
+                        )
+                    
+                    # Community usage visualization
+                    st.markdown("#### Community Usage Distribution")
+                    
+                    if 'community_usage' in coverage and coverage['community_usage']:
+                        usage_data = coverage['community_usage']
+                        
+                        # Create usage histogram
+                        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 6))
+                        
+                        # Usage frequency histogram
+                        usage_counts = list(usage_data.values())
+                        ax1.hist(usage_counts, bins=max(1, len(set(usage_counts))), alpha=0.7, edgecolor='black')
+                        ax1.set_xlabel('Times Used')
+                        ax1.set_ylabel('Number of Communities')
+                        ax1.set_title('Distribution of Community Usage Frequency')
+                        ax1.grid(True, alpha=0.3)
+                        
+                        # Community usage bar plot (top 20 communities)
+                        sorted_usage = sorted(usage_data.items(), key=lambda x: x[1], reverse=True)
+                        top_communities = sorted_usage[:20]
+                        
+                        if top_communities:
+                            communities, usage_counts = zip(*top_communities)
+                            ax2.bar(range(len(communities)), usage_counts, alpha=0.7)
+                            ax2.set_xlabel('Community Index')
+                            ax2.set_ylabel('Usage Count')
+                            ax2.set_title(f'Top {len(communities)} Most Used Communities')
+                            ax2.set_xticks(range(len(communities)))
+                            ax2.set_xticklabels([str(c) for c in communities], rotation=45)
+                            ax2.grid(True, alpha=0.3)
+                        
+                        plt.tight_layout()
+                        st.pyplot(fig)
+                        
+                        # Detailed usage table
+                        st.markdown("#### Detailed Community Usage")
+                        
+                        usage_df = pd.DataFrame([
+                            {'Community': comm, 'Usage Count': count, 'Usage %': f"{count/len(st.session_state.current_family_graphs)*100:.1f}%"}
+                            for comm, count in sorted_usage
+                        ])
+                        
+                        st.dataframe(usage_df, use_container_width=True)
+                        
+                        # Special communities
+                        col1, col2 = st.columns(2)
+                        
+                        with col1:
+                            st.markdown("**Communities in ALL graphs:**")
+                            common_comms = coverage.get('communities_in_all_graphs', [])
+                            if common_comms:
+                                st.write(", ".join(map(str, common_comms)))
+                            else:
+                                st.write("None")
+                        
+                        with col2:
+                            st.markdown("**Rarely used communities (only 1 graph):**")
+                            rare_comms = coverage.get('rarely_used_communities', [])
+                            if rare_comms:
+                                st.write(", ".join(map(str, rare_comms)))
+                            else:
+                                st.write("None")
+                else:
+                    st.error("No community coverage data available")
+            
+            with tab4:
+                st.markdown("### Text Report")
+                
+                try:
+                    report = st.session_state.consistency_analyzer.get_summary_report()
+                    
+                    # Display report in expandable sections
+                    st.markdown("#### Summary Report")
+                    st.text_area(
+                        "Full Analysis Report",
+                        value=report,
+                        height=400,
+                        help="Complete text summary of the consistency analysis"
+                    )
+                    
+                    # Download report button
+                    st.download_button(
+                        "Download Report (TXT)",
+                        report,
+                        "family_consistency_report.txt",
+                        "text/plain"
+                    )
+                    
+                except Exception as e:
+                    st.error(f"Error generating report: {str(e)}")
+            
+            with tab5:
+                st.markdown("### Export & Advanced Options")
+                
+                # Export options
+                st.markdown("#### Export Options")
+                
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    # Export results as JSON
+                    if st.button("Export Results (JSON)"):
+                        import json
+                        
+                        # Convert results to JSON-serializable format
+                        export_results = {}
+                        for key, value in results.items():
+                            if isinstance(value, dict):
+                                export_results[key] = {}
+                                for subkey, subvalue in value.items():
+                                    if isinstance(subvalue, (list, float, int, str)):
+                                        export_results[key][subkey] = subvalue
+                                    else:
+                                        export_results[key][subkey] = str(subvalue)
+                            else:
+                                export_results[key] = str(value)
+                        
+                        json_str = json.dumps(export_results, indent=2)
+                        st.download_button(
+                            "Download Results JSON",
+                            json_str,
+                            "consistency_results.json",
+                            "application/json"
+                        )
+                
+                with col2:
+                    # Export dashboard as image
+                    if st.button("Export Dashboard (PNG)"):
+                        try:
+                            fig = st.session_state.consistency_analyzer.create_consistency_dashboard()
+                            
+                            import io
+                            buf = io.BytesIO()
+                            fig.savefig(buf, format="png", bbox_inches='tight', dpi=300)
+                            
+                            st.download_button(
+                                "Download Dashboard PNG",
+                                buf.getvalue(),
+                                "consistency_dashboard.png",
+                                "image/png"
+                            )
+                        except Exception as e:
+                            st.error(f"Error exporting dashboard: {str(e)}")
+                
+                # Advanced options
+                st.markdown("#### Advanced Analysis Options")
+                
+                if st.button("Recalculate with Warnings Enabled"):
+                    with st.spinner("Recalculating with detailed warnings..."):
+                        try:
+                            import warnings
+                            warnings.resetwarnings()
+                            
+                            analyzer = FamilyConsistencyAnalyzer(
+                                st.session_state.current_family_graphs,
+                                st.session_state.universe
+                            )
+                            
+                            results = analyzer.analyze_consistency()
+                            
+                            st.session_state.consistency_analyzer = analyzer
+                            st.session_state.consistency_results = results
+                            
+                            st.success("Analysis recalculated with warnings enabled!")
+                            st.experimental_rerun()
+                            
+                        except Exception as e:
+                            st.error(f"Error in recalculation: {str(e)}")
+                
+                # Debug information
+                with st.expander("Debug Information"):
+                    st.markdown("**Analysis Results Structure:**")
+                    st.json(results)
+        
+        else:
+            st.info("Click 'Run Consistency Analysis' to analyze your graph family.")
+
 # Metapath Analysis Page
 elif page == "Metapath Analysis":
     st.markdown('<div class="section-header">Metapath Analysis</div>', unsafe_allow_html=True)
