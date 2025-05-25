@@ -167,6 +167,8 @@ class GraphUniverse:
         cluster_variance: float = 0.1,      # Spread within each cluster
         assignment_skewness: float = 0.0,   # If some clusters are used more frequently
         community_exclusivity: float = 1.0, # How exclusively clusters map to communities
+        # Degree center parameters
+        degree_center_method: str = "linear",  # How to generate degree centers ("linear", "random", "shuffled")
         seed: Optional[int] = None
     ):
         """
@@ -185,6 +187,7 @@ class GraphUniverse:
             cluster_variance: Spread within each cluster
             assignment_skewness: If some clusters are used more frequently (0.0 to 1.0)
             community_exclusivity: How exclusively clusters map to communities (0.0 to 1.0)
+            degree_center_method: How to generate degree centers ("linear", "random", "shuffled")
             seed: Random seed for reproducibility
         """
         self.K = K
@@ -228,6 +231,20 @@ class GraphUniverse:
         self.intra_community_regime_similarity = 0.8
         self.inter_community_regime_similarity = 0.2
 
+        # Generate degree centers based on method
+        if degree_center_method == "linear":
+            # Linear spacing from -1 to 1
+            self.degree_centers = np.linspace(-1, 1, K)
+        elif degree_center_method == "random":
+            # Random uniform distribution
+            self.degree_centers = np.random.uniform(-1, 1, K)
+        elif degree_center_method == "shuffled":
+            # Linear spacing but shuffled
+            self.degree_centers = np.linspace(-1, 1, K)
+            np.random.shuffle(self.degree_centers)
+        else:
+            raise ValueError(f"Unknown degree center method: {degree_center_method}")
+    
     def _generate_probability_matrix(
         self, 
         K: int, 
@@ -574,7 +591,6 @@ class GraphUniverse:
         
         return list(result)
     
-    
 class GraphSample:
     """
     Represents a single graph instance sampled from the GraphUniverse.
@@ -613,10 +629,7 @@ class GraphSample:
         community_imbalance: float = 0.0,
         degree_separation: float = 0.5,
         dccc_global_degree_params: Optional[dict] = None,
-        aggressive_separation: bool = True,
-        alpha: float = 0.5,
         degree_method: str = "standard",
-        disable_avg_degree_scaling: bool = False,
         disable_deviation_limiting: bool = False
     ):
         """
@@ -633,8 +646,6 @@ class GraphSample:
         self.community_imbalance = community_imbalance
         self.degree_separation = degree_separation
         self.dccc_global_degree_params = dccc_global_degree_params or {}
-        self.aggressive_separation = aggressive_separation
-        self.alpha = alpha
         self.disable_deviation_limiting = disable_deviation_limiting  # Store the parameter
         
         # Original initialization code with modifications...
@@ -677,15 +688,11 @@ class GraphSample:
         
         # If DCCC-SBM is enabled, update generation method
         if use_dccc_sbm:
-            self.disable_avg_degree_scaling = disable_avg_degree_scaling
             self.generation_method = "dccc_sbm"
             self.generation_params.update({
                 "community_imbalance": community_imbalance,
                 "degree_separation": degree_separation,
                 "degree_distribution_type": degree_distribution,
-                "aggressive_separation": aggressive_separation,
-                "alpha": alpha,
-                "disable_avg_degree_scaling": disable_avg_degree_scaling
             })
             if degree_distribution == "power_law":
                 self.generation_params["power_law_exponent"] = power_law_exponent
@@ -779,10 +786,9 @@ class GraphSample:
                 self.community_labels,
                 degree_distribution,
                 degree_separation,  # Changed from degree_distribution_overlap
-                global_degree_params,
-                target_avg_degree or (self.target_density * (n_nodes - 1)),
-                aggressive_separation
+                global_degree_params
             )
+            edge_noise = 0.0
         elif self.use_configuration_model:
             self.degree_factors = self._generate_degree_factors_configuration(
                 n_nodes,
@@ -809,18 +815,6 @@ class GraphSample:
                 max_max_community_deviation=self.max_max_community_deviation,
                 max_parameter_search_attempts=self.max_parameter_search_attempts,
                 parameter_search_range=self.parameter_search_range
-            )
-        elif self.use_dccc_sbm:
-            # Use the alpha-weighted edge generation for DCCC-SBM
-            self.adjacency = self._generate_edges_with_alpha(
-                self.community_labels,
-                self.P_sub,
-                self.degree_factors,
-                alpha=self.alpha,
-                noise=edge_noise,
-                min_edge_density=self.min_edge_density,
-                max_retries=self.max_retries,
-                target_avg_degree=target_avg_degree
             )
         else:
             # Standard DC-SBM edge generation
@@ -1062,210 +1056,86 @@ class GraphSample:
         factors = factors / factors.mean()
         
         return factors
-
+    
     def _generate_community_degree_factors_improved(
         self,
         community_labels: np.ndarray,
         degree_distribution_type: str,
         degree_separation: float,
         global_degree_params: dict,
-        target_avg_degree: float,
-        aggressive_separation: bool = True  # Ignored, kept for compatibility
     ) -> np.ndarray:
-        """
-        Generate degree factors with smooth control over community separation.
-        Uses a single method with degree_separation as a continuous slider from 0 to 1.
-        
-        Args:
-            degree_separation: 0 = all communities share same distribution
-                            1 = maximum separation between communities
-        """
-        n_communities = len(np.unique(community_labels))
         n_nodes = len(community_labels)
         degree_factors = np.zeros(n_nodes)
-        
-        # Define the global quantile function based on distribution type
+
+        # 1. Sample global degree distribution
         if degree_distribution_type == "power_law":
             exponent = global_degree_params.get("exponent", 2.5)
-            x_min = global_degree_params.get("x_min", 1.0)
-            
-            def global_quantile_func(p):
-                return x_min * np.power(1 - p, -1/exponent)
-        
+            raw_degrees = np.random.pareto(exponent, size=n_nodes) + 1
         elif degree_distribution_type == "exponential":
             rate = global_degree_params.get("rate", 1.0)
-            
-            def global_quantile_func(p):
-                return -np.log(1 - p) / rate
-        
+            raw_degrees = np.random.exponential(scale=1/rate, size=n_nodes)
         elif degree_distribution_type == "uniform":
-            min_degree = global_degree_params.get("min_degree", 1.0)
-            max_degree = global_degree_params.get("max_degree", 10.0)
-            
-            def global_quantile_func(p):
-                return min_degree + p * (max_degree - min_degree)
-        
+            low = global_degree_params.get("min_degree", 1.0)
+            high = global_degree_params.get("max_degree", 10.0)
+            raw_degrees = np.random.uniform(low, high, size=n_nodes)
         else:
-            raise ValueError(f"Unknown degree distribution type: {degree_distribution_type}")
-        
-        # Step 1: Compute percentile ranges for each community
-        if degree_separation == 0.0:
-            # No separation: all communities use full distribution
-            percentile_ranges = [(0.0, 1.0) for _ in range(n_communities)]
-        else:
-            # Divide the percentile space among communities with controlled overlap
-            base_width = 1.0 / n_communities
-            overlap = (1.0 - degree_separation) * 0.5  # Overlap decreases with separation
-            
-            percentile_ranges = []
-            for i in range(n_communities):
-                # Base range for this community
-                base_start = i * base_width
-                base_end = (i + 1) * base_width
-                
-                # Expand range based on overlap
-                start = max(0.0, base_start - overlap * base_width)
-                end = min(1.0, base_end + overlap * base_width)
-                
-                percentile_ranges.append((start, end))
-        
-        # Step 2: Generate degree factors for each community
-        for comm_idx in range(n_communities):
-            comm_mask = (community_labels == comm_idx)
-            comm_size = np.sum(comm_mask)
-            
-            if comm_size == 0:
-                continue
-            
-            # Get percentile range for this community
-            p_start, p_end = percentile_ranges[comm_idx]
-            
-            # Sample uniformly from community's percentile range
-            percentiles = np.random.uniform(p_start, p_end, comm_size)
-            
-            # Convert percentiles to degrees using global distribution
-            community_degrees = global_quantile_func(percentiles)
-            
-            # Step 3: Apply exponential scaling based on community index
-            # This creates consistent separation between communities
-            if degree_separation > 0:
-                # Scale factor increases/decreases exponentially with community index
-                # Communities are ordered from low to high degree
-                scale_strength = degree_separation * 3.0  # Scaling intensity
-                relative_position = (comm_idx - (n_communities - 1) / 2) / ((n_communities - 1) / 2)
-                scale_factor = np.exp(relative_position * scale_strength)
-                community_degrees *= scale_factor
-            
-            # Ensure positive degrees
-            community_degrees = np.maximum(1.0, community_degrees)
-            
-            # Assign to nodes in this community
-            degree_factors[comm_mask] = community_degrees
-        
-        # Step 4: Scale to match target average degree
-        if target_avg_degree is not None:
-            current_avg = np.mean(degree_factors)
-            if current_avg > 0:
-                scaling_factor = target_avg_degree / current_avg
-                degree_factors *= scaling_factor
-        
-        return degree_factors
+            raise ValueError("Unknown distribution type")
 
-    def _generate_edges_with_alpha(
-        self, 
-        community_labels: np.ndarray,
-        P_sub: np.ndarray,
-        degree_factors: np.ndarray,
-        alpha: float = 0.5,
-        noise: float = 0.0,
-        min_edge_density: float = 0.005,
-        max_retries: int = 5,
-        target_avg_degree: Optional[float] = None
-    ) -> sp.spmatrix:
-        """
-        Generate edges with alpha-weighted combination of community and degree effects.
-        
-        Args:
-            community_labels: Node community assignments
-            P_sub: Community-community probability matrix
-            degree_factors: Node degree factors 
-            alpha: Weight of community structure vs. degree factors (0-1)
-            noise: Edge noise level
-            min_edge_density: Minimum acceptable edge density
-            max_retries: Maximum number of retries if graph is too sparse
-            target_avg_degree: Target average degree (optional)
-            
-        Returns:
-            Sparse adjacency matrix
-        """
-        n_nodes = len(community_labels)
-        
-        for attempt in range(max_retries):
-            # Create node pairs
-            i_nodes, j_nodes = np.triu_indices(n_nodes, k=1)
-            
-            # Get community info
-            comm_i = community_labels[i_nodes]
-            comm_j = community_labels[j_nodes]
-            
-            # Get base community probabilities
-            community_probs = P_sub[comm_i, comm_j]
-            
-            # Calculate normalized degree contribution
-            # Normalize degree factors to [0, 1] range for proper weighting
-            max_degree = np.max(degree_factors)
-            if max_degree > 0:
-                normalized_degrees = degree_factors / max_degree
-                degree_contrib = normalized_degrees[i_nodes] * normalized_degrees[j_nodes]
-            else:
-                degree_contrib = np.ones(len(i_nodes))
-            
-            # Alpha-weighted combination
-            raw_probs = alpha * community_probs + (1 - alpha) * degree_contrib
-            
-            # Add noise if specified
-            if noise > 0:
-                noise_factor = 1 + np.random.uniform(-noise, noise, size=len(raw_probs))
-                raw_probs *= noise_factor
-                raw_probs = np.clip(raw_probs, 0, 1)
-            
-            # Optional scaling to target average degree
-            if target_avg_degree is not None and not self.disable_avg_degree_scaling:  # ADD CONDITION
-                expected_edges = np.sum(raw_probs)
-                target_edges = (n_nodes * target_avg_degree) / 2
-                
-                if expected_edges > 0:
-                    scaling_factor = target_edges / expected_edges
-                    edge_probs = raw_probs * scaling_factor
-                    edge_probs = np.clip(edge_probs, 0, 1)
+        sorted_degrees = np.sort(raw_degrees)
+        assigned_indices = np.zeros(n_nodes, dtype=bool)
+
+        community_ids = np.unique(community_labels)
+        K = len(community_ids)
+        total_nodes = n_nodes
+
+        # Order communities by universe degree center (lowest to highest)
+        comm_order = np.argsort([self.universe.degree_centers[comm] for comm in community_ids])
+        ordered_comms = community_ids[comm_order]
+
+        # Decide window width:
+        # At separation=0: full width; at 1: just enough for community size
+        min_window_fraction = 1.0 / K  # Minimum window size (just fits community size)
+        window_fraction = min_window_fraction + (1.0 - min_window_fraction) * (1 - degree_separation)
+        window_width = int(np.round(window_fraction * total_nodes))
+
+        # Center positions along the degree spectrum (spread equally between 0 and n_nodes-1)
+        if K == 1:
+            centers = [total_nodes // 2]
+        else:
+            centers = np.linspace(window_width // 2, total_nodes - window_width // 2, K, dtype=int)
+        # Or: alternative is to space centers more according to universe.degree_centers if desired.
+
+        # For each community, assign its nodes to available degree indices within its window
+        for comm_idx, comm in enumerate(ordered_comms):
+            nodes = np.where(community_labels == comm)[0]
+            n_comm = len(nodes)
+
+            # Determine window bounds
+            c = centers[comm_idx]
+            window_start = max(0, c - window_width // 2)
+            window_end = min(total_nodes, c + window_width // 2)
+            available_in_window = [i for i in range(window_start, window_end) if not assigned_indices[i]]
+
+            # If not enough available in window (can happen with large overlap/small separation), expand outwards
+            if len(available_in_window) < n_comm:
+                extras_needed = n_comm - len(available_in_window)
+                # Pick random from the rest
+                extra_indices = [i for i in range(total_nodes) if not assigned_indices[i] and i not in available_in_window]
+                if extras_needed > 0 and len(extra_indices) >= extras_needed:
+                    available_in_window += list(np.random.choice(extra_indices, size=extras_needed, replace=False))
                 else:
-                    edge_probs = raw_probs
-            else:
-                edge_probs = raw_probs
-                
-            # Sample edges
-            edges = np.random.random(len(edge_probs)) < edge_probs
-            
-            # Create adjacency matrix
-            rows = i_nodes[edges]
-            cols = j_nodes[edges]
-            all_rows = np.concatenate([rows, cols])
-            all_cols = np.concatenate([cols, rows])
-            all_data = np.ones(len(all_rows))
-            adj = sp.csr_matrix((all_data, (all_rows, all_cols)), shape=(n_nodes, n_nodes))
-            
-            # Calculate actual edge density
-            actual_edges = len(rows)
-            actual_density = actual_edges / (n_nodes * (n_nodes - 1) / 2) if n_nodes > 1 else 0
-            
-            if actual_density >= min_edge_density:
-                return adj
-            
-            # Retry with slightly higher base probabilities
-            if attempt < max_retries - 1:
-                P_sub = P_sub * 1.2
-        
-        return adj
+                    # Fallback: take whatever is left, even if fewer
+                    available_in_window += extra_indices
+
+            # Randomly assign indices in window to nodes
+            chosen_indices = np.random.choice(available_in_window, size=n_comm, replace=False)
+            for node, deg_idx in zip(nodes, chosen_indices):
+                degree_factors[node] = sorted_degrees[deg_idx]
+                assigned_indices[deg_idx] = True
+
+        # Normalize to mean 1 for consistency
+        degree_factors = degree_factors / degree_factors.mean()
+        return degree_factors
 
     def _generate_edges(
         self, 
@@ -2190,127 +2060,52 @@ class GraphSample:
             "max_deviation": max_deviation
         }
 
-    def calculate_community_signals(self, feature_metric='cosine', structure_metric='kl', degree_metric='wasserstein'):
+    def calculate_feature_signal(self, random_state: int = 42) -> float:
         """
-        Calculate all community-related signal metrics.
+        Calculate Feature Signal using Random Forest classifier and macro F1 score.
         
         Args:
-            feature_metric: Distance metric for feature signal
-            structure_metric: Divergence metric for structure signal
-            degree_metric: Distance metric for degree signal
+            random_state: Random seed for reproducibility
             
         Returns:
-            Dictionary with aggregated and community-level metrics
+            Feature signal ∈ [0, 1], or 0.0 if no features available
         """
-        import numpy as np
-        
-        # Calculate individual signals if graph has necessary components
-        signals = {}
-        
-        # Feature signal (if features available)
-        if self.features is not None and len(self.features) > 0:
-            try:
-                feature_signals = self.calculate_feature_signal(distance_metric=feature_metric)
-                signals['feature_signal'] = feature_signals
-                signals['mean_feature_signal'] = float(np.mean(list(feature_signals.values())))
-                signals['min_feature_signal'] = float(np.min(list(feature_signals.values())))
-                signals['max_feature_signal'] = float(np.max(list(feature_signals.values())))
-            except Exception as e:
-                print(f"Error calculating feature signal: {e}")
-        
-        # Structure signal
-        try:
-            structure_signals = self.calculate_structure_signal(divergence_metric=structure_metric)
-            signals['structure_signal'] = structure_signals
-            signals['mean_structure_signal'] = float(np.mean(list(structure_signals.values())))
-            signals['min_structure_signal'] = float(np.min(list(structure_signals.values())))
-            signals['max_structure_signal'] = float(np.max(list(structure_signals.values())))
-        except Exception as e:
-            print(f"Error calculating structure signal: {e}")
-        
-        # Degree signal
-        try:
-            degree_signals = self.calculate_degree_signal(distance_metric=degree_metric)
-            signals['degree_signal'] = degree_signals
-            signals['mean_degree_signal'] = float(np.mean(list(degree_signals.values())))
-            signals['min_degree_signal'] = float(np.min(list(degree_signals.values())))
-            signals['max_degree_signal'] = float(np.max(list(degree_signals.values())))
-        except Exception as e:
-            print(f"Error calculating degree signal: {e}")
-        
-        return signals
-
-    def calculate_feature_signal(self, distance_metric='cosine', epsilon=1e-8):
-        """
-        Calculate Feature Signal: Inter vs Intra-Community Distance
-        
-        Args:
-            distance_metric: Distance metric to use ('cosine' or 'euclidean')
-            epsilon: Small constant to avoid division by zero
-            
-        Returns:
-            Dictionary mapping community index to feature signal
-        """
-        # Check if features exist
         if self.features is None or len(self.features) == 0:
-            raise ValueError("No features available for this graph")
+            return 0.0
+            
+        from sklearn.ensemble import RandomForestClassifier
+        from sklearn.model_selection import train_test_split
+        from sklearn.metrics import f1_score
         
-        from scipy.spatial.distance import pdist, cdist
-        import numpy as np
+        # Get features and labels
+        X = self.features
+        y = self.community_labels
         
-        # Get unique communities
-        unique_communities = np.unique(self.community_labels)
+        # Split data ensuring all communities are represented in both splits
+        X_train, X_test, y_train, y_test = train_test_split(
+            X, y, 
+            test_size=0.3,
+            stratify=y,
+            random_state=random_state
+        )
         
-        # Initialize results
-        feature_signals = {}
+        # Train Random Forest classifier
+        clf = RandomForestClassifier(
+            n_estimators=100,
+            max_depth=None,
+            min_samples_split=2,
+            min_samples_leaf=1,
+            random_state=random_state
+        )
         
-        # For each community
-        for community in unique_communities:
-            # Get indices of nodes in this community
-            community_mask = (self.community_labels == community)
-            if np.sum(community_mask) <= 1:  # Skip if only one node or none
-                continue
-                
-            community_indices = np.where(community_mask)[0]
-            non_community_indices = np.where(~community_mask)[0]
-            
-            # Get features for nodes in this community
-            community_features = self.features[community_indices]
-            
-            # Get features for nodes not in this community
-            non_community_features = self.features[non_community_indices]
-            
-            # Calculate intra-community distances
-            if distance_metric == 'cosine':
-                intra_distances = pdist(community_features, metric='cosine')
-            else:  # euclidean
-                intra_distances = pdist(community_features, metric='euclidean')
-            
-            # Calculate inter-community distances
-            if len(non_community_indices) > 0:
-                if distance_metric == 'cosine':
-                    inter_distances = cdist(community_features, non_community_features, metric='cosine')
-                else:  # euclidean
-                    inter_distances = cdist(community_features, non_community_features, metric='euclidean')
-                
-                # Calculate mean inter-community distance
-                mean_inter = np.mean(inter_distances)
-            else:
-                mean_inter = 0.0
-            
-            # Calculate mean intra-community distance
-            if len(intra_distances) > 0:
-                mean_intra = np.mean(intra_distances)
-            else:
-                mean_intra = 0.0
-            
-            # Calculate feature signal
-            feature_signal = mean_inter / (mean_intra + epsilon)
-            
-            # Store results
-            feature_signals[int(community)] = float(feature_signal)
+        # Fit and predict
+        clf.fit(X_train, y_train)
+        y_pred = clf.predict(X_test)
         
-        return feature_signals
+        # Calculate macro F1 score
+        f1 = f1_score(y_test, y_pred, average='macro')
+        
+        return float(f1)
 
     def calculate_structure_signal(self, divergence_metric='kl'):
         """
@@ -2345,7 +2140,6 @@ class GraphSample:
             comm_j = label_to_index[self.community_labels[j]]
             edge_probs[comm_i, comm_j] += 1
             edge_probs[comm_j, comm_i] += 1  # Undirected graph
-        
         
         # Calculate actual probabilities
         for i in range(n_communities):
@@ -2417,228 +2211,16 @@ class GraphSample:
         
         return structure_signals
 
-    def calculate_degree_signal(self, distance_metric='wasserstein'):
+    def calculate_degree_signal(self,
+                            method: str = "naive_bayes",
+                            metric: str = "accuracy", 
+                            cv_folds: int = 5,
+                            random_state: int = 42) -> float:
         """
-        Calculate Degree Signal: Statistical Distance Between Degree Distributions
+        Calculate Degree Signal using degree-based classification.
         
         Args:
-            distance_metric: Distance metric to use ('wasserstein' or 'js')
-            
-        Returns:
-            Dictionary mapping community index to degree signal
-        """
-        import numpy as np
-        from scipy.stats import wasserstein_distance
-        from scipy.special import kl_div, rel_entr
-        
-        # Get unique communities
-        unique_communities = np.unique(self.community_labels)
-        n_communities = len(unique_communities)
-        
-        # Collect degrees for each community
-        community_degrees = []
-        for community in unique_communities:
-            # Get indices of nodes in this community
-            community_mask = (self.community_labels == community)
-            community_indices = np.where(community_mask)[0]
-            
-            # Get degrees of nodes in this community
-            degrees = [self.graph.degree(i) for i in community_indices]
-            community_degrees.append(degrees)
-        
-        # Define JS divergence function for discrete distributions
-        def js_divergence_discrete(p_counts, q_counts):
-            # Get all unique values
-            all_values = sorted(set(p_counts + q_counts))
-            
-            # Count occurrences
-            p_dist = np.zeros(len(all_values))
-            q_dist = np.zeros(len(all_values))
-            
-            for i, val in enumerate(all_values):
-                p_dist[i] = p_counts.count(val)
-                q_dist[i] = q_counts.count(val)
-            
-            # Normalize
-            p_dist = p_dist / np.sum(p_dist)
-            q_dist = q_dist / np.sum(q_dist)
-            
-            # Add small epsilon to avoid log(0)
-            p_dist = p_dist + 1e-10
-            q_dist = q_dist + 1e-10
-            
-            # Renormalize
-            p_dist = p_dist / np.sum(p_dist)
-            q_dist = q_dist / np.sum(q_dist)
-            
-            # Calculate JS divergence
-            m = 0.5 * (p_dist + q_dist)
-            js = 0.5 * np.sum(rel_entr(p_dist, m)) + 0.5 * np.sum(rel_entr(q_dist, m))
-            
-            return js
-        
-        # Initialize results
-        degree_signals = {}
-        
-        # For each community
-        for i, community in enumerate(unique_communities):
-            if len(community_degrees[i]) <= 1:  # Skip if only one node or none
-                continue
-                
-            # Initialize minimum distance as infinity
-            min_distance = float('inf')
-            
-            # For each other community
-            for j, other_community in enumerate(unique_communities):
-                if community == other_community or len(community_degrees[j]) <= 1:
-                    continue
-                    
-                # Calculate distance based on specified metric
-                if distance_metric == 'wasserstein':
-                    # Wasserstein distance
-                    distance = wasserstein_distance(community_degrees[i], community_degrees[j])
-                else:  # js
-                    # JS divergence
-                    distance = js_divergence_discrete(community_degrees[i], community_degrees[j])
-                
-                # Update minimum distance
-                min_distance = min(min_distance, distance)
-            
-            # Store degree signal for this community (if valid)
-            if min_distance != float('inf'):
-                degree_signals[int(community)] = float(min_distance)
-            else:
-                degree_signals[int(community)] = 0.0
-        
-        return degree_signals
-
-    def calculate_structure_signal_new(self, 
-                                    method: str = "louvain",
-                                    metric: str = "nmi", 
-                                    resolution: float = 1.0,
-                                    n_clusters: Optional[int] = None) -> float:
-        """
-        NEW: Calculate structure signal using community detection + NMI/ARI.
-        Replaces the old calculate_structure_signal method.
-        
-        Args:
-            method: Community detection method ("louvain", "spectral")
-            metric: Evaluation metric ("nmi", "ari", "accuracy")
-            resolution: Resolution parameter for Louvain
-            n_clusters: Number of clusters for spectral (if None, auto-detect)
-            
-        Returns:
-            Structure signal ∈ [0, 1]
-        """
-        if self.graph.number_of_nodes() == 0:
-            return 0.0
-        
-        # Determine number of clusters if not provided
-        if n_clusters is None:
-            n_clusters = len(np.unique(self.community_labels))
-        
-        # Apply community detection algorithm
-        if method == "louvain":
-            partition = community_louvain.best_partition(self.graph, resolution=resolution)
-            # Create prediction array aligned with self.community_labels
-            predicted_communities = np.array([partition.get(i, 0) for i in range(len(self.community_labels))])
-            
-        elif method == "spectral":
-            try:
-                adjacency = nx.adjacency_matrix(self.graph).toarray()
-                spectral = SpectralClustering(
-                    n_clusters=n_clusters, 
-                    affinity='precomputed',
-                    assign_labels='discretize',
-                    random_state=42
-                )
-                predicted_communities = spectral.fit_predict(adjacency)
-            except Exception as e:
-                warnings.warn(f"Spectral clustering failed: {e}. Using Louvain fallback.")
-                partition = community_louvain.best_partition(self.graph)
-                predicted_communities = np.array([partition.get(i, 0) for i in range(len(self.community_labels))])
-        
-        else:
-            raise ValueError(f"Unknown community detection method: {method}")
-        
-        # Ensure arrays have same length
-        min_len = min(len(predicted_communities), len(self.community_labels))
-        predicted_communities = predicted_communities[:min_len]
-        ground_truth = self.community_labels[:min_len]
-        
-        # Calculate evaluation metric
-        if metric == "nmi":
-            return normalized_mutual_info_score(ground_truth, predicted_communities)
-        elif metric == "ari":
-            return adjusted_rand_score(ground_truth, predicted_communities)
-        elif metric == "accuracy":
-            return self._calculate_best_accuracy(ground_truth, predicted_communities)
-        else:
-            raise ValueError(f"Unknown evaluation metric: {metric}")
-
-    def calculate_feature_signal_new(self,
-                                method: str = "kmeans",
-                                metric: str = "nmi",
-                                n_clusters: Optional[int] = None,
-                                random_state: int = 42) -> float:
-        """
-        NEW: Calculate feature signal using k-means/GMM + NMI/ARI.
-        Replaces the old calculate_feature_signal method.
-        
-        Args:
-            method: Clustering method ("kmeans", "gmm")
-            metric: Evaluation metric ("nmi", "ari", "accuracy")
-            n_clusters: Number of clusters (if None, auto-detect)
-            random_state: Random seed
-            
-        Returns:
-            Feature signal ∈ [0, 1], or 0.0 if no features available
-        """
-        if self.features is None or len(self.features) == 0:
-            return 0.0
-        
-        # Determine number of clusters if not provided
-        if n_clusters is None:
-            n_clusters = len(np.unique(self.community_labels))
-        
-        # Apply clustering algorithm
-        if method == "kmeans":
-            clusterer = KMeans(n_clusters=n_clusters, random_state=random_state, n_init=10)
-            predicted_clusters = clusterer.fit_predict(self.features)
-            
-        elif method == "gmm":
-            clusterer = GaussianMixture(n_components=n_clusters, random_state=random_state)
-            predicted_clusters = clusterer.fit_predict(self.features)
-            
-        else:
-            raise ValueError(f"Unknown clustering method: {method}")
-        
-        # Ensure arrays have same length
-        min_len = min(len(predicted_clusters), len(self.community_labels))
-        predicted_clusters = predicted_clusters[:min_len]
-        ground_truth = self.community_labels[:min_len]
-        
-        # Calculate evaluation metric
-        if metric == "nmi":
-            return normalized_mutual_info_score(ground_truth, predicted_clusters)
-        elif metric == "ari":
-            return adjusted_rand_score(ground_truth, predicted_clusters)
-        elif metric == "accuracy":
-            return self._calculate_best_accuracy(ground_truth, predicted_clusters)
-        else:
-            raise ValueError(f"Unknown evaluation metric: {metric}")
-
-    def calculate_degree_signal_new(self,
-                                method: str = "naive_bayes",
-                                metric: str = "accuracy", 
-                                cv_folds: int = 5,
-                                random_state: int = 42) -> float:
-        """
-        NEW: Calculate degree signal using degree-based classification.
-        Replaces the old calculate_degree_signal method.
-        
-        Args:
-            method: Classification method ("naive_bayes", "quantile_binning", "cross_validation")
+            method: Classification method ("naive_bayes", "quantile_binning")
             metric: Evaluation metric ("accuracy", "nmi", "ari")
             cv_folds: Number of cross-validation folds
             random_state: Random seed
@@ -2712,26 +2294,21 @@ class GraphSample:
         else:
             raise ValueError(f"Unknown degree classification method: {method}")
 
-    def calculate_community_classifier_signals(self,
-                                    structure_method: str = "louvain",
-                                    feature_method: str = "kmeans",
-                                    degree_method: str = "naive_bayes",
-                                    metric: str = "nmi",
-                                    resolution: float = 1.0,
-                                    cv_folds: int = 5,
-                                    random_state: int = 42) -> Dict[str, float]:
+    def calculate_community_signals(self,
+                                structure_metric: str = 'kl',
+                                degree_method: str = "naive_bayes",
+                                degree_metric: str = "accuracy",
+                                cv_folds: int = 5,
+                                random_state: int = 42) -> Dict[str, Any]:
         """
-        NEW: Calculate all three signals using classifier-based approaches.
-        This replaces the old calculate_community_signals method.
+        Calculate all community-related signal metrics using the unified approach.
         
         Args:
-            structure_method: Method for structure signal ("louvain", "spectral")
-            feature_method: Method for feature signal ("kmeans", "gmm")
+            structure_metric: Divergence metric for structure signal ('kl', 'js', 'cosine')
             degree_method: Method for degree signal ("naive_bayes", "quantile_binning")
-            metric: Evaluation metric for all signals ("nmi", "ari", "accuracy")
-            resolution: Resolution parameter for Louvain
-            cv_folds: Cross-validation folds for degree signal
-            random_state: Random seed
+            degree_metric: Evaluation metric for degree signal ("accuracy", "nmi", "ari")
+            cv_folds: Number of cross-validation folds for degree signal
+            random_state: Random seed for reproducibility
             
         Returns:
             Dictionary with signal values and summary statistics
@@ -2740,19 +2317,23 @@ class GraphSample:
         
         # Structure signal
         try:
-            signals['structure_signal'] = self.calculate_structure_signal_new(
-                method=structure_method, metric=metric, resolution=resolution
-            )
+            structure_signals = self.calculate_structure_signal(divergence_metric=structure_metric)
+            signals['structure_signal'] = structure_signals
+            signals['mean_structure_signal'] = float(np.mean(list(structure_signals.values())))
+            signals['min_structure_signal'] = float(np.min(list(structure_signals.values())))
+            signals['max_structure_signal'] = float(np.max(list(structure_signals.values())))
         except Exception as e:
             warnings.warn(f"Failed to calculate structure signal: {e}")
             signals['structure_signal'] = 0.0
+            signals['mean_structure_signal'] = 0.0
+            signals['min_structure_signal'] = 0.0
+            signals['max_structure_signal'] = 0.0
         
         # Feature signal (only if features are available)
         if self.features is not None and len(self.features) > 0:
             try:
-                signals['feature_signal'] = self.calculate_feature_signal_new(
-                    method=feature_method, metric=metric, random_state=random_state
-                )
+                feature_signal = self.calculate_feature_signal(random_state=random_state)
+                signals['feature_signal'] = feature_signal
             except Exception as e:
                 warnings.warn(f"Failed to calculate feature signal: {e}")
                 signals['feature_signal'] = 0.0
@@ -2761,15 +2342,19 @@ class GraphSample:
         
         # Degree signal
         try:
-            signals['degree_signal'] = self.calculate_degree_signal_new(
-                method=degree_method, metric=metric, cv_folds=cv_folds, random_state=random_state
+            degree_signal = self.calculate_degree_signal(
+                method=degree_method,
+                metric=degree_metric,
+                cv_folds=cv_folds,
+                random_state=random_state
             )
+            signals['degree_signal'] = degree_signal
         except Exception as e:
             warnings.warn(f"Failed to calculate degree signal: {e}")
             signals['degree_signal'] = 0.0
         
         # Calculate summary statistics (excluding None values)
-        valid_signals = [v for v in signals.values() if v is not None]
+        valid_signals = [v for v in [signals.get('feature_signal'), signals.get('degree_signal')] if v is not None]
         if valid_signals:
             signals['mean_signal'] = float(np.mean(valid_signals))
             signals['min_signal'] = float(np.min(valid_signals))
@@ -2778,11 +2363,10 @@ class GraphSample:
         
         # Add metadata
         signals['method_info'] = {
-            'structure_method': structure_method,
-            'feature_method': feature_method,
+            'structure_metric': structure_metric,
             'degree_method': degree_method,
-            'metric': metric,
-            'classifier_based': True
+            'degree_metric': degree_metric,
+            'cv_folds': cv_folds
         }
         
         return signals

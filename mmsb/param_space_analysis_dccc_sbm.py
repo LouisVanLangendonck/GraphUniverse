@@ -45,17 +45,13 @@ DEFAULT_PARAM_RANGES = {
     
     # Sample parameters
     "n_nodes": {"type": "int", "min": 50, "max": 300},  # Number of nodes
-    "min_component_size": {"type": "int", "min": 0, "max": 20},  # Min component size
+    "min_component_size": {"type": "int", "min": 0, "max": 5},  # Min component size
     "degree_heterogeneity": {"type": "float", "min": 0.0, "max": 1.0},  # Degree variability
-    "edge_noise": {"type": "float", "min": 0.0, "max": 0.3},  # Edge noise level
+    "edge_noise": {"type": "float", "min": 0.0, "max": 0.1},  # Edge noise level
     
     # DCCC-SBM specific parameters
-    "community_imbalance": {"type": "float", "min": 0.0, "max": 0.8},  # Community size imbalance
-    "degree_distribution_overlap": {"type": "float", "min": 0.0, "max": 1.0},  # Degree distribution overlap
-    "alpha": {"type": "float", "min": 0.0, "max": 1.0},  # Weight of community structure vs. degree factors
-    "aggressive_separation": {"type": "bool", "prob": 0.5},  # Enhanced community separation
-    "degree_method": {"type": "choice", "options": ["standard", "gmda"]},  # Degree assignment method
-    "target_avg_degree": {"type": "float", "min": 1.0, "max": 15.0},  # Target average degree
+    "community_imbalance": {"type": "float", "min": 0.0, "max": 0.6},  # Community size imbalance
+    "degree_separation": {"type": "float", "min": 0.4, "max": 1.0},  # Degree distribution separation
     "degree_distribution": {"type": "choice", "options": ["power_law", "exponential", "uniform"]},  # Degree distribution type
     "power_law_exponent": {"type": "float", "min": 2.0, "max": 3.5},  # Power law exponent (if power law)
     "exponential_rate": {"type": "float", "min": 0.01, "max": 0.2},  # Exponential rate (if exponential)
@@ -150,7 +146,7 @@ def create_graph(params, use_dccc_sbm=False):
             use_configuration_model=False,  # Not using configuration model
             degree_distribution=degree_distribution,  # Use selected distribution
             power_law_exponent=degree_params.get("power_law_exponent", 2.5),
-            target_avg_degree=params.get("target_avg_degree"),
+            target_avg_degree=None,  # Let the model determine this
             triangle_enhancement=0.0,  # No enhancement
             max_mean_community_deviation=0.5,  # Allow significant deviation
             max_max_community_deviation=0.8,  # Allow significant deviation
@@ -161,14 +157,10 @@ def create_graph(params, use_dccc_sbm=False):
             # DCCC-SBM specific parameters
             use_dccc_sbm=use_dccc_sbm,
             community_imbalance=params.get("community_imbalance", 0.0),
-            degree_distribution_overlap=params.get("degree_distribution_overlap", 0.5),
-            aggressive_separation=params.get("aggressive_separation", True),
-            alpha=params.get("alpha", 0.5),
+            degree_separation=params.get("degree_separation", 0.5),
             degree_method=params.get("degree_method", "standard"),
-            # New parameter to disable deviation limiting
-            disable_deviation_limiting=True,  # Allow more graphs to be generated
-            # Add configuration model parameters
-            config_model_params=degree_params
+            dccc_global_degree_params=degree_params,
+            disable_deviation_limiting=True  # Allow more graphs to be generated
         )
         
         # Ensure features are generated
@@ -201,38 +193,67 @@ def extract_graph_parameters(graph):
     # Calculate actual density
     edge_density = float(nx.density(graph.graph))
     
-    # Calculate ratios
-    homophily_ratio = float(community_analysis['mean_deviation'] / graph.target_homophily if graph.target_homophily else 0.0)
-    density_ratio = float(edge_density / graph.target_density if graph.target_density else 0.0)
-    
-    # Calculate signals and ensure they are floats
-    # Take average of signal dictionaries
-    feature_signal_dict = graph.calculate_feature_signal()
-    structure_signal_dict = graph.calculate_structure_signal()
-    degree_signal_dict = graph.calculate_degree_signal()
-    
-    feature_signal = float(np.mean(list(feature_signal_dict.values())))
-    structure_signal = float(np.mean(list(structure_signal_dict.values())))
-    degree_signal = float(np.mean(list(degree_signal_dict.values())))
+    # Calculate community signals using the new unified method
+    signals = graph.calculate_community_signals(
+        structure_metric='kl',
+        degree_method="naive_bayes",
+        degree_metric="accuracy",
+        cv_folds=5,
+        random_state=42
+    )
     
     # Extract parameters
     params = {
-        'n_nodes': int(graph.graph.number_of_nodes()),
-        'n_communities': int(len(graph.communities)),
-        'edge_density': edge_density,
-        'avg_degree': float(sum(dict(graph.graph.degree()).values()) / graph.graph.number_of_nodes()),
-        'homophily': float(community_analysis['mean_deviation']),  # Use mean deviation as homophily measure
-        'degree_heterogeneity': float(degree_heterogeneity),
-        'clustering_coefficient': clustering_coefficient,
-        'feature_signal': feature_signal,
-        'structure_signal': structure_signal,
-        'degree_signal': degree_signal,
-        # Add targeted parameters
-        'target_homophily': float(graph.target_homophily) if graph.target_homophily is not None else None,
-        'target_density': float(graph.target_density) if graph.target_density is not None else None,
-        'homophily_ratio': homophily_ratio,
-        'density_ratio': density_ratio
+        # Basic graph properties
+        "n_nodes": graph.graph.number_of_nodes(),
+        "n_edges": graph.graph.number_of_edges(),
+        "edge_density": edge_density,
+        "clustering_coefficient": clustering_coefficient,
+        "degree_heterogeneity": degree_heterogeneity,
+        
+        # Community structure
+        "n_communities": len(graph.communities),
+        "mean_community_size": np.mean([len(c) for c in nx.community.label_propagation_communities(graph.graph)]),
+        "community_imbalance": graph.community_imbalance if hasattr(graph, 'community_imbalance') else 0.0,
+        
+        # Signal metrics
+        "structure_signal": signals.get('mean_structure_signal', 0.0),
+        "feature_signal": signals.get('feature_signal', 0.0),
+        "degree_signal": signals.get('degree_signal', 0.0),
+        "mean_signal": signals.get('mean_signal', 0.0),
+        
+        # Community deviations
+        "mean_community_deviation": community_analysis.get('mean_deviation', 0.0),
+        "max_community_deviation": community_analysis.get('max_deviation', 0.0),
+        
+        # Degree distribution parameters
+        "degree_distribution": graph.degree_distribution if hasattr(graph, 'degree_distribution') else None,
+        "degree_separation": graph.degree_separation if hasattr(graph, 'degree_separation') else 0.0,
+        "degree_method": graph.degree_method if hasattr(graph, 'degree_method') else "standard",
+        
+        # Feature parameters
+        "feature_dim": graph.features.shape[1] if graph.features is not None else 0,
     }
+    
+    # Add feature generator parameters if available
+    if hasattr(graph.universe, 'feature_generator') and graph.universe.feature_generator is not None:
+        feature_gen = graph.universe.feature_generator
+        params.update({
+            "cluster_count_factor": getattr(feature_gen, '_cluster_count_factor', 0.0),
+            "center_variance": getattr(feature_gen, '_center_variance', 0.0),
+            "cluster_variance": getattr(feature_gen, '_cluster_variance', 0.0),
+            "assignment_skewness": getattr(feature_gen, '_assignment_skewness', 0.0),
+            "community_exclusivity": getattr(feature_gen, '_community_exclusivity', 0.0)
+        })
+    else:
+        # Add default values if feature generator is not available
+        params.update({
+            "cluster_count_factor": 0.0,
+            "center_variance": 0.0,
+            "cluster_variance": 0.0,
+            "assignment_skewness": 0.0,
+            "community_exclusivity": 0.0
+        })
     
     return params
 

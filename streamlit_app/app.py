@@ -21,6 +21,7 @@ from collections import Counter, defaultdict
 import plotly.graph_objects as go
 import io
 import seaborn as sns
+import scipy.stats as stats
 
 # Add parent directory to path to allow imports
 parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -846,6 +847,7 @@ if page == "Universe Creation":
         <li>Community connection patterns</li>
         <li>Feature generation rules (if enabled)</li>
         <li>Overlap structure between communities</li>
+        <li>Degree center ordering for communities</li>
     </ul>
     </div>
     """, unsafe_allow_html=True)
@@ -884,6 +886,15 @@ if page == "Universe Creation":
             step=0.05,
             help="Controls the amount of Gaussian noise added to the universe's strength matrix"
         )
+    
+    # Add degree center method selection
+    st.markdown('<div class="subsection-header">Degree Center Configuration</div>', unsafe_allow_html=True)
+    degree_center_method = st.selectbox(
+        "Degree center method",
+        options=["linear", "random", "shuffled"],
+        index=0,
+        help="How to generate degree centers for communities: linear (ordered), random, or shuffled linear"
+    )
     
     # Feature parameters if features are enabled
     if feature_dim > 0:
@@ -954,6 +965,7 @@ if page == "Universe Creation":
                 cluster_variance=cluster_variance if feature_dim > 0 else 0.1,
                 assignment_skewness=assignment_skewness if feature_dim > 0 else 0.0,
                 community_exclusivity=community_exclusivity if feature_dim > 0 else 1.0,
+                degree_center_method=degree_center_method,  # Add degree center method
                 seed=seed
             )
             
@@ -967,6 +979,16 @@ if page == "Universe Creation":
             
             # Plot community matrix
             fig = plot_community_matrix(universe.P, communities=range(K))
+            st.pyplot(fig)
+            
+            # Plot degree centers
+            st.markdown('<div class="subsection-header">Degree Centers</div>', unsafe_allow_html=True)
+            fig, ax = plt.subplots(figsize=(10, 4))
+            ax.plot(range(K), universe.degree_centers, 'o-', label='Degree Centers')
+            ax.set_xlabel('Community Index')
+            ax.set_ylabel('Degree Center Value')
+            ax.set_title(f'Degree Centers ({degree_center_method})')
+            ax.grid(True)
             st.pyplot(fig)
             
             # Show feature analysis if enabled
@@ -1115,22 +1137,7 @@ elif page == "Graph Sampling":
                     step=0.1,
                     help="Controls how much degree distributions are separated between communities (0=overlapping, 1=well separated)"
                 )
-                
-                st.session_state.graph_params['method_params']['alpha'] = st.slider(
-                    "Community-degree balance (α)",
-                    min_value=0.0,
-                    max_value=1.0,
-                    value=st.session_state.graph_params['method_params'].get('alpha', 0.5),
-                    step=0.1,
-                    help="Controls the balance between community structure and degree factors (0=only degrees matter, 1=only community structure matters)"
-                )
-                
-                st.session_state.graph_params['method_params']['disable_avg_degree_scaling'] = st.checkbox(
-                    "Disable average degree scaling",
-                    value=st.session_state.graph_params['method_params'].get('disable_avg_degree_scaling', False),
-                    help="If checked, the average degree will not be scaled to match the target average degree"
-                )
-                
+      
                 degree_dist_type = st.selectbox(
                     "Degree distribution type",
                     options=["power_law", "exponential", "uniform"],
@@ -1183,7 +1190,7 @@ elif page == "Graph Sampling":
                 st.session_state.graph_params['method_params']['power_law_exponent'] = st.slider(
                     "Power law exponent",
                     min_value=2.0,
-                    max_value=3.0,
+                    max_value=4.0,
                     value=st.session_state.graph_params['method_params'].get('power_law_exponent', 2.5),
                     step=0.1,
                     help="Exponent for power law degree distribution"
@@ -1236,17 +1243,6 @@ elif page == "Graph Sampling":
                 help="Amount of random noise to add to edge probabilities"
             )
             
-            # Add target average degree for all methods
-            target_avg_degree = st.slider(
-                "Target average degree",
-                min_value=1.0,
-                max_value=20.0,
-                value=st.session_state.graph_params['method_params'].get('target_avg_degree', 5.0),
-                step=0.5,
-                help="Target average node degree (if not specified, calculated from density)"
-            )
-            st.session_state.graph_params['method_params']['target_avg_degree'] = target_avg_degree
-
         st.session_state.graph_params['seed'] = st.number_input(
                 "Random seed",
                 min_value=0,
@@ -1278,9 +1274,7 @@ elif page == "Graph Sampling":
                     community_imbalance = st.session_state.graph_params['method_params'].get('community_imbalance', 0.3)
                     degree_separation = st.session_state.graph_params['method_params'].get('degree_separation', 0.5)
                     degree_distribution = st.session_state.graph_params['method_params'].get('degree_distribution_type', 'power_law')
-                    alpha = st.session_state.graph_params['method_params'].get('alpha', 0.5)
-                    disable_avg_degree_scaling = st.session_state.graph_params['method_params'].get('disable_avg_degree_scaling', False)
-                    
+
                     # Distribution-specific parameters
                     dccc_global_degree_params = {}
                     if degree_distribution == "power_law":
@@ -1308,8 +1302,6 @@ elif page == "Graph Sampling":
                     community_imbalance = 0.0
                     degree_separation = 0.5
                     dccc_global_degree_params = None
-                    alpha = 0.5  # Default value for non-DCCC-SBM methods
-                    disable_avg_degree_scaling = False  # Default value for non-DCCC-SBM methods
                     
                     # Configuration model parameters 
                     use_configuration_model = st.session_state.graph_params['method'] != "Standard"
@@ -1339,12 +1331,12 @@ elif page == "Graph Sampling":
                     degree_heterogeneity=st.session_state.graph_params['method_params'].get('degree_heterogeneity', 0.0),
                     edge_noise=st.session_state.graph_params['method_params'].get('edge_noise', 0.0),
                     feature_regime_balance=0.5,
-                    target_homophily=None,
-                    target_density=None,
+                    target_homophily=None, # Set to None to use universe homophily
+                    target_density=None, # Set to None to use universe density
                     use_configuration_model=use_configuration_model,
                     degree_distribution=degree_distribution,
                     power_law_exponent=power_law_exponent,
-                    target_avg_degree=st.session_state.graph_params['method_params'].get('target_avg_degree'),
+                    target_avg_degree=st.session_state.graph_params['method_params'].get('target_avg_degree', None),  # Add placeholder for target_avg_degree
                     triangle_enhancement=st.session_state.graph_params['method_params'].get('triangle_enhancement', 0.0),
                     max_mean_community_deviation=st.session_state.graph_params['max_mean_community_deviation'],
                     max_max_community_deviation=st.session_state.graph_params['max_max_community_deviation'],
@@ -1359,8 +1351,6 @@ elif page == "Graph Sampling":
                     community_imbalance=community_imbalance if use_dccc_sbm else 0.0,
                     degree_separation=degree_separation if use_dccc_sbm else 0.5,
                     dccc_global_degree_params=dccc_global_degree_params if use_dccc_sbm else None,
-                    alpha=alpha if use_dccc_sbm else 0.5,
-                    disable_avg_degree_scaling=disable_avg_degree_scaling if use_dccc_sbm else False,
                     disable_deviation_limiting=st.session_state.graph_params.get('disable_deviation_limiting', False)
                 )
 
@@ -1413,39 +1403,6 @@ elif page == "Graph Sampling":
                     'Density': connection_analysis['densities']
                 })
                 st.dataframe(stats_df)
-
-                # Create graph sample
-                graph = GraphSample(
-                    universe=st.session_state.universe,
-                    communities=communities,
-                    n_nodes=st.session_state.graph_params['n_nodes'],
-                    min_component_size=st.session_state.graph_params['min_component_size'],
-                    degree_heterogeneity=st.session_state.graph_params['method_params'].get('degree_heterogeneity', 0.0),
-                    edge_noise=st.session_state.graph_params['method_params'].get('edge_noise', 0.0),
-                    feature_regime_balance=0.5,
-                    target_homophily=None,
-                    target_density=None,
-                    use_configuration_model=use_configuration_model,
-                    degree_distribution=degree_distribution,
-                    power_law_exponent=power_law_exponent,
-                    target_avg_degree=st.session_state.graph_params['method_params'].get('target_avg_degree'),
-                    triangle_enhancement=st.session_state.graph_params['method_params'].get('triangle_enhancement', 0.0),
-                    max_mean_community_deviation=st.session_state.graph_params['max_mean_community_deviation'],
-                    max_max_community_deviation=st.session_state.graph_params['max_max_community_deviation'],
-                    max_parameter_search_attempts=st.session_state.graph_params['max_parameter_search_attempts'],
-                    parameter_search_range=st.session_state.graph_params['parameter_search_range'],
-                    min_edge_density=st.session_state.graph_params['min_edge_density'],
-                    max_retries=st.session_state.graph_params['max_retries'],
-                    seed=st.session_state.graph_params['seed'],
-                    config_model_params=config_model_params,
-                    use_dccc_sbm=use_dccc_sbm,
-                    community_imbalance=community_imbalance if use_dccc_sbm else 0.0,
-                    degree_separation=degree_separation if use_dccc_sbm else 0.5,
-                    dccc_global_degree_params=dccc_global_degree_params if use_dccc_sbm else None,
-                    alpha=alpha if use_dccc_sbm else 0.5,
-                    disable_avg_degree_scaling=disable_avg_degree_scaling if use_dccc_sbm else False,
-                    disable_deviation_limiting=st.session_state.graph_params.get('disable_deviation_limiting', False)
-                )
                 
                 # Store in session state
                 st.session_state.current_graph = graph
@@ -1454,60 +1411,33 @@ elif page == "Graph Sampling":
                 
                 # Calculate and display signals
                 st.markdown("### Graph Signals")
-                col1, col2, col3 = st.columns(3)
                 
-                with col1:
-                    degree_signals = graph.calculate_degree_signal()
-                    mean_degree_signal = np.mean(list(degree_signals.values()))
-                    min_degree_signal = np.min(list(degree_signals.values()))
-                    max_degree_signal = np.max(list(degree_signals.values()))
-                    st.metric("Degree Signal", f"{mean_degree_signal:.3f}")
-                    st.caption(f"Min: {min_degree_signal:.3f}, Max: {max_degree_signal:.3f}")
-                
-                with col2:
-                    structure_signals = graph.calculate_structure_signal()
-                    mean_structure_signal = np.mean(list(structure_signals.values()))
-                    min_structure_signal = np.min(list(structure_signals.values()))
-                    max_structure_signal = np.max(list(structure_signals.values()))
-                    st.metric("Structure Signal", f"{mean_structure_signal:.3f}")
-                    st.caption(f"Min: {min_structure_signal:.3f}, Max: {max_structure_signal:.3f}")
-                
-                with col3:
-                    feature_signals = graph.calculate_feature_signal()
-                    mean_feature_signal = np.mean(list(feature_signals.values()))
-                    min_feature_signal = np.min(list(feature_signals.values()))
-                    max_feature_signal = np.max(list(feature_signals.values()))
-                    st.metric("Feature Signal", f"{mean_feature_signal:.3f}")
-                    st.caption(f"Min: {min_feature_signal:.3f}, Max: {max_feature_signal:.3f}")
-                
-                # Add new classifier-based signals section
-                st.markdown("### Classifier-Based Signals")
-                st.markdown("These signals use machine learning classifiers to measure community separation.")
-                
-                # Calculate classifier-based signals
-                classifier_signals = graph.calculate_community_classifier_signals(
-                    structure_method="spectral",  # Changed from "louvain" to "spectral" as fallback
-                    feature_method="kmeans",
-                    metric="nmi"
+                # Calculate all signals using the unified approach
+                signals = graph.calculate_community_signals(
+                    structure_metric='kl',
+                    degree_method="naive_bayes",
+                    degree_metric="accuracy",
+                    cv_folds=5
                 )
                 
-                # Display classifier-based signals in columns
+                # Display signals in columns
                 col1, col2, col3 = st.columns(3)
                 
                 with col1:
-                    st.metric("Structure Signal (Classifier)", f"{classifier_signals['structure_signal']:.3f}")
-                    st.caption("Using Spectral Clustering")  # Updated caption
+                    st.metric("Structure Signal", f"{signals['mean_structure_signal']:.3f}")
+                    st.caption(f"Min: {signals['min_structure_signal']:.3f}, Max: {signals['max_structure_signal']:.3f}")
+                    st.caption("Using KL divergence")
                 
                 with col2:
-                    if classifier_signals['feature_signal'] is not None:
-                        st.metric("Feature Signal (Classifier)", f"{classifier_signals['feature_signal']:.3f}")
-                        st.caption("Using K-means clustering")
+                    if signals['feature_signal'] is not None:
+                        st.metric("Feature Signal", f"{signals['feature_signal']:.3f}")
+                        st.caption("Using Random Forest + macro F1")
                     else:
-                        st.metric("Feature Signal (Classifier)", "N/A")
+                        st.metric("Feature Signal", "N/A")
                         st.caption("No features available")
                 
                 with col3:
-                    st.metric("Degree Signal (Classifier)", f"{classifier_signals['degree_signal']:.3f}")
+                    st.metric("Degree Signal", f"{signals['degree_signal']:.3f}")
                     st.caption("Using Naive Bayes classification")
                 
                 # Display summary statistics
@@ -1515,18 +1445,138 @@ elif page == "Graph Sampling":
                 summary_df = pd.DataFrame({
                     'Metric': ['Mean', 'Min', 'Max', 'Std'],
                     'Value': [
-                        classifier_signals['mean_signal'],
-                        classifier_signals['min_signal'],
-                        classifier_signals['max_signal'],
-                        classifier_signals['std_signal']
+                        signals['mean_signal'],
+                        signals['min_signal'],
+                        signals['max_signal'],
+                        signals['std_signal']
                     ]
                 })
                 st.dataframe(summary_df)
                 
                 # Display method information
                 st.markdown("#### Method Information")
-                method_info = classifier_signals['method_info']
-                st.json(method_info)
+                st.json(signals['method_info'])
+
+                # After generating the graph in the Graph Sampling page, add this visualization:
+                # After graph generation, show degree analysis
+                st.markdown('<div class="subsection-header">Degree Analysis</div>', unsafe_allow_html=True)
+                
+                # Calculate degrees from adjacency matrix
+                degrees = np.array([d for _, d in graph.graph.degree()])
+                
+                # Calculate community-wise degree statistics
+                community_degrees = {}
+                for comm in np.unique(graph.community_labels):
+                    # Get the original universe community index
+                    universe_comm = graph.communities[comm]
+                    comm_nodes = graph.community_labels == comm
+                    community_degrees[universe_comm] = {
+                        'mean': np.mean(degrees[comm_nodes]),
+                        'std': np.std(degrees[comm_nodes]),
+                        'min': np.min(degrees[comm_nodes]),
+                        'max': np.max(degrees[comm_nodes])
+                    }
+                
+                # Plot 1: Degree centers vs actual mean degrees
+                fig1, ax1 = plt.subplots(figsize=(10, 6))
+                comm_ids = sorted(community_degrees.keys())  # These are now universe community indices
+                centers = [st.session_state.universe.degree_centers[comm] for comm in comm_ids]
+                means = [community_degrees[comm]['mean'] for comm in comm_ids]
+                stds = [community_degrees[comm]['std'] for comm in comm_ids]
+                
+                ax1.errorbar(centers, means, yerr=stds, fmt='o', capsize=5)
+                ax1.set_xlabel('Degree Center')
+                ax1.set_ylabel('Actual Mean Degree')
+                ax1.set_title('Degree Centers vs Actual Degrees')
+                st.pyplot(fig1)
+                
+                # Plot 2: Degree distributions per community
+                fig2, ax2 = plt.subplots(figsize=(10, 6))
+                for comm in comm_ids:
+                    # Convert back to local community index for node selection
+                    local_comm_indices = np.where(graph.communities == comm)[0]
+                    if len(local_comm_indices) > 0:
+                        local_comm = local_comm_indices[0]
+                        comm_nodes = graph.community_labels == local_comm
+                        ax2.hist(degrees[comm_nodes], alpha=0.5, label=f'Community {comm}')
+                ax2.set_xlabel('Degree')
+                ax2.set_ylabel('Count')
+                ax2.set_title('Degree Distributions by Community')
+                ax2.legend()
+                st.pyplot(fig2)
+                
+                # Add degree assignment debugging visualization
+                if hasattr(graph, '_debug_degree_assignment'):
+                    st.subheader("Degree Assignment Process")
+                    
+                    # Plot 3: Degree assignment process
+                    fig3, ax3 = plt.subplots(figsize=(12, 6))
+                    
+                    # Plot the raw degrees
+                    raw_degrees = graph._debug_degree_assignment['raw_degrees']
+                    ax3.plot(range(len(raw_degrees)), raw_degrees, 'k-', alpha=0.3, label='Raw Degrees')
+                    
+                    # Plot the community distributions
+                    for comm in comm_ids:
+                        # Convert back to local community index for node selection
+                        local_comm_indices = np.where(graph.communities == comm)[0]
+                        if len(local_comm_indices) > 0:
+                            local_comm = local_comm_indices[0]
+                            center = graph._debug_degree_assignment['community_centers'][local_comm]
+                            mean = graph._debug_degree_assignment['means'][local_comm]
+                            std = graph._debug_degree_assignment['stds'][local_comm]
+                            
+                            # Plot the normal distribution
+                            x = np.linspace(mean - 3*std, mean + 3*std, 100)
+                            y = stats.norm.pdf(x, mean, std)
+                            ax3.plot(x, y * len(raw_degrees) * 0.1, label=f'Community {comm} Distribution')
+                            
+                            # Plot the actual assignments
+                            assignments = graph._debug_degree_assignment['final_assignments'][local_comm]
+                            if assignments:
+                                nodes, indices, degrees = zip(*assignments)
+                                ax3.scatter(indices, degrees, alpha=0.5, label=f'Community {comm} Assignments')
+                    
+                    ax3.set_xlabel('Node Index')
+                    ax3.set_ylabel('Degree')
+                    ax3.set_title('Degree Assignment Process')
+                    ax3.legend()
+                    st.pyplot(fig3)
+                    
+                    # Display assignment statistics
+                    st.write("Assignment Statistics:")
+                    stats_data = []
+                    for comm in comm_ids:
+                        # Convert back to local community index for node selection
+                        local_comm_indices = np.where(graph.communities == comm)[0]
+                        if len(local_comm_indices) > 0:
+                            local_comm = local_comm_indices[0]
+                            assignments = graph._debug_degree_assignment['final_assignments'][local_comm]
+                            if assignments:
+                                nodes, indices, degrees = zip(*assignments)
+                                stats_data.append({
+                                    'Community': comm,
+                                    'Center': graph._debug_degree_assignment['community_centers'][local_comm],
+                                    'Mean Index': np.mean(indices),
+                                    'Std Index': np.std(indices),
+                                    'Mean Degree': np.mean(degrees),
+                                    'Std Degree': np.std(degrees)
+                                })
+                    st.dataframe(pd.DataFrame(stats_data))
+                
+                # Display community degree statistics
+                st.write("Community Degree Statistics:")
+                stats_data = []
+                for comm in comm_ids:
+                    stats_data.append({
+                        'Community': comm,
+                        'Degree Center': st.session_state.universe.degree_centers[comm],
+                        'Mean Degree': community_degrees[comm]['mean'],
+                        'Std Degree': community_degrees[comm]['std'],
+                        'Min Degree': community_degrees[comm]['min'],
+                        'Max Degree': community_degrees[comm]['max']
+                    })
+                st.dataframe(pd.DataFrame(stats_data))
 
 # Parameter Space Analysis Page
 elif page == "Parameter Space Analysis":
@@ -3547,76 +3597,3 @@ st.markdown("""
 ---
 **MMSB Explorer** | Mixed-Membership Stochastic Block Model for Graph Transfer Learning
 """) 
-
-def create_graph_dashboard(graph):
-    # Create tabs for different visualizations
-    tab1, tab2, tab3, tab4 = st.tabs([
-        "Graph with Communities",
-        "Community Distribution",
-        "Parameter Analysis",
-        "Feature Analysis"
-    ])
-
-    with tab1:
-        st.subheader("Graph with Communities")
-        fig = plot_graph_communities(graph)
-        st.pyplot(fig)
-
-    with tab2:
-        st.subheader("Community Distribution")
-        # Pass the graph object directly
-        fig = plot_membership_matrix(graph)
-        st.pyplot(fig)
-
-    with tab3:
-        st.subheader("Parameter Analysis")
-        # Convert parameters dictionary to DataFrame
-        params_dict = graph.extract_parameters()
-        params_df = pd.DataFrame([params_dict])
-        fig = create_parameter_dashboard(params_df)
-        st.pyplot(fig)
-
-    with tab4:
-        st.subheader("Feature Analysis")
-        if hasattr(graph, 'features') and graph.features is not None:
-            # Pass a list containing the single graph sample
-            fig = plot_community_statistics([graph])
-            st.pyplot(fig)
-            
-            # Add feature regime analysis if available
-            if hasattr(graph, 'node_regimes') and graph.node_regimes is not None:
-                st.subheader("Feature Regime Analysis")
-                regime_analysis = graph.analyze_neighborhood_features()
-                st.write("Regime Distribution:", regime_analysis)
-                
-                # Add community-cluster visualization if feature generator is available
-                if hasattr(graph, 'universe') and hasattr(graph.universe, 'feature_generator'):
-                    st.subheader("Community-Cluster Assignments")
-                    fig = visualize_community_cluster_assignments(graph.universe.feature_generator)
-                    st.pyplot(fig)
-        else:
-            st.info("No feature analysis available for this graph")
-
-    with tab5:
-        st.subheader("Degree Analysis")
-        # Add degree distribution analysis
-        if hasattr(graph, 'degree_factors'):
-            st.write("Degree Distribution Parameters:")
-            st.write(f"- Distribution Type: {graph.degree_distribution}")
-            if graph.power_law_exponent is not None:
-                st.write(f"- Power Law Exponent: {graph.power_law_exponent:.2f}")
-            if graph.target_avg_degree is not None:
-                st.write(f"- Target Average Degree: {graph.target_avg_degree:.2f}")
-            
-            # Plot degree distribution
-            fig = plot_degree_distribution(graph)
-            st.pyplot(fig)
-            
-            # Show community-specific degree statistics
-            if hasattr(graph, 'community_degree_factors'):
-                st.subheader("Community Degree Statistics")
-                community_stats = graph.analyze_community_connections()
-                if 'degree_analysis' in community_stats:
-                    st.write(community_stats['degree_analysis'])
-        else:
-            st.info("No degree analysis available for this graph")
