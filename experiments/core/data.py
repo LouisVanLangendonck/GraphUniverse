@@ -13,7 +13,7 @@ from typing import Dict, List, Optional, Tuple, Union, Any
 
 from mmsb.model import GraphSample
 from experiments.core.config import ExperimentConfig
-from mmsb.feature_regimes import FeatureRegimeGenerator, NeighborhoodFeatureAnalyzer, GenerativeRuleBasedLabeler
+from mmsb.feature_regimes import NeighborhoodFeatureAnalyzer, GenerativeRuleBasedLabeler, SimplifiedFeatureGenerator
 from utils.motif_and_role_analysis import MotifRoleAnalyzer
 
 

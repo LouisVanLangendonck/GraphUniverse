@@ -1,0 +1,31 @@
+{
+  "total_time": 0.08993983268737793,
+  "successful_graphs": 10,
+  "failed_graphs": 0,
+  "success_rate": 1.0,
+  "avg_time_per_graph": 0.008993983268737793,
+  "node_count_stats": {
+    "mean": 84.3,
+    "std": 16.137224048763777,
+    "min": 55,
+    "max": 106
+  },
+  "edge_count_stats": {
+    "mean": 145.0,
+    "std": 55.490539734264615,
+    "min": 62,
+    "max": 233
+  },
+  "density_stats": {
+    "mean": 0.039965494997233716,
+    "std": 0.0043288226227559115,
+    "min": 0.033300033300033303,
+    "max": 0.048530416951469584
+  },
+  "attempts_stats": {
+    "mean": 1.0,
+    "std": 0.0,
+    "min": 1,
+    "max": 1
+  }
+}

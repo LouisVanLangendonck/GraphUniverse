@@ -1,0 +1,141 @@
+{
+  "run_id": 4,
+  "timestamp": "20250526_131927",
+  "config_path": "multi_inductive_results\\multi_inductive_20250526_131652\\run_0004",
+  "sweep_parameters": {
+    "universe_homophily": 1.0,
+    "universe_edge_density": 0.01
+  },
+  "random_parameters": {
+    "homophily_range_0": 0.23514970524172518,
+    "density_range_0": 0.03174168530263651,
+    "degree_heterogeneity": 0.32413878236417404,
+    "edge_noise": 0.2274227593949453,
+    "cluster_count_factor": 0.8322307905738557,
+    "center_variance": 1.211666848918469,
+    "cluster_variance": 0.06928945175851876,
+    "assignment_skewness": 0.35269376274384356,
+    "community_exclusivity": 0.9563611449675988,
+    "universe_randomness_factor": 0.2275019594633894,
+    "max_mean_community_deviation": 0.17698358517594792,
+    "max_max_community_deviation": 0.13396318191788006,
+    "community_imbalance_range_0": 0.21317489553276886,
+    "degree_separation_range_0": 0.6220018717857105,
+    "power_law_exponent_range_0": 3.3139139538551063
+  },
+  "all_parameters": {
+    "universe_homophily": 1.0,
+    "universe_edge_density": 0.01,
+    "homophily_range_0": 0.23514970524172518,
+    "density_range_0": 0.03174168530263651,
+    "degree_heterogeneity": 0.32413878236417404,
+    "edge_noise": 0.2274227593949453,
+    "cluster_count_factor": 0.8322307905738557,
+    "center_variance": 1.211666848918469,
+    "cluster_variance": 0.06928945175851876,
+    "assignment_skewness": 0.35269376274384356,
+    "community_exclusivity": 0.9563611449675988,
+    "universe_randomness_factor": 0.2275019594633894,
+    "max_mean_community_deviation": 0.17698358517594792,
+    "max_max_community_deviation": 0.13396318191788006,
+    "community_imbalance_range_0": 0.21317489553276886,
+    "degree_separation_range_0": 0.6220018717857105,
+    "power_law_exponent_range_0": 3.3139139538551063
+  },
+  "family_stats": {
+    "n_graphs": 7,
+    "node_counts": [
+      93,
+      81,
+      105,
+      28,
+      102,
+      83,
+      42
+    ],
+    "edge_counts": [
+      181,
+      143,
+      277,
+      34,
+      257,
+      122,
+      43
+    ],
+    "densities": [
+      0.042309490416082285,
+      0.0441358024691358,
+      0.05073260073260073,
+      0.08994708994708994,
+      0.04989322461657931,
+      0.03585071995298266,
+      0.04994192799070848
+    ],
+    "avg_degrees": [
+      3.89247311827957,
+      3.5308641975308643,
+      5.276190476190476,
+      2.4285714285714284,
+      5.03921568627451,
+      2.9397590361445785,
+      2.0476190476190474
+    ],
+    "community_counts": [
+      4,
+      4,
+      4,
+      1,
+      3,
+      3,
+      2
+    ],
+    "node_counts_mean": 76.28571428571429,
+    "node_counts_std": 27.618390796787594,
+    "node_counts_min": 28,
+    "node_counts_max": 105,
+    "edge_counts_mean": 151.0,
+    "edge_counts_std": 88.05031029392879,
+    "edge_counts_min": 34,
+    "edge_counts_max": 277,
+    "densities_mean": 0.05183012230359703,
+    "densities_std": 0.016329687754352076,
+    "densities_min": 0.03585071995298266,
+    "densities_max": 0.08994708994708994,
+    "avg_degrees_mean": 3.5935275700872107,
+    "avg_degrees_std": 1.145739498650405,
+    "avg_degrees_min": 2.0476190476190474,
+    "avg_degrees_max": 5.276190476190476,
+    "community_counts_mean": 3.0,
+    "community_counts_std": 1.0690449676496976,
+    "community_counts_min": 1,
+    "community_counts_max": 4
+  },
+  "model_results": {
+    "community": {
+      "gcn_accuracy": 0.976,
+      "gcn_f1_macro": 0.9764372932635587,
+      "gcn_train_time": 2.964259624481201,
+      "sage_accuracy": 0.904,
+      "sage_f1_macro": 0.8801919328235118,
+      "sage_train_time": 1.5403494834899902,
+      "mlp_accuracy": 0.944,
+      "mlp_f1_macro": 0.7160830999066292,
+      "mlp_train_time": 0.9788095951080322,
+      "rf_accuracy": 0.928,
+      "rf_f1_macro": 0.9188453159041394,
+      "rf_train_time": 0.16984224319458008
+    }
+  },
+  "total_time": 31.980764389038086,
+  "n_graphs": 10,
+  "universe_K": 5,
+  "tasks": [
+    "community"
+  ],
+  "models_run": [
+    "gcn",
+    "sage",
+    "mlp",
+    "rf"
+  ]
+}

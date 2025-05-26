@@ -827,24 +827,27 @@ class FamilyConsistencyAnalyzer:
         for graph in self.family_graphs:
             all_communities.update(graph.communities)
             for comm in graph.communities:
-                community_usage[comm] = community_usage.get(comm, 0) + 1
+                # Convert numpy int to native Python int
+                comm_key = int(comm)
+                community_usage[comm_key] = community_usage.get(comm_key, 0) + 1
         
         total_graphs = len(self.family_graphs)
         
         # Calculate statistics
         usage_counts = list(community_usage.values())
         
+        # Convert numpy types to native Python types
         return {
-            'total_unique_communities': len(all_communities),
-            'universe_communities': self.universe.K,
-            'coverage_fraction': len(all_communities) / self.universe.K,
+            'total_unique_communities': int(len(all_communities)),
+            'universe_communities': int(self.universe.K),
+            'coverage_fraction': float(len(all_communities) / self.universe.K),
             'community_usage': community_usage,
-            'avg_usage_per_community': np.mean(usage_counts) if usage_counts else 0,
-            'usage_std': np.std(usage_counts) if usage_counts else 0,
-            'min_usage': min(usage_counts) if usage_counts else 0,
-            'max_usage': max(usage_counts) if usage_counts else 0,
-            'communities_in_all_graphs': [comm for comm, count in community_usage.items() if count == total_graphs],
-            'rarely_used_communities': [comm for comm, count in community_usage.items() if count == 1]
+            'avg_usage_per_community': float(np.mean(usage_counts) if usage_counts else 0),
+            'usage_std': float(np.std(usage_counts) if usage_counts else 0),
+            'min_usage': int(min(usage_counts) if usage_counts else 0),
+            'max_usage': int(max(usage_counts) if usage_counts else 0),
+            'communities_in_all_graphs': [int(comm) for comm, count in community_usage.items() if count == total_graphs],
+            'rarely_used_communities': [int(comm) for comm, count in community_usage.items() if count == 1]
         }
     
     def _interpret_score(self, score: float, metric_type: str) -> str:

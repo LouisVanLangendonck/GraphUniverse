@@ -913,7 +913,7 @@ if page == "Universe Creation":
             )
             center_variance = st.slider(
                 "Center variance",
-                min_value=0.1,
+                min_value=0.0,
                 max_value=2.0,
                 value=1.0,
                 step=0.1,

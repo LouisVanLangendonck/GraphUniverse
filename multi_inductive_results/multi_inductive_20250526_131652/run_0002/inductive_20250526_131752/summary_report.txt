@@ -1,0 +1,44 @@
+INDUCTIVE LEARNING EXPERIMENT SUMMARY
+============================================================
+
+CONFIGURATION:
+  Graph family size: 10
+  Node range: [80, 120]
+  Community range: [3, 5]
+  Inductive mode: graph_level
+  Graph splits: 6 train, 2 val, 2 test
+  Tasks: community
+
+FAMILY GENERATION:
+  Success rate: 100.0%
+  Total time: 0.1s
+  Avg time per graph: 0.01s
+
+TASK: COMMUNITY
+----------------------------------------
+  GCN:
+    F1_MACRO: 0.3268
+    Training time: 3.09s
+    Accuracy: 0.4950
+
+  SAGE:
+    F1_MACRO: 0.3679
+    Training time: 1.53s
+    Accuracy: 0.5545
+
+  MLP:
+    F1_MACRO: 0.3661
+    Training time: 1.21s
+    Accuracy: 0.5545
+
+  RF:
+    F1_MACRO: 0.3643
+    Training time: 0.21s
+    Accuracy: 0.5545
+
+  BEST MODEL: SAGE (F1_MACRO: 0.3679)
+
+OVERALL SUMMARY:
+  Total models trained: 4
+  Successful models: 4
+  Success rate: 100.0%
