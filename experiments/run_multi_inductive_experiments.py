@@ -39,6 +39,14 @@ def parse_args():
     parser.add_argument('--n_repetitions', type=int, default=2,
                         help='Number of repetitions per parameter combination')
     
+    # Task configuration
+    parser.add_argument('--tasks', type=str, nargs='+', 
+                        default=['k_hop_community_counts'],
+                        choices=['community', 'k_hop_community_counts'],
+                        help='Learning tasks to run')
+    parser.add_argument('--khop_k', type=int, default=2,
+                        help='k value for k-hop community counting task')
+    
     # Base experiment settings
     parser.add_argument('--n_graphs', type=int, default=12,
                         help='Number of graphs per family')
@@ -61,9 +69,11 @@ def parse_args():
                         help='Training epochs')
     parser.add_argument('--patience', type=int, default=20,
                         help='Early stopping patience')
+    parser.add_argument('--batch_size', type=int, default=1,
+                        help='Batch size for training (per graph)')
     
     # Hyperparameter optimization settings
-    parser.add_argument('--param_hyperoptim', action='store_true',
+    parser.add_argument('--optimize_hyperparams', action='store_true',
                         help='Enable hyperparameter optimization')
     parser.add_argument('--n_trials', type=int, default=20,
                         help='Number of hyperparameter optimization trials')
@@ -100,9 +110,16 @@ def create_custom_experiment(args) -> CleanMultiExperimentConfig:
         # Method
         use_dccc_sbm=args.use_dccc_sbm,
         degree_distribution=args.degree_distribution,
+
+        # Tasks configuration
+        tasks=args.tasks,
+        khop_community_counts_k=args.khop_k,
+        is_regression={
+            'community': False,
+            'k_hop_community_counts': True
+        },
         
         # Tasks and models
-        tasks=['community'],
         gnn_types=['gcn', 'sage'],
         run_gnn=True,
         run_mlp=True,
@@ -111,9 +128,10 @@ def create_custom_experiment(args) -> CleanMultiExperimentConfig:
         # Training
         epochs=args.epochs,
         patience=args.patience,
+        batch_size=args.batch_size,
         
         # Hyperparameter optimization
-        optimize_hyperparams=args.param_hyperoptim,
+        optimize_hyperparams=args.optimize_hyperparams,
         n_trials=args.n_trials,
         optimization_timeout=args.optimization_timeout,
         

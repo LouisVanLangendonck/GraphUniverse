@@ -30,6 +30,13 @@ def parse_args():
     parser.add_argument('--force_cpu', action='store_true',
                         help='Force CPU usage even if CUDA is available')
     
+    # === TASKS ===
+    parser.add_argument('--tasks', type=str, nargs='+', default=['community'],
+                        choices=['community', 'k_hop_community_counts'],
+                        help='Learning tasks to run')
+    parser.add_argument('--khop_k', type=int, default=2,
+                        help='k value for k-hop community counting task')
+    
     # === GRAPH FAMILY GENERATION ===
     parser.add_argument('--n_graphs', type=int, default=15,
                         help='Number of graphs to generate in family')
@@ -104,6 +111,8 @@ def parse_args():
                         help='Learning rate for neural models')
     parser.add_argument('--hidden_dim', type=int, default=64,
                         help='Hidden dimension for neural models')
+    parser.add_argument('--batch_size', type=int, default=2,
+                        help='Batch size for training')
     
     # === ANALYSIS ===
     parser.add_argument('--require_consistency_check', action='store_true', default=False,
@@ -128,6 +137,10 @@ def create_config_from_args(args) -> InductiveExperimentConfig:
         seed=args.seed,
         device_id=args.device_id,
         force_cpu=args.force_cpu,
+
+        # === TASKS ===
+        tasks=args.tasks,
+        khop_community_counts_k=args.khop_k,
         
         # === GRAPH FAMILY GENERATION ===
         n_graphs=args.n_graphs,
@@ -156,9 +169,6 @@ def create_config_from_args(args) -> InductiveExperimentConfig:
         community_imbalance_range=tuple(args.community_imbalance_range),
         degree_separation_range=tuple(args.degree_separation_range),
         
-        # === TASKS ===
-        tasks=args.tasks,
-        
         # === MODELS ===
         gnn_types=args.gnn_types,
         run_gnn=run_gnn,
@@ -170,6 +180,7 @@ def create_config_from_args(args) -> InductiveExperimentConfig:
         patience=args.patience,
         learning_rate=args.learning_rate,
         hidden_dim=args.hidden_dim,
+        batch_size=args.batch_size,
         
         # === ANALYSIS ===
         require_consistency_check=args.require_consistency_check,

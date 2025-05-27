@@ -137,7 +137,7 @@ def train_inductive_model(
     criterion = nn.MSELoss() if is_regression else nn.CrossEntropyLoss()
     
     # Training loop
-    best_val_metric = float('inf') if is_regression else 0.0
+    best_val_metric = float('-inf') if is_regression else 0.0
     patience_counter = 0
     best_model_state = None
     
@@ -516,7 +516,7 @@ def optimize_inductive_hyperparameters(
         
         # Quick training loop
         max_epochs = min(50, config.epochs // 4)  # Reduced epochs for hyperopt
-        best_val_metric = float('inf') if is_regression else 0.0
+        best_val_metric = float('-inf') if is_regression else 0.0
         patience_counter = 0
         
         for epoch in range(max_epochs):

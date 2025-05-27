@@ -94,7 +94,7 @@ class InductiveExperimentConfig:
     weight_decay: float = 5e-4
     epochs: int = 200
     patience: int = 50
-    batch_size: int = 32
+    batch_size: int = 1
     hidden_dim: int = 64
     num_layers: int = 2
     dropout: float = 0.5
