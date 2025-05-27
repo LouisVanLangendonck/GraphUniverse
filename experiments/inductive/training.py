@@ -160,11 +160,6 @@ def train_inductive_model(
                     out = model(batch.x, batch.edge_index)
                 else:  # MLPModel
                     out = model(batch.x)
-
-                print(f"Batch labels: {batch.y.cpu().numpy()}")
-                print(f"Model output shape: {out.shape}")
-                print(f"Unique labels: {torch.unique(batch.y).cpu().numpy()}")
-                print(f"Label range: {batch.y.min().item()} to {batch.y.max().item()}")
                 
                 loss = criterion(out, batch.y)
                 val_loss += loss.item()

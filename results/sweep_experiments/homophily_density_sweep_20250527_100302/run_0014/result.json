@@ -1,0 +1,293 @@
+{
+  "run_id": 14,
+  "timestamp": "20250527_100640",
+  "config_path": "results/sweep_experiments\\homophily_density_sweep_20250527_100302\\run_0014",
+  "sweep_parameters": {
+    "universe_homophily": 0.5,
+    "universe_edge_density": 0.1
+  },
+  "random_parameters": {
+    "homophily_range_width": 0.295257555162773,
+    "density_range_width": 0.01667061330073267,
+    "degree_heterogeneity": 0.5715911372683963,
+    "edge_noise": 0.03927808344290491
+  },
+  "all_parameters": {
+    "universe_homophily": 0.5,
+    "universe_edge_density": 0.1,
+    "homophily_range_width": 0.295257555162773,
+    "density_range_width": 0.01667061330073267,
+    "degree_heterogeneity": 0.5715911372683963,
+    "edge_noise": 0.03927808344290491
+  },
+  "method": "dc_sbm",
+  "degree_distribution": "standard",
+  "family_properties": {
+    "n_graphs": 12,
+    "node_counts": [
+      84,
+      100,
+      80,
+      89,
+      92,
+      93,
+      92,
+      84,
+      97,
+      99,
+      91,
+      96
+    ],
+    "edge_counts": [
+      489,
+      738,
+      651,
+      904,
+      939,
+      489,
+      676,
+      782,
+      540,
+      1190,
+      773,
+      1260
+    ],
+    "community_counts": [
+      3,
+      3,
+      4,
+      3,
+      4,
+      5,
+      5,
+      4,
+      5,
+      5,
+      5,
+      5
+    ],
+    "node_counts_mean": 91.41666666666667,
+    "node_counts_std": 6.006362367430797,
+    "node_counts_min": 80.0,
+    "node_counts_max": 100.0,
+    "edge_counts_mean": 785.9166666666666,
+    "edge_counts_std": 240.6541288285373,
+    "edge_counts_min": 489.0,
+    "edge_counts_max": 1260.0,
+    "community_counts_mean": 4.25,
+    "community_counts_std": 0.82915619758885,
+    "community_counts_min": 3.0,
+    "community_counts_max": 5.0
+  },
+  "family_consistency": {
+    "pattern_preservation": {
+      "score": 0.8420587136701791,
+      "individual_correlations": [
+        0.8783100656536799,
+        0.8783100656536799,
+        0.8528028654224415,
+        0.8783100656536799,
+        0.8528028654224415,
+        0.8190487086369508,
+        0.8183170883849713,
+        0.8528028654224415,
+        0.8183170883849713,
+        0.8190487086369508,
+        0.8183170883849713,
+        0.8183170883849713
+      ],
+      "std": 0.025170041220521775,
+      "interpretation": "Excellent pattern preservation - rank ordering strongly maintained",
+      "description": "How well rank ordering of community connections is preserved relative to universe"
+    },
+    "generation_fidelity": {
+      "score": 0.9869838301874894,
+      "individual_scores": [
+        0.9953345422331183,
+        0.9786942856418339,
+        0.9840796569653084,
+        0.9881530239954218,
+        0.9828888590059028,
+        0.9892224275479423,
+        0.9795238644743719,
+        0.9982633590231549,
+        0.9780428285413243,
+        0.9936572849332378,
+        0.9799220207291087,
+        0.9960238091591465
+      ],
+      "std": 0.007123774890807917,
+      "interpretation": "Excellent generation fidelity - graphs closely match targets",
+      "description": "How well graphs match their scaled probability targets (P_sub)"
+    },
+    "degree_consistency": {
+      "score": 0.02349258313340857,
+      "individual_scores": [
+        -0.07282681659638898,
+        -0.2637299711484724,
+        0.23260756928580198,
+        -0.13257113482442087,
+        -0.004795721517564425,
+        -0.2186537912252361,
+        0.16347345453605686,
+        0.09143066769851443,
+        0.29798619184123637,
+        -0.24480682777418228,
+        -0.026669578637706366,
+        0.46046695596326465
+      ],
+      "std": 0.22066163133769248,
+      "interpretation": "No degree-community relationship - no correlation with centers",
+      "description": "How well actual node degrees correlate with universe degree centers"
+    },
+    "overall": {
+      "score": 0.7363155341697492,
+      "interpretation": "Moderate overall consistency - family shows some structural preservation",
+      "description": "Weighted average of all consistency metrics"
+    },
+    "community_coverage": {
+      "total_unique_communities": 5,
+      "universe_communities": 5,
+      "coverage_fraction": 1.0,
+      "community_usage": {
+        "0": 11,
+        "3": 12,
+        "4": 8,
+        "2": 10,
+        "1": 10
+      },
+      "avg_usage_per_community": 10.2,
+      "usage_std": 1.3266499161421599,
+      "min_usage": 8,
+      "max_usage": 12,
+      "communities_in_all_graphs": [
+        3
+      ],
+      "rarely_used_communities": []
+    }
+  },
+  "community_signals": {
+    "degree_signals": {
+      "mean": 0.36693068455452355,
+      "std": 0.08523727312983793,
+      "min": 0.275,
+      "max": 0.54,
+      "individual_values": [
+        0.3095588235294118,
+        0.54,
+        0.275,
+        0.48496732026143785,
+        0.46842105263157896,
+        0.29181286549707597,
+        0.3807017543859649,
+        0.2977941176470588,
+        0.28789473684210526,
+        0.36473684210526314,
+        0.3070175438596491,
+        0.3952631578947368
+      ]
+    },
+    "structure_signals": {
+      "mean": 0.6891758641337181,
+      "std": 0.1921210490631019,
+      "min": 0.48187769032731387,
+      "max": 1.0438421231433082,
+      "individual_values": [
+        0.48187769032731387,
+        0.49673849504492223,
+        0.6925879214012084,
+        0.5641976765953828,
+        0.6532450042777788,
+        0.5041675505424295,
+        0.9635368049082975,
+        0.9652017700352705,
+        0.7493623837609278,
+        0.6325944915088331,
+        0.522758458058947,
+        1.0438421231433082
+      ]
+    },
+    "feature_signals": {
+      "mean": 0.8397615035281754,
+      "std": 0.07560000095188289,
+      "min": 0.657948717948718,
+      "max": 0.9309263496906518,
+      "individual_values": [
+        0.882010582010582,
+        0.9309263496906518,
+        0.9137806637806638,
+        0.8171717171717172,
+        0.8434355118565644,
+        0.819047619047619,
+        0.657948717948718,
+        0.9270833333333334,
+        0.8828506787330317,
+        0.813192559074912,
+        0.745967365967366,
+        0.8437229437229437
+      ]
+    }
+  },
+  "model_results": {
+    "community": {
+      "gcn": {
+        "test_metrics": {
+          "accuracy": 0.9739776951672863,
+          "precision_macro": 0.9813478413478414,
+          "precision_weighted": 0.9744643982562198,
+          "recall_macro": 0.9724031311154597,
+          "recall_weighted": 0.9739776951672863,
+          "f1_macro": 0.9764708354737776,
+          "f1_weighted": 0.9739199270428952
+        },
+        "train_time": 2.3784565925598145,
+        "success": true
+      },
+      "sage": {
+        "test_metrics": {
+          "accuracy": 0.9925650557620818,
+          "precision_macro": 0.9948051948051948,
+          "precision_weighted": 0.9927581711968329,
+          "recall_macro": 0.99440313111546,
+          "recall_weighted": 0.9925650557620818,
+          "f1_macro": 0.9945502617869406,
+          "f1_weighted": 0.9925877787976677
+        },
+        "train_time": 0.9226226806640625,
+        "success": true
+      },
+      "mlp": {
+        "test_metrics": {
+          "accuracy": 0.8698884758364313,
+          "precision_macro": 0.8825383244206775,
+          "precision_weighted": 0.8941621772061309,
+          "recall_macro": 0.8947840834964123,
+          "recall_weighted": 0.8698884758364313,
+          "f1_macro": 0.8745953220618439,
+          "f1_weighted": 0.8657828325178332
+        },
+        "train_time": 0.8817934989929199,
+        "success": true
+      },
+      "rf": {
+        "test_metrics": {
+          "accuracy": 0.929368029739777,
+          "precision_macro": 0.9085188129305777,
+          "precision_weighted": 0.9312099383442048,
+          "recall_macro": 0.9343870406610133,
+          "recall_weighted": 0.929368029739777,
+          "f1_macro": 0.9199460742519829,
+          "f1_weighted": 0.9297955608618023
+        },
+        "train_time": 0.45905470848083496,
+        "success": true
+      }
+    }
+  },
+  "total_time": 16.642699480056763,
+  "n_graphs": 12,
+  "universe_K": 5,
+  "tasks": [
+    "community"
+  ]
+}

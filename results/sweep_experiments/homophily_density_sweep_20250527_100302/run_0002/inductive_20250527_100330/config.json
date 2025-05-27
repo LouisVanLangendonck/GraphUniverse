@@ -1,0 +1,107 @@
+{
+  "output_dir": "results/sweep_experiments\\homophily_density_sweep_20250527_100302\\run_0002",
+  "seed": 44,
+  "device_id": 0,
+  "force_cpu": false,
+  "n_graphs": 12,
+  "min_n_nodes": 80,
+  "max_n_nodes": 100,
+  "min_communities": 3,
+  "max_communities": 5,
+  "universe_K": 5,
+  "universe_feature_dim": 32,
+  "universe_edge_density": 0.1,
+  "universe_homophily": 0.1,
+  "universe_randomness_factor": 0.0,
+  "cluster_count_factor": 1.0,
+  "center_variance": 1.0,
+  "cluster_variance": 0.1,
+  "assignment_skewness": 0.0,
+  "community_exclusivity": 1.0,
+  "degree_center_method": "linear",
+  "homophily_range": [
+    0.0,
+    0.2
+  ],
+  "density_range": [
+    0.0,
+    0.2
+  ],
+  "degree_heterogeneity": 0.6212483371756625,
+  "edge_noise": 0.07210016725125715,
+  "target_avg_degree": null,
+  "triangle_enhancement": 0.0,
+  "use_dccc_sbm": false,
+  "community_imbalance_range": [
+    0.0,
+    0.3
+  ],
+  "degree_separation_range": [
+    0.0,
+    1.0
+  ],
+  "degree_distribution": "power_law",
+  "power_law_exponent_range": [
+    2.0,
+    3.5
+  ],
+  "power_law_x_min": 1.0,
+  "exponential_rate_range": [
+    0.3,
+    1.0
+  ],
+  "uniform_min_factor_range": [
+    0.3,
+    0.7
+  ],
+  "uniform_max_factor_range": [
+    1.3,
+    2.0
+  ],
+  "dccc_target_avg_degree_range": [
+    2.0,
+    10.0
+  ],
+  "max_parameter_search_attempts": 20,
+  "parameter_search_range": 0.5,
+  "max_retries": 5,
+  "min_edge_density": 0.005,
+  "disable_deviation_limiting": false,
+  "max_mean_community_deviation": 0.15,
+  "max_max_community_deviation": 0.3,
+  "min_component_size": 10,
+  "train_graph_ratio": 0.6,
+  "val_graph_ratio": 0.2,
+  "test_graph_ratio": 0.2,
+  "inductive_mode": "graph_level",
+  "tasks": [
+    "community"
+  ],
+  "is_regression": {
+    "community": false
+  },
+  "khop_community_counts_k": 2,
+  "gnn_types": [
+    "gcn",
+    "sage"
+  ],
+  "run_gnn": true,
+  "run_mlp": true,
+  "run_rf": true,
+  "learning_rate": 0.01,
+  "weight_decay": 0.0005,
+  "epochs": 100,
+  "patience": 20,
+  "batch_size": 32,
+  "hidden_dim": 64,
+  "num_layers": 2,
+  "dropout": 0.5,
+  "optimize_hyperparams": false,
+  "n_trials": 20,
+  "optimization_timeout": 600,
+  "min_family_consistency": 0.5,
+  "require_consistency_check": false,
+  "collect_family_stats": true,
+  "collect_signal_metrics": true,
+  "save_individual_graphs": false
+}

@@ -1,0 +1,291 @@
+{
+  "run_id": 12,
+  "timestamp": "20250527_100610",
+  "config_path": "results/sweep_experiments\\homophily_density_sweep_20250527_100302\\run_0012",
+  "sweep_parameters": {
+    "universe_homophily": 0.5,
+    "universe_edge_density": 0.05
+  },
+  "random_parameters": {
+    "homophily_range_width": 0.12605489014223215,
+    "density_range_width": 0.01816197484825428,
+    "degree_heterogeneity": 0.22941368143301621,
+    "edge_noise": 0.10365654563349525
+  },
+  "all_parameters": {
+    "universe_homophily": 0.5,
+    "universe_edge_density": 0.05,
+    "homophily_range_width": 0.12605489014223215,
+    "density_range_width": 0.01816197484825428,
+    "degree_heterogeneity": 0.22941368143301621,
+    "edge_noise": 0.10365654563349525
+  },
+  "method": "dc_sbm",
+  "degree_distribution": "standard",
+  "family_properties": {
+    "n_graphs": 12,
+    "node_counts": [
+      95,
+      95,
+      80,
+      94,
+      95,
+      82,
+      88,
+      94,
+      91,
+      92,
+      80,
+      89
+    ],
+    "edge_counts": [
+      388,
+      850,
+      307,
+      719,
+      750,
+      474,
+      906,
+      482,
+      779,
+      712,
+      148,
+      399
+    ],
+    "community_counts": [
+      4,
+      4,
+      3,
+      4,
+      3,
+      3,
+      4,
+      4,
+      4,
+      4,
+      4,
+      3
+    ],
+    "node_counts_mean": 89.58333333333333,
+    "node_counts_std": 5.619287222494405,
+    "node_counts_min": 80.0,
+    "node_counts_max": 95.0,
+    "edge_counts_mean": 576.1666666666666,
+    "edge_counts_std": 230.1926125853931,
+    "edge_counts_min": 148.0,
+    "edge_counts_max": 906.0,
+    "community_counts_mean": 3.6666666666666665,
+    "community_counts_std": 0.4714045207910317,
+    "community_counts_min": 3.0,
+    "community_counts_max": 4.0
+  },
+  "family_consistency": {
+    "pattern_preservation": {
+      "score": 0.8615216036116761,
+      "individual_correlations": [
+        0.8528028654224415,
+        0.8528028654224415,
+        0.8783100656536799,
+        0.8528028654224415,
+        0.8783100656536799,
+        0.8783100656536799,
+        0.8528028654224415,
+        0.8528028654224415,
+        0.8528028654224415,
+        0.8528028654224415,
+        0.8553989227683015,
+        0.8783100656536799
+      ],
+      "std": 0.011891915394291862,
+      "interpretation": "Excellent pattern preservation - rank ordering strongly maintained",
+      "description": "How well rank ordering of community connections is preserved relative to universe"
+    },
+    "generation_fidelity": {
+      "score": 0.9771649060872675,
+      "individual_scores": [
+        0.9801510175807162,
+        0.9909549044792724,
+        0.9645060504740739,
+        0.9804329350714202,
+        0.9820762965363818,
+        0.9877966448877398,
+        0.9953114195555055,
+        0.991330432901878,
+        0.9907874100398478,
+        0.9718206204783416,
+        0.9143298137661107,
+        0.976481327275921
+      ],
+      "std": 0.02081660273483789,
+      "interpretation": "Excellent generation fidelity - graphs closely match targets",
+      "description": "How well graphs match their scaled probability targets (P_sub)"
+    },
+    "degree_consistency": {
+      "score": -0.02317783998209443,
+      "individual_scores": [
+        0.043239665719972536,
+        0.09408089222070415,
+        -0.12997505017277228,
+        -0.17615042013210602,
+        -0.0896248565342467,
+        0.0746512211714184,
+        -0.06426618599311298,
+        0.07364859703895943,
+        -0.1733014739090548,
+        0.14887508241544808,
+        -0.15965690830090684,
+        0.08034535669056386
+      ],
+      "std": 0.11528927166414779,
+      "interpretation": "Score out of expected range",
+      "description": "How well actual node degrees correlate with universe degree centers"
+    },
+    "overall": {
+      "score": 0.7308390358831586,
+      "interpretation": "Moderate overall consistency - family shows some structural preservation",
+      "description": "Weighted average of all consistency metrics"
+    },
+    "community_coverage": {
+      "total_unique_communities": 5,
+      "universe_communities": 5,
+      "coverage_fraction": 1.0,
+      "community_usage": {
+        "0": 7,
+        "1": 11,
+        "2": 8,
+        "3": 8,
+        "4": 10
+      },
+      "avg_usage_per_community": 8.8,
+      "usage_std": 1.4696938456699067,
+      "min_usage": 7,
+      "max_usage": 11,
+      "communities_in_all_graphs": [],
+      "rarely_used_communities": []
+    }
+  },
+  "community_signals": {
+    "degree_signals": {
+      "mean": 0.3063958404999427,
+      "std": 0.043421733214901906,
+      "min": 0.2450292397660819,
+      "max": 0.4125,
+      "individual_values": [
+        0.3157894736842105,
+        0.2947368421052631,
+        0.2625,
+        0.2450292397660819,
+        0.3157894736842105,
+        0.4125,
+        0.34183006535947713,
+        0.2672514619883041,
+        0.3286549707602339,
+        0.3157894736842105,
+        0.2625,
+        0.31437908496732025
+      ]
+    },
+    "structure_signals": {
+      "mean": 0.5142031088881923,
+      "std": 0.25842967104366404,
+      "min": 0.2330764709494951,
+      "max": 1.171256427050998,
+      "individual_values": [
+        0.44931878301526124,
+        0.4599712841325321,
+        0.4751413614189359,
+        0.4027615918001412,
+        0.2330764709494951,
+        0.3982055205857519,
+        0.6499984171606012,
+        1.171256427050998,
+        0.8882854850395054,
+        0.42603496893341575,
+        0.35867329633846406,
+        0.25771370023320617
+      ]
+    },
+    "feature_signals": {
+      "mean": 0.8640204603069024,
+      "std": 0.08027431387030483,
+      "min": 0.7093795093795093,
+      "max": 0.9665831244778613,
+      "individual_values": [
+        0.8370766488413547,
+        0.8123120300751879,
+        0.8772875816993464,
+        0.7093795093795093,
+        0.8956228956228957,
+        0.903030303030303,
+        0.9606060606060607,
+        0.8258928571428571,
+        0.9252136752136753,
+        0.9266694090223502,
+        0.7285714285714285,
+        0.9665831244778613
+      ]
+    }
+  },
+  "model_results": {
+    "community": {
+      "gcn": {
+        "test_metrics": {
+          "accuracy": 0.94140625,
+          "precision_macro": 0.9611742424242424,
+          "precision_weighted": 0.9490313289141414,
+          "recall_macro": 0.948768974453906,
+          "recall_weighted": 0.94140625,
+          "f1_macro": 0.9517408860995795,
+          "f1_weighted": 0.9412808515724311
+        },
+        "train_time": 1.6031620502471924,
+        "success": true
+      },
+      "sage": {
+        "test_metrics": {
+          "accuracy": 0.98828125,
+          "precision_macro": 0.9914772727272727,
+          "precision_weighted": 0.9886807528409092,
+          "recall_macro": 0.9897723065531284,
+          "recall_weighted": 0.98828125,
+          "f1_macro": 0.9904918373900621,
+          "f1_weighted": 0.9883153176221114
+        },
+        "train_time": 1.0303316116333008,
+        "success": true
+      },
+      "mlp": {
+        "test_metrics": {
+          "accuracy": 0.95703125,
+          "precision_macro": 0.9371163548606076,
+          "precision_weighted": 0.960062758969458,
+          "recall_macro": 0.9653684909728423,
+          "recall_weighted": 0.95703125,
+          "f1_macro": 0.9490141851395009,
+          "f1_weighted": 0.9575354416284462
+        },
+        "train_time": 0.7478790283203125,
+        "success": true
+      },
+      "rf": {
+        "test_metrics": {
+          "accuracy": 0.90625,
+          "precision_macro": 0.9016474621724153,
+          "precision_weighted": 0.906419396312083,
+          "recall_macro": 0.901414917133088,
+          "recall_weighted": 0.90625,
+          "f1_macro": 0.9014460784313726,
+          "f1_weighted": 0.9062369791666666
+        },
+        "train_time": 0.3056180477142334,
+        "success": true
+      }
+    }
+  },
+  "total_time": 12.375551462173462,
+  "n_graphs": 12,
+  "universe_K": 5,
+  "tasks": [
+    "community"
+  ]
+}

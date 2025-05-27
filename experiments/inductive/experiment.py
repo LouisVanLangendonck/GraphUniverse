@@ -1,8 +1,6 @@
 """
-Inductive experiment orchestration for graph families.
-
-This module provides the main experiment class for running inductive learning
-experiments on graph families.
+Clean inductive experiment orchestration.
+Focuses on DC-SBM and DCCC-SBM with improved metrics collection.
 """
 
 import os
@@ -11,40 +9,28 @@ import time
 import logging
 from typing import Dict, List, Optional, Union, Any
 from datetime import datetime
-
-import torch
 import numpy as np
+import torch
 
 from mmsb.model import GraphUniverse
 from mmsb.graph_family import GraphFamilyGenerator, FamilyConsistencyAnalyzer
-from experiments.inductive.config import InductiveExperimentConfig
 from experiments.inductive.data import (
     prepare_inductive_data, 
     create_inductive_dataloaders,
-    analyze_graph_family_properties,
-    prepare_mixed_inductive_data,
-    split_graphs
+    analyze_graph_family_properties
 )
 from experiments.inductive.training import train_and_evaluate_inductive, get_total_classes_from_dataloaders
 from experiments.core.models import GNNModel, MLPModel, SklearnModel
 
-# Set up logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
 class InductiveExperiment:
-    """
-    Main class for running inductive learning experiments on graph families.
-    """
+    """Clean inductive learning experiment runner."""
     
-    def __init__(self, config: InductiveExperimentConfig):
-        """
-        Initialize the inductive experiment.
-        
-        Args:
-            config: Experiment configuration
-        """
+    def __init__(self, config):
+        """Initialize experiment with clean config."""
         self.config = config
         
         # Set up device
@@ -61,16 +47,15 @@ class InductiveExperiment:
         self.output_dir = os.path.join(config.output_dir, f"inductive_{timestamp}")
         os.makedirs(self.output_dir, exist_ok=True)
         
-        # Save config
-        config.save(os.path.join(self.output_dir, "config.json"))
-        
-        # Initialize storage for results
+        # Initialize storage
         self.results = {}
         self.family_graphs = None
-        self.family_stats = None
+        self.family_consistency = None
+        self.graph_signals = None
         
-        print(f"Inductive experiment initialized. Output directory: {self.output_dir}")
-        print(f"Using device: {self.device}")
+        print(f"Experiment initialized. Output: {self.output_dir}")
+        print(f"Device: {self.device}")
+        print(f"Method: {'DCCC-SBM' if config.use_dccc_sbm else 'DC-SBM'}")
     
     def _setup_device(self, device_id: int = 0) -> torch.device:
         """Set up compute device."""
@@ -90,22 +75,16 @@ class InductiveExperiment:
             torch.cuda.manual_seed_all(seed)
     
     def generate_graph_family(self) -> List:
-        """
-        Generate a family of graphs for inductive learning.
-        
-        Returns:
-            List of GraphSample objects
-        """
+        """Generate graph family using clean parameters."""
         print("\n" + "="*60)
         print("GENERATING GRAPH FAMILY")
         print("="*60)
         
-        # Create universe
+        # Create universe with clean parameters
         print("Creating graph universe...")
         universe = GraphUniverse(
             K=self.config.universe_K,
             feature_dim=self.config.universe_feature_dim,
-            block_structure=self.config.universe_block_structure,
             edge_density=self.config.universe_edge_density,
             homophily=self.config.universe_homophily,
             randomness_factor=self.config.universe_randomness_factor,
@@ -118,7 +97,7 @@ class InductiveExperiment:
             seed=self.config.seed
         )
         
-        # Create family generator
+        # Create family generator with clean parameters
         print("Setting up graph family generator...")
         family_generator = GraphFamilyGenerator(
             universe=universe,
@@ -128,29 +107,34 @@ class InductiveExperiment:
             min_communities=self.config.min_communities,
             max_communities=self.config.max_communities,
             min_component_size=self.config.min_component_size,
-            feature_regime_balance=self.config.feature_regime_balance,
             homophily_range=self.config.homophily_range,
             density_range=self.config.density_range,
+            
+            # Method selection
             use_dccc_sbm=self.config.use_dccc_sbm,
+            degree_distribution=self.config.degree_distribution,
+            
+            # DCCC-SBM parameters
             community_imbalance_range=self.config.community_imbalance_range,
             degree_separation_range=self.config.degree_separation_range,
-            degree_method="standard",
-            disable_deviation_limiting=self.config.disable_deviation_limiting,
-            max_mean_community_deviation=self.config.max_mean_community_deviation,
-            max_max_community_deviation=self.config.max_max_community_deviation,
-            min_edge_density=self.config.min_edge_density,
-            degree_distribution=self.config.degree_distribution,
             power_law_exponent_range=self.config.power_law_exponent_range,
             exponential_rate_range=self.config.exponential_rate_range,
             uniform_min_factor_range=self.config.uniform_min_factor_range,
             uniform_max_factor_range=self.config.uniform_max_factor_range,
+            
+            # Fixed parameters
             degree_heterogeneity=self.config.degree_heterogeneity,
             edge_noise=self.config.edge_noise,
-            target_avg_degree=self.config.target_avg_degree,
-            triangle_enhancement=self.config.triangle_enhancement,
+            
+            # Generation constraints
             max_parameter_search_attempts=self.config.max_parameter_search_attempts,
             parameter_search_range=self.config.parameter_search_range,
             max_retries=self.config.max_retries,
+            min_edge_density=self.config.min_edge_density,
+            disable_deviation_limiting=self.config.disable_deviation_limiting,
+            max_mean_community_deviation=self.config.max_mean_community_deviation,
+            max_max_community_deviation=self.config.max_max_community_deviation,
+            
             seed=self.config.seed
         )
         
@@ -166,52 +150,103 @@ class InductiveExperiment:
         print(f"Family generation completed in {generation_time:.2f} seconds")
         print(f"Successfully generated {len(family_graphs)} graphs")
         
-        # Analyze family consistency if required
+        self.family_graphs = family_graphs
+        
+        return family_graphs
+    
+    def analyze_family_consistency(self) -> Dict[str, Any]:
+        """Analyze family consistency using existing methods."""
+        if self.family_graphs is None:
+            raise ValueError("Must generate graph family first")
+        
+        print("\nAnalyzing family consistency...")
+        
+        # Get universe from first graph
+        universe = self.family_graphs[0].universe
+        
+        # Create consistency analyzer
+        consistency_analyzer = FamilyConsistencyAnalyzer(self.family_graphs, universe)
+        consistency_results = consistency_analyzer.analyze_consistency()
+        
+        overall_consistency = consistency_results.get('overall', {}).get('score', 0.0)
+        print(f"Family consistency score: {overall_consistency:.3f}")
+        
         if self.config.require_consistency_check:
-            print("\nAnalyzing family consistency...")
-            consistency_analyzer = FamilyConsistencyAnalyzer(family_graphs, universe)
-            consistency_results = consistency_analyzer.analyze_consistency()
-            
-            overall_consistency = consistency_results.get('overall', {}).get('score', 0.0)
-            print(f"Family consistency score: {overall_consistency:.3f}")
-            
             if overall_consistency < self.config.min_family_consistency:
                 raise ValueError(
                     f"Family consistency {overall_consistency:.3f} below required minimum "
                     f"{self.config.min_family_consistency:.3f}"
                 )
-            
-            # Save consistency results
-            with open(os.path.join(self.output_dir, "family_consistency.json"), 'w') as f:
-                # Convert numpy types to native Python types for JSON serialization
-                serializable_results = self._make_json_serializable(consistency_results)
-                json.dump(serializable_results, f, indent=2)
         
-        # Analyze family properties
-        if self.config.collect_family_stats:
-            print("\nAnalyzing family properties...")
-            family_properties = analyze_graph_family_properties(family_graphs)
-            
-            with open(os.path.join(self.output_dir, "family_properties.json"), 'w') as f:
-                json.dump(family_properties, f, indent=2)
-            
-            print(f"Family statistics:")
-            print(f"  Node count range: [{family_properties['node_counts_min']}, {family_properties['node_counts_max']}]")
-            print(f"  Average degree range: [{family_properties['avg_degrees_min']:.2f}, {family_properties['avg_degrees_max']:.2f}]")
-            print(f"  Density range: [{family_properties['densities_min']:.4f}, {family_properties['densities_max']:.4f}]")
+        self.family_consistency = self._make_json_serializable(consistency_results)
+        return self.family_consistency
+    
+    def calculate_graph_signals(self) -> Dict[str, Any]:
+        """Calculate community signals for each graph in the family."""
+        if self.family_graphs is None:
+            raise ValueError("Must generate graph family first")
         
-        self.family_graphs = family_graphs
-        self.family_stats = family_generator.generation_stats
+        if not self.config.collect_signal_metrics:
+            return {}
         
-        return family_graphs
+        print("\nCalculating community signals for each graph...")
+        
+        all_signals = {
+            'degree_signals': [],
+            'structure_signals': [],
+            'feature_signals': []
+        }
+        
+        for i, graph in enumerate(self.family_graphs):
+            try:
+                # Calculate community signals using existing methods
+                signals = graph.calculate_community_signals(
+                    structure_metric='kl',
+                    degree_method='naive_bayes',
+                    degree_metric='accuracy',
+                    random_state=self.config.seed + i
+                )
+                
+                # Store individual signals
+                all_signals['degree_signals'].append(signals.get('degree_signal', 0.0))
+                all_signals['structure_signals'].append(signals.get('mean_structure_signal', 0.0))
+                
+                # Feature signal (may be None)
+                feature_signal = signals.get('feature_signal')
+                if feature_signal is not None:
+                    all_signals['feature_signals'].append(feature_signal)
+                
+            except Exception as e:
+                print(f"Warning: Failed to calculate signals for graph {i}: {e}")
+                all_signals['degree_signals'].append(0.0)
+                all_signals['structure_signals'].append(0.0)
+        
+        # Calculate aggregated statistics
+        aggregated_signals = {}
+        
+        for signal_type, values in all_signals.items():
+            if values:  # Only if we have values
+                aggregated_signals[signal_type] = {
+                    'mean': float(np.mean(values)),
+                    'std': float(np.std(values)),
+                    'min': float(np.min(values)),
+                    'max': float(np.max(values)),
+                    'individual_values': [float(v) for v in values]
+                }
+            else:
+                aggregated_signals[signal_type] = {
+                    'mean': 0.0,
+                    'std': 0.0,
+                    'min': 0.0,
+                    'max': 0.0,
+                    'individual_values': []
+                }
+        
+        self.graph_signals = aggregated_signals
+        return aggregated_signals
     
     def prepare_data(self) -> Dict[str, Dict[str, Any]]:
-        """
-        Prepare data for inductive learning.
-        
-        Returns:
-            Dictionary containing prepared data for all tasks
-        """
+        """Prepare data for inductive learning."""
         print("\n" + "="*60)
         print("PREPARING INDUCTIVE DATA")
         print("="*60)
@@ -219,21 +254,14 @@ class InductiveExperiment:
         if self.family_graphs is None:
             raise ValueError("Must generate graph family before preparing data")
         
-        # Choose data preparation method based on inductive mode
-        if self.config.inductive_mode == "graph_level":
-            print("Using graph-level inductive split...")
-            inductive_data = prepare_inductive_data(self.family_graphs, self.config)
-        elif self.config.inductive_mode == "mixed":
-            print("Using mixed inductive split...")
-            inductive_data = prepare_mixed_inductive_data(self.family_graphs, self.config)
-        else:
-            raise ValueError(f"Unknown inductive mode: {self.config.inductive_mode}")
+        # Prepare inductive data
+        inductive_data = prepare_inductive_data(self.family_graphs, self.config)
         
         # Create dataloaders
         print("Creating dataloaders...")
         dataloaders = create_inductive_dataloaders(inductive_data, self.config)
         
-        # Print data split information
+        # Print split information
         for task in self.config.tasks:
             print(f"\nTask: {task}")
             for split in ['train', 'val', 'test']:
@@ -245,12 +273,7 @@ class InductiveExperiment:
         return dataloaders
     
     def run_experiments(self) -> Dict[str, Any]:
-        """
-        Run inductive learning experiments for all tasks and models.
-        
-        Returns:
-            Dictionary containing all experiment results
-        """
+        """Run inductive learning experiments."""
         print("\n" + "="*60)
         print("RUNNING INDUCTIVE EXPERIMENTS")
         print("="*60)
@@ -260,7 +283,6 @@ class InductiveExperiment:
         
         all_results = {}
         
-        # Run experiments for each task
         for task in self.config.tasks:
             print(f"\n{'='*40}")
             print(f"TASK: {task.upper()}")
@@ -270,11 +292,10 @@ class InductiveExperiment:
             task_dataloaders = self.dataloaders[task]
             is_regression = self.config.is_regression.get(task, False)
             
-            # Get dimensions for model creation
+            # Get dimensions
             sample_batch = next(iter(task_dataloaders['train']))
             input_dim = sample_batch.x.shape[1]
             
-            # CRITICAL FIX: Determine number of classes from ALL data
             if not is_regression:
                 output_dim = get_total_classes_from_dataloaders(task_dataloaders)
             else:
@@ -285,7 +306,7 @@ class InductiveExperiment:
             print(f"  Output dim: {output_dim}")
             print(f"  Is regression: {is_regression}")
             
-            # Determine which models to run
+            # Determine models to run
             models_to_run = []
             if self.config.run_gnn:
                 models_to_run.extend(self.config.gnn_types)
@@ -299,12 +320,12 @@ class InductiveExperiment:
                 print(f"\n--- Training {model_name.upper()} ---")
                 
                 try:
-                    # Create model with CORRECT number of classes
+                    # Create model
                     if model_name in self.config.gnn_types:
                         model = GNNModel(
                             input_dim=input_dim,
                             hidden_dim=self.config.hidden_dim,
-                            output_dim=output_dim,  # Use correct output_dim here!
+                            output_dim=output_dim,
                             num_layers=self.config.num_layers,
                             dropout=self.config.dropout,
                             gnn_type=model_name,
@@ -314,7 +335,7 @@ class InductiveExperiment:
                         model = MLPModel(
                             input_dim=input_dim,
                             hidden_dim=self.config.hidden_dim,
-                            output_dim=output_dim,  # Use correct output_dim here!
+                            output_dim=output_dim,
                             num_layers=self.config.num_layers,
                             dropout=self.config.dropout,
                             is_regression=is_regression
@@ -322,7 +343,7 @@ class InductiveExperiment:
                     elif model_name == 'rf':
                         model = SklearnModel(
                             input_dim=input_dim,
-                            output_dim=output_dim,  # Use correct output_dim here!
+                            output_dim=output_dim,
                             is_regression=is_regression
                         )
                     
@@ -355,15 +376,67 @@ class InductiveExperiment:
         return all_results
     
     def save_results(self) -> None:
-        """Save all experiment results."""
+        """Save results in clean format with two JSON files."""
         print("\n" + "="*60)
         print("SAVING RESULTS")
         print("="*60)
         
-        # Save main results
-        results_file = os.path.join(self.output_dir, "inductive_results.json")
+        # 1. Save clean configuration
+        config_file = os.path.join(self.output_dir, "config.json")
+        self.config.save(config_file)
+        print(f"Configuration saved: {config_file}")
         
-        # Create a clean results dictionary with only serializable data
+        # 2. Create comprehensive results JSON
+        comprehensive_results = {
+            # Experiment metadata
+            'experiment_info': {
+                'timestamp': datetime.now().strftime("%Y%m%d_%H%M%S"),
+                'method': 'dccc_sbm' if self.config.use_dccc_sbm else 'dc_sbm',
+                'degree_distribution': self.config.degree_distribution if self.config.use_dccc_sbm else 'standard',
+                'n_graphs': self.config.n_graphs,
+                'universe_K': self.config.universe_K
+            },
+            
+            # Graph family properties
+            'family_properties': self._get_family_properties(),
+            
+            # Family consistency metrics (NEW)
+            'family_consistency': self.family_consistency or {},
+            
+            # Community signal metrics (NEW)
+            'community_signals': self.graph_signals or {},
+            
+            # Model results
+            'model_results': self._clean_model_results(),
+            
+            # Generation statistics
+            'generation_stats': self._get_generation_stats()
+        }
+        
+        # Save comprehensive results
+        results_file = os.path.join(self.output_dir, "results.json")
+        with open(results_file, 'w') as f:
+            json.dump(self._make_json_serializable(comprehensive_results), f, indent=2)
+        
+        print(f"Comprehensive results saved: {results_file}")
+    
+    def _get_family_properties(self) -> Dict[str, Any]:
+        """Get family properties using existing analysis."""
+        if self.family_graphs is None:
+            return {}
+        
+        try:
+            properties = analyze_graph_family_properties(self.family_graphs)
+            return self._make_json_serializable(properties)
+        except Exception as e:
+            print(f"Warning: Failed to analyze family properties: {e}")
+            return {}
+    
+    def _clean_model_results(self) -> Dict[str, Any]:
+        """Clean and organize model results."""
+        if not self.results:
+            return {}
+        
         clean_results = {}
         for task, task_results in self.results.items():
             clean_results[task] = {}
@@ -372,6 +445,7 @@ class InductiveExperiment:
                     'test_metrics': model_results.get('test_metrics', {}),
                     'train_time': model_results.get('train_time', 0.0),
                     'best_epoch': model_results.get('best_epoch', 0),
+                    'error': model_results.get('error'),
                     'training_history': {
                         'train_loss': [float(x) for x in model_results.get('training_history', {}).get('train_loss', [])],
                         'val_loss': [float(x) for x in model_results.get('training_history', {}).get('val_loss', [])],
@@ -380,49 +454,46 @@ class InductiveExperiment:
                     }
                 }
         
-        # Save clean results
-        with open(results_file, 'w') as f:
-            json.dump(clean_results, f, indent=2)
+        return clean_results
+    
+    def _get_generation_stats(self) -> Dict[str, Any]:
+        """Get generation statistics."""
+        if not hasattr(self, 'family_graphs') or not self.family_graphs:
+            return {}
         
-        print(f"Results saved to: {results_file}")
-        
-        # Save individual graphs if requested
-        if self.config.save_individual_graphs and self.family_graphs:
-            import pickle
-            graphs_dir = os.path.join(self.output_dir, "graphs")
-            os.makedirs(graphs_dir, exist_ok=True)
+        # Get stats from family generator if available
+        first_graph = self.family_graphs[0]
+        if hasattr(first_graph, 'timing_info'):
+            # Aggregate timing info
+            timing_stats = {}
+            for graph in self.family_graphs:
+                if hasattr(graph, 'timing_info'):
+                    for key, value in graph.timing_info.items():
+                        if key not in timing_stats:
+                            timing_stats[key] = []
+                        timing_stats[key].append(value)
             
-            for i, graph in enumerate(self.family_graphs):
-                graph_file = os.path.join(graphs_dir, f"graph_{i:03d}.pkl")
-                with open(graph_file, 'wb') as f:
-                    pickle.dump(graph, f)
+            # Calculate statistics
+            aggregated_timing = {}
+            for key, values in timing_stats.items():
+                aggregated_timing[key] = {
+                    'mean': float(np.mean(values)),
+                    'std': float(np.std(values)),
+                    'min': float(np.min(values)),
+                    'max': float(np.max(values))
+                }
             
-            print(f"Individual graphs saved to: {graphs_dir}")
+            return {'timing_statistics': aggregated_timing}
         
-        # Save family statistics
-        if self.family_stats:
-            stats_file = os.path.join(self.output_dir, "family_generation_stats.json")
-            # Convert numpy types to native Python types
-            clean_stats = self._make_json_serializable(self.family_stats)
-            with open(stats_file, 'w') as f:
-                json.dump(clean_stats, f, indent=2)
-            
-            print(f"Family statistics saved to: {stats_file}")
-        
-        # Save configuration
-        config_file = os.path.join(self.output_dir, "config.json")
-        config_dict = self.config.to_dict()
-        with open(config_file, 'w') as f:
-            json.dump(config_dict, f, indent=2)
-        
-        print(f"Configuration saved to: {config_file}")
+        return {}
     
     def _make_json_serializable(self, obj: Any) -> Any:
         """Convert objects to JSON-serializable format."""
         if isinstance(obj, dict):
-            # Convert dictionary keys to strings if they're not already
             return {str(k): self._make_json_serializable(v) for k, v in obj.items()}
         elif isinstance(obj, list):
+            return [self._make_json_serializable(item) for item in obj]
+        elif isinstance(obj, tuple):
             return [self._make_json_serializable(item) for item in obj]
         elif isinstance(obj, set):
             return [self._make_json_serializable(item) for item in obj]
@@ -431,120 +502,29 @@ class InductiveExperiment:
         elif isinstance(obj, np.ndarray):
             return obj.tolist()
         elif hasattr(obj, '__dict__'):
-            # For objects with __dict__, try to serialize their attributes
             try:
                 return self._make_json_serializable(obj.__dict__)
             except:
                 return str(obj)
-        elif hasattr(obj, 'items'):  # Handle mappingproxy and similar mapping objects
-            return {str(k): self._make_json_serializable(v) for k, v in obj.items()}
-        elif isinstance(obj, type) or hasattr(obj, '__origin__'):  # Handle type hints and generic types
-            return str(obj)
         elif callable(obj):
             return str(obj)
         else:
             return obj
     
-    def generate_summary_report(self) -> str:
-        """
-        Generate a comprehensive summary report of the inductive experiment.
-        
-        Returns:
-            Formatted string report
-        """
-        if not self.results:
-            return "No results available. Run experiments first."
-        
-        report_lines = []
-        report_lines.append("INDUCTIVE LEARNING EXPERIMENT SUMMARY")
-        report_lines.append("=" * 60)
-        report_lines.append("")
-        
-        # Experiment configuration summary
-        report_lines.append("CONFIGURATION:")
-        report_lines.append(f"  Graph family size: {self.config.n_graphs}")
-        report_lines.append(f"  Node range: [{self.config.min_n_nodes}, {self.config.max_n_nodes}]")
-        report_lines.append(f"  Community range: [{self.config.min_communities}, {self.config.max_communities}]")
-        report_lines.append(f"  Inductive mode: {self.config.inductive_mode}")
-        n_train, n_val, n_test = self.config.get_graph_splits()
-        report_lines.append(f"  Graph splits: {n_train} train, {n_val} val, {n_test} test")
-        report_lines.append(f"  Tasks: {', '.join(self.config.tasks)}")
-        report_lines.append("")
-        
-        # Family statistics
-        if self.family_stats:
-            report_lines.append("FAMILY GENERATION:")
-            report_lines.append(f"  Success rate: {self.family_stats.get('success_rate', 0):.1%}")
-            report_lines.append(f"  Total time: {self.family_stats.get('total_time', 0):.1f}s")
-            report_lines.append(f"  Avg time per graph: {self.family_stats.get('avg_time_per_graph', 0):.2f}s")
-            report_lines.append("")
-        
-        # Results summary for each task
-        for task, task_results in self.results.items():
-            report_lines.append(f"TASK: {task.upper()}")
-            report_lines.append("-" * 40)
-            
-            is_regression = self.config.is_regression.get(task, False)
-            primary_metric = 'r2' if is_regression else 'f1_macro'
-            
-            model_performances = []
-            
-            for model_name, model_results in task_results.items():
-                if 'test_metrics' in model_results:
-                    test_metrics = model_results['test_metrics']
-                    primary_score = test_metrics.get(primary_metric, 0.0)
-                    train_time = model_results.get('train_time', 0.0)
-                    
-                    model_performances.append({
-                        'model': model_name.upper(),
-                        'score': primary_score,
-                        'train_time': train_time
-                    })
-                    
-                    report_lines.append(f"  {model_name.upper()}:")
-                    report_lines.append(f"    {primary_metric.upper()}: {primary_score:.4f}")
-                    report_lines.append(f"    Training time: {train_time:.2f}s")
-                    
-                    if is_regression:
-                        report_lines.append(f"    MSE: {test_metrics.get('mse', 0.0):.4f}")
-                        report_lines.append(f"    RMSE: {test_metrics.get('rmse', 0.0):.4f}")
-                    else:
-                        report_lines.append(f"    Accuracy: {test_metrics.get('accuracy', 0.0):.4f}")
-                    
-                    report_lines.append("")
-            
-            # Best model summary
-            if model_performances:
-                best_model = max(model_performances, key=lambda x: x['score'])
-                report_lines.append(f"  BEST MODEL: {best_model['model']} ({primary_metric.upper()}: {best_model['score']:.4f})")
-                report_lines.append("")
-        
-        # Overall summary
-        report_lines.append("OVERALL SUMMARY:")
-        total_models = sum(len(task_results) for task_results in self.results.values())
-        successful_models = sum(
-            sum(1 for model_results in task_results.values() if 'test_metrics' in model_results)
-            for task_results in self.results.values()
-        )
-        report_lines.append(f"  Total models trained: {total_models}")
-        report_lines.append(f"  Successful models: {successful_models}")
-        report_lines.append(f"  Success rate: {successful_models/total_models:.1%}" if total_models > 0 else "  Success rate: 0%")
-        
-        return "\n".join(report_lines)
-    
     def run(self) -> Dict[str, Any]:
-        """
-        Run the complete inductive experiment pipeline.
-        
-        Returns:
-            Dictionary containing all results
-        """
+        """Run complete experiment pipeline."""
         try:
             print("Starting inductive learning experiment...")
             experiment_start = time.time()
             
             # Generate graph family
             family_graphs = self.generate_graph_family()
+            
+            # Analyze family consistency (NEW)
+            family_consistency = self.analyze_family_consistency()
+            
+            # Calculate community signals (NEW)
+            graph_signals = self.calculate_graph_signals()
             
             # Prepare data
             dataloaders = self.prepare_data()
@@ -555,10 +535,10 @@ class InductiveExperiment:
             # Save results
             self.save_results()
             
-            # Generate and save summary report
+            # Generate summary report
             summary_report = self.generate_summary_report()
             
-            with open(os.path.join(self.output_dir, "summary_report.txt"), 'w') as f:
+            with open(os.path.join(self.output_dir, "summary.txt"), 'w') as f:
                 f.write(summary_report)
             
             print("\n" + summary_report)
@@ -568,6 +548,8 @@ class InductiveExperiment:
             
             return {
                 'family_graphs': family_graphs,
+                'family_consistency': family_consistency,
+                'graph_signals': graph_signals,
                 'results': results,
                 'dataloaders': dataloaders,
                 'config': self.config,
@@ -585,22 +567,114 @@ class InductiveExperiment:
                 'config': self.config.to_dict()
             }
             
-            error_file = os.path.join(self.output_dir, "error_info.json")
+            error_file = os.path.join(self.output_dir, "error.json")
             with open(error_file, 'w') as f:
                 json.dump(error_info, f, indent=2)
             
             raise
-
-
-def run_inductive_experiment(config: InductiveExperimentConfig) -> Dict[str, Any]:
-    """
-    Convenience function to run an inductive experiment with configuration.
     
-    Args:
-        config: Inductive experiment configuration
+    def generate_summary_report(self) -> str:
+        """Generate comprehensive summary report."""
+        if not self.results:
+            return "No results available."
         
-    Returns:
-        Experiment results
-    """
+        lines = []
+        lines.append("INDUCTIVE LEARNING EXPERIMENT SUMMARY")
+        lines.append("=" * 60)
+        lines.append("")
+        
+        # Configuration summary
+        lines.append("CONFIGURATION:")
+        lines.append(f"  Method: {'DCCC-SBM' if self.config.use_dccc_sbm else 'DC-SBM'}")
+        if self.config.use_dccc_sbm:
+            lines.append(f"  Degree distribution: {self.config.degree_distribution}")
+        lines.append(f"  Graph family size: {self.config.n_graphs}")
+        lines.append(f"  Node range: [{self.config.min_n_nodes}, {self.config.max_n_nodes}]")
+        lines.append(f"  Community range: [{self.config.min_communities}, {self.config.max_communities}]")
+        lines.append(f"  Tasks: {', '.join(self.config.tasks)}")
+        lines.append("")
+        
+        # Family consistency summary (NEW)
+        if self.family_consistency:
+            overall_score = self.family_consistency.get('overall', {}).get('score', 0.0)
+            lines.append("FAMILY CONSISTENCY:")
+            lines.append(f"  Overall score: {overall_score:.3f}")
+            
+            pattern_score = self.family_consistency.get('pattern_preservation', {}).get('score', 0.0)
+            fidelity_score = self.family_consistency.get('generation_fidelity', {}).get('score', 0.0)
+            degree_score = self.family_consistency.get('degree_consistency', {}).get('score', 0.0)
+            
+            lines.append(f"  Pattern preservation: {pattern_score:.3f}")
+            lines.append(f"  Generation fidelity: {fidelity_score:.3f}")
+            lines.append(f"  Degree consistency: {degree_score:.3f}")
+            lines.append("")
+        
+        # Community signals summary (NEW)
+        if self.graph_signals:
+            lines.append("COMMUNITY SIGNALS (averaged over graphs):")
+            
+            degree_mean = self.graph_signals.get('degree_signals', {}).get('mean', 0.0)
+            degree_std = self.graph_signals.get('degree_signals', {}).get('std', 0.0)
+            lines.append(f"  Degree signal: {degree_mean:.3f} ± {degree_std:.3f}")
+            
+            structure_mean = self.graph_signals.get('structure_signals', {}).get('mean', 0.0)
+            structure_std = self.graph_signals.get('structure_signals', {}).get('std', 0.0)
+            lines.append(f"  Structure signal: {structure_mean:.3f} ± {structure_std:.3f}")
+            
+            if 'feature_signals' in self.graph_signals and self.graph_signals['feature_signals']['individual_values']:
+                feature_mean = self.graph_signals.get('feature_signals', {}).get('mean', 0.0)
+                feature_std = self.graph_signals.get('feature_signals', {}).get('std', 0.0)
+                lines.append(f"  Feature signal: {feature_mean:.3f} ± {feature_std:.3f}")
+            lines.append("")
+        
+        # Results summary
+        for task, task_results in self.results.items():
+            lines.append(f"TASK: {task.upper()}")
+            lines.append("-" * 40)
+            
+            is_regression = self.config.is_regression.get(task, False)
+            primary_metric = 'r2' if is_regression else 'f1_macro'
+            
+            best_score = 0.0
+            best_model = None
+            
+            for model_name, model_results in task_results.items():
+                if 'test_metrics' in model_results and model_results['test_metrics']:
+                    test_metrics = model_results['test_metrics']
+                    score = test_metrics.get(primary_metric, 0.0)
+                    train_time = model_results.get('train_time', 0.0)
+                    
+                    lines.append(f"  {model_name.upper()}:")
+                    lines.append(f"    {primary_metric.upper()}: {score:.4f}")
+                    lines.append(f"    Training time: {train_time:.2f}s")
+                    
+                    if score > best_score:
+                        best_score = score
+                        best_model = model_name.upper()
+                else:
+                    lines.append(f"  {model_name.upper()}: Failed")
+            
+            if best_model:
+                lines.append(f"  BEST: {best_model} ({primary_metric.upper()}: {best_score:.4f})")
+            lines.append("")
+        
+        # Overall summary
+        total_models = sum(len(task_results) for task_results in self.results.values())
+        successful_models = sum(
+            sum(1 for model_results in task_results.values() 
+                if 'test_metrics' in model_results and model_results['test_metrics'])
+            for task_results in self.results.values()
+        )
+        
+        lines.append("OVERALL:")
+        lines.append(f"  Models trained: {total_models}")
+        lines.append(f"  Successful: {successful_models}")
+        lines.append(f"  Success rate: {successful_models/total_models:.1%}" if total_models > 0 else "  Success rate: 0%")
+        
+        return "\n".join(lines)
+
+
+def run_inductive_experiment(config) -> Dict[str, Any]:
+    """Convenience function to run an inductive experiment."""
     experiment = InductiveExperiment(config)
     return experiment.run()

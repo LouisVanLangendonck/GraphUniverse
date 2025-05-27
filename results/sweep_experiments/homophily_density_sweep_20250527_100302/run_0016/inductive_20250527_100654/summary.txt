@@ -1,0 +1,41 @@
+INDUCTIVE LEARNING EXPERIMENT SUMMARY
+============================================================
+
+CONFIGURATION:
+  Method: DC-SBM
+  Graph family size: 12
+  Node range: [80, 100]
+  Community range: [3, 5]
+  Tasks: community
+
+FAMILY CONSISTENCY:
+  Overall score: 0.717
+  Pattern preservation: 0.853
+  Generation fidelity: 0.986
+  Degree consistency: -0.091
+
+COMMUNITY SIGNALS (averaged over graphs):
+  Degree signal: 0.368 ± 0.071
+  Structure signal: 0.629 ± 0.253
+  Feature signal: 0.843 ± 0.108
+
+TASK: COMMUNITY
+----------------------------------------
+  GCN:
+    F1_MACRO: 0.8915
+    Training time: 4.00s
+  SAGE:
+    F1_MACRO: 0.9641
+    Training time: 2.20s
+  MLP:
+    F1_MACRO: 0.9210
+    Training time: 3.90s
+  RF:
+    F1_MACRO: 0.7250
+    Training time: 0.66s
+  BEST: SAGE (F1_MACRO: 0.9641)
+
+OVERALL:
+  Models trained: 4
+  Successful: 4
+  Success rate: 100.0%

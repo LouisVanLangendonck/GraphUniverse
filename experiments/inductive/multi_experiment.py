@@ -1,8 +1,6 @@
 """
-Multi-experiment runner for inductive learning with parameter sweeps and random sampling.
-
-This module orchestrates multiple inductive experiments with systematic parameter
-variations and random sampling from specified ranges.
+Clean multi-experiment runner for parameter sweeps and random sampling.
+Removes old parameters and focuses on DC-SBM and DCCC-SBM methods only.
 """
 
 import os
@@ -16,28 +14,19 @@ from tqdm import tqdm
 import numpy as np
 import pandas as pd
 
-from experiments.inductive.multi_config import MultiInductiveExperimentConfig
-from experiments.inductive.experiment import run_inductive_experiment
+from experiments.inductive.multi_config import CleanMultiExperimentConfig
+from experiments.run_inductive_experiments import run_inductive_experiment
 from experiments.inductive.config import InductiveExperimentConfig
-from experiments.inductive.training import get_total_classes_from_dataloaders
 
-# Set up logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-class MultiInductiveExperimentRunner:
-    """
-    Runner for multiple inductive experiments with parameter sweeps and random sampling.
-    """
+class CleanMultiExperimentRunner:
+    """Runner for multiple clean inductive experiments with parameter sweeps."""
     
-    def __init__(self, config: MultiInductiveExperimentConfig):
-        """
-        Initialize multi-experiment runner.
-        
-        Args:
-            config: Multi-experiment configuration
-        """
+    def __init__(self, config: CleanMultiExperimentConfig):
+        """Initialize multi-experiment runner."""
         self.config = config
         
         # Create output directory
@@ -52,7 +41,6 @@ class MultiInductiveExperimentRunner:
         # Initialize result storage
         self.all_results = []
         self.failed_runs = []
-        self.run_metadata = []
         
         print(f"Multi-experiment runner initialized")
         print(f"Output directory: {self.output_dir}")
@@ -61,7 +49,7 @@ class MultiInductiveExperimentRunner:
     def run_all_experiments(self) -> Dict[str, Any]:
         """Run all configured experiments."""
         print(f"\n{'='*80}")
-        print(f"STARTING MULTI-INDUCTIVE EXPERIMENT SUITE")
+        print(f"STARTING CLEAN MULTI-EXPERIMENT SUITE")
         print(f"{'='*80}")
         
         start_time = time.time()
@@ -76,9 +64,7 @@ class MultiInductiveExperimentRunner:
         print(f"Total runs: {total_runs}")
         
         run_id = 0
-        
-        # Set up fresh random state for each run
-        base_seed = 42  # or get from config
+        base_seed = 42
         
         # Progress tracking
         with tqdm(total=total_runs, desc="Running experiments") as pbar:
@@ -101,13 +87,14 @@ class MultiInductiveExperimentRunner:
                         random_params = self.config.sample_random_parameters()
                         print(f"Random parameters: {random_params}")
                         
-                        # Process tuple parameters here directly
-                        processed_random = self._process_tuple_parameters(random_params)
+                        # Process special parameters
+                        processed_sweep = self._process_special_parameters(sweep_params)
+                        processed_random = self._process_special_parameters(random_params)
                         
                         # Create run configuration
                         run_config = self.config.create_run_config(
-                            sweep_params=sweep_params,
-                            random_params=processed_random,  # Use processed params
+                            sweep_params=processed_sweep,
+                            random_params=processed_random,
                             run_id=run_id
                         )
                         
@@ -123,8 +110,8 @@ class MultiInductiveExperimentRunner:
                         result = self._run_single_experiment(
                             config=run_config,
                             run_id=run_id,
-                            sweep_params=sweep_params,
-                            random_params=random_params,  # Store original params for tracking
+                            sweep_params=processed_sweep,
+                            random_params=processed_random,
                             run_subdir=run_subdir
                         )
                         
@@ -172,33 +159,34 @@ class MultiInductiveExperimentRunner:
         
         return final_results
     
+    def _process_special_parameters(self, params: Dict[str, float]) -> Dict[str, Any]:
+        """Process special parameters that need conversion."""
+        processed = params.copy()
+        
+        # Convert degree_distribution index to string
+        if 'degree_distribution' in processed:
+            dist_map = {0: 'standard', 1: 'power_law', 2: 'exponential', 3: 'uniform'}
+            idx = int(processed['degree_distribution'])
+            processed['degree_distribution'] = dist_map.get(idx, 'power_law')
+        
+        # Convert use_dccc_sbm index to boolean
+        if 'use_dccc_sbm' in processed:
+            processed['use_dccc_sbm'] = bool(int(processed['use_dccc_sbm']))
+        
+        return processed
+    
     def _run_single_experiment(
         self,
         config: InductiveExperimentConfig,
         run_id: int,
-        sweep_params: Dict[str, float],
-        random_params: Dict[str, float],
-        run_subdir: Optional[str] = None
+        sweep_params: Dict[str, Any],
+        random_params: Dict[str, Any],
+        run_subdir: str
     ) -> Optional[Dict[str, Any]]:
-        """
-        Run a single inductive experiment.
-        
-        Args:
-            config: Configuration for this run
-            run_id: Unique run identifier
-            sweep_params: Systematic parameter values
-            random_params: Random parameter values
-            run_subdir: Directory to save run files
-            
-        Returns:
-            Experiment results or None if failed
-        """
+        """Run a single inductive experiment."""
         try:
             # Run the experiment
             experiment_results = run_inductive_experiment(config)
-            
-            # Extract key metrics from results
-            result_summary = self._extract_result_summary(experiment_results)
             
             # Compile complete result record
             complete_result = {
@@ -212,34 +200,34 @@ class MultiInductiveExperimentRunner:
                 'random_parameters': random_params,
                 'all_parameters': {**sweep_params, **random_params},
                 
-                # Graph family metrics (if available)
-                'family_stats': self._extract_family_stats(experiment_results),
+                # Method info
+                'method': 'dccc_sbm' if config.use_dccc_sbm else 'dc_sbm',
+                'degree_distribution': config.degree_distribution if config.use_dccc_sbm else 'standard',
+                
+                # Graph family metrics
+                'family_properties': self._extract_family_properties(experiment_results),
+                
+                # Family consistency metrics (NEW)
+                'family_consistency': experiment_results.get('family_consistency', {}),
+                
+                # Community signal metrics (NEW)
+                'community_signals': experiment_results.get('graph_signals', {}),
                 
                 # Model results
-                'model_results': result_summary,
+                'model_results': self._extract_model_results(experiment_results),
                 
                 # Experiment metadata
                 'total_time': experiment_results.get('total_time', 0),
                 'n_graphs': config.n_graphs,
                 'universe_K': config.universe_K,
-                'tasks': config.tasks,
-                'models_run': self._get_models_run(config)
+                'tasks': config.tasks
             }
             
             # Save individual result if configured
             if self.config.save_individual_results:
-                if run_subdir is None:
-                    run_subdir = self.output_dir
-                result_path = os.path.join(run_subdir, f"result.json")
+                result_path = os.path.join(run_subdir, "result.json")
                 with open(result_path, 'w') as f:
                     json.dump(self._make_json_serializable(complete_result), f, indent=2)
-            
-            # Save individual config if configured
-            if self.config.save_individual_configs:
-                if run_subdir is None:
-                    run_subdir = self.output_dir
-                config_path = os.path.join(run_subdir, f"config.json")
-                config.save(config_path)
             
             return complete_result
             
@@ -247,96 +235,52 @@ class MultiInductiveExperimentRunner:
             logger.error(f"Error in run {run_id}: {str(e)}", exc_info=True)
             return None
     
-    def _extract_result_summary(self, experiment_results: Dict[str, Any]) -> Dict[str, Any]:
-        """Extract key metrics from experiment results."""
-        if 'results' not in experiment_results:
-            return {}
-        
-        summary = {}
-        
-        for task, task_results in experiment_results['results'].items():
-            task_summary = {}
-            
-            for model, model_results in task_results.items():
-                if 'test_metrics' in model_results:
-                    test_metrics = model_results['test_metrics']
-                    
-                    # Extract key metrics based on task type
-                    if 'accuracy' in test_metrics:
-                        # Classification metrics
-                        task_summary[f"{model}_accuracy"] = test_metrics['accuracy']
-                        task_summary[f"{model}_f1_macro"] = test_metrics.get('f1_macro', 0.0)
-                    else:
-                        # Regression metrics
-                        task_summary[f"{model}_mse"] = test_metrics.get('mse', float('inf'))
-                        task_summary[f"{model}_r2"] = test_metrics.get('r2', 0.0)
-                    
-                    # Training time
-                    task_summary[f"{model}_train_time"] = model_results.get('train_time', 0.0)
-            
-            summary[task] = task_summary
-        
-        return summary
-    
-    def _extract_family_stats(self, experiment_results: Dict[str, Any]) -> Dict[str, Any]:
-        """Extract graph family statistics."""
+    def _extract_family_properties(self, experiment_results: Dict[str, Any]) -> Dict[str, Any]:
+        """Extract family properties from experiment results."""
         if 'family_graphs' not in experiment_results:
             return {}
         
         family_graphs = experiment_results['family_graphs']
-        
         if not family_graphs:
             return {}
         
-        # Calculate family statistics
-        stats = {
+        # Calculate basic statistics
+        properties = {
             'n_graphs': len(family_graphs),
-            'node_counts': [],
-            'edge_counts': [],
-            'densities': [],
-            'avg_degrees': [],
-            'community_counts': []
+            'node_counts': [g.n_nodes for g in family_graphs],
+            'edge_counts': [g.graph.number_of_edges() for g in family_graphs],
+            'community_counts': [len(np.unique(g.community_labels)) for g in family_graphs]
         }
         
-        for graph in family_graphs:
-            stats['node_counts'].append(graph.n_nodes)
-            stats['edge_counts'].append(graph.graph.number_of_edges())
-            
-            if graph.n_nodes > 1:
-                density = graph.graph.number_of_edges() / (graph.n_nodes * (graph.n_nodes - 1) / 2)
-                stats['densities'].append(density)
-            else:
-                stats['densities'].append(0.0)
-            
-            if graph.n_nodes > 0:
-                avg_degree = sum(dict(graph.graph.degree()).values()) / graph.n_nodes
-                stats['avg_degrees'].append(avg_degree)
-            else:
-                stats['avg_degrees'].append(0.0)
-            
-            stats['community_counts'].append(len(np.unique(graph.community_labels)))
-        
         # Calculate summary statistics
-        for key in ['node_counts', 'edge_counts', 'densities', 'avg_degrees', 'community_counts']:
-            values = stats[key]
+        for key in ['node_counts', 'edge_counts', 'community_counts']:
+            values = properties[key]
             if values:
-                stats[f'{key}_mean'] = np.mean(values)
-                stats[f'{key}_std'] = np.std(values)
-                stats[f'{key}_min'] = np.min(values)
-                stats[f'{key}_max'] = np.max(values)
+                properties[f'{key}_mean'] = float(np.mean(values))
+                properties[f'{key}_std'] = float(np.std(values))
+                properties[f'{key}_min'] = float(np.min(values))
+                properties[f'{key}_max'] = float(np.max(values))
         
-        return stats
+        return properties
     
-    def _get_models_run(self, config: InductiveExperimentConfig) -> List[str]:
-        """Get list of models that were run."""
-        models = []
-        if config.run_gnn:
-            models.extend(config.gnn_types)
-        if config.run_mlp:
-            models.append('mlp')
-        if config.run_rf:
-            models.append('rf')
-        return models
+    def _extract_model_results(self, experiment_results: Dict[str, Any]) -> Dict[str, Any]:
+        """Extract model results from experiment results."""
+        if 'results' not in experiment_results:
+            return {}
+        
+        clean_results = {}
+        for task, task_results in experiment_results['results'].items():
+            clean_results[task] = {}
+            for model_name, model_results in task_results.items():
+                # Extract key metrics
+                test_metrics = model_results.get('test_metrics', {})
+                clean_results[task][model_name] = {
+                    'test_metrics': test_metrics,
+                    'train_time': model_results.get('train_time', 0.0),
+                    'success': bool(test_metrics)  # True if we have test metrics
+                }
+        
+        return clean_results
     
     def _save_intermediate_results(self) -> None:
         """Save intermediate results."""
@@ -358,7 +302,7 @@ class MultiInductiveExperimentRunner:
         
         # Save complete results
         final_results = {
-            'config': self.config.__dict__,
+            'config': self._make_json_serializable(self.config.__dict__),
             'all_results': self.all_results,
             'failed_runs': self.failed_runs,
             'summary_stats': {
@@ -383,11 +327,11 @@ class MultiInductiveExperimentRunner:
             csv_path = os.path.join(self.output_dir, "results_summary.csv")
             df.to_csv(csv_path, index=False)
             
-            # Save parameter summary
-            param_summary = self._create_parameter_summary(df)
-            param_path = os.path.join(self.output_dir, "parameter_summary.json")
+            # Save parameter analysis
+            param_analysis = self._analyze_parameter_effects(df)
+            param_path = os.path.join(self.output_dir, "parameter_analysis.json")
             with open(param_path, 'w') as f:
-                json.dump(param_summary, f, indent=2)
+                json.dump(param_analysis, f, indent=2)
         
         return final_results
     
@@ -400,98 +344,135 @@ class MultiInductiveExperimentRunner:
                 'run_id': result['run_id'],
                 'timestamp': result['timestamp'],
                 'total_time': result['total_time'],
+                'method': result['method'],
+                'degree_distribution': result['degree_distribution'],
                 'n_graphs': result['n_graphs']
             }
             
             # Add all parameters
             row.update(result['all_parameters'])
             
-            # Add family stats
-            if 'family_stats' in result:
-                family_stats = result['family_stats']
-                for key, value in family_stats.items():
-                    if isinstance(value, (int, float)):
-                        row[f'family_{key}'] = value
+            # Add family properties
+            family_props = result.get('family_properties', {})
+            for key, value in family_props.items():
+                if isinstance(value, (int, float)):
+                    row[f'family_{key}'] = value
+            
+            # Add family consistency metrics
+            family_consistency = result.get('family_consistency', {})
+            if family_consistency:
+                row['consistency_overall'] = family_consistency.get('overall', {}).get('score', 0.0)
+                row['consistency_pattern'] = family_consistency.get('pattern_preservation', {}).get('score', 0.0)
+                row['consistency_fidelity'] = family_consistency.get('generation_fidelity', {}).get('score', 0.0)
+                row['consistency_degree'] = family_consistency.get('degree_consistency', {}).get('score', 0.0)
+            
+            # Add community signals
+            community_signals = result.get('community_signals', {})
+            for signal_type in ['degree_signals', 'structure_signals', 'feature_signals']:
+                signal_data = community_signals.get(signal_type, {})
+                if signal_data and 'mean' in signal_data:
+                    row[f'signal_{signal_type}_mean'] = signal_data['mean']
+                    row[f'signal_{signal_type}_std'] = signal_data['std']
             
             # Add model results
-            if 'model_results' in result:
-                for task, task_results in result['model_results'].items():
-                    for metric, value in task_results.items():
-                        row[f'{task}_{metric}'] = value
+            model_results = result.get('model_results', {})
+            for task, task_results in model_results.items():
+                for model, model_data in task_results.items():
+                    test_metrics = model_data.get('test_metrics', {})
+                    
+                    # Add key metrics
+                    for metric in ['accuracy', 'f1_macro', 'r2', 'mse']:
+                        if metric in test_metrics:
+                            row[f'{task}_{model}_{metric}'] = test_metrics[metric]
+                    
+                    # Add training time and success
+                    row[f'{task}_{model}_train_time'] = model_data.get('train_time', 0.0)
+                    row[f'{task}_{model}_success'] = model_data.get('success', False)
             
             rows.append(row)
         
         return pd.DataFrame(rows)
     
-    def _create_parameter_summary(self, df: pd.DataFrame) -> Dict[str, Any]:
-        """Create summary of parameter effects on model performance."""
-        summary = {
+    def _analyze_parameter_effects(self, df: pd.DataFrame) -> Dict[str, Any]:
+        """Analyze parameter effects on model performance."""
+        analysis = {
             'sweep_parameters': list(self.config.sweep_parameters.keys()),
             'random_parameters': list(self.config.random_parameters.keys()),
             'parameter_correlations': {},
             'best_configurations': {},
-            'worst_configurations': {}
+            'method_comparison': {}
         }
         
         # Find numeric columns for correlation analysis
         numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
-        param_cols = [col for col in numeric_cols if col in self.config.sweep_parameters or col in self.config.random_parameters]
+        param_cols = [col for col in numeric_cols if col in analysis['sweep_parameters'] + analysis['random_parameters']]
         
-        # Calculate correlations between parameters and performance metrics
-        performance_cols = [col for col in numeric_cols if any(metric in col for metric in ['accuracy', 'f1_macro', 'r2', 'mse'])]
+        # Find performance metrics
+        performance_cols = [col for col in numeric_cols if any(metric in col for metric in ['accuracy', 'f1_macro', 'r2']) and 'mse' not in col]
         
+        # Calculate correlations
         if param_cols and performance_cols:
-            correlation_matrix = df[param_cols + performance_cols].corr()
-            
-            for perf_col in performance_cols:
-                param_correlations = {}
-                for param_col in param_cols:
-                    if param_col in correlation_matrix.index and perf_col in correlation_matrix.columns:
-                        corr_val = correlation_matrix.loc[param_col, perf_col]
-                        if not np.isnan(corr_val):
-                            param_correlations[param_col] = float(corr_val)
+            try:
+                correlation_matrix = df[param_cols + performance_cols].corr()
                 
-                if param_correlations:
-                    summary['parameter_correlations'][perf_col] = param_correlations
+                for perf_col in performance_cols:
+                    param_correlations = {}
+                    for param_col in param_cols:
+                        if param_col in correlation_matrix.index and perf_col in correlation_matrix.columns:
+                            corr_val = correlation_matrix.loc[param_col, perf_col]
+                            if not pd.isna(corr_val):
+                                param_correlations[param_col] = float(corr_val)
+                    
+                    if param_correlations:
+                        analysis['parameter_correlations'][perf_col] = param_correlations
+            except Exception as e:
+                print(f"Warning: Could not calculate correlations: {e}")
         
-        # Find best and worst configurations for each performance metric
+        # Find best configurations
         for perf_col in performance_cols:
-            if perf_col in df.columns:
-                # Best configuration (highest for accuracy/f1/r2, lowest for mse)
-                if 'mse' in perf_col.lower():
-                    best_idx = df[perf_col].idxmin()
-                    worst_idx = df[perf_col].idxmax()
-                else:
-                    best_idx = df[perf_col].idxmax()
-                    worst_idx = df[perf_col].idxmin()
+            if perf_col in df.columns and not df[perf_col].isna().all():
+                best_idx = df[perf_col].idxmax()
                 
                 if not pd.isna(best_idx):
                     best_config = {}
-                    worst_config = {}
-                    
                     for param in param_cols:
                         if param in df.columns:
                             best_config[param] = df.loc[best_idx, param]
-                            worst_config[param] = df.loc[worst_idx, param]
                     
-                    summary['best_configurations'][perf_col] = {
+                    analysis['best_configurations'][perf_col] = {
                         'parameters': best_config,
                         'performance': float(df.loc[best_idx, perf_col]),
-                        'run_id': int(df.loc[best_idx, 'run_id'])
-                    }
-                    
-                    summary['worst_configurations'][perf_col] = {
-                        'parameters': worst_config,
-                        'performance': float(df.loc[worst_idx, perf_col]),
-                        'run_id': int(df.loc[worst_idx, 'run_id'])
+                        'run_id': int(df.loc[best_idx, 'run_id']),
+                        'method': df.loc[best_idx, 'method']
                     }
         
-        return summary
+        # Method comparison
+        if 'method' in df.columns:
+            method_stats = {}
+            for method in df['method'].unique():
+                method_df = df[df['method'] == method]
+                method_stats[method] = {
+                    'n_runs': len(method_df),
+                    'avg_performance': {}
+                }
+                
+                for perf_col in performance_cols:
+                    if perf_col in method_df.columns and not method_df[perf_col].isna().all():
+                        method_stats[method]['avg_performance'][perf_col] = {
+                            'mean': float(method_df[perf_col].mean()),
+                            'std': float(method_df[perf_col].std()),
+                            'min': float(method_df[perf_col].min()),
+                            'max': float(method_df[perf_col].max())
+                        }
+            
+            analysis['method_comparison'] = method_stats
+        
+        return analysis
     
     def _generate_summary(self, total_time: float) -> str:
         """Generate a text summary of the multi-experiment run."""
         lines = []
-        lines.append("MULTI-INDUCTIVE EXPERIMENT SUMMARY")
+        lines.append("CLEAN MULTI-EXPERIMENT SUMMARY")
         lines.append("=" * 60)
         lines.append("")
         
@@ -524,23 +505,43 @@ class MultiInductiveExperimentRunner:
             lines.append(f"  {param}: [{param_range.min_val}, {param_range.max_val}] ({param_range.distribution})")
         lines.append("")
         
-        # Performance summary (if we have results)
+        # Performance summary
         if self.all_results:
             lines.append("Performance Summary:")
             df = self._create_results_dataframe()
             
-            # Find performance columns
-            performance_cols = [col for col in df.columns if any(metric in col for metric in ['accuracy', 'f1_macro', 'r2', 'mse'])]
+            # Method comparison
+            if 'method' in df.columns:
+                lines.append("Method comparison:")
+                for method in df['method'].unique():
+                    method_df = df[df['method'] == method]
+                    lines.append(f"  {method.upper()}: {len(method_df)} runs")
+                    
+                    # Find best performance metric for this method
+                    perf_cols = [col for col in df.columns if 'f1_macro' in col or 'accuracy' in col]
+                    for col in perf_cols[:2]:  # Show top 2 metrics
+                        if col in method_df.columns and not method_df[col].isna().all():
+                            mean_perf = method_df[col].mean()
+                            std_perf = method_df[col].std()
+                            lines.append(f"    {col}: {mean_perf:.3f} ± {std_perf:.3f}")
+                lines.append("")
             
-            for col in performance_cols:
-                if col in df.columns and not df[col].isna().all():
-                    lines.append(f"  {col}:")
-                    lines.append(f"    Mean: {df[col].mean():.4f}")
-                    lines.append(f"    Std:  {df[col].std():.4f}")
-                    lines.append(f"    Min:  {df[col].min():.4f}")
-                    lines.append(f"    Max:  {df[col].max():.4f}")
+            # Signal summary
+            signal_cols = [col for col in df.columns if 'signal_' in col and '_mean' in col]
+            if signal_cols:
+                lines.append("Average Community Signals:")
+                for col in signal_cols:
+                    signal_name = col.replace('signal_', '').replace('_mean', '').replace('_', ' ').title()
+                    avg_signal = df[col].mean()
+                    lines.append(f"  {signal_name}: {avg_signal:.3f}")
+                lines.append("")
+            
+            # Consistency summary
+            if 'consistency_overall' in df.columns:
+                avg_consistency = df['consistency_overall'].mean()
+                lines.append(f"Average Family Consistency: {avg_consistency:.3f}")
+                lines.append("")
         
-        lines.append("")
         lines.append(f"Results saved to: {self.output_dir}")
         
         return "\n".join(lines)
@@ -548,8 +549,12 @@ class MultiInductiveExperimentRunner:
     def _make_json_serializable(self, obj: Any) -> Any:
         """Convert objects to JSON-serializable format."""
         if isinstance(obj, dict):
-            return {k: self._make_json_serializable(v) for k, v in obj.items()}
+            return {str(k): self._make_json_serializable(v) for k, v in obj.items()}
         elif isinstance(obj, list):
+            return [self._make_json_serializable(item) for item in obj]
+        elif isinstance(obj, tuple):
+            return [self._make_json_serializable(item) for item in obj]
+        elif isinstance(obj, set):
             return [self._make_json_serializable(item) for item in obj]
         elif isinstance(obj, (np.integer, np.floating)):
             return obj.item()
@@ -565,70 +570,21 @@ class MultiInductiveExperimentRunner:
         else:
             return obj
 
-    def _process_tuple_parameters(self, random_params: Dict[str, float]) -> Dict[str, Any]:
-        """Process parameters that need to be converted to tuples (like ranges)."""
-        processed = random_params.copy()
-        
-        # Convert range parameters from separate values to tuples
-        if 'homophily_range_0' in processed:
-            hr_val = processed.pop('homophily_range_0')
-            dr_val = processed.pop('density_range_0', hr_val)
-            processed['homophily_range'] = (0.0, hr_val)
-            processed['density_range'] = (0.0, dr_val)
-        
-        # Convert DCCC-SBM range parameters
-        if 'community_imbalance_range_0' in processed:
-            ci_val = processed.pop('community_imbalance_range_0')
-            processed['community_imbalance_range'] = (0.0, ci_val)
-        
-        if 'degree_separation_range_0' in processed:
-            ds_val = processed.pop('degree_separation_range_0')
-            processed['degree_separation_range'] = (0.1, ds_val)
-        
-        # Convert distribution-specific range parameters
-        if 'power_law_exponent_range_0' in processed:
-            ple_val = processed.pop('power_law_exponent_range_0')
-            processed['power_law_exponent_range'] = (2.0, ple_val)
-        
-        if 'exponential_rate_range_0' in processed:
-            er_val = processed.pop('exponential_rate_range_0')
-            processed['exponential_rate_range'] = (0.1, er_val)
-        
-        if 'uniform_min_factor_range_0' in processed:
-            umf_val = processed.pop('uniform_min_factor_range_0')
-            processed['uniform_min_factor_range'] = (0.1, umf_val)
-        
-        if 'uniform_max_factor_range_0' in processed:
-            umxf_val = processed.pop('uniform_max_factor_range_0')
-            processed['uniform_max_factor_range'] = (1.0, umxf_val)
-        
-        return processed
 
-
-def run_multi_inductive_experiments(config: MultiInductiveExperimentConfig) -> Dict[str, Any]:
-    """
-    Convenience function to run multi-inductive experiments.
-    
-    Args:
-        config: Multi-experiment configuration
-        
-    Returns:
-        Complete results dictionary
-    """
-    runner = MultiInductiveExperimentRunner(config)
+def run_clean_multi_experiments(config: CleanMultiExperimentConfig) -> Dict[str, Any]:
+    """Convenience function to run multi-experiments."""
+    runner = CleanMultiExperimentRunner(config)
     return runner.run_all_experiments()
 
 
 def create_analysis_plots(results_dir: str, output_dir: Optional[str] = None) -> None:
-    """
-    Create analysis plots from multi-experiment results.
-    
-    Args:
-        results_dir: Directory containing multi-experiment results
-        output_dir: Directory to save plots (defaults to results_dir/plots)
-    """
-    import matplotlib.pyplot as plt
-    import seaborn as sns
+    """Create analysis plots from multi-experiment results."""
+    try:
+        import matplotlib.pyplot as plt
+        import seaborn as sns
+    except ImportError:
+        print("Matplotlib and seaborn required for plotting. Skipping plots.")
+        return
     
     if output_dir is None:
         output_dir = os.path.join(results_dir, "plots")
@@ -642,82 +598,69 @@ def create_analysis_plots(results_dir: str, output_dir: Optional[str] = None) ->
     
     df = pd.read_csv(csv_path)
     
-    # Load config to get parameter information
-    config_path = os.path.join(results_dir, "multi_config.json")
-    if os.path.exists(config_path):
-        with open(config_path, 'r') as f:
-            config_data = json.load(f)
-        sweep_params = list(config_data['sweep_parameters'].keys())
-        random_params = list(config_data['random_parameters'].keys())
-    else:
-        # Try to infer from data
-        sweep_params = []
-        random_params = []
+    # Find performance and parameter columns
+    performance_cols = [col for col in df.columns if any(metric in col for metric in ['accuracy', 'f1_macro', 'r2']) and 'mse' not in col]
+    param_cols = [col for col in df.columns if any(param in col for param in ['universe_', 'homophily', 'density', 'degree_'])]
     
-    # Find performance columns
-    performance_cols = [col for col in df.columns if any(metric in col for metric in ['accuracy', 'f1_macro', 'r2'])]
-    
-    # Create plots
     plt.style.use('default')
     
-    # 1. Sweep parameter effects
-    for sweep_param in sweep_params:
-        if sweep_param in df.columns:
-            fig, axes = plt.subplots(1, len(performance_cols), figsize=(5*len(performance_cols), 4))
-            if len(performance_cols) == 1:
-                axes = [axes]
-            
-            for i, perf_col in enumerate(performance_cols):
-                if perf_col in df.columns:
-                    # Group by sweep parameter and calculate mean/std
-                    grouped = df.groupby(sweep_param)[perf_col].agg(['mean', 'std']).reset_index()
-                    
-                    axes[i].errorbar(grouped[sweep_param], grouped['mean'], yerr=grouped['std'], 
-                                   marker='o', capsize=5)
-                    axes[i].set_xlabel(sweep_param)
-                    axes[i].set_ylabel(perf_col)
-                    axes[i].set_title(f'{perf_col} vs {sweep_param}')
-                    axes[i].grid(True, alpha=0.3)
-            
-            plt.tight_layout()
-            plt.savefig(os.path.join(output_dir, f'sweep_{sweep_param}_effects.png'), dpi=300, bbox_inches='tight')
-            plt.close()
-    
-    # 2. Parameter correlation heatmap
-    param_cols = [col for col in df.columns if col in sweep_params + random_params]
-    if param_cols and performance_cols:
-        correlation_data = df[param_cols + performance_cols].corr()
-        
-        # Extract parameter-performance correlations
-        param_perf_corr = correlation_data.loc[param_cols, performance_cols]
-        
-        plt.figure(figsize=(max(8, len(performance_cols) * 1.5), max(6, len(param_cols) * 0.8)))
-        sns.heatmap(param_perf_corr, annot=True, cmap='RdBu_r', center=0, 
-                   cbar_kws={'label': 'Correlation'})
-        plt.title('Parameter-Performance Correlations')
-        plt.tight_layout()
-        plt.savefig(os.path.join(output_dir, 'parameter_correlation_heatmap.png'), dpi=300, bbox_inches='tight')
-        plt.close()
-    
-    # 3. Performance distribution plots
-    if performance_cols:
+    # 1. Method comparison
+    if 'method' in df.columns and performance_cols:
         fig, axes = plt.subplots(1, len(performance_cols), figsize=(5*len(performance_cols), 4))
         if len(performance_cols) == 1:
             axes = [axes]
         
         for i, perf_col in enumerate(performance_cols):
             if perf_col in df.columns:
-                df[perf_col].hist(bins=20, alpha=0.7, ax=axes[i])
-                axes[i].axvline(df[perf_col].mean(), color='red', linestyle='--', 
-                              label=f'Mean: {df[perf_col].mean():.3f}')
-                axes[i].set_xlabel(perf_col)
-                axes[i].set_ylabel('Frequency')
-                axes[i].set_title(f'Distribution of {perf_col}')
-                axes[i].legend()
-                axes[i].grid(True, alpha=0.3)
+                df.boxplot(column=perf_col, by='method', ax=axes[i])
+                axes[i].set_title(f'{perf_col} by Method')
+                axes[i].set_xlabel('Method')
+                axes[i].set_ylabel(perf_col)
         
         plt.tight_layout()
-        plt.savefig(os.path.join(output_dir, 'performance_distributions.png'), dpi=300, bbox_inches='tight')
+        plt.savefig(os.path.join(output_dir, 'method_comparison.png'), dpi=300, bbox_inches='tight')
+        plt.close()
+    
+    # 2. Parameter effects (first few parameters)
+    for param in param_cols[:4]:  # Limit to avoid too many plots
+        if param in df.columns and performance_cols:
+            n_plots = min(2, len(performance_cols))
+            fig, axes = plt.subplots(1, n_plots, figsize=(10, 4))
+            # Ensure axes is always a list
+            if n_plots == 1:
+                axes = [axes]
+            elif not isinstance(axes, list):
+                axes = list(axes)
+            
+            for i, perf_col in enumerate(performance_cols[:2]):
+                if perf_col in df.columns:
+                    axes[i].scatter(df[param], df[perf_col], alpha=0.6)
+                    axes[i].set_xlabel(param)
+                    axes[i].set_ylabel(perf_col)
+                    axes[i].set_title(f'{perf_col} vs {param}')
+                    axes[i].grid(True, alpha=0.3)
+            
+            plt.tight_layout()
+            plt.savefig(os.path.join(output_dir, f'param_effect_{param}.png'), dpi=300, bbox_inches='tight')
+            plt.close()
+    
+    # 3. Signal analysis
+    signal_cols = [col for col in df.columns if 'signal_' in col and '_mean' in col]
+    if signal_cols:
+        fig, ax = plt.subplots(1, 1, figsize=(10, 6))
+        
+        signal_data = []
+        signal_names = []
+        for col in signal_cols:
+            signal_data.append(df[col].dropna())
+            signal_names.append(col.replace('signal_', '').replace('_mean', '').replace('_', ' ').title())
+        
+        ax.boxplot(signal_data, labels=signal_names)
+        ax.set_title('Community Signal Distributions')
+        ax.set_ylabel('Signal Strength')
+        plt.xticks(rotation=45)
+        plt.tight_layout()
+        plt.savefig(os.path.join(output_dir, 'signal_distributions.png'), dpi=300, bbox_inches='tight')
         plt.close()
     
     print(f"Analysis plots saved to: {output_dir}")

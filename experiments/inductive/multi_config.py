@@ -1,8 +1,6 @@
 """
-Configuration for multiple inductive experiment runs with parameter sweeps and random sampling.
-
-This module defines configuration for running many inductive experiments with
-systematic parameter variations and random sampling from specified ranges.
+Clean configuration for multiple inductive experiments with parameter sweeps and random sampling.
+Removes old parameters and focuses only on DC-SBM and DCCC-SBM methods.
 """
 
 from dataclasses import dataclass, field
@@ -13,9 +11,10 @@ import numpy as np
 import itertools
 from experiments.inductive.config import InductiveExperimentConfig
 
+
 @dataclass
 class ParameterRange:
-    """Class to define parameter ranges for sampling or sweeping."""
+    """Defines parameter ranges for sweeping or random sampling."""
     
     # Range definition
     min_val: float
@@ -39,10 +38,9 @@ class ParameterRange:
             raise ValueError("Sweep parameters must have a step size")
         
         if not self.is_sweep and self.n_samples is None:
-            self.n_samples = 1  # Default to single sample
+            self.n_samples = 1
         
         if self.distribution == "normal" and (self.mean is None or self.std is None):
-            # Default to mean at center of range, std as 1/6 of range
             self.mean = (self.min_val + self.max_val) / 2
             self.std = (self.max_val - self.min_val) / 6
     
@@ -52,13 +50,11 @@ class ParameterRange:
             raise ValueError("Cannot get sweep values for non-sweep parameter")
         
         if isinstance(self.min_val, int) and isinstance(self.max_val, int) and isinstance(self.step, int):
-            # Integer range
             return list(range(int(self.min_val), int(self.max_val) + 1, int(self.step)))
         else:
-            # Float range
             values = []
             current = self.min_val
-            while current <= self.max_val + 1e-10:  # Small epsilon for float comparison
+            while current <= self.max_val + 1e-10:
                 values.append(current)
                 current += self.step
             return values
@@ -75,7 +71,6 @@ class ParameterRange:
         
         elif self.distribution == "normal":
             samples = np.random.normal(self.mean, self.std, n)
-            # Clip to range
             return np.clip(samples, self.min_val, self.max_val).tolist()
         
         elif self.distribution == "log_uniform":
@@ -89,10 +84,10 @@ class ParameterRange:
 
 
 @dataclass
-class MultiInductiveExperimentConfig:
-    """Configuration for running multiple inductive experiments with parameter variations."""
+class CleanMultiExperimentConfig:
+    """Configuration for running multiple clean inductive experiments with parameter variations."""
     
-    # Base configuration that applies to all runs
+    # Base configuration for all runs
     base_config: InductiveExperimentConfig = field(default_factory=InductiveExperimentConfig)
     
     # Parameters that are swept systematically
@@ -107,16 +102,16 @@ class MultiInductiveExperimentConfig:
     # Output configuration
     output_dir: str = "multi_inductive_results"
     experiment_name: str = "multi_inductive"
-    save_individual_configs: bool = True
-    save_individual_results: bool = True
+    save_individual_configs: bool = False
+    save_individual_results: bool = False
     
     # Experiment control
-    max_concurrent_runs: int = 1  # For potential parallel execution
+    max_concurrent_runs: int = 1
     continue_on_failure: bool = True
     
     # Result aggregation
     aggregate_results: bool = True
-    create_summary_plots: bool = True
+    create_summary_plots: bool = False
     
     def __post_init__(self):
         """Validate multi-experiment configuration."""
@@ -131,7 +126,7 @@ class MultiInductiveExperimentConfig:
     def get_parameter_combinations(self) -> List[Dict[str, float]]:
         """Get all parameter combinations for systematic sweeps."""
         if not self.sweep_parameters:
-            return [{}]  # Single empty combination if no sweep parameters
+            return [{}]
         
         # Get all sweep values
         sweep_values = {}
@@ -163,17 +158,7 @@ class MultiInductiveExperimentConfig:
         random_params: Dict[str, float],
         run_id: int
     ) -> InductiveExperimentConfig:
-        """
-        Create a configuration for a single run.
-        
-        Args:
-            sweep_params: Systematic parameter values
-            random_params: Random parameter values
-            run_id: Unique identifier for this run
-            
-        Returns:
-            InductiveExperimentConfig for this specific run
-        """
+        """Create a configuration for a single run."""
         # Start with base config
         config_dict = self.base_config.to_dict()
         
@@ -183,6 +168,9 @@ class MultiInductiveExperimentConfig:
         # Override with random parameters
         config_dict.update(random_params)
         
+        # Process tuple parameters (ranges)
+        config_dict = self._process_tuple_parameters(config_dict)
+        
         # Set unique output directory
         config_dict['output_dir'] = os.path.join(
             self.output_dir,
@@ -191,6 +179,37 @@ class MultiInductiveExperimentConfig:
         
         # Create config object
         return InductiveExperimentConfig.from_dict(config_dict)
+    
+    def _process_tuple_parameters(self, config_dict: Dict[str, Any]) -> Dict[str, Any]:
+        """Process parameters that need to be converted to tuples (like ranges)."""
+        processed = config_dict.copy()
+        
+        # Convert range parameters from single values to tuples
+        range_params = {
+            'homophily_range': 'homophily_range_width',
+            'density_range': 'density_range_width',
+            'community_imbalance_range': 'community_imbalance_range_width',
+            'degree_separation_range': 'degree_separation_range_width',
+            'power_law_exponent_range': 'power_law_exponent_range_width',
+            'exponential_rate_range': 'exponential_rate_range_width',
+            'uniform_min_factor_range': 'uniform_min_factor_range_width',
+            'uniform_max_factor_range': 'uniform_max_factor_range_width',
+            'dccc_target_avg_degree_range': 'dccc_target_avg_degree_range_width'
+        }
+        
+        for range_param, width_param in range_params.items():
+            if width_param in processed:
+                width = processed.pop(width_param)
+                if range_param in processed:
+                    center = processed[range_param]
+                    if isinstance(center, (list, tuple)):
+                        # Already a range, don't modify
+                        continue
+                    else:
+                        # Convert single value to range
+                        processed[range_param] = (max(0, center - width/2), center + width/2)
+        
+        return processed
     
     def get_total_runs(self) -> int:
         """Calculate total number of experiment runs."""
@@ -241,7 +260,7 @@ class MultiInductiveExperimentConfig:
             json.dump(config_dict, f, indent=2)
     
     @classmethod
-    def load(cls, filepath: str) -> 'MultiInductiveExperimentConfig':
+    def load(cls, filepath: str) -> 'CleanMultiExperimentConfig':
         """Load configuration from file."""
         with open(filepath, 'r') as f:
             config_dict = json.load(f)
@@ -274,73 +293,58 @@ class MultiInductiveExperimentConfig:
         )
 
 
-def create_default_multi_config() -> MultiInductiveExperimentConfig:
-    """Create a default multi-experiment configuration with example parameter ranges."""
+# =============================================================================
+# PREDEFINED EXPERIMENT CONFIGURATIONS
+# =============================================================================
+
+def create_homophily_density_sweep() -> CleanMultiExperimentConfig:
+    """Create configuration for homophily vs density sweep."""
     
-    # Base configuration
     base_config = InductiveExperimentConfig(
-        # Core experiment settings
-        n_graphs=15,
+        n_graphs=12,
         min_n_nodes=80,
-        max_n_nodes=120,
-        min_communities=5,
+        max_n_nodes=100,
+        min_communities=3,
         max_communities=5,
-        
-        # Universe settings
         universe_K=5,
         universe_feature_dim=32,
-        universe_edge_density=0.1,
-        universe_homophily=0.5,
-        
-        # Graph generation method - can be changed
-        use_dccc_sbm=False,  # Set to True to use DCCC-SBM
-        degree_distribution="standard",
-        
-        # Training settings
-        epochs=150,
-        patience=30,
-        optimize_hyperparams=False,
-        
-        # Tasks
+        use_dccc_sbm=False,  # Standard DC-SBM
         tasks=['community'],
-        
-        # Models
         gnn_types=['gcn', 'sage'],
         run_gnn=True,
         run_mlp=True,
         run_rf=True,
-        
-        # Output
-        require_consistency_check=False,
-        collect_family_stats=True
+        epochs=100,
+        patience=20,
+        collect_signal_metrics=True,
+        require_consistency_check=False
     )
     
-    # Sweep parameters (systematic variation)
+    # Sweep homophily and density systematically
     sweep_parameters = {
         'universe_homophily': ParameterRange(
-            min_val=0.0,
-            max_val=1.0,
-            step=0.1,
+            min_val=0.1,
+            max_val=0.9,
+            step=0.2,
             is_sweep=True
         ),
         'universe_edge_density': ParameterRange(
-            min_val=0.01,
-            max_val=0.021,
-            step=0.011,
+            min_val=0.05,
+            max_val=0.15,
+            step=0.05,
             is_sweep=True
         )
     }
     
-    # Random parameters (sampled for each run)
+    # Randomize other parameters
     random_parameters = {
-        # Standard graph parameters
-        'homophily_range': ParameterRange(
+        'homophily_range_width': ParameterRange(
             min_val=0.0,
             max_val=0.3,
             distribution="uniform",
             is_sweep=False
         ),
-        'density_range': ParameterRange(
+        'density_range_width': ParameterRange(
             min_val=0.0,
             max_val=0.05,
             distribution="uniform",
@@ -348,173 +352,6 @@ def create_default_multi_config() -> MultiInductiveExperimentConfig:
         ),
         'degree_heterogeneity': ParameterRange(
             min_val=0.1,
-            max_val=1.0,
-            distribution="uniform",
-            is_sweep=False
-        ),
-        'edge_noise': ParameterRange(
-            min_val=0.0,
-            max_val=0.3,
-            distribution="uniform",
-            is_sweep=False
-        ),
-        
-        # Feature generation parameters
-        'cluster_count_factor': ParameterRange(
-            min_val=0.3,
-            max_val=2.0,
-            distribution="uniform",
-            is_sweep=False
-        ),
-        'center_variance': ParameterRange(
-            min_val=0.1,
-            max_val=2.0,
-            distribution="log_uniform",
-            is_sweep=False
-        ),
-        'cluster_variance': ParameterRange(
-            min_val=0.05,
-            max_val=0.5,
-            distribution="uniform",
-            is_sweep=False
-        ),
-        'assignment_skewness': ParameterRange(
-            min_val=0.0,
-            max_val=0.8,
-            distribution="uniform",
-            is_sweep=False
-        ),
-        'community_exclusivity': ParameterRange(
-            min_val=0.5,
-            max_val=1.0,
-            distribution="uniform",
-            is_sweep=False
-        ),
-        
-        # Universe parameters
-        'universe_randomness_factor': ParameterRange(
-            min_val=0.0,
-            max_val=0.5,
-            distribution="uniform",
-            is_sweep=False
-        ),
-        'max_mean_community_deviation': ParameterRange(
-            min_val=0.05,
-            max_val=0.3,
-            distribution="uniform",
-            is_sweep=False
-        ),
-        'max_max_community_deviation': ParameterRange(
-            min_val=0.1,
-            max_val=0.5,
-            distribution="uniform",
-            is_sweep=False
-        ),
-        
-        # DCCC-SBM parameters (only used if use_dccc_sbm=True)
-        'community_imbalance_range_0': ParameterRange(  # Will be converted to tuple
-            min_val=0.0,
-            max_val=0.6,
-            distribution="uniform",
-            is_sweep=False
-        ),
-        'degree_separation_range_0': ParameterRange(  # Will be converted to tuple
-            min_val=0.1,
-            max_val=0.9,
-            distribution="uniform",
-            is_sweep=False
-        )
-    }
-    
-    return MultiInductiveExperimentConfig(
-        base_config=base_config,
-        sweep_parameters=sweep_parameters,
-        random_parameters=random_parameters,
-        n_repetitions=2,
-        experiment_name="homophily_density_sweep",
-        output_dir="multi_inductive_results",
-        continue_on_failure=True,
-        aggregate_results=True,
-        create_summary_plots=True
-    )
-
-
-def create_dccc_multi_config(degree_distribution: str = "power_law") -> MultiInductiveExperimentConfig:
-    """
-    Create a multi-experiment configuration focused on DCCC-SBM with specific degree distribution.
-    
-    Args:
-        degree_distribution: Type of degree distribution ("power_law", "exponential", "uniform")
-    
-    Returns:
-        MultiInductiveExperimentConfig configured for DCCC-SBM experiments
-    """
-    
-    # Base configuration with DCCC-SBM enabled
-    base_config = InductiveExperimentConfig(
-        # Core experiment settings
-        n_graphs=12,
-        min_n_nodes=80,
-        max_n_nodes=100,
-        min_communities=5,
-        max_communities=5,
-        
-        # Universe settings
-        universe_K=5,
-        universe_feature_dim=32,
-        universe_edge_density=0.1,
-        universe_homophily=0.6,
-        
-        # DCCC-SBM settings
-        use_dccc_sbm=True,
-        degree_distribution=degree_distribution,
-        
-        # Training settings
-        epochs=120,
-        patience=25,
-        optimize_hyperparams=False,
-        
-        # Tasks
-        tasks=['community'],
-        
-        # Models
-        gnn_types=['gcn', 'sage'],
-        run_gnn=True,
-        run_mlp=True,
-        run_rf=False,  # Skip for faster experiments
-        
-        # Output
-        require_consistency_check=False,
-        collect_family_stats=True
-    )
-    
-    # Sweep community imbalance and degree separation
-    sweep_parameters = {
-        'community_imbalance_range_0': ParameterRange(
-            min_val=0.0,
-            max_val=0.6,
-            step=0.2,
-            is_sweep=True
-        ),
-        'degree_separation_range_0': ParameterRange(
-            min_val=0.2,
-            max_val=0.8,
-            step=0.3,
-            is_sweep=True
-        )
-    }
-    
-    # Random parameters based on degree distribution type
-    random_parameters = {
-        # Standard parameters
-        'universe_homophily': ParameterRange(
-            min_val=0.3,
-            max_val=0.9,
-            distribution="uniform",
-            is_sweep=False
-        ),
-        'degree_heterogeneity': ParameterRange(
-            min_val=0.3,
             max_val=0.8,
             distribution="uniform",
             is_sweep=False
@@ -527,69 +364,187 @@ def create_dccc_multi_config(degree_distribution: str = "power_law") -> MultiInd
         )
     }
     
-    # Add distribution-specific parameters
-    if degree_distribution == "power_law":
-        random_parameters.update({
-            'power_law_exponent_range_0': ParameterRange(
-                min_val=2.1,
-                max_val=3.5,
-                distribution="uniform",
-                is_sweep=False
-            ),
-            'dccc_target_avg_degree_range_0': ParameterRange(
-                min_val=3.0,
-                max_val=8.0,
-                distribution="uniform",
-                is_sweep=False
-            )
-        })
+    return CleanMultiExperimentConfig(
+        base_config=base_config,
+        sweep_parameters=sweep_parameters,
+        random_parameters=random_parameters,
+        n_repetitions=2,
+        experiment_name="homophily_density_sweep",
+        output_dir="results/sweep_experiments",
+        continue_on_failure=True
+    )
+
+
+def create_dccc_method_comparison() -> CleanMultiExperimentConfig:
+    """Create configuration for comparing DCCC-SBM degree distributions."""
     
-    elif degree_distribution == "exponential":
-        random_parameters.update({
-            'exponential_rate_range_0': ParameterRange(
-                min_val=0.2,
-                max_val=1.2,
-                distribution="uniform",
-                is_sweep=False
-            ),
-            'dccc_target_avg_degree_range_0': ParameterRange(
-                min_val=2.0,
-                max_val=6.0,
-                distribution="uniform",
-                is_sweep=False
-            )
-        })
+    base_config = InductiveExperimentConfig(
+        n_graphs=10,
+        min_n_nodes=60,
+        max_n_nodes=80,
+        min_communities=3,
+        max_communities=4,
+        universe_K=4,
+        universe_feature_dim=16,
+        use_dccc_sbm=True,  # DCCC-SBM
+        tasks=['community'],
+        gnn_types=['gcn', 'sage'],
+        run_gnn=True,
+        run_mlp=True,
+        run_rf=False,
+        epochs=80,
+        patience=15,
+        collect_signal_metrics=True,
+        require_consistency_check=False
+    )
     
-    elif degree_distribution == "uniform":
-        random_parameters.update({
-            'uniform_min_factor_range_0': ParameterRange(
-                min_val=0.2,
-                max_val=0.8,
-                distribution="uniform",
-                is_sweep=False
-            ),
-            'uniform_max_factor_range_0': ParameterRange(
-                min_val=1.2,
-                max_val=2.5,
-                distribution="uniform",
-                is_sweep=False
-            ),
-            'dccc_target_avg_degree_range_0': ParameterRange(
-                min_val=3.0,
-                max_val=10.0,
-                distribution="uniform",
-                is_sweep=False
-            )
-        })
+    # Sweep degree distributions and community imbalance
+    sweep_parameters = {
+        'degree_distribution': ParameterRange(
+            min_val=0,  # Will be mapped to distributions
+            max_val=2,
+            step=1,
+            is_sweep=True
+        ),
+        'community_imbalance_range_width': ParameterRange(
+            min_val=0.0,
+            max_val=0.6,
+            step=0.2,
+            is_sweep=True
+        )
+    }
     
-    return MultiInductiveExperimentConfig(
+    # Randomize DCCC parameters
+    random_parameters = {
+        'degree_separation_range_width': ParameterRange(
+            min_val=0.2,
+            max_val=0.8,
+            distribution="uniform",
+            is_sweep=False
+        ),
+        'power_law_exponent_range_width': ParameterRange(
+            min_val=0.5,
+            max_val=1.5,
+            distribution="uniform",
+            is_sweep=False
+        ),
+        'universe_homophily': ParameterRange(
+            min_val=0.4,
+            max_val=0.8,
+            distribution="uniform",
+            is_sweep=False
+        ),
+        'edge_noise': ParameterRange(
+            min_val=0.0,
+            max_val=0.15,
+            distribution="uniform",
+            is_sweep=False
+        )
+    }
+    
+    return CleanMultiExperimentConfig(
         base_config=base_config,
         sweep_parameters=sweep_parameters,
         random_parameters=random_parameters,
         n_repetitions=3,
-        experiment_name=f"dccc_{degree_distribution}_study",
-        output_dir=f"multi_inductive_results/dccc_{degree_distribution}",
-        continue_on_failure=True,
-        aggregate_results=True,
-        create_summary_plots=True
+        experiment_name="dccc_method_comparison",
+        output_dir="results/dccc_comparison",
+        continue_on_failure=True
+    )
+
+
+def create_large_scale_benchmark() -> CleanMultiExperimentConfig:
+    """Create configuration for large-scale benchmarking."""
+    
+    base_config = InductiveExperimentConfig(
+        n_graphs=15,
+        universe_K=8,
+        universe_feature_dim=32,
+        tasks=['community'],
+        gnn_types=['gcn', 'sage'],
+        run_gnn=True,
+        run_mlp=True,
+        run_rf=True,
+        epochs=120,
+        patience=25,
+        collect_signal_metrics=True,
+        require_consistency_check=True
+    )
+    
+    # Sweep method and graph size
+    sweep_parameters = {
+        'use_dccc_sbm': ParameterRange(
+            min_val=0,  # Will be mapped to boolean
+            max_val=1,
+            step=1,
+            is_sweep=True
+        ),
+        'max_n_nodes': ParameterRange(
+            min_val=80,
+            max_val=120,
+            step=20,
+            is_sweep=True
+        )
+    }
+    
+    # Randomize many parameters
+    random_parameters = {
+        'universe_homophily': ParameterRange(
+            min_val=0.3,
+            max_val=0.9,
+            distribution="uniform",
+            is_sweep=False
+        ),
+        'universe_edge_density': ParameterRange(
+            min_val=0.05,
+            max_val=0.15,
+            distribution="uniform",
+            is_sweep=False
+        ),
+        'homophily_range_width': ParameterRange(
+            min_val=0.0,
+            max_val=0.3,
+            distribution="uniform",
+            is_sweep=False
+        ),
+        'density_range_width': ParameterRange(
+            min_val=0.0,
+            max_val=0.05,
+            distribution="uniform",
+            is_sweep=False
+        ),
+        'degree_heterogeneity': ParameterRange(
+            min_val=0.2,
+            max_val=0.8,
+            distribution="uniform",
+            is_sweep=False
+        ),
+        'edge_noise': ParameterRange(
+            min_val=0.0,
+            max_val=0.25,
+            distribution="uniform",
+            is_sweep=False
+        ),
+        'community_imbalance_range_width': ParameterRange(
+            min_val=0.0,
+            max_val=0.5,
+            distribution="uniform",
+            is_sweep=False
+        ),
+        'degree_separation_range_width': ParameterRange(
+            min_val=0.1,
+            max_val=0.7,
+            distribution="uniform",
+            is_sweep=False
+        )
+    }
+    
+    return CleanMultiExperimentConfig(
+        base_config=base_config,
+        sweep_parameters=sweep_parameters,
+        random_parameters=random_parameters,
+        n_repetitions=2,
+        experiment_name="large_scale_benchmark",
+        output_dir="results/benchmark",
+        continue_on_failure=True
     )
