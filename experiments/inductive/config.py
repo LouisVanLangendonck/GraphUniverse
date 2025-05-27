@@ -68,14 +68,14 @@ class InductiveExperimentConfig:
     max_retries: int = 10
     min_edge_density: float = 0.005
     disable_deviation_limiting: bool = False
-    max_mean_community_deviation: float = 0.07
-    max_max_community_deviation: float = 0.17
+    max_mean_community_deviation: float = 0.10
+    max_max_community_deviation: float = 0.20
     min_component_size: int = 10
     
     # === DATA SPLITS ===
-    train_graph_ratio: float = 0.6
-    val_graph_ratio: float = 0.2
-    test_graph_ratio: float = 0.2
+    train_graph_ratio: float = 0.5
+    val_graph_ratio: float = 0.25
+    test_graph_ratio: float = 0.25
     inductive_mode: str = "graph_level"  # "graph_level" or "mixed"
     
     # === TASKS ===

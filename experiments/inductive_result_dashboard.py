@@ -116,15 +116,24 @@ def calculate_model_rankings(df, task='community', metric='accuracy'):
     
     return ranking_df, distance_df, avg_rankings, model_names, clean_indices
 
-def create_2d_parameter_manifold(df, param1, param2, model, task='community', metric='accuracy', distance_df=None):
+def create_2d_parameter_manifold(df, param1, param2, model, task='community', metric='accuracy', distance_data=None):
     """Create a 2D manifold plot showing model performance across parameter space."""
-    if distance_df is not None:
-        # Use ranking distance
-        z_col = f'{task}_{model}_rank'
-        z_values = distance_df[z_col].values
-        title = f'{model.upper()}'
-        colorbar_title = 'Ranking Distance'
-        colorscale = 'RdBu'  # Changed to RdBu (red for negative/better, blue for positive/worse)
+    if distance_data is not None:
+        distance_df, distance_type = distance_data
+        
+        if distance_type == 'performance':
+            # Performance distance: positive = good (red), negative = bad (blue)
+            z_col = f'{task}_{model}_rank'
+            z_values = distance_df[z_col].values
+            title = f'{model.upper()}'
+            colorbar_title = 'Performance Distance from Average'
+            colorscale = 'RdBu_r'  # Reversed so positive (good) is red
+        else:  # ranking - show average ranking spot
+            z_col = f'{task}_{model}_rank'
+            z_values = distance_df[z_col].values  # These are the actual rankings
+            title = f'{model.upper()}'
+            colorbar_title = 'Average Ranking'
+            colorscale = 'Oranges'  # Use a built-in colorscale that goes from grey to orange
     else:
         # Use raw metric values
         z_col = f'{task}_{model}_{metric}'
@@ -182,7 +191,8 @@ def create_2d_parameter_manifold(df, param1, param2, model, task='community', me
                         showlabels=True,
                         labelfont=dict(size=8, color='white')
                     ),
-                    name='Interpolated Surface'
+                    name='Interpolated Surface',
+                    showlegend=False  # Hide the interpolated surface from legend
                 ))
         except Exception as e:
             # If interpolation fails, just show scatter plot
@@ -196,11 +206,12 @@ def create_2d_parameter_manifold(df, param1, param2, model, task='community', me
         marker=dict(
             size=10,
             color=z_values,
-            colorscale=colorscale,
+            colorscale=colorscale,  # Use the same colorscale as defined above
             line=dict(width=2, color='white'),
             colorbar=dict(title=colorbar_title)
         ),
         name='Data Points',
+        showlegend=False,  # Hide the scatter plot legend
         text=[f'{param1}: {x:.3f}<br>{param2}: {y:.3f}<br>{colorbar_title}: {z:.3f}' 
               for x, y, z in zip(x_values, y_values, z_values)],
         hovertemplate='%{text}<extra></extra>'
@@ -208,9 +219,10 @@ def create_2d_parameter_manifold(df, param1, param2, model, task='community', me
     
     fig.update_layout(
         title=title,
-        showlegend=False,  # Hide individual legends
+        showlegend=False,  # Hide all legends
         width=400,
-        height=400
+        height=400,
+        margin=dict(t=50, b=50, l=50, r=50)
     )
     
     return fig
@@ -252,7 +264,7 @@ def main():
         return
     
     # Main content tabs
-    tab1, tab2, tab3, tab4, tab5 = st.tabs(["📈 Basic Plots", "🏆 Model Rankings", "🗺️ Parameter Manifolds", "📊 Summary Stats", "🔍 Data Explorer"])
+    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["📈 Basic Plots", "🏆 Model Rankings", "🗺️ Parameter Manifolds", "📊 Summary Stats", "🔍 Data Explorer", "🎯 Hyperparameter Analysis"])
     
     with tab1:
         st.header("Basic 2D Plotting")
@@ -365,9 +377,11 @@ def main():
             param1 = st.selectbox("Parameter 1 (X-axis):", param_columns, key="manifold_x")
         with col2:
             param2 = st.selectbox("Parameter 2 (Y-axis):", param_columns, key="manifold_y", 
-                                 index=min(1, len(param_columns)-1))
+                                index=min(1, len(param_columns)-1))
         with col3:
-            use_rankings = st.checkbox("Use Ranking Distance", value=True, key="use_rankings")
+            viz_type = st.selectbox("Visualization Type:", 
+                                ["Performance Distance from Average", "Average Ranking"], 
+                                key="viz_type")
             manifold_task = st.selectbox("Task:", ['community'], key="manifold_task")
             manifold_metric = st.selectbox("Metric:", ['accuracy', 'f1_macro', 'precision', 'recall'], key="manifold_metric")
         
@@ -381,88 +395,79 @@ def main():
                 # Filter the main dataframe to only include clean runs
                 df_clean = df.loc[clean_indices]
                 
-                # Option 1: Show individual plots side by side (better for detailed analysis)
-                show_as_grid = st.checkbox("Show as single grid plot", value=False)
+                # Calculate the appropriate distance data
+                if viz_type == "Performance Distance from Average":
+                    # Get the metric columns for the selected task
+                    metric_cols = [col for col in df_clean.columns if f'{manifold_task}_' in col and f'_{manifold_metric}' in col and 'train_time' not in col]
+                    
+                    # Calculate average performance for each run
+                    avg_performance = df_clean[metric_cols].mean(axis=1)
+                    
+                    # Calculate distance from average for each model
+                    performance_distance_df = pd.DataFrame(index=df_clean.index)
+                    for col in metric_cols:
+                        model_name = col.replace(f'{manifold_task}_', '').replace(f'_{manifold_metric}', '')
+                        performance_distance_df[f'{manifold_task}_{model_name}_rank'] = df_clean[col] - avg_performance
+                    
+                    distance_data = (performance_distance_df, 'performance')
+                else:  # Average Ranking
+                    distance_data = (ranking_df, 'ranking')
                 
-                if show_as_grid:
-                    # Create subplot grid with square organization
-                    n_models = len(model_names)
-                    n_cols = int(np.ceil(np.sqrt(n_models)))
-                    n_rows = int(np.ceil(n_models / n_cols))
+                # Always show as single grid plot
+                n_models = len(model_names)
+                n_cols = int(np.ceil(np.sqrt(n_models)))
+                n_rows = int(np.ceil(n_models / n_cols))
+                
+                subplot_titles = [f"{model.upper()}" for model in model_names]
+                
+                fig = make_subplots(
+                    rows=n_rows,
+                    cols=n_cols,
+                    subplot_titles=subplot_titles,
+                    vertical_spacing=0.1,
+                    horizontal_spacing=0.1,
+                    shared_xaxes=True,
+                    shared_yaxes=True
+                )
+                
+                for i, model in enumerate(model_names):
+                    row = (i // n_cols) + 1
+                    col = (i % n_cols) + 1
                     
-                    subplot_titles = [f"{model.upper()}" for model in model_names]
-                    
-                    fig = make_subplots(
-                        rows=n_rows,
-                        cols=n_cols,
-                        subplot_titles=subplot_titles,
-                        vertical_spacing=0.1,
-                        horizontal_spacing=0.1,
-                        shared_xaxes=True,
-                        shared_yaxes=True
+                    # Create individual manifold
+                    individual_fig = create_2d_parameter_manifold(
+                        df_clean, param1, param2, model, manifold_task, manifold_metric,
+                        distance_data
                     )
                     
-                    for i, model in enumerate(model_names):
-                        row = (i // n_cols) + 1
-                        col = (i % n_cols) + 1
-                        
-                        # Create individual manifold
-                        individual_fig = create_2d_parameter_manifold(
-                            df_clean, param1, param2, model, manifold_task, manifold_metric,
-                            distance_df if use_rankings else None
-                        )
-                        
-                        # Add traces to subplot
-                        for j, trace in enumerate(individual_fig.data):
-                            trace.showlegend = (i == 0)  # Only show legend for first plot
-                            fig.add_trace(trace, row=row, col=col)
-                    
-                    # Update layout with shared axis titles
-                    fig.update_layout(
-                        title=f"Parameter Space Analysis: {param1} vs {param2}",
-                        height=400 * n_rows,
-                        width=400 * n_cols,
-                        showlegend=True,
-                        legend=dict(
-                            orientation="v",
-                            yanchor="top",
-                            y=1,
-                            xanchor="left",
-                            x=1.02
-                        )
-                    )
-                    
-                    # Add shared axis titles
-                    fig.update_xaxes(title_text=param1, row=n_rows, col=1)
-                    fig.update_yaxes(title_text=param2, row=1, col=1)
-                    
-                    st.plotly_chart(fig, use_container_width=True)
+                    # Add traces to subplot
+                    for j, trace in enumerate(individual_fig.data):
+                        trace.showlegend = (i == 0)  # Only show legend for first plot
+                        fig.add_trace(trace, row=row, col=col)
                 
-                else:
-                    # Show individual plots in columns (preserves legends and interactivity)
-                    st.subheader(f"Parameter Space Analysis: {param1} vs {param2}")
-                    
-                    # Calculate square grid dimensions
-                    n_models = len(model_names)
-                    n_cols = int(np.ceil(np.sqrt(n_models)))
-                    n_rows = int(np.ceil(n_models / n_cols))
-                    
-                    for row in range(n_rows):
-                        cols = st.columns(n_cols)
-                        
-                        for col in range(n_cols):
-                            idx = row * n_cols + col
-                            if idx < len(model_names):
-                                with cols[col]:
-                                    individual_fig = create_2d_parameter_manifold(
-                                        df_clean, param1, param2, model_names[idx], 
-                                        manifold_task, manifold_metric,
-                                        distance_df if use_rankings else None
-                                    )
-                                    st.plotly_chart(individual_fig, use_container_width=True)
+                # Update layout with shared axis titles
+                fig.update_layout(
+                    title=f"Parameter Space Analysis: {param1} vs {param2} ({viz_type})",
+                    height=400 * n_rows,
+                    width=400 * n_cols,
+                    showlegend=True,
+                    legend=dict(
+                        orientation="v",
+                        yanchor="top",
+                        y=1,
+                        xanchor="left",
+                        x=1.02
+                    )
+                )
+                
+                # Add shared axis titles
+                fig.update_xaxes(title_text=param1, row=n_rows, col=1)
+                fig.update_yaxes(title_text=param2, row=1, col=1)
+                
+                st.plotly_chart(fig, use_container_width=True)
         else:
             st.warning("Please select different parameters for X and Y axes.")
-    
+
     with tab4:
         st.header("Summary Statistics")
         
@@ -546,6 +551,158 @@ def main():
             file_name=f"{selected_experiment}_filtered_results.csv",
             mime="text/csv"
         )
+
+    with tab6:
+        st.header("Hyperparameter Analysis")
+        
+        # Get all models that have hyperparameter optimization results
+        models_with_hyperopt = []
+        for result in data['all_results']:
+            for task_name, task_results in result['model_results'].items():
+                for model_name, model_data in task_results.items():
+                    if model_data.get('success') and 'optimal_hyperparams' in model_data:
+                        if (task_name, model_name) not in models_with_hyperopt:
+                            models_with_hyperopt.append((task_name, model_name))
+        
+        if not models_with_hyperopt:
+            st.warning("No hyperparameter optimization results found in the data.")
+        else:
+            # Model selection
+            col1, col2 = st.columns(2)
+            with col1:
+                selected_task = st.selectbox("Task:", [m[0] for m in models_with_hyperopt])
+            with col2:
+                selected_model = st.selectbox("Model:", [m[1] for m in models_with_hyperopt if m[0] == selected_task])
+            
+            # Get all hyperparameters for the selected model
+            hyperparams = set()
+            for result in data['all_results']:
+                if selected_task in result['model_results'] and selected_model in result['model_results'][selected_task]:
+                    model_data = result['model_results'][selected_task][selected_model]
+                    if model_data.get('success') and 'optimal_hyperparams' in model_data:
+                        hyperparams.update(model_data['optimal_hyperparams'].keys())
+            
+            if not hyperparams:
+                st.warning(f"No hyperparameter optimization results found for {selected_model} on {selected_task} task.")
+            else:
+                # Hyperparameter selection
+                selected_hyperparam = st.selectbox("Hyperparameter:", sorted(list(hyperparams)))
+                
+                # Collect hyperparameter values and corresponding performance
+                hyperparam_values = []
+                performance_values = []
+                sweep_params = []
+                
+                for result in data['all_results']:
+                    if selected_task in result['model_results'] and selected_model in result['model_results'][selected_task]:
+                        model_data = result['model_results'][selected_task][selected_model]
+                        if model_data.get('success') and 'optimal_hyperparams' in model_data:
+                            hyperparam_values.append(model_data['optimal_hyperparams'][selected_hyperparam])
+                            # Use accuracy as performance metric
+                            performance_values.append(model_data['test_metrics']['accuracy'])
+                            # Store sweep parameters for correlation analysis
+                            sweep_params.append(result['sweep_parameters'])
+                
+                if not hyperparam_values:
+                    st.warning(f"No values found for {selected_hyperparam}.")
+                else:
+                    # Create two columns for plots
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
+                        st.subheader("Hyperparameter Distribution")
+                        
+                        # Check if hyperparameter is numerical or categorical
+                        is_numerical = all(isinstance(x, (int, float)) for x in hyperparam_values)
+                        
+                        if is_numerical:
+                            # Create histogram for numerical values
+                            fig = px.histogram(
+                                x=hyperparam_values,
+                                title=f"Distribution of {selected_hyperparam}",
+                                labels={'x': selected_hyperparam, 'y': 'Count'},
+                                nbins=20
+                            )
+                        else:
+                            # Create bar plot for categorical values
+                            value_counts = pd.Series(hyperparam_values).value_counts()
+                            fig = px.bar(
+                                x=value_counts.index,
+                                y=value_counts.values,
+                                title=f"Distribution of {selected_hyperparam}",
+                                labels={'x': selected_hyperparam, 'y': 'Count'}
+                            )
+                        
+                        st.plotly_chart(fig, use_container_width=True)
+                    
+                    with col2:
+                        st.subheader("Performance vs Hyperparameter")
+                        
+                        if is_numerical:
+                            # Scatter plot for numerical values
+                            fig = px.scatter(
+                                x=hyperparam_values,
+                                y=performance_values,
+                                title=f"Performance vs {selected_hyperparam}",
+                                labels={'x': selected_hyperparam, 'y': 'Accuracy'},
+                                trendline="ols"
+                            )
+                        else:
+                            # Box plot for categorical values
+                            df_plot = pd.DataFrame({
+                                selected_hyperparam: hyperparam_values,
+                                'Accuracy': performance_values
+                            })
+                            fig = px.box(
+                                df_plot,
+                                x=selected_hyperparam,
+                                y='Accuracy',
+                                title=f"Performance by {selected_hyperparam}"
+                            )
+                        
+                        st.plotly_chart(fig, use_container_width=True)
+                    
+                    # Parameter correlation analysis
+                    st.subheader("Parameter Correlation Analysis")
+                    
+                    # Select a sweep parameter to analyze correlation with
+                    sweep_param_cols = st.multiselect(
+                        "Select sweep parameters to analyze:",
+                        list(sweep_params[0].keys()),
+                        default=list(sweep_params[0].keys())[:2] if sweep_params else []
+                    )
+                    
+                    if sweep_param_cols:
+                        # Create correlation plots
+                        cols = st.columns(len(sweep_param_cols))
+                        
+                        for i, param in enumerate(sweep_param_cols):
+                            with cols[i]:
+                                param_values = [p[param] for p in sweep_params]
+                                
+                                if is_numerical:
+                                    # Scatter plot for numerical values
+                                    fig = px.scatter(
+                                        x=param_values,
+                                        y=hyperparam_values,
+                                        title=f"{selected_hyperparam} vs {param}",
+                                        labels={'x': param, 'y': selected_hyperparam},
+                                        trendline="ols"
+                                    )
+                                else:
+                                    # Box plot for categorical values
+                                    df_plot = pd.DataFrame({
+                                        param: param_values,
+                                        selected_hyperparam: hyperparam_values
+                                    })
+                                    fig = px.box(
+                                        df_plot,
+                                        x=param,
+                                        y=selected_hyperparam,
+                                        title=f"{selected_hyperparam} by {param}"
+                                    )
+                                
+                                st.plotly_chart(fig, use_container_width=True)
 
 if __name__ == "__main__":
     main()

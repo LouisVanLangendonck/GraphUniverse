@@ -92,7 +92,7 @@ def create_custom_experiment(args) -> CleanMultiExperimentConfig:
         n_graphs=args.n_graphs,
         min_n_nodes=args.min_n_nodes,
         max_n_nodes=args.max_n_nodes,
-        min_communities=4,
+        min_communities=5,
         max_communities=5,
         universe_K=args.universe_K,
         universe_feature_dim=32,
