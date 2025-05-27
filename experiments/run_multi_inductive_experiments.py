@@ -62,6 +62,14 @@ def parse_args():
     parser.add_argument('--patience', type=int, default=20,
                         help='Early stopping patience')
     
+    # Hyperparameter optimization settings
+    parser.add_argument('--param_hyperoptim', action='store_true',
+                        help='Enable hyperparameter optimization')
+    parser.add_argument('--n_trials', type=int, default=20,
+                        help='Number of hyperparameter optimization trials')
+    parser.add_argument('--optimization_timeout', type=int, default=600,
+                        help='Timeout in seconds for hyperparameter optimization')
+    
     # Analysis options
     parser.add_argument('--create_plots', action='store_true', default=False,
                         help='Create analysis plots after experiments')
@@ -103,6 +111,11 @@ def create_custom_experiment(args) -> CleanMultiExperimentConfig:
         # Training
         epochs=args.epochs,
         patience=args.patience,
+        
+        # Hyperparameter optimization
+        optimize_hyperparams=args.param_hyperoptim,
+        n_trials=args.n_trials,
+        optimization_timeout=args.optimization_timeout,
         
         # Analysis
         collect_signal_metrics=True,

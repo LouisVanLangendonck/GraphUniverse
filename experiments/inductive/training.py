@@ -11,6 +11,7 @@ import torch.optim as optim
 import numpy as np
 import time
 import logging
+import os
 from typing import Dict, List, Optional, Tuple, Union, Any, Callable
 from torch_geometric.loader import DataLoader
 from torch_geometric.data import Batch
@@ -23,6 +24,46 @@ from experiments.core.training import optimize_hyperparameters
 # Set up logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# Optuna storage utilities
+def get_optuna_storage_path(experiment_name: str, run_id: int) -> str:
+    """Get the storage path for optuna study."""
+    storage_dir = os.path.join('optuna_storage', experiment_name)
+    os.makedirs(storage_dir, exist_ok=True)
+    return f"sqlite:///{storage_dir}/study_{run_id:04d}.db"
+
+def start_optuna_dashboard(experiment_name: Optional[str] = None, port: int = 8080):
+    """Start optuna dashboard server.
+    
+    Args:
+        experiment_name: Optional experiment name to filter studies
+        port: Port to run the dashboard on
+    """
+    import subprocess
+    import webbrowser
+    
+    # Build storage URL
+    if experiment_name:
+        storage_url = f"sqlite:///optuna_storage/{experiment_name}/"
+    else:
+        storage_url = "sqlite:///optuna_storage/"
+    
+    # Start dashboard server
+    cmd = [
+        "optuna-dashboard",
+        storage_url,
+        "--port", str(port)
+    ]
+    
+    print(f"Starting optuna-dashboard on port {port}...")
+    print(f"Storage URL: {storage_url}")
+    print("Press Ctrl+C to stop the server")
+    
+    # Open browser
+    webbrowser.open(f"http://localhost:{port}")
+    
+    # Run server
+    subprocess.run(cmd)
 
 
 def get_total_classes_from_dataloaders(dataloaders: Dict[str, DataLoader]) -> int:
@@ -365,7 +406,9 @@ def optimize_inductive_hyperparameters(
     n_trials: int = 20,
     timeout: Optional[int] = 600,
     device: Optional[torch.device] = None,
-    is_regression: bool = False
+    is_regression: bool = False,
+    experiment_name: Optional[str] = None,
+    run_id: Optional[int] = None
 ) -> Dict[str, Any]:
     """
     Optimize hyperparameters for inductive learning using validation graphs.
@@ -380,6 +423,8 @@ def optimize_inductive_hyperparameters(
         timeout: Timeout in seconds
         device: Device to use
         is_regression: Whether this is regression
+        experiment_name: Name of the experiment for optuna storage
+        run_id: ID of the current run for optuna storage
         
     Returns:
         Dictionary with optimization results
@@ -536,14 +581,28 @@ def optimize_inductive_hyperparameters(
         
         return best_val_metric
     
-    # Create and run study
-    study = create_study(direction='maximize')
+    # Create study with storage if experiment info provided
+    study_name = f"{model_type}_{gnn_type if gnn_type else ''}_{'regression' if is_regression else 'classification'}"
+    if experiment_name and run_id is not None:
+        storage_path = get_optuna_storage_path(experiment_name, run_id)
+        study = create_study(
+            study_name=study_name,
+            storage=storage_path,
+            direction='maximize',
+            load_if_exists=True
+        )
+        print(f"Using optuna storage: {storage_path}")
+    else:
+        study = create_study(direction='maximize')
+    
+    # Run optimization
     study.optimize(objective, n_trials=n_trials, timeout=timeout)
     
     return {
         'best_params': study.best_params,
         'best_value': study.best_value,
-        'n_trials': len(study.trials)
+        'n_trials': len(study.trials),
+        'study_name': study_name
     }
 
 
@@ -553,7 +612,9 @@ def train_and_evaluate_inductive(
     config: InductiveExperimentConfig,
     task: str,
     device: torch.device,
-    optimize_hyperparams: bool = False
+    optimize_hyperparams: bool = False,
+    experiment_name: Optional[str] = None,
+    run_id: Optional[int] = None
 ) -> Dict[str, Any]:
     """
     Complete training and evaluation pipeline for inductive learning.
@@ -564,17 +625,23 @@ def train_and_evaluate_inductive(
         config: Experiment configuration
         task: Task name
         device: Device to use
-        optimize_hyperparams: Whether to optimize hyperparameters
+        optimize_hyperparams: Whether to optimize hyperparameters (overrides config setting)
+        experiment_name: Name of the experiment for optuna storage
+        run_id: ID of the current run for optuna storage
         
     Returns:
         Complete results dictionary
     """
     is_regression = config.is_regression.get(task, False)
     
+    # Use config setting if optimize_hyperparams not explicitly set
+    if optimize_hyperparams is None:
+        optimize_hyperparams = config.optimize_hyperparams
+    
     # Hyperparameter optimization if requested
     hyperopt_results = None
     if optimize_hyperparams and not isinstance(model, SklearnModel):
-        print("Optimizing hyperparameters for inductive learning...")
+        print(f"Optimizing hyperparameters for inductive learning (n_trials={config.n_trials}, timeout={config.optimization_timeout}s)...")
         
         # Get model creator function
         if isinstance(model, GNNModel):
@@ -595,7 +662,9 @@ def train_and_evaluate_inductive(
             n_trials=config.n_trials,
             timeout=config.optimization_timeout,
             device=device,
-            is_regression=is_regression
+            is_regression=is_regression,
+            experiment_name=experiment_name,
+            run_id=run_id
         )
         
         # Update model with best parameters

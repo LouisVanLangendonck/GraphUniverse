@@ -354,10 +354,19 @@ class InductiveExperiment:
                         config=self.config,
                         task=task,
                         device=self.device,
-                        optimize_hyperparams=self.config.optimize_hyperparams
+                        optimize_hyperparams=self.config.optimize_hyperparams,
+                        experiment_name=self.config.experiment_name if hasattr(self.config, 'experiment_name') else None,
+                        run_id=self.config.run_id if hasattr(self.config, 'run_id') else None
                     )
                     
-                    task_results[model_name] = results
+                    # Store results including hyperopt results if available
+                    task_results[model_name] = {
+                        'test_metrics': results.get('test_metrics', {}),
+                        'train_time': results.get('train_time', 0.0),
+                        'training_history': results.get('training_history', {}),
+                        'hyperopt_results': results.get('hyperopt_results', None)
+                    }
+                    
                     print(f"✓ {model_name.upper()} completed successfully")
                     
                 except Exception as e:

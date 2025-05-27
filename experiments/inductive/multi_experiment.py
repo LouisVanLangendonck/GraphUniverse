@@ -13,6 +13,7 @@ import traceback
 from tqdm import tqdm
 import numpy as np
 import pandas as pd
+import tempfile
 
 from experiments.inductive.multi_config import CleanMultiExperimentConfig
 from experiments.run_inductive_experiments import run_inductive_experiment
@@ -101,18 +102,13 @@ class CleanMultiExperimentRunner:
                         # Set the run's seed in the config
                         run_config.seed = run_seed
                         
-                        # Use subfolder for each run
-                        run_subdir = os.path.join(self.output_dir, f"run_{run_id:04d}")
-                        os.makedirs(run_subdir, exist_ok=True)
-                        run_config.output_dir = run_subdir
-                        
                         # Run single experiment
                         result = self._run_single_experiment(
                             config=run_config,
                             run_id=run_id,
                             sweep_params=processed_sweep,
                             random_params=processed_random,
-                            run_subdir=run_subdir
+                            run_subdir=None
                         )
                         
                         if result is not None:
@@ -141,9 +137,8 @@ class CleanMultiExperimentRunner:
                     run_id += 1
                     pbar.update(1)
                     
-                    # Save intermediate results
-                    if run_id % 5 == 0:
-                        self._save_intermediate_results()
+                    # Save intermediate results after every run
+                    self._save_intermediate_results()
                 
                 if not self.config.continue_on_failure and self.failed_runs:
                     break
@@ -185,51 +180,49 @@ class CleanMultiExperimentRunner:
     ) -> Optional[Dict[str, Any]]:
         """Run a single inductive experiment."""
         try:
-            # Run the experiment
-            experiment_results = run_inductive_experiment(config)
-            
-            # Compile complete result record
-            complete_result = {
-                # Run metadata
-                'run_id': run_id,
-                'timestamp': datetime.now().strftime("%Y%m%d_%H%M%S"),
-                'config_path': config.output_dir,
+            # Create a temporary directory for this run
+            with tempfile.TemporaryDirectory() as temp_dir:
+                # Set the output directory to the temporary directory
+                config.output_dir = temp_dir
                 
-                # Input parameters
-                'sweep_parameters': sweep_params,
-                'random_parameters': random_params,
-                'all_parameters': {**sweep_params, **random_params},
+                # Run the experiment
+                experiment_results = run_inductive_experiment(config)
                 
-                # Method info
-                'method': 'dccc_sbm' if config.use_dccc_sbm else 'dc_sbm',
-                'degree_distribution': config.degree_distribution if config.use_dccc_sbm else 'standard',
+                # Compile complete result record
+                complete_result = {
+                    # Run metadata
+                    'run_id': run_id,
+                    'timestamp': datetime.now().strftime("%Y%m%d_%H%M%S"),
+                    
+                    # Input parameters
+                    'sweep_parameters': sweep_params,
+                    'random_parameters': random_params,
+                    'all_parameters': {**sweep_params, **random_params},
+                    
+                    # Method info
+                    'method': 'dccc_sbm' if config.use_dccc_sbm else 'dc_sbm',
+                    'degree_distribution': config.degree_distribution if config.use_dccc_sbm else 'standard',
+                    
+                    # Graph family metrics
+                    'family_properties': self._extract_family_properties(experiment_results),
+                    
+                    # Family consistency metrics
+                    'family_consistency': experiment_results.get('family_consistency', {}),
+                    
+                    # Community signal metrics
+                    'community_signals': experiment_results.get('graph_signals', {}),
+                    
+                    # Model results
+                    'model_results': self._extract_model_results(experiment_results),
+                    
+                    # Experiment metadata
+                    'total_time': experiment_results.get('total_time', 0),
+                    'n_graphs': config.n_graphs,
+                    'universe_K': config.universe_K,
+                    'tasks': config.tasks
+                }
                 
-                # Graph family metrics
-                'family_properties': self._extract_family_properties(experiment_results),
-                
-                # Family consistency metrics (NEW)
-                'family_consistency': experiment_results.get('family_consistency', {}),
-                
-                # Community signal metrics (NEW)
-                'community_signals': experiment_results.get('graph_signals', {}),
-                
-                # Model results
-                'model_results': self._extract_model_results(experiment_results),
-                
-                # Experiment metadata
-                'total_time': experiment_results.get('total_time', 0),
-                'n_graphs': config.n_graphs,
-                'universe_K': config.universe_K,
-                'tasks': config.tasks
-            }
-            
-            # Save individual result if configured
-            if self.config.save_individual_results:
-                result_path = os.path.join(run_subdir, "result.json")
-                with open(result_path, 'w') as f:
-                    json.dump(self._make_json_serializable(complete_result), f, indent=2)
-            
-            return complete_result
+                return complete_result
             
         except Exception as e:
             logger.error(f"Error in run {run_id}: {str(e)}", exc_info=True)
@@ -274,10 +267,19 @@ class CleanMultiExperimentRunner:
             for model_name, model_results in task_results.items():
                 # Extract key metrics
                 test_metrics = model_results.get('test_metrics', {})
+                
+                # Extract hyperopt results if available
+                optimal_hyperparams = None
+                if 'hyperopt_results' in model_results and model_results['hyperopt_results'] is not None:
+                    hyperopt = model_results['hyperopt_results']
+                    if isinstance(hyperopt, dict) and 'best_params' in hyperopt:
+                        optimal_hyperparams = hyperopt['best_params']
+                
                 clean_results[task][model_name] = {
                     'test_metrics': test_metrics,
                     'train_time': model_results.get('train_time', 0.0),
-                    'success': bool(test_metrics)  # True if we have test metrics
+                    'success': bool(test_metrics),  # True if we have test metrics
+                    'optimal_hyperparams': optimal_hyperparams
                 }
         
         return clean_results
