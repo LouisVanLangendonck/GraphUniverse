@@ -4,7 +4,7 @@ Core module for MMSB graph learning experiments.
 
 from experiments.core.config import ExperimentConfig
 from experiments.core.experiment import Experiment
-from experiments.core.data import prepare_data, create_sklearn_compatible_data
+from experiments.core.data import prepare_data #, create_sklearn_compatible_data
 from experiments.core.models import GNNModel, MLPModel, SklearnModel
 from experiments.core.training import (
     train_gnn_model,
@@ -25,7 +25,6 @@ __all__ = [
     'ExperimentConfig',
     'Experiment',
     'prepare_data',
-    'create_sklearn_compatible_data',
     'GNNModel',
     'MLPModel',
     'SklearnModel',

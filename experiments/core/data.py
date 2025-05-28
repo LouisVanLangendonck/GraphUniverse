@@ -56,7 +56,6 @@ def compute_khop_community_counts(
     
     return community_counts
 
-
 def prepare_data(
     graph_sample: GraphSample,
     config: ExperimentConfig
@@ -150,79 +149,8 @@ def prepare_data(
                 "num_classes": len(torch.unique(torch.tensor(community_labels)))
             }
             print("Community counts task data preparation complete.")
-            
-        # elif task == "regime":
-        #     # Feature regime prediction task using rule-based generation
-        #     print("\nPreparing regime task data...")
-            
-        #     # Compute neighborhood features if not already done
-        #     if graph_sample.neighborhood_analyzer is None:
-        #         print("Computing neighborhood features...")
-        #         graph_sample.compute_neighborhood_features(max_hops=config.regime_task_max_hop)
-            
-        #     # Get frequency vectors for all hop distances in the specified range
-        #     freq_vectors_by_hop = {}
-        #     for k in range(config.regime_task_min_hop, config.regime_task_max_hop + 1):
-        #         freq_vectors_by_hop[k] = graph_sample.neighborhood_analyzer.get_all_frequency_vectors(k)
-            
-        #     # Generate rule-based labels
-        #     rule_generator = GenerativeRuleBasedLabeler(
-        #         n_labels=config.regime_task_n_labels,
-        #         min_support=config.regime_task_min_support,
-        #         max_rules_per_label=config.regime_task_max_rules_per_label,
-        #         min_hop=config.regime_task_min_hop,
-        #         max_hop=config.regime_task_max_hop,
-        #         seed=config.seed
-        #     )
-            
-        #     print("Generating and applying rules...")
-        #     rules = rule_generator.generate_rules(freq_vectors_by_hop)
-        #     regime_labels, applied_rules = rule_generator.apply_rules(freq_vectors_by_hop)
-            
-        #     # Convert to tensor
-        #     regime_labels = torch.tensor(regime_labels, dtype=torch.long)
-            
-        #     task_data["regime"] = {
-        #         "features": features,
-        #         "edge_index": edge_index,
-        #         "labels": regime_labels,
-        #         "train_idx": train_idx,
-        #         "val_idx": val_idx,
-        #         "test_idx": test_idx,
-        #         "num_classes": config.regime_task_n_labels,
-        #         "rules": rules,
-        #         "applied_rules": applied_rules,
-        #         "freq_vectors_by_hop": freq_vectors_by_hop
-        #     }
-        #     print("Regime task data preparation complete.")
-            
-        # elif task == "role":
-        #     # Role prediction task using motif analysis
-        #     print("\nPreparing role task data...")
-        #     motif_analyzer = MotifRoleAnalyzer(
-        #         graph=graph_sample.graph,
-        #         max_motif_size=config.role_task_max_motif_size,
-        #         n_roles=config.role_task_n_roles
-        #     )
-            
-        #     role_labels = motif_analyzer.get_node_roles()
-        #     role_labels = torch.tensor(role_labels, dtype=torch.long)
-            
-        #     task_data["role"] = {
-        #         "features": features,
-        #         "edge_index": edge_index,
-        #         "labels": role_labels,
-        #         "train_idx": train_idx,
-        #         "val_idx": val_idx,
-        #         "test_idx": test_idx,
-        #         "num_classes": config.role_task_n_roles,
-        #         "motif_counts": motif_analyzer.motif_counts,
-        #         "role_assignments": motif_analyzer.role_assignments
-        #     }
-        #     print("Role task data preparation complete.")
     
     return task_data
-
 
 def networkx_to_pyg(
     graph: nx.Graph,
@@ -265,91 +193,91 @@ def networkx_to_pyg(
     return features, edge_index, labels
 
 
-def create_sklearn_compatible_data(
-    features: Union[np.ndarray, torch.Tensor],
-    edge_index: Union[np.ndarray, torch.Tensor],
-    labels: Union[np.ndarray, torch.Tensor],
-    include_graph_features: bool = True
-) -> Tuple[np.ndarray, np.ndarray]:
-    """
-    Create scikit-learn compatible features by optionally adding graph structure information.
+# def create_sklearn_compatible_data(
+#     features: Union[np.ndarray, torch.Tensor],
+#     edge_index: Union[np.ndarray, torch.Tensor],
+#     labels: Union[np.ndarray, torch.Tensor],
+#     include_graph_features: bool = True
+# ) -> Tuple[np.ndarray, np.ndarray]:
+#     """
+#     Create scikit-learn compatible features by optionally adding graph structure information.
     
-    Args:
-        features: Node features [num_nodes, num_features]
-        edge_index: Graph connectivity [2, num_edges]
-        labels: Node labels [num_nodes]
-        include_graph_features: Whether to include graph structure features
+#     Args:
+#         features: Node features [num_nodes, num_features]
+#         edge_index: Graph connectivity [2, num_edges]
+#         labels: Node labels [num_nodes]
+#         include_graph_features: Whether to include graph structure features
         
-    Returns:
-        Tuple of (X, y) for scikit-learn models
-    """
-    # Convert tensors to numpy, ensuring they're on CPU first
-    if isinstance(features, torch.Tensor):
-        X = features.cpu().numpy()
-    else:
-        X = features
+#     Returns:
+#         Tuple of (X, y) for scikit-learn models
+#     """
+#     # Convert tensors to numpy, ensuring they're on CPU first
+#     if isinstance(features, torch.Tensor):
+#         X = features.cpu().numpy()
+#     else:
+#         X = features
         
-    if isinstance(labels, torch.Tensor):
-        y = labels.cpu().numpy()
-    else:
-        y = labels
+#     if isinstance(labels, torch.Tensor):
+#         y = labels.cpu().numpy()
+#     else:
+#         y = labels
     
-    if include_graph_features:
-        # Create adjacency-based features
-        num_nodes = X.shape[0]
+#     if include_graph_features:
+#         # Create adjacency-based features
+#         num_nodes = X.shape[0]
         
-        if isinstance(edge_index, torch.Tensor):
-            edge_list = edge_index.t().cpu().numpy()
-        else:
-            edge_list = np.array(edge_index).T
+#         if isinstance(edge_index, torch.Tensor):
+#             edge_list = edge_index.t().cpu().numpy()
+#         else:
+#             edge_list = np.array(edge_index).T
             
-        # Create mapping to ensure edge indices are within bounds
-        unique_nodes = np.unique(edge_list.flatten())
-        node_to_idx = {node: idx for idx, node in enumerate(range(num_nodes))}
+#         # Create mapping to ensure edge indices are within bounds
+#         unique_nodes = np.unique(edge_list.flatten())
+#         node_to_idx = {node: idx for idx, node in enumerate(range(num_nodes))}
         
-        # Create adjacency matrix
-        adjacency = np.zeros((num_nodes, num_nodes))
-        for edge in edge_list:
-            u, v = edge[0], edge[1]
-            if u in node_to_idx and v in node_to_idx:
-                u_idx, v_idx = node_to_idx[u], node_to_idx[v]
-                adjacency[u_idx, v_idx] = 1
+#         # Create adjacency matrix
+#         adjacency = np.zeros((num_nodes, num_nodes))
+#         for edge in edge_list:
+#             u, v = edge[0], edge[1]
+#             if u in node_to_idx and v in node_to_idx:
+#                 u_idx, v_idx = node_to_idx[u], node_to_idx[v]
+#                 adjacency[u_idx, v_idx] = 1
         
-        # Feature 1: Node degree
-        degree = np.sum(adjacency, axis=1, keepdims=True)
+#         # Feature 1: Node degree
+#         degree = np.sum(adjacency, axis=1, keepdims=True)
         
-        # Feature 2: Clustering coefficient (approximated by local triangle count)
-        triangle_count = np.zeros((num_nodes, 1))
-        for i in range(num_nodes):
-            neighbors = np.where(adjacency[i] > 0)[0]
-            if len(neighbors) >= 2:
-                # Count triangles (connections between neighbors)
-                for j in range(len(neighbors)):
-                    for k in range(j+1, len(neighbors)):
-                        if adjacency[neighbors[j], neighbors[k]] > 0:
-                            triangle_count[i, 0] += 1
+#         # Feature 2: Clustering coefficient (approximated by local triangle count)
+#         triangle_count = np.zeros((num_nodes, 1))
+#         for i in range(num_nodes):
+#             neighbors = np.where(adjacency[i] > 0)[0]
+#             if len(neighbors) >= 2:
+#                 # Count triangles (connections between neighbors)
+#                 for j in range(len(neighbors)):
+#                     for k in range(j+1, len(neighbors)):
+#                         if adjacency[neighbors[j], neighbors[k]] > 0:
+#                             triangle_count[i, 0] += 1
         
-        # Feature 3: Average neighbor degree
-        avg_neighbor_degree = np.zeros((num_nodes, 1))
-        for i in range(num_nodes):
-            neighbors = np.where(adjacency[i] > 0)[0]
-            if len(neighbors) > 0:
-                avg_neighbor_degree[i, 0] = np.mean(degree[neighbors])
+#         # Feature 3: Average neighbor degree
+#         avg_neighbor_degree = np.zeros((num_nodes, 1))
+#         for i in range(num_nodes):
+#             neighbors = np.where(adjacency[i] > 0)[0]
+#             if len(neighbors) > 0:
+#                 avg_neighbor_degree[i, 0] = np.mean(degree[neighbors])
         
-        # Combine all features
-        graph_features = np.hstack([
-            degree,
-            triangle_count,
-            avg_neighbor_degree
-        ])
+#         # Combine all features
+#         graph_features = np.hstack([
+#             degree,
+#             triangle_count,
+#             avg_neighbor_degree
+#         ])
         
-        # Normalize graph features
-        graph_features = (graph_features - np.mean(graph_features, axis=0)) / (np.std(graph_features, axis=0) + 1e-8)
+#         # Normalize graph features
+#         graph_features = (graph_features - np.mean(graph_features, axis=0)) / (np.std(graph_features, axis=0) + 1e-8)
         
-        # Combine with original features
-        X = np.hstack([X, graph_features])
+#         # Combine with original features
+#         X = np.hstack([X, graph_features])
     
-    return X, y
+#     return X, y
 
 
 def generate_graph_statistics(graph_sample: GraphSample) -> Dict[str, float]:
