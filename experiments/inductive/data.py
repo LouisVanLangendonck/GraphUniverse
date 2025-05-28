@@ -10,11 +10,31 @@ from typing import Dict, List, Optional, Tuple, Union, Any
 import networkx as nx
 from collections import defaultdict
 
-from mmsb.model import GraphSample
+from mmsb.model import GraphSample, GraphUniverse
 from mmsb.feature_regimes import graphsample_to_pyg
 from utils.metapath_analysis import MetapathAnalyzer, UniverseMetapathSelector, FamilyMetapathEvaluator
 
 def prepare_inductive_data(
+    family_graphs: List[GraphSample],
+    config
+) -> Dict[str, Dict[str, Any]]:
+    """Updated to use universe-based metapath generation only."""
+    
+    # Get universe from first graph for metapath generation
+    universe = family_graphs[0].universe if family_graphs else None
+    
+    if universe and hasattr(config, 'enable_metapath_tasks') and config.enable_metapath_tasks:
+        # Use universe-based approach
+        return prepare_inductive_data_with_universe_metapaths(
+            family_graphs=family_graphs,
+            universe=universe,
+            config=config
+        )
+    else:
+        # Standard preparation without metapaths
+        return prepare_inductive_data_standard(family_graphs, config)
+
+def prepare_inductive_data_standard(
     family_graphs: List[GraphSample],
     config
 ) -> Dict[str, Dict[str, Any]]:
@@ -327,7 +347,6 @@ def compute_khop_community_counts_batch(
     
     return community_counts
 
-
 def create_inductive_dataloaders(
     inductive_data: Dict[str, Dict[str, Any]],
     config
@@ -375,7 +394,6 @@ def create_inductive_dataloaders(
         dataloaders[task] = task_loaders
     
     return dataloaders
-
 
 def analyze_graph_family_properties(
     family_graphs: List[GraphSample]
@@ -450,7 +468,6 @@ def analyze_graph_family_properties(
     
     return properties
 
-
 def create_metapath_benchmark_config():
     """
     Create a sample configuration for metapath-based benchmarking.
@@ -483,7 +500,6 @@ def create_metapath_benchmark_config():
     
     return MetapathConfig()
 
-
 def generate_universe_based_metapath_tasks(
     family_graphs: List[GraphSample],
     universe: 'GraphUniverse',
@@ -515,22 +531,26 @@ def generate_universe_based_metapath_tasks(
         Dictionary containing valid metapath tasks and detailed analysis
     """
     
-    print(f"\nGenerating universe-based metapath tasks...")
-    print(f"Universe parameters:")
-    print(f"  K communities: {universe.K}")
-    print(f"  Degree centers: {universe.degree_centers}")
-    print(f"  P matrix shape: {universe.P.shape}")
-    print(f"Family parameters:")
-    print(f"  Total graphs: {len(family_graphs)}")
-    print(f"  Train: {len(train_indices)}, Val: {len(val_indices)}, Test: {len(test_indices)}")
+    print("\n[DEBUG] Starting generate_universe_based_metapath_tasks")
+    print(f"[DEBUG] Input validation:")
+    print(f"  - family_graphs length: {len(family_graphs)}")
+    print(f"  - universe K: {universe.K}")
+    print(f"  - train/val/test indices: {len(train_indices)}/{len(val_indices)}/{len(test_indices)}")
+    print(f"  - k_values: {k_values}")
+    print(f"  - require_loop: {require_loop}")
+    print(f"  - degree_weight: {degree_weight}")
+    print(f"  - max_community_participation: {max_community_participation}")
+    print(f"  - n_candidates_per_k: {n_candidates_per_k}")
     
     # Step 1: Generate candidates based purely on universe parameters
+    print("\n[DEBUG] Step 1: Creating UniverseMetapathSelector")
     selector = UniverseMetapathSelector(
         universe=universe,
         degree_weight=degree_weight,
         verbose=True
     )
     
+    print("\n[DEBUG] Generating diverse metapath candidates")
     candidates = selector.generate_diverse_metapath_candidates(
         k_values=k_values,
         require_loop=require_loop,
@@ -539,20 +559,20 @@ def generate_universe_based_metapath_tasks(
         min_prob_threshold=0.001
     )
     
+    print(f"[DEBUG] Generated candidates per k: {[len(cands) for k, cands in candidates.items()]}")
+    
     # Analyze candidate properties
     candidate_analysis = selector.analyze_candidate_properties(candidates)
     
-    print(f"\nGenerated candidates:")
-    for k, k_candidates in candidates.items():
-        print(f"  k={k}: {len(k_candidates)} candidates")
-        if k_candidates:
-            top_prob = k_candidates[0][1]
-            bottom_prob = k_candidates[-1][1]
-            print(f"    Probability range: [{bottom_prob:.6f}, {top_prob:.6f}]")
+    print(f"\n[DEBUG] Candidate analysis:")
+    print(f"  - Total candidates: {candidate_analysis['total_candidates']}")
+    print(f"  - Candidates per k: {candidate_analysis['candidates_per_k']}")
     
     # Step 2: Evaluate candidates on family splits
+    print("\n[DEBUG] Step 2: Creating FamilyMetapathEvaluator")
     evaluator = FamilyMetapathEvaluator(verbose=True)
     
+    print("\n[DEBUG] Evaluating candidates on family")
     evaluation_results = evaluator.evaluate_candidates_on_family(
         candidates=candidates,
         family_graphs=family_graphs,
@@ -562,10 +582,16 @@ def generate_universe_based_metapath_tasks(
         max_community_participation=max_community_participation
     )
     
+    print(f"\n[DEBUG] Evaluation results:")
+    print(f"  - Valid metapaths: {len(evaluation_results['valid_metapaths'])}")
+    print(f"  - Rejected metapaths: {len(evaluation_results['rejected_metapaths'])}")
+    
     # Step 3: Convert valid metapaths to task format
+    print("\n[DEBUG] Step 3: Converting to task format")
     valid_tasks = {}
     
     for task_name, metapath_data in evaluation_results['valid_metapaths'].items():
+        print(f"\n[DEBUG] Processing task: {task_name}")
         metapath = metapath_data['metapath']
         k = metapath_data['k']
         
@@ -603,12 +629,14 @@ def generate_universe_based_metapath_tasks(
                     task_labels_by_graph[graph_idx] = None
                     
             except Exception as e:
-                print(f"Warning: Failed to create labels for graph {graph_idx}: {e}")
+                print(f"[DEBUG] Warning: Failed to create labels for graph {graph_idx}: {e}")
                 task_labels_by_graph[graph_idx] = None
         
         # Calculate coverage (how many graphs can use this task)
         valid_graphs = [idx for idx, labels in task_labels_by_graph.items() if labels is not None]
         coverage = len(valid_graphs) / len(family_graphs)
+        
+        print(f"[DEBUG] Task {task_name} coverage: {coverage:.3f} ({len(valid_graphs)}/{len(family_graphs)} graphs)")
         
         # Only keep tasks with reasonable coverage
         if coverage >= 0.5:  # At least 50% of graphs must support the task
@@ -634,13 +662,17 @@ def generate_universe_based_metapath_tasks(
                 'evaluation_data': metapath_data['evaluation']
             }
             
-            print(f"\nValid task created: {task_name}")
-            print(f"  Metapath: {' -> '.join(map(str, metapath))}")
-            print(f"  Coverage: {coverage:.2f}")
-            print(f"  Avg positive rate: {avg_positive_rate:.3f}")
+            print(f"[DEBUG] Added valid task: {task_name}")
+            print(f"  - Metapath: {' -> '.join(map(str, metapath))}")
+            print(f"  - Coverage: {coverage:.3f}")
+            print(f"  - Avg positive rate: {avg_positive_rate:.3f}")
     
     # Generate detailed report
+    print("\n[DEBUG] Generating detailed report")
     detailed_report = evaluator.generate_detailed_report(evaluation_results)
+    
+    print("\n[DEBUG] Final results:")
+    print(f"  - Valid tasks created: {len(valid_tasks)}")
     
     return {
         'tasks': valid_tasks,
@@ -691,6 +723,7 @@ def prepare_inductive_data_with_universe_metapaths(
     metapath_data = None
     if hasattr(config, 'enable_metapath_tasks') and config.enable_metapath_tasks:
         print("\nGenerating universe-based metapath tasks...")
+
         metapath_data = generate_universe_based_metapath_tasks(
             family_graphs=family_graphs,
             universe=universe,
@@ -698,16 +731,17 @@ def prepare_inductive_data_with_universe_metapaths(
             val_indices=val_indices,
             test_indices=test_indices,
             k_values=getattr(config, 'metapath_k_values', [3, 4, 5]),
-            require_loop=getattr(config, 'metapath_require_loop', True),
+            require_loop=getattr(config, 'metapath_require_loop', False),
             degree_weight=getattr(config, 'metapath_degree_weight', 0.3),
-            max_community_participation=getattr(config, 'max_community_participation', 0.95),
-            n_candidates_per_k=getattr(config, 'n_candidates_per_k', 30)
+            max_community_participation=getattr(config, 'max_community_participation', 1.0),
+            n_candidates_per_k=getattr(config, 'n_candidates_per_k', 40)
         )
         
         # Add metapath tasks to config.tasks
         if metapath_data and metapath_data['tasks']:
-            config.tasks.extend(list(metapath_data['tasks'].keys()))
-            print(f"Added {len(metapath_data['tasks'])} metapath tasks: {list(metapath_data['tasks'].keys())}")
+            # Use a consistent task name for metapath tasks
+            config.tasks = ["metapath"]  # Replace all tasks with just "metapath"
+            print(f"Added metapath task")
     
     # Process each task
     for task in config.tasks:
@@ -716,7 +750,7 @@ def prepare_inductive_data_with_universe_metapaths(
         task_data = {}
         
         # Check if this is a metapath task
-        is_metapath_task = (metapath_data and task in metapath_data['tasks'])
+        is_metapath_task = (metapath_data and metapath_data['tasks'])
         
         # Process each split
         for split_name, graphs_in_split in graph_split_dict.items():
@@ -752,12 +786,14 @@ def prepare_inductive_data_with_universe_metapaths(
                 elif is_metapath_task:
                     # Use universe-based metapath labels
                     original_graph_idx = graph_indices[i]
-                    task_info = metapath_data['tasks'][task]
+                    task_info = list(metapath_data['tasks'].values())[0]  # Get the first (and only) task
                     
                     if original_graph_idx in task_info['labels_by_graph']:
                         metapath_labels = task_info['labels_by_graph'][original_graph_idx]
                         if metapath_labels is not None:
-                            pyg_data.y = torch.tensor(metapath_labels, dtype=torch.long)
+                            # Convert to binary labels (0 = not participating, 1 = participating)
+                            binary_labels = (metapath_labels > 0).astype(int)
+                            pyg_data.y = torch.tensor(binary_labels, dtype=torch.long)
                         else:
                             # Skip this graph - doesn't support the metapath
                             continue
@@ -790,8 +826,7 @@ def prepare_inductive_data_with_universe_metapaths(
         if is_regression:
             output_dim = len(np.unique(family_graphs[0].community_labels))
         elif is_metapath_task:
-            task_info = metapath_data['tasks'][task]
-            output_dim = 3 if task_info['is_loop_task'] else 2
+            output_dim = 2  # Binary classification: participating or not
         else:
             all_labels = []
             for graph in family_graphs:
@@ -807,7 +842,7 @@ def prepare_inductive_data_with_universe_metapaths(
         
         # Add metapath-specific metadata
         if is_metapath_task:
-            task_info = metapath_data['tasks'][task]
+            task_info = list(metapath_data['tasks'].values())[0]  # Get the first (and only) task
             task_data['metadata'].update({
                 'metapath': task_info['metapath'],
                 'universe_probability': task_info['universe_probability'],

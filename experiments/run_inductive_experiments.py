@@ -87,6 +87,18 @@ def parse_args():
                         choices=['community', 'k_hop_community_counts'],
                         help='Learning tasks to run')
     
+    # === METAPATH TASK ARGUMENTS === 
+    parser.add_argument('--enable_metapath_tasks', action='store_true',
+                        help='Enable metapath-based classification tasks')
+    parser.add_argument('--metapath_k_values', type=int, nargs='+', default=[4, 5],
+                        help='K-values for metapath lengths (4+ for proper loops)')
+    parser.add_argument('--metapath_require_loop', action='store_true', default=False,
+                        help='Require metapaths to form loops')
+    parser.add_argument('--metapath_degree_weight', type=float, default=0.3,
+                        help='Weight for degree center influence in metapath selection')
+    parser.add_argument('--max_community_participation', type=float, default=0.95,
+                        help='Maximum allowed participation rate per community')
+    
     # === MODELS ===
     parser.add_argument('--gnn_types', type=str, nargs='+', default=['gcn', 'sage'],
                         choices=['gcn', 'gat', 'sage'],
@@ -141,6 +153,13 @@ def create_config_from_args(args) -> InductiveExperimentConfig:
         # === TASKS ===
         tasks=args.tasks,
         khop_community_counts_k=args.khop_k,
+
+        # === METAPATH CONFIGURATION ===
+        enable_metapath_tasks=args.enable_metapath_tasks,
+        metapath_k_values=args.metapath_k_values,
+        metapath_require_loop=args.metapath_require_loop,
+        metapath_degree_weight=args.metapath_degree_weight,
+        max_community_participation=args.max_community_participation,
         
         # === GRAPH FAMILY GENERATION ===
         n_graphs=args.n_graphs,

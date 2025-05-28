@@ -132,17 +132,17 @@ class MetapathAnalyzer:
         label_name: str = "metapath_participation"
     ) -> np.ndarray:
         """
-        Create node labels based on participation in a metapath.
-        Updated to require 4+ nodes for loops.
+        Create node labels with 3-class system for loops.
+        Updated to distinguish actual node loops vs community loops.
         """
         if len(metapath) < 2:
             raise ValueError("Metapath must have at least 2 communities")
         
-        # Updated loop detection: require at least 4 communities for loops
+        # Check if this could form loops (community-level check)
         is_potential_loop = self._is_valid_loop(metapath)
         
         if is_potential_loop:
-            # For loops, create 3-class labels
+            # For potential loops, create 3-class labels
             labels = np.zeros(self.n_nodes, dtype=int)
             non_loop_participating = set()
             loop_participating = set()
@@ -154,25 +154,26 @@ class MetapathAnalyzer:
         # Find all instances of the metapath in the actual graph
         metapath_instances = self._find_metapath_instances_in_graph(graph, metapath)
         
-        # Separate loop and non-loop instances
+        # Separate actual NODE loops from non-loops
         if is_potential_loop:
             loop_instances = []
             non_loop_instances = []
             
             for instance in metapath_instances:
-                if len(instance) >= 4 and instance[0] == instance[-1]:  # Updated condition
+                # Check for actual NODE loop (same node ID at start and end)
+                if len(instance) >= 4 and instance[0] == instance[-1]:  # Same NODE ID
                     loop_instances.append(instance)
                     loop_participating.update(instance)
                 else:
                     non_loop_instances.append(instance)
                     non_loop_participating.update(instance)
             
-            # Set labels: 1 for non-loop, 2 for loop participation
+            # Set labels: 1 for non-loop, 2 for actual node loop participation
             for node in non_loop_participating:
                 if node not in loop_participating:  # Only non-loop
                     labels[node] = 1
             for node in loop_participating:
-                labels[node] = 2  # Loop takes precedence
+                labels[node] = 2  # Actual node loop takes precedence
                 
             participating_nodes = non_loop_participating | loop_participating
             
@@ -314,7 +315,7 @@ class MetapathAnalyzer:
     ) -> List[List[int]]:
         """
         DFS search for metapath instances.
-        Updated to handle 4+ node loops properly.
+        Updated to handle actual node loops (same node ID) vs community loops.
         """
         # Base case: reached the end of metapath
         if metapath_index == len(metapath) - 1:
@@ -323,16 +324,17 @@ class MetapathAnalyzer:
         valid_paths = []
         next_target_community = metapath[metapath_index + 1]
         is_final_step = (metapath_index == len(metapath) - 2)
-        is_potential_loop = self._is_valid_loop(metapath)  # Use updated method
+        is_potential_loop = self._is_valid_loop(metapath)  # Community-level loop check
         
         # Explore neighbors
         for neighbor in graph.neighbors(current_node):
             # Check if neighbor is in the correct community
             if self.community_labels[neighbor] == next_target_community:
-                # For potential loops with 4+ nodes: allow returning to start node only on final step
+                
+                # For potential loops: check if this creates an actual NODE loop (same node ID)
                 if is_potential_loop and is_final_step and len(metapath) >= 4:
-                    # Final step of loop: must connect back to start node
-                    if neighbor == current_path[0]:
+                    # Final step of potential loop: allow connection back to start NODE
+                    if neighbor == current_path[0]:  # Same node ID, not just same community
                         valid_paths.append(current_path + [neighbor])
                 elif neighbor not in visited:
                     # Regular step: avoid revisiting nodes
@@ -383,6 +385,7 @@ class UniverseMetapathSelector:
     def calculate_theoretical_probability(self, metapath: List[int]) -> float:
         """
         Calculate theoretical probability using universe P and degree_centers.
+        Uses geometric mean of transition probabilities to avoid extremely small values.
         
         Args:
             metapath: List of universe community IDs
@@ -390,7 +393,7 @@ class UniverseMetapathSelector:
         Returns:
             Theoretical probability
         """
-        total_prob = 1.0
+        probs = []
         
         for i in range(len(metapath) - 1):
             from_comm = metapath[i]
@@ -409,21 +412,24 @@ class UniverseMetapathSelector:
                 degree_multiplier = (1 - self.degree_weight) + self.degree_weight * attraction_weight
             
             final_prob = base_prob * degree_multiplier
-            total_prob *= final_prob
+            probs.append(final_prob)
             
             if self.verbose and hasattr(self, '_debug_mode'):
                 print(f"    {from_comm} -> {to_comm}: base={base_prob:.4f}, "
                       f"deg_mult={degree_multiplier:.4f}, final={final_prob:.4f}")
         
-        return total_prob
+        # Use geometric mean instead of product
+        if not probs:
+            return 0.0
+        return np.exp(np.mean(np.log(probs)))
     
     def generate_diverse_metapath_candidates(
         self,
         k_values: List[int] = [3, 4, 5],
-        require_loop: bool = True,
+        require_loop: bool = False,
         n_candidates_per_k: int = 50,
         diversity_factor: float = 0.4,
-        min_prob_threshold: float = 0.001
+        min_prob_threshold: float = 0.0001
     ) -> Dict[int, List[Tuple[List[int], float]]]:
         """
         Generate diverse metapath candidates based on universe parameters only.
@@ -570,41 +576,30 @@ class UniverseMetapathSelector:
         k: int,
         max_candidates: int = 20
     ) -> List[Tuple[List[int], float]]:
-        """Filter candidates to ensure diversity."""
-        if len(candidates) <= max_candidates:
-            return candidates
-        
-        # Select diverse subset
-        selected = []
+        """Filter candidates to ensure diversity and randomly select one valid metapath."""
+        if not candidates:
+            return []
+            
+        # First ensure we have some minimum diversity by removing very similar paths
+        diverse_candidates = []
         remaining = candidates.copy()
         
-        # Always include the highest probability candidate
-        if remaining:
-            selected.append(remaining.pop(0))
-        
-        # Select diverse remaining candidates
-        while len(selected) < max_candidates and remaining:
-            best_candidate = None
-            best_diversity_score = -1
-            best_idx = -1
+        while remaining:
+            current = remaining.pop(0)
+            diverse_candidates.append(current)
             
-            for i, (candidate_path, candidate_prob) in enumerate(remaining):
-                # Calculate diversity score (how different from already selected)
-                diversity_score = self._calculate_diversity_score(candidate_path, selected)
-                
-                # Combine with probability (weighted)
-                combined_score = 0.7 * diversity_score + 0.3 * (candidate_prob / candidates[0][1])
-                
-                if combined_score > best_diversity_score:
-                    best_diversity_score = combined_score
-                    best_candidate = (candidate_path, candidate_prob)
-                    best_idx = i
-            
-            if best_candidate:
-                selected.append(best_candidate)
-                remaining.pop(best_idx)
+            # Remove paths that are too similar to current
+            remaining = [
+                (path, prob) for path, prob in remaining
+                if self._calculate_diversity_score(path, [current]) > 0.3
+            ]
         
-        return selected
+        # Randomly select one of the diverse candidates
+        if diverse_candidates:
+            selected_idx = np.random.randint(0, len(diverse_candidates))
+            return [diverse_candidates[selected_idx]]
+        
+        return []
     
     def _calculate_diversity_score(
         self,
@@ -695,6 +690,7 @@ class FamilyMetapathEvaluator:
     ) -> Dict[str, Any]:
         """
         Evaluate metapath candidates across graph family splits.
+        Selects one random valid metapath for labeling.
         
         Args:
             candidates: Universe-generated candidates {k: [(metapath, prob), ...]}
@@ -705,7 +701,7 @@ class FamilyMetapathEvaluator:
             max_community_participation: Max allowed participation rate per community
             
         Returns:
-            Dictionary with evaluation results and valid metapaths
+            Dictionary with evaluation results and one valid metapath
         """
         if self.verbose:
             print(f"\nEvaluating metapath candidates on graph family...")
@@ -725,17 +721,15 @@ class FamilyMetapathEvaluator:
             'test': test_indices
         }
         
+        # Collect all valid metapaths first
+        valid_candidates = []
+        
         for k, k_candidates in candidates.items():
             if self.verbose:
-                print(f"\n{'='*50}")
-                print(f"EVALUATING {k}-LENGTH METAPATH CANDIDATES")
-                print(f"{'='*50}")
+                print(f"\nEvaluating {k}-length metapath candidates")
             
             for candidate_idx, (metapath, universe_prob) in enumerate(k_candidates):
                 metapath_str = ' -> '.join(map(str, metapath))
-                
-                if self.verbose:
-                    print(f"\nCandidate {candidate_idx + 1}: {metapath_str} (universe prob: {universe_prob:.6f})")
                 
                 # Evaluate this metapath across all graphs and splits
                 metapath_evaluation = self._evaluate_single_metapath(
@@ -748,15 +742,7 @@ class FamilyMetapathEvaluator:
                 task_name = f"metapath_k{k}_{'loop' if metapath[0] == metapath[-1] else 'path'}_{candidate_idx}"
                 
                 if is_valid:
-                    evaluation_results['valid_metapaths'][task_name] = {
-                        'metapath': metapath,
-                        'universe_probability': universe_prob,
-                        'k': k,
-                        'evaluation': metapath_evaluation
-                    }
-                    
-                    if self.verbose:
-                        print(f"  ✓ VALID - Max participation: {metapath_evaluation['max_participation_across_splits']:.3f}")
+                    valid_candidates.append((task_name, metapath, universe_prob, metapath_evaluation))
                 else:
                     evaluation_results['rejected_metapaths'][task_name] = {
                         'metapath': metapath,
@@ -765,16 +751,26 @@ class FamilyMetapathEvaluator:
                         'evaluation': metapath_evaluation,
                         'rejection_reason': metapath_evaluation['rejection_reason']
                     }
-                    
-                    if self.verbose:
-                        print(f"  ✗ REJECTED - {metapath_evaluation['rejection_reason']}")
                 
                 # Store detailed participation report
                 evaluation_results['participation_reports'][task_name] = metapath_evaluation['detailed_report']
-                
-                # Only keep first valid metapath per k for now
-                if is_valid:
-                    break
+        
+        # Randomly select one valid metapath
+        if valid_candidates:
+            selected_idx = np.random.randint(0, len(valid_candidates))
+            task_name, metapath, universe_prob, metapath_evaluation = valid_candidates[selected_idx]
+            
+            evaluation_results['valid_metapaths'][task_name] = {
+                'metapath': metapath,
+                'universe_probability': universe_prob,
+                'k': len(metapath),
+                'evaluation': metapath_evaluation
+            }
+            
+            if self.verbose:
+                print(f"\nSelected valid metapath: {task_name}")
+                print(f"  Metapath: {' -> '.join(map(str, metapath))}")
+                print(f"  Max participation: {metapath_evaluation['max_participation_across_splits']:.3f}")
         
         # Generate summary analysis
         evaluation_results['split_analysis'] = self._analyze_split_performance(
@@ -798,7 +794,6 @@ class FamilyMetapathEvaluator:
         # Map metapath from universe IDs to graph-local IDs for each graph
         participation_by_split = {}
         detailed_participation = {}
-        rejection_reasons = []
         
         for split_name, graph_indices in splits.items():
             participation_by_split[split_name] = {}
@@ -844,7 +839,7 @@ class FamilyMetapathEvaluator:
         
         # Calculate participation rates and check validity
         max_participation_overall = 0.0
-        invalid_splits = []
+        has_valid_community = False  # Track if any community is below threshold
         
         for split_name, split_participation in participation_by_split.items():
             for comm_id, comm_data in split_participation.items():
@@ -854,26 +849,19 @@ class FamilyMetapathEvaluator:
                     
                     max_participation_overall = max(max_participation_overall, participation_rate)
                     
-                    if participation_rate >= 1.0:
-                        invalid_splits.append(f"{split_name}_comm_{comm_id}")
-                        rejection_reasons.append(
-                            f"Community {comm_id} has 100% participation in {split_name} split"
-                        )
-                    elif participation_rate > max_participation:
-                        invalid_splits.append(f"{split_name}_comm_{comm_id}")
-                        rejection_reasons.append(
-                            f"Community {comm_id} has {participation_rate:.3f} participation in {split_name} split (>{max_participation})"
-                        )
+                    # Check if this community has acceptable participation
+                    if participation_rate < max_participation:
+                        has_valid_community = True
         
-        is_valid = len(invalid_splits) == 0
+        # Accept if at least one community has acceptable participation
+        is_valid = has_valid_community
         
         return {
             'is_valid': is_valid,
             'participation_by_split': participation_by_split,
             'detailed_participation': detailed_participation,
             'max_participation_across_splits': max_participation_overall,
-            'invalid_splits': invalid_splits,
-            'rejection_reason': '; '.join(rejection_reasons) if rejection_reasons else None,
+            'rejection_reason': None if is_valid else "No community has participation below threshold",
             'detailed_report': self._create_participation_report(metapath, participation_by_split)
         }
     

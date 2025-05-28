@@ -41,11 +41,13 @@ def parse_args():
     
     # Task configuration
     parser.add_argument('--tasks', type=str, nargs='+', 
-                        default=['k_hop_community_counts'],
-                        choices=['community', 'k_hop_community_counts'],
+                        default=['metapath'],
+                        choices=['community', 'k_hop_community_counts', 'metapath'],
                         help='Learning tasks to run')
     parser.add_argument('--khop_k', type=int, default=2,
                         help='k value for k-hop community counting task')
+    parser.add_argument('--metapath_k_values', type=int, nargs='+', default=[3, 4, 5],
+                        help='K-values for metapath lengths')
     
     # Base experiment settings
     parser.add_argument('--n_graphs', type=int, default=12,
@@ -247,6 +249,15 @@ def create_custom_experiment(args) -> CleanMultiExperimentConfig:
                 is_sweep=False
             )
         })
+    # ADD metapath task configuration
+    if 'metapath' in args.tasks:
+        # Metapath tasks will be added automatically by the system
+        # Configure metapath parameters
+        base_config.enable_metapath_tasks = True
+        base_config.metapath_k_values = getattr(args, 'metapath_k_values', [4, 5])
+        base_config.metapath_require_loop = getattr(args, 'metapath_require_loop', False)
+        base_config.metapath_degree_weight = getattr(args, 'metapath_degree_weight', 0.3)
+        base_config.max_community_participation = getattr(args, 'max_community_participation', 0.95)
     
     return CleanMultiExperimentConfig(
         base_config=base_config,

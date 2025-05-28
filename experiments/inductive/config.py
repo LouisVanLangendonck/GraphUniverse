@@ -82,6 +82,14 @@ class InductiveExperimentConfig:
     tasks: List[str] = field(default_factory=lambda: ['community'])
     is_regression: Dict[str, bool] = field(default_factory=lambda: {'community': False})
     khop_community_counts_k: int = 2
+
+    # === METAPATH TASK SETTINGS ===
+    enable_metapath_tasks: bool = False
+    metapath_k_values: List[int] = field(default_factory=lambda: [4, 5])  # 4+ for proper loops
+    metapath_require_loop: bool = True
+    metapath_degree_weight: float = 0.3
+    max_community_participation: float = 0.95
+    n_candidates_per_k: int = 30
     
     # === MODELS ===
     gnn_types: List[str] = field(default_factory=lambda: ['gcn', 'sage'])

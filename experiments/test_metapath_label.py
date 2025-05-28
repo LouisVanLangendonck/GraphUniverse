@@ -392,7 +392,7 @@ def run_multi_graph_metapath_test(
             )
         else:
             print(f"No valid data for visualization of {task_name}")
-            
+
 def create_multi_graph_metapath_visualization(
     family_graphs: List,
     task_data: List[Dict],
@@ -658,7 +658,7 @@ def test_core_universe_metapath():
     train_indices = [0, 1, 2]
     val_indices = [3, 4] 
     test_indices = [5]
-    
+
     # 3. Generate universe-based tasks
     metapath_data = generate_universe_based_metapath_tasks(
         family_graphs=family_graphs,
@@ -667,7 +667,7 @@ def test_core_universe_metapath():
         val_indices=val_indices,
         test_indices=test_indices,
         k_values=[4, 5],  # 4+ for proper loops
-        require_loop=True
+        require_loop=False
     )
     
     # 4. Visualize across multiple graphs
