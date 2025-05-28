@@ -111,6 +111,10 @@ class InductiveExperimentConfig:
     collect_signal_metrics: bool = True  # NEW: collect community signals
     save_individual_graphs: bool = False
     
+    # Regression-specific parameters
+    regression_loss: str = 'mae'  # 'mse' or 'mae'
+    regression_metrics: List[str] = field(default_factory=lambda: ['mae', 'mse', 'rmse', 'r2'])
+    
     def __post_init__(self):
         """Validate configuration."""
         # Validate graph split ratios

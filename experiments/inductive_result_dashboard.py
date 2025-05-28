@@ -73,9 +73,66 @@ def process_results_to_dataframe(data):
     
     return pd.DataFrame(rows)
 
+def get_available_tasks_and_metrics(df):
+    """Extract available tasks and their metrics from the dataframe columns."""
+    tasks = {}
+    
+    # Find all task_model_metric columns
+    for col in df.columns:
+        if '_' in col and not col.startswith(('sweep_', 'random_', 'family_', 'consistency_', 'signal_')) and not col.endswith('_train_time'):
+            parts = col.split('_')
+            if len(parts) >= 3:
+                # Handle label-specific metrics (e.g., k_hop_community_counts_gcn_mse_label_0)
+                if 'label' in parts:
+                    label_idx = parts.index('label')
+                    # Everything before 'label' minus the last part (which is the base metric)
+                    task_model_parts = parts[:label_idx-1]
+                    metric_part = parts[label_idx-1]  # The base metric name
+                else:
+                    # Regular format: task_model_metric
+                    task_model_parts = parts[:-1]  # Everything except the last part
+                    metric_part = parts[-1]  # The metric name
+                
+                if len(task_model_parts) >= 2:
+                    # The task could be multi-word (e.g., k_hop_community_counts)
+                    # We need to figure out where task ends and model begins
+                    # Strategy: try different splits and see which ones make sense
+                    
+                    # For now, let's assume the model is the last part of task_model_parts
+                    # and everything before is the task
+                    task_parts = task_model_parts[:-1]
+                    task = '_'.join(task_parts) if len(task_parts) > 1 else task_parts[0]
+                    
+                    if task not in tasks:
+                        tasks[task] = set()
+                    tasks[task].add(metric_part)
+    
+    # Convert sets to sorted lists
+    for task in tasks:
+        tasks[task] = sorted(list(tasks[task]))
+    
+    return tasks
+
+def is_higher_better_metric(metric):
+    """Determine if higher values are better for a given metric."""
+    # Metrics where higher is better
+    higher_better = {'accuracy', 'f1_macro', 'f1_micro', 'precision', 'recall', 'r2', 'auc', 'roc_auc'}
+    # Metrics where lower is better
+    lower_better = {'mse', 'rmse', 'mae', 'loss', 'error'}
+    
+    metric_lower = metric.lower()
+    
+    if any(hb in metric_lower for hb in higher_better):
+        return True
+    elif any(lb in metric_lower for lb in lower_better):
+        return False
+    else:
+        # Default assumption: higher is better (can be customized)
+        return True
+
 def calculate_model_rankings(df, task='community', metric='accuracy'):
     """Calculate model rankings for each run and overall averages."""
-    model_columns = [col for col in df.columns if f'{task}_' in col and f'_{metric}' in col and 'train_time' not in col]
+    model_columns = [col for col in df.columns if f'{task}_' in col and f'_{metric}' in col and 'train_time' not in col and 'label' not in col]
     model_names = [col.replace(f'{task}_', '').replace(f'_{metric}', '') for col in model_columns]
     
     # Filter out runs that have NaN values for any model in this task/metric
@@ -95,9 +152,15 @@ def calculate_model_rankings(df, task='community', metric='accuracy'):
     
     # Per-run rankings (1 = best)
     ranking_df = df_clean.copy()
+    higher_better = is_higher_better_metric(metric)
+    
     for idx, row in ranking_df.iterrows():
-        # Rank in descending order (higher metric = better = lower rank number)
-        ranks = rankdata(-row.values, method='min')
+        if higher_better:
+            # Higher metric = better = lower rank number
+            ranks = rankdata(-row.values, method='min')
+        else:
+            # Lower metric = better = lower rank number  
+            ranks = rankdata(row.values, method='min')
         ranking_df.loc[idx] = ranks
     
     # Rename columns to indicate rankings
@@ -227,6 +290,35 @@ def create_2d_parameter_manifold(df, param1, param2, model, task='community', me
     
     return fig
 
+       
+def get_models_for_task(df, task):
+    """Get all model names for a specific task."""
+    models = set()
+    
+    # Find all columns that match this task
+    for col in df.columns:
+        if col.startswith(f'{task}_') and not col.endswith('_train_time'):
+            # Remove the task prefix
+            remaining = col[len(task)+1:]  # +1 for the underscore
+            
+            # Split the remaining part
+            parts = remaining.split('_')
+            
+            # Handle label-specific metrics (e.g., gcn_mse_label_0)
+            if 'label' in parts:
+                label_idx = parts.index('label')
+                # Model is everything before the metric (which is before 'label')
+                model_parts = parts[:label_idx-1]
+            else:
+                # Regular format: model_metric
+                model_parts = parts[:-1]  # Everything except the last part (metric)
+            
+            if model_parts:
+                model = '_'.join(model_parts) if len(model_parts) > 1 else model_parts[0]
+                models.add(model)
+    
+    return sorted(list(models))
+        
 # Main Streamlit App
 def main():
     st.title("🧠 GraphUniverse Benchmarking Visualization")
@@ -248,10 +340,14 @@ def main():
                 data = load_experiment_data(json_file)
                 df = process_results_to_dataframe(data)
                 
+                # Get available tasks and metrics
+                available_tasks_metrics = get_available_tasks_and_metrics(df)
+                
                 # Display basic info
                 st.sidebar.success(f"✅ Loaded {len(df)} successful runs")
                 st.sidebar.info(f"📊 Total runs attempted: {data['summary_stats']['total_runs_attempted']}")
                 st.sidebar.info(f"⏱️ Success rate: {data['summary_stats']['success_rate']:.1%}")
+                st.sidebar.info(f"🎯 Available tasks: {', '.join(available_tasks_metrics.keys())}")
                 
             else:
                 st.error(f"JSON file not found: {json_file}")
@@ -269,28 +365,34 @@ def main():
     with tab1:
         st.header("Basic 2D Plotting")
         
-        col1, col2, col3 = st.columns(3)
+        col1, col2, col3, col4 = st.columns(4)
         
-        # Get available parameters and metrics
+        # Get available parameters
         param_columns = [col for col in df.columns if col.startswith(('sweep_', 'random_', 'family_', 'consistency_', 'signal_'))]
-        metric_columns = [col for col in df.columns if any(metric in col for metric in ['accuracy', 'f1_macro', 'precision', 'recall']) and 'train_time' not in col]
-        model_names = list(set([col.split('_')[1] for col in metric_columns if '_' in col]))
         
         with col1:
             x_param = st.selectbox("X-axis Parameter:", param_columns, key="basic_x")
             
         with col2:
-            y_metric = st.selectbox("Y-axis Metric:", metric_columns, key="basic_y")
+            selected_task = st.selectbox("Task:", list(available_tasks_metrics.keys()), key="basic_task")
             
         with col3:
+            if selected_task in available_tasks_metrics:
+                y_metric = st.selectbox("Y-axis Metric:", available_tasks_metrics[selected_task], key="basic_y")
+            else:
+                st.error("No metrics available for selected task")
+                return
+        with col4:
+            model_names = get_models_for_task(df, selected_task)
             selected_models = st.multiselect("Models to Plot:", model_names, default=model_names[:3], key="basic_models")
         
         if selected_models:
             # Filter out runs with NaN values for the selected models
             relevant_columns = []
             for model in selected_models:
-                model_metric_cols = [col for col in metric_columns if f'_{model}_' in col and y_metric.split('_')[-1] in col]
-                relevant_columns.extend(model_metric_cols)
+                model_col = f'{selected_task}_{model}_{y_metric}'
+                if model_col in df.columns:
+                    relevant_columns.append(model_col)
             
             # Only use runs that have complete data for all selected models
             df_plot = df[relevant_columns + [x_param]].dropna()
@@ -304,18 +406,18 @@ def main():
                 fig = go.Figure()
                 
                 for model in selected_models:
-                    model_metric_col = [col for col in metric_columns if f'_{model}_' in col and y_metric.split('_')[-1] in col][0]
-                    
-                    fig.add_trace(go.Scatter(
-                        x=df_plot[x_param],
-                        y=df_plot[model_metric_col],
-                        mode='markers',
-                        name=model.upper(),
-                        marker=dict(size=8, opacity=0.7)
-                    ))
+                    model_col = f'{selected_task}_{model}_{y_metric}'
+                    if model_col in df_plot.columns:
+                        fig.add_trace(go.Scatter(
+                            x=df_plot[x_param],
+                            y=df_plot[model_col],
+                            mode='markers',
+                            name=model.upper(),
+                            marker=dict(size=8, opacity=0.7)
+                        ))
                 
                 fig.update_layout(
-                    title=f"{y_metric} vs {x_param}",
+                    title=f"{selected_task} - {y_metric} vs {x_param}",
                     xaxis_title=x_param,
                     yaxis_title=y_metric,
                     height=500
@@ -329,44 +431,58 @@ def main():
         col1, col2 = st.columns(2)
         
         with col1:
-            task = st.selectbox("Task:", ['community'], key="rank_task")  # Extend as needed
-            metric = st.selectbox("Metric:", ['accuracy', 'f1_macro', 'precision', 'recall'], key="rank_metric")
+            task = st.selectbox("Task:", list(available_tasks_metrics.keys()), key="rank_task")
+        
+        with col2:
+            if task in available_tasks_metrics:
+                metric = st.selectbox("Metric:", available_tasks_metrics[task], key="rank_metric")
+            else:
+                st.error("No metrics available for selected task")
+                return
         
         ranking_df, distance_df, avg_rankings, model_names, clean_indices = calculate_model_rankings(df, task, metric)
         
-        # Average rankings bar chart
-        fig_avg = go.Figure(data=[
-            go.Bar(
-                x=model_names,
-                y=avg_rankings.values,
-                text=[f'{val:.2f}' for val in avg_rankings.values],
-                textposition='auto'
-            )
-        ])
-        fig_avg.update_layout(
-            title=f"Average Model Rankings ({metric})",
-            xaxis_title="Model",
-            yaxis_title="Average Rank (1=best)",
-            height=400
-        )
-        
-        st.plotly_chart(fig_avg, use_container_width=True)
-        
-        # Rankings distribution
-        st.subheader("Ranking Distributions")
-        
-        cols = st.columns(len(model_names))
-        for i, model in enumerate(model_names):
-            with cols[i]:
-                rank_col = f'{task}_{model}_rank'
-                fig_dist = px.histogram(
-                    ranking_df, 
-                    x=rank_col,
-                    title=f"{model.upper()}<br>Rank Distribution",
-                    nbins=int(max(ranking_df[rank_col])) if max(ranking_df[rank_col]) > 1 else 5
+        if ranking_df is not None:
+            # Average rankings bar chart
+            fig_avg = go.Figure(data=[
+                go.Bar(
+                    x=model_names,
+                    y=avg_rankings.values,
+                    text=[f'{val:.2f}' for val in avg_rankings.values],
+                    textposition='auto'
                 )
-                fig_dist.update_layout(height=300, showlegend=False)
-                st.plotly_chart(fig_dist, use_container_width=True)
+            ])
+            fig_avg.update_layout(
+                title=f"Average Model Rankings ({metric}) - Lower is Better",
+                xaxis_title="Model",
+                yaxis_title="Average Rank (1=best)",
+                height=400
+            )
+            
+            st.plotly_chart(fig_avg, use_container_width=True)
+            
+            # Show which direction is better for this metric
+            higher_better = is_higher_better_metric(metric)
+            if higher_better:
+                st.info(f"ℹ️ For {metric}: Higher values are better")
+            else:
+                st.info(f"ℹ️ For {metric}: Lower values are better")
+            
+            # Rankings distribution
+            st.subheader("Ranking Distributions")
+            
+            cols = st.columns(len(model_names))
+            for i, model in enumerate(model_names):
+                with cols[i]:
+                    rank_col = f'{task}_{model}_rank'
+                    fig_dist = px.histogram(
+                        ranking_df, 
+                        x=rank_col,
+                        title=f"{model.upper()}<br>Rank Distribution",
+                        nbins=int(max(ranking_df[rank_col])) if max(ranking_df[rank_col]) > 1 else 5
+                    )
+                    fig_dist.update_layout(height=300, showlegend=False)
+                    st.plotly_chart(fig_dist, use_container_width=True)
     
     with tab3:
         st.header("Parameter Space Manifolds")
@@ -382,8 +498,13 @@ def main():
             viz_type = st.selectbox("Visualization Type:", 
                                 ["Performance Distance from Average", "Average Ranking"], 
                                 key="viz_type")
-            manifold_task = st.selectbox("Task:", ['community'], key="manifold_task")
-            manifold_metric = st.selectbox("Metric:", ['accuracy', 'f1_macro', 'precision', 'recall'], key="manifold_metric")
+            manifold_task = st.selectbox("Task:", list(available_tasks_metrics.keys()), key="manifold_task")
+            
+            if manifold_task in available_tasks_metrics:
+                manifold_metric = st.selectbox("Metric:", available_tasks_metrics[manifold_task], key="manifold_metric")
+            else:
+                st.error("No metrics available for selected task")
+                return
         
         if param1 != param2:
             result = calculate_model_rankings(df, manifold_task, manifold_metric)
@@ -398,7 +519,7 @@ def main():
                 # Calculate the appropriate distance data
                 if viz_type == "Performance Distance from Average":
                     # Get the metric columns for the selected task
-                    metric_cols = [col for col in df_clean.columns if f'{manifold_task}_' in col and f'_{manifold_metric}' in col and 'train_time' not in col]
+                    metric_cols = [col for col in df_clean.columns if f'{manifold_task}_' in col and f'_{manifold_metric}' in col and 'train_time' not in col and 'label' not in col]
                     
                     # Calculate average performance for each run
                     avg_performance = df_clean[metric_cols].mean(axis=1)
@@ -534,10 +655,16 @@ def main():
         st.subheader(f"Filtered Data ({len(filtered_df)} runs)")
         
         # Show data table
+        all_metric_columns = []
+        for task, metrics in available_tasks_metrics.items():
+            for metric in metrics:
+                task_model_columns = [col for col in df.columns if f'{task}_' in col and f'_{metric}' in col and 'train_time' not in col and 'label' not in col]
+                all_metric_columns.extend(task_model_columns)
+        
         display_columns = st.multiselect(
             "Select Columns to Display:",
             df.columns.tolist(),
-            default=['run_id', 'method', 'degree_distribution', 'n_graphs'] + metric_columns[:5]
+            default=['run_id', 'method', 'degree_distribution', 'n_graphs'] + all_metric_columns[:5]
         )
         
         if display_columns:
@@ -570,9 +697,11 @@ def main():
             # Model selection
             col1, col2 = st.columns(2)
             with col1:
-                selected_task = st.selectbox("Task:", [m[0] for m in models_with_hyperopt])
+                available_tasks_hyperopt = list(set([m[0] for m in models_with_hyperopt]))
+                selected_task = st.selectbox("Task:", available_tasks_hyperopt)
             with col2:
-                selected_model = st.selectbox("Model:", [m[1] for m in models_with_hyperopt if m[0] == selected_task])
+                available_models_for_task = [m[1] for m in models_with_hyperopt if m[0] == selected_task]
+                selected_model = st.selectbox("Model:", available_models_for_task)
             
             # Get all hyperparameters for the selected model
             hyperparams = set()
@@ -593,19 +722,42 @@ def main():
                 performance_values = []
                 sweep_params = []
                 
+                # Determine the best performance metric for this task
+                if selected_task in available_tasks_metrics:
+                    task_metrics = available_tasks_metrics[selected_task]
+                    # Choose the primary metric based on task type
+                    if 'accuracy' in task_metrics:
+                        performance_metric = 'accuracy'
+                    elif 'r2' in task_metrics:
+                        performance_metric = 'r2'
+                    elif 'mse' in task_metrics:
+                        performance_metric = 'mse'
+                    else:
+                        performance_metric = task_metrics[0]  # Just use the first available metric
+                else:
+                    performance_metric = 'accuracy'  # Default fallback
+                
                 for result in data['all_results']:
                     if selected_task in result['model_results'] and selected_model in result['model_results'][selected_task]:
                         model_data = result['model_results'][selected_task][selected_model]
                         if model_data.get('success') and 'optimal_hyperparams' in model_data:
-                            hyperparam_values.append(model_data['optimal_hyperparams'][selected_hyperparam])
-                            # Use accuracy as performance metric
-                            performance_values.append(model_data['test_metrics']['accuracy'])
-                            # Store sweep parameters for correlation analysis
-                            sweep_params.append(result['sweep_parameters'])
+                            if selected_hyperparam in model_data['optimal_hyperparams']:
+                                hyperparam_values.append(model_data['optimal_hyperparams'][selected_hyperparam])
+                                # Use the selected performance metric
+                                if performance_metric in model_data['test_metrics']:
+                                    performance_values.append(model_data['test_metrics'][performance_metric])
+                                else:
+                                    # If the performance metric isn't available, skip this run
+                                    continue
+                                # Store sweep parameters for correlation analysis
+                                sweep_params.append(result['sweep_parameters'])
                 
                 if not hyperparam_values:
                     st.warning(f"No values found for {selected_hyperparam}.")
                 else:
+                    # Display which performance metric is being used
+                    st.info(f"Using {performance_metric} as performance metric")
+                    
                     # Create two columns for plots
                     col1, col2 = st.columns(2)
                     
@@ -636,28 +788,28 @@ def main():
                         st.plotly_chart(fig, use_container_width=True)
                     
                     with col2:
-                        st.subheader("Performance vs Hyperparameter")
+                        st.subheader(f"Performance vs Hyperparameter")
                         
                         if is_numerical:
                             # Scatter plot for numerical values
                             fig = px.scatter(
                                 x=hyperparam_values,
                                 y=performance_values,
-                                title=f"Performance vs {selected_hyperparam}",
-                                labels={'x': selected_hyperparam, 'y': 'Accuracy'},
+                                title=f"{performance_metric.upper()} vs {selected_hyperparam}",
+                                labels={'x': selected_hyperparam, 'y': performance_metric.upper()},
                                 trendline="ols"
                             )
                         else:
                             # Box plot for categorical values
                             df_plot = pd.DataFrame({
                                 selected_hyperparam: hyperparam_values,
-                                'Accuracy': performance_values
+                                performance_metric.upper(): performance_values
                             })
                             fig = px.box(
                                 df_plot,
                                 x=selected_hyperparam,
-                                y='Accuracy',
-                                title=f"Performance by {selected_hyperparam}"
+                                y=performance_metric.upper(),
+                                title=f"{performance_metric.upper()} by {selected_hyperparam}"
                             )
                         
                         st.plotly_chart(fig, use_container_width=True)
@@ -666,43 +818,44 @@ def main():
                     st.subheader("Parameter Correlation Analysis")
                     
                     # Select a sweep parameter to analyze correlation with
-                    sweep_param_cols = st.multiselect(
-                        "Select sweep parameters to analyze:",
-                        list(sweep_params[0].keys()),
-                        default=list(sweep_params[0].keys())[:2] if sweep_params else []
-                    )
-                    
-                    if sweep_param_cols:
-                        # Create correlation plots
-                        cols = st.columns(len(sweep_param_cols))
+                    if sweep_params:
+                        sweep_param_cols = st.multiselect(
+                            "Select sweep parameters to analyze:",
+                            list(sweep_params[0].keys()),
+                            default=list(sweep_params[0].keys())[:2] if sweep_params else []
+                        )
                         
-                        for i, param in enumerate(sweep_param_cols):
-                            with cols[i]:
-                                param_values = [p[param] for p in sweep_params]
-                                
-                                if is_numerical:
-                                    # Scatter plot for numerical values
-                                    fig = px.scatter(
-                                        x=param_values,
-                                        y=hyperparam_values,
-                                        title=f"{selected_hyperparam} vs {param}",
-                                        labels={'x': param, 'y': selected_hyperparam},
-                                        trendline="ols"
-                                    )
-                                else:
-                                    # Box plot for categorical values
-                                    df_plot = pd.DataFrame({
-                                        param: param_values,
-                                        selected_hyperparam: hyperparam_values
-                                    })
-                                    fig = px.box(
-                                        df_plot,
-                                        x=param,
-                                        y=selected_hyperparam,
-                                        title=f"{selected_hyperparam} by {param}"
-                                    )
-                                
-                                st.plotly_chart(fig, use_container_width=True)
+                        if sweep_param_cols:
+                            # Create correlation plots
+                            cols = st.columns(len(sweep_param_cols))
+                            
+                            for i, param in enumerate(sweep_param_cols):
+                                with cols[i]:
+                                    param_values = [p[param] for p in sweep_params]
+                                    
+                                    if is_numerical:
+                                        # Scatter plot for numerical values
+                                        fig = px.scatter(
+                                            x=param_values,
+                                            y=hyperparam_values,
+                                            title=f"{selected_hyperparam} vs {param}",
+                                            labels={'x': param, 'y': selected_hyperparam},
+                                            trendline="ols"
+                                        )
+                                    else:
+                                        # Box plot for categorical values
+                                        df_plot = pd.DataFrame({
+                                            param: param_values,
+                                            selected_hyperparam: hyperparam_values
+                                        })
+                                        fig = px.box(
+                                            df_plot,
+                                            x=param,
+                                            y=selected_hyperparam,
+                                            title=f"{selected_hyperparam} by {param}"
+                                        )
+                                    
+                                    st.plotly_chart(fig, use_container_width=True)
 
 if __name__ == "__main__":
     main()

@@ -134,7 +134,14 @@ def train_inductive_model(
         weight_decay=config.weight_decay
     )
     
-    criterion = nn.MSELoss() if is_regression else nn.CrossEntropyLoss()
+    # Set up loss function
+    if is_regression:
+        if config.regression_loss == 'mae':
+            criterion = torch.nn.L1Loss()
+        else:
+            criterion = torch.nn.MSELoss()
+    else:
+        criterion = torch.nn.CrossEntropyLoss()
     
     # Training loop
     best_val_metric = float('-inf') if is_regression else 0.0
@@ -227,8 +234,8 @@ def train_inductive_model(
         val_metrics = compute_metrics(val_true, val_pred, is_regression)
         
         if is_regression:
-            train_metric = train_metrics['r2']
-            val_metric = val_metrics['r2']
+            train_metric = train_metrics['mae']
+            val_metric = val_metrics['mae']
         else:
             train_metric = train_metrics['f1_macro']
             val_metric = val_metrics['f1_macro']
@@ -247,8 +254,16 @@ def train_inductive_model(
         # Model selection
         improved = False
         if is_regression:
-            if val_metric > best_val_metric:  # Higher R² is better
-                improved = True
+            if config.regression_loss == 'mae':
+                # For MAE, lower is better
+                if val_metric < best_val_metric:
+                    improved = True
+            elif config.regression_loss == 'r2':
+                # For R², higher is better
+                if val_metric > best_val_metric:
+                    improved = True
+            else:
+                raise ValueError(f"Invalid regression loss: {config.regression_loss}")
         else:
             if val_metric > best_val_metric:  # Higher F1 is better
                 improved = True
@@ -308,12 +323,28 @@ def train_sklearn_inductive(
         batch_features = batch.x.cpu().numpy()
         batch_labels = batch.y.cpu().numpy()
         
+        # Ensure labels have correct shape
+        if len(batch_labels.shape) == 1:
+            batch_labels = batch_labels.reshape(-1, 1)
+        
+        # Reshape features if needed (handle batch dimension)
+        if len(batch_features.shape) > 2:
+            batch_features = batch_features.reshape(batch_features.shape[0], -1)
+        
         train_features.append(batch_features)
         train_labels.append(batch_labels)
     
     # Concatenate all training data
     X_train = np.vstack(train_features)
-    y_train = np.hstack(train_labels)
+    y_train = np.vstack(train_labels)
+    
+    # Verify shapes match
+    if X_train.shape[0] != y_train.shape[0]:
+        raise ValueError(f"Feature and label dimensions don't match: X_train {X_train.shape}, y_train {y_train.shape}")
+    
+    # If regression task, flatten y_train if it's 2D
+    if is_regression and len(y_train.shape) > 1:
+        y_train = y_train.ravel()
     
     # Train model
     start_time = time.time()
@@ -328,14 +359,34 @@ def train_sklearn_inductive(
         batch_features = batch.x.cpu().numpy()
         batch_labels = batch.y.cpu().numpy()
         
+        # Ensure labels have correct shape
+        if len(batch_labels.shape) == 1:
+            batch_labels = batch_labels.reshape(-1, 1)
+        
+        # Reshape features if needed (handle batch dimension)
+        if len(batch_features.shape) > 2:
+            batch_features = batch_features.reshape(batch_features.shape[0], -1)
+        
         test_features.append(batch_features)
         test_labels.append(batch_labels)
     
     X_test = np.vstack(test_features)
-    y_test = np.hstack(test_labels)
+    y_test = np.vstack(test_labels)
+    
+    # Verify shapes match
+    if X_test.shape[0] != y_test.shape[0]:
+        raise ValueError(f"Feature and label dimensions don't match: X_test {X_test.shape}, y_test {y_test.shape}")
+    
+    # If regression task, flatten y_test if it's 2D
+    if is_regression and len(y_test.shape) > 1:
+        y_test = y_test.ravel()
     
     # Make predictions
     y_pred = model.predict(X_test)
+    
+    # Ensure predictions have correct shape for metrics
+    if is_regression and len(y_pred.shape) == 1:
+        y_pred = y_pred.reshape(-1, 1)
     
     # Compute metrics
     test_metrics = compute_metrics(y_test, y_pred, is_regression)
@@ -508,15 +559,27 @@ def optimize_inductive_hyperparameters(
             )
             
             # Train and evaluate sklearn model quickly
-            return train_sklearn_inductive(model, dataloaders, config, is_regression)['test_metrics']['r2' if is_regression else 'f1_macro']
+            results = train_sklearn_inductive(model, dataloaders, config, is_regression)
+            if is_regression:
+                return -results['test_metrics']['mae']  # Negative because we minimize MAE
+            else:
+                return results['test_metrics']['f1_macro']
         
         # Train PyTorch model with reduced epochs for speed
         optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
-        criterion = nn.MSELoss() if is_regression else nn.CrossEntropyLoss()
+        
+        # Set up loss function based on regression type
+        if is_regression:
+            if config.regression_loss == 'mae':
+                criterion = torch.nn.L1Loss()
+            else:
+                criterion = torch.nn.MSELoss()
+        else:
+            criterion = torch.nn.CrossEntropyLoss()
         
         # Quick training loop
         max_epochs = min(50, config.epochs // 4)  # Reduced epochs for hyperopt
-        best_val_metric = float('-inf') if is_regression else 0.0
+        best_val_metric = float('inf') if is_regression else 0.0  # Initialize based on task
         patience_counter = 0
         
         for epoch in range(max_epochs):
@@ -562,15 +625,23 @@ def optimize_inductive_hyperparameters(
             val_metrics = compute_metrics(val_true, val_pred, is_regression)
             
             if is_regression:
-                val_metric = val_metrics['r2']
-                if val_metric > best_val_metric:
-                    best_val_metric = val_metric
-                    patience_counter = 0
+                if config.regression_loss == 'mae':
+                    val_metric = val_metrics['mae']
+                    if val_metric < best_val_metric:  # Lower is better for MAE
+                        best_val_metric = val_metric
+                        patience_counter = 0
+                    else:
+                        patience_counter += 1
                 else:
-                    patience_counter += 1
+                    val_metric = val_metrics['r2']
+                    if val_metric > best_val_metric:  # Higher is better for R²
+                        best_val_metric = val_metric
+                        patience_counter = 0
+                    else:
+                        patience_counter += 1
             else:
                 val_metric = val_metrics['f1_macro']
-                if val_metric > best_val_metric:
+                if val_metric > best_val_metric:  # Higher is better for F1
                     best_val_metric = val_metric
                     patience_counter = 0
                 else:
@@ -579,7 +650,14 @@ def optimize_inductive_hyperparameters(
             if patience_counter >= patience:
                 break
         
-        return best_val_metric
+        # Return negative MAE for minimization or positive R²/F1 for maximization
+        if is_regression:
+            if config.regression_loss == 'mae':
+                return -best_val_metric  # Negative because we minimize MAE
+            else:
+                return best_val_metric  # Positive because we maximize R²
+        else:
+            return best_val_metric  # Positive because we maximize F1
     
     # Create study with storage if experiment info provided
     study_name = f"{model_type}_{gnn_type if gnn_type else ''}_{'regression' if is_regression else 'classification'}"
@@ -588,19 +666,19 @@ def optimize_inductive_hyperparameters(
         study = create_study(
             study_name=study_name,
             storage=storage_path,
-            direction='maximize',
+            direction='maximize',  # We always maximize because we negate MAE
             load_if_exists=True
         )
         print(f"Using optuna storage: {storage_path}")
     else:
-        study = create_study(direction='maximize')
+        study = create_study(direction='maximize')  # We always maximize because we negate MAE
     
     # Run optimization
     study.optimize(objective, n_trials=n_trials, timeout=timeout)
     
     return {
         'best_params': study.best_params,
-        'best_value': study.best_value,
+        'best_value': -study.best_value if is_regression and config.regression_loss == 'mae' else study.best_value,  # Convert back from negative MAE
         'n_trials': len(study.trials),
         'study_name': study_name
     }

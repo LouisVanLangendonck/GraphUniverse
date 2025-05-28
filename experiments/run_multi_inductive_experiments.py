@@ -86,6 +86,14 @@ def parse_args():
     parser.add_argument('--analyze_existing', type=str, default=None,
                         help='Analyze existing results at given path')
     
+    # Model selection
+    parser.add_argument('--no_gnn', action='store_false', dest='run_gnn',
+                        help='Skip GNN models')
+    parser.add_argument('--no_mlp', action='store_false', dest='run_mlp',
+                        help='Skip MLP model')
+    parser.add_argument('--no_rf', action='store_false', dest='run_rf',
+                        help='Skip Random Forest model')
+    
     # Random seed
     parser.add_argument('--seed', type=int, default=42,
                         help='Random seed')
@@ -121,9 +129,9 @@ def create_custom_experiment(args) -> CleanMultiExperimentConfig:
         
         # Tasks and models
         gnn_types=['gcn', 'sage'],
-        run_gnn=True,
-        run_mlp=True,
-        run_rf=True,
+        run_gnn=args.run_gnn,
+        run_mlp=args.run_mlp,
+        run_rf=args.run_rf,
         
         # Training
         epochs=args.epochs,
