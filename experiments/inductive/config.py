@@ -18,6 +18,17 @@ class InductiveExperimentConfig:
     seed: int = 42
     device_id: int = 0
     force_cpu: bool = False
+
+    # === SSL FINE-TUNING CONFIGURATION ===
+    use_pretrained: bool = False
+    pretrained_model_dir: str = "ssl_experiments"
+    pretrained_model_id: Optional[str] = None  # Specific model to use
+    graph_family_id: Optional[str] = None      # Specific family to use
+    graph_family_dir: str = "graph_families"   # Family directory
+    auto_load_family: bool = True              # Auto-load family from model
+    freeze_encoder: bool = False
+    compare_pretrained: bool = False
+    fine_tune_lr_multiplier: float = 0.1
     
     # === GRAPH FAMILY GENERATION ===
     n_graphs: int = 50
@@ -194,3 +205,127 @@ class InductiveExperimentConfig:
         with open(filepath, 'r') as f:
             config_dict = json.load(f)
         return cls.from_dict(config_dict)
+
+@dataclass
+class SSLInductiveConfig(InductiveExperimentConfig):
+    """Extended inductive config with SSL pre-training options."""
+    
+    # === SSL PRE-TRAINING OPTIONS ===
+    use_pretrained_models: bool = False
+    pretrained_model_dir: str = "pretrained_models"
+    
+    # Pre-training configuration (if training from scratch)
+    pretrain_from_scratch: bool = False
+    pretraining_tasks: List[str] = field(default_factory=lambda: ["link_prediction"])
+    pretraining_gnn_types: List[str] = field(default_factory=lambda: ["gcn", "sage"])
+    
+    # Fine-tuning options
+    freeze_encoder: bool = False  # Whether to freeze pre-trained encoder during fine-tuning
+    fine_tune_lr_multiplier: float = 0.1  # Learning rate multiplier for fine-tuning
+    
+    # Model matching
+    auto_match_pretrained: bool = True  # Automatically match pre-trained models to downstream tasks
+    fallback_to_random: bool = True  # Fall back to random initialization if no pre-trained model found
+
+@dataclass
+class PreTrainingConfig:
+    """Configuration for self-supervised pre-training."""
+    
+    # === EXPERIMENT SETUP ===
+    output_dir: str = "pretrained_models"
+    experiment_name: str = "ssl_pretraining"
+    seed: int = 42
+    device_id: int = 0
+    force_cpu: bool = False
+    
+    # === PRE-TRAINING TASK ===
+    pretraining_task: str = "link_prediction"  # "link_prediction", "contrastive", "both"
+
+    # === GRAPH FAMILY PERSISTENCE ===
+    n_extra_graphs_for_finetuning: int = 30  # Extra graphs to generate for later fine-tuning
+    save_graph_family: bool = True  # Save the entire graph family
+    graph_family_dir: str = "graph_families"  # Directory to save graph families
+    
+    # === PRE-TRAINING DATA SPLIT ===
+    pretraining_graph_ratio: float = 0.7  # Ratio of total graphs used for pre-training
+    warmup_graph_ratio: float = 0.3  # Ratio of pre-training graphs used for hyperopt warmup
+    
+    # === FAMILY GENERATION ===
+    # These will be used to generate the graph family
+    n_graphs: int = 50  # Base number of graphs for pre-training
+    min_n_nodes: int = 80
+    max_n_nodes: int = 120
+    min_communities: int = 3
+    max_communities: int = 7
+    universe_K: int = 10
+    universe_feature_dim: int = 32
+    universe_edge_density: float = 0.1
+    universe_homophily: float = 0.8
+    use_dccc_sbm: bool = False
+    degree_distribution: str = "power_law"
+    
+    # === MODEL CONFIGURATION ===
+    gnn_type: str = "gcn"  # "gcn", "sage", "gat"
+    hidden_dim: int = 128
+    num_layers: int = 3
+    dropout: float = 0.1
+    
+    # === TRAINING PARAMETERS ===
+    epochs: int = 300
+    learning_rate: float = 0.001
+    weight_decay: float = 1e-5
+    batch_size: int = 32
+    patience: int = 50
+    
+    # === HYPERPARAMETER OPTIMIZATION ===
+    optimize_hyperparams: bool = True
+    n_warmup_graphs: int = 5  # Number of graphs for hyperparameter tuning
+    n_trials: int = 20
+    optimization_timeout: int = 1200  # 20 minutes
+    
+    # === TASK-SPECIFIC PARAMETERS ===
+    # Link prediction
+    negative_sampling_ratio: float = 1.0
+    link_pred_loss: str = "bce"  # "bce", "margin"
+    
+    # Contrastive learning (Deep Graph InfoMax style)
+    contrastive_temperature: float = 0.07
+    corruption_type: str = "feature_shuffle"  # "feature_shuffle", "edge_dropout"
+    corruption_rate: float = 0.2
+    
+    # === SAVING CONFIGURATION ===
+    save_checkpoints: bool = True
+    checkpoint_frequency: int = 50  # Save every N epochs
+    save_best_only: bool = True
+    
+    def __post_init__(self):
+        """Validate configuration."""
+        valid_tasks = ["link_prediction", "contrastive", "both"]
+        if self.pretraining_task not in valid_tasks:
+            raise ValueError(f"pretraining_task must be one of {valid_tasks}")
+        
+        valid_gnn_types = ["gcn", "sage", "gat"]
+        if self.gnn_type not in valid_gnn_types:
+            raise ValueError(f"gnn_type must be one of {valid_gnn_types}")
+        
+        if self.n_extra_graphs_for_finetuning < 0:
+            raise ValueError("n_extra_graphs_for_finetuning must be >= 0")
+        
+        if not (0.0 < self.pretraining_graph_ratio <= 1.0):
+            raise ValueError("pretraining_graph_ratio must be in (0, 1]")
+        
+        if not (0.0 < self.warmup_graph_ratio <= 1.0):
+            raise ValueError("warmup_graph_ratio must be in (0, 1]")
+        
+    def get_total_graphs(self) -> int:
+        """Get total number of graphs that will be generated."""
+        return self.n_graphs + self.n_extra_graphs_for_finetuning
+    
+    def get_graph_splits(self) -> Tuple[int, int, int]:
+        """Get (pretraining, warmup, finetuning) graph counts."""
+        total_pretraining = self.n_graphs
+        n_warmup = int(total_pretraining * self.warmup_graph_ratio)
+        n_actual_pretraining = total_pretraining - n_warmup
+        n_finetuning = self.n_extra_graphs_for_finetuning
+        
+        return n_actual_pretraining, n_warmup, n_finetuning

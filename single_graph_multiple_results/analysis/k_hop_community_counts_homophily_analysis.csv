@@ -1,5 +1,0 @@
-,graph-density,graph-density,graph-avg_degree,graph-avg_degree,graph-clustering_coefficient,graph-clustering_coefficient,graph-homophily,graph-homophily
-,mean,std,mean,std,mean,std,mean,std
-homophily,,,,,,,,
-0.0,0.04,,2.96,,0.1331,,0.0,
-1.0,0.0477,,7.4395,,0.3375,,1.0,

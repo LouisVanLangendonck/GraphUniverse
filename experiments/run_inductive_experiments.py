@@ -30,8 +30,27 @@ def parse_args():
     parser.add_argument('--force_cpu', action='store_true',
                         help='Force CPU usage even if CUDA is available')
     
+    # Add these arguments to parse_args():
+    parser.add_argument('--use_pretrained', action='store_true',
+                        help='Use pre-trained models instead of random initialization')
+    parser.add_argument('--pretrained_model_dir', type=str, default='ssl_experiments',
+                        help='Directory containing pre-trained models')
+    parser.add_argument('--pretrained_model_id', type=str, default=None,
+                        help='Specific pre-trained model ID to use for fine-tuning')
+    parser.add_argument('--graph_family_id', type=str, default=None,
+                        help='Specific graph family ID to use (should match pre-trained model)')
+    parser.add_argument('--graph_family_dir', type=str, default='graph_families',
+                        help='Directory containing graph families')
+    parser.add_argument('--auto_load_family', action='store_true', default=True,
+                        help='Automatically load graph family associated with pre-trained model')
+    parser.add_argument('--freeze_encoder', action='store_true',
+                        help='Freeze encoder weights during fine-tuning')
+    parser.add_argument('--compare_pretrained', action='store_true',
+                        help='Compare pre-trained vs random initialization')    
+    
+    
     # === TASKS ===
-    parser.add_argument('--tasks', type=str, nargs='+', default=['community'],
+    parser.add_argument('--tasks', type=str, nargs='+', default=['community', 'k_hop_community_counts'],
                         choices=['community', 'k_hop_community_counts'],
                         help='Learning tasks to run')
     parser.add_argument('--khop_k', type=int, default=2,
@@ -82,11 +101,6 @@ def parse_args():
     parser.add_argument('--degree_separation_range', type=float, nargs=2, default=[0.0, 1.0],
                         help='Range for degree distribution separation (DCCC-SBM)')
     
-    # === TASKS ===
-    parser.add_argument('--tasks', type=str, nargs='+', default=['community'],
-                        choices=['community', 'k_hop_community_counts'],
-                        help='Learning tasks to run')
-    
     # === METAPATH TASK ARGUMENTS === 
     parser.add_argument('--enable_metapath_tasks', action='store_true',
                         help='Enable metapath-based classification tasks')
@@ -100,7 +114,7 @@ def parse_args():
                         help='Maximum allowed participation rate per community')
     
     # === MODELS ===
-    parser.add_argument('--gnn_types', type=str, nargs='+', default=['gcn', 'sage'],
+    parser.add_argument('--gnn_types', type=str, nargs='+', default=['gcn'],
                         choices=['gcn', 'gat', 'sage'],
                         help='Types of GNN models to run')
     parser.add_argument('--run_mlp', action='store_true', default=True,
@@ -149,6 +163,17 @@ def create_config_from_args(args) -> InductiveExperimentConfig:
         seed=args.seed,
         device_id=args.device_id,
         force_cpu=args.force_cpu,
+
+        # === SSL FINE-TUNING SETUP ===
+        use_pretrained=args.use_pretrained,
+        pretrained_model_dir=args.pretrained_model_dir,
+        pretrained_model_id=getattr(args, 'pretrained_model_id', None),
+        graph_family_id=getattr(args, 'graph_family_id', None),
+        graph_family_dir=getattr(args, 'graph_family_dir', 'graph_families'),
+        auto_load_family=getattr(args, 'auto_load_family', True),
+        freeze_encoder=args.freeze_encoder,
+        compare_pretrained=args.compare_pretrained,
+        fine_tune_lr_multiplier=getattr(args, 'fine_tune_lr_multiplier', 0.1),
 
         # === TASKS ===
         tasks=args.tasks,

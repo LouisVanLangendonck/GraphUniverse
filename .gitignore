@@ -1,2 +1,5 @@
 data/
 multi_results/
+clean_inductive_results/
+ssl_experiments/
+graph_families/

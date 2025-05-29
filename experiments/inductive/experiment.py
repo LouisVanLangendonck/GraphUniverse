@@ -7,10 +7,12 @@ import os
 import json
 import time
 import logging
-from typing import Dict, List, Optional, Union, Any
+from typing import Dict, List, Optional, Union, Any, Tuple
 from datetime import datetime
 import numpy as np
 import torch
+import optuna
+from dataclasses import asdict
 
 from mmsb.model import GraphUniverse
 from mmsb.graph_family import GraphFamilyGenerator, FamilyConsistencyAnalyzer
@@ -21,6 +23,15 @@ from experiments.inductive.data import (
 )
 from experiments.inductive.training import train_and_evaluate_inductive, get_total_classes_from_dataloaders
 from experiments.core.models import GNNModel, MLPModel, SklearnModel
+from experiments.inductive.self_supervised_task import (
+    PreTrainingConfig, 
+    SelfSupervisedTask, 
+    create_ssl_task,
+    PreTrainedModelSaver,
+    create_pretraining_dataloader
+)
+from experiments.inductive.data import GraphFamilyManager
+from experiments.inductive.config import PreTrainingConfig, InductiveExperimentConfig
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -75,7 +86,17 @@ class InductiveExperiment:
             torch.cuda.manual_seed_all(seed)
     
     def generate_graph_family(self) -> List:
-        """Generate graph family using clean parameters."""
+        """Generate graph family using clean parameters or load from specified family."""
+        
+        # Check if we should load existing graphs for fine-tuning
+        if self.config.use_pretrained:
+            finetuning_graphs = load_finetuning_graphs_from_model(self.config)
+            if finetuning_graphs:
+                print(f"🎯 Using {len(finetuning_graphs)} graphs for fine-tuning")
+                self.family_graphs = finetuning_graphs
+                return finetuning_graphs
+        
+        # Otherwise, generate new graph family (existing logic)
         print("\n" + "="*60)
         print("GENERATING GRAPH FAMILY")
         print("="*60)
@@ -682,8 +703,626 @@ class InductiveExperiment:
         
         return "\n".join(lines)
 
+class PreTrainingRunner:
+    """Main runner for self-supervised pre-training with hyperparameter optimization."""
+    
+    def __init__(self, config: PreTrainingConfig):
+        self.config = config
+        self.device = self._setup_device()
+        self.model_saver = PreTrainedModelSaver(config.output_dir)
+        self.family_manager = GraphFamilyManager(config)
+        
+        # Set random seeds
+        self._set_seeds(config.seed)
+    
+    def _setup_device(self) -> torch.device:
+        """Set up compute device."""
+        if self.config.force_cpu:
+            return torch.device("cpu")
+        
+        if torch.cuda.is_available():
+            if self.config.device_id < torch.cuda.device_count():
+                device = torch.device(f"cuda:{self.config.device_id}")
+                torch.cuda.set_device(self.config.device_id)
+                return device
+        return torch.device("cpu")
+    
+    def _set_seeds(self, seed: int) -> None:
+        """Set random seeds for reproducibility."""
+        np.random.seed(seed)
+        torch.manual_seed(seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed(seed)
+            torch.cuda.manual_seed_all(seed)
+
+    def run_pretraining_only(
+        self, 
+        family_id: Optional[str] = None,
+        use_existing_family: bool = False
+    ) -> Dict[str, Any]:
+        """Run pre-training only, generating and saving graphs for later fine-tuning."""
+        
+        print("="*80)
+        print("ENHANCED SSL PRE-TRAINING (GRAPHS SAVED FOR LATER)")
+        print("="*80)
+        
+        pipeline_start = time.time()
+        results = {'config': asdict(self.config)}
+        
+        # Step 1: Generate or load graph family
+        if use_existing_family and family_id:
+            print(f"\nStep 1: Loading existing graph family")
+            print("-" * 50)
+            family_graphs, family_metadata = self.family_manager.load_family(family_id)
+            graph_splits = self.family_manager.get_graph_splits(family_graphs, family_metadata)
+            results['used_existing_family'] = True
+            results['family_metadata'] = family_metadata
+        else:
+            print(f"\nStep 1: Generating new graph family")
+            print("-" * 50)
+            family_graphs, family_id = self.family_manager.generate_and_save_family(family_id)
+            
+            # Create splits
+            n_actual_pretraining, n_warmup, n_finetuning = self.config.get_graph_splits()
+            graph_splits = {
+                'pretraining': family_graphs[:n_actual_pretraining],
+                'warmup': family_graphs[n_actual_pretraining:n_actual_pretraining + n_warmup],
+                'finetuning': family_graphs[n_actual_pretraining + n_warmup:]
+            }
+            results['used_existing_family'] = False
+        
+        results['family_id'] = family_id
+        results['graph_splits_sizes'] = {k: len(v) for k, v in graph_splits.items()}
+        
+        print(f"Graph splits: {results['graph_splits_sizes']}")
+        
+        # Step 2: Hyperparameter optimization (if enabled)
+        hyperopt_results = None
+        if self.config.optimize_hyperparams:
+            print(f"\nStep 2: Hyperparameter Optimization")
+            print("-" * 50)
+            
+            warmup_graphs = graph_splits['warmup']
+            print(f"Using {len(warmup_graphs)} warmup graphs for hyperopt")
+            
+            task = create_ssl_task(self.config)
+            if isinstance(task, list):
+                task = task[0]  # Use first task for optimization
+            
+            hyperopt_results = self._optimize_hyperparameters(warmup_graphs, task)
+            results['hyperopt_results'] = hyperopt_results
+        else:
+            print("\nSkipping hyperparameter optimization")
+        
+        # Step 3: Pre-training on main graphs
+        print(f"\nStep 3: Pre-training")
+        print("-" * 50)
+        
+        pretraining_graphs = graph_splits['pretraining']
+        print(f"Using {len(pretraining_graphs)} graphs for pre-training")
+        
+        optimized_params = None
+        if hyperopt_results:
+            optimized_params = hyperopt_results['best_params']
+        
+        model, training_results = self._train_model(pretraining_graphs, optimized_params)
+        results.update(training_results)
+        
+        # Step 4: Save pre-trained model with family reference
+        print(f"\nStep 4: Saving pre-trained model")
+        print("-" * 50)
+        
+        # Include family information in model metadata
+        enhanced_metadata = {
+            'family_id': family_id,
+            'family_total_graphs': len(family_graphs),
+            'finetuning_graphs_available': len(graph_splits['finetuning']),
+            'pretraining_graphs_used': len(pretraining_graphs),
+            'warmup_graphs_used': len(graph_splits['warmup'])
+        }
+        
+        model_id = self.model_saver.save_model(
+            model=model,
+            config=self.config,
+            training_history=training_results['training_history'],
+            metrics=training_results['final_metrics'],
+            hyperopt_results=hyperopt_results,
+            enhanced_metadata=enhanced_metadata  # Add family info
+        )
+        
+        results['model_id'] = model_id
+        
+        # Final summary
+        total_time = time.time() - pipeline_start
+        results['total_time'] = total_time
+        
+        print(f"\n" + "="*80)
+        print("PRE-TRAINING COMPLETED SUCCESSFULLY")
+        print("="*80)
+        print(f"Model ID: {model_id}")
+        print(f"Graph family ID: {family_id}")
+        print(f"Graphs available for fine-tuning: {len(graph_splits['finetuning'])}")
+        print(f"Total time: {total_time:.2f} seconds")
+        print(f"✓ Ready for fine-tuning with: python run_ssl_experiments.py --mode finetune --model_id {model_id}")
+        
+        return results
+    
+    def _optimize_hyperparameters(self, warmup_graphs: List, task: SelfSupervisedTask) -> Dict[str, Any]:
+        """Optimize hyperparameters using warmup graphs."""
+        
+        print(f"Optimizing hyperparameters using {len(warmup_graphs)} warmup graphs")
+        
+        # Create warmup dataloader
+        warmup_loader = create_pretraining_dataloader(
+            warmup_graphs, 
+            batch_size=self.config.batch_size,
+            shuffle=True
+        )
+        
+        # Get input dimension
+        sample_batch = next(iter(warmup_loader))
+        input_dim = sample_batch.x.shape[1]
+        
+        def objective(trial: optuna.Trial) -> float:
+            """Optuna objective function."""
+            
+            # Sample hyperparameters
+            suggested_config = self._sample_hyperparameters(trial)
+            
+            # Create temporary config
+            temp_config = PreTrainingConfig(**{**asdict(self.config), **suggested_config})
+            temp_task = create_ssl_task(temp_config)
+            
+            if isinstance(temp_task, list):
+                temp_task = temp_task[0]
+            
+            model = temp_task.create_model(input_dim).to(self.device)
+            
+            # Quick training
+            max_epochs = min(50, self.config.epochs // 4)
+            optimizer = torch.optim.Adam(
+                model.parameters(),
+                lr=suggested_config['learning_rate'],
+                weight_decay=suggested_config.get('weight_decay', 1e-5)
+            )
+            
+            best_metric = float('-inf')
+            patience_counter = 0
+            patience = 10
+            
+            for epoch in range(max_epochs):
+                model.train()
+                for batch in warmup_loader:
+                    batch = batch.to(self.device)
+                    optimizer.zero_grad()
+                    
+                    loss = temp_task.compute_loss(model, batch)
+                    loss.backward()
+                    optimizer.step()
+                
+                # Quick evaluation
+                if epoch % 5 == 0:
+                    eval_metrics = temp_task.evaluate(model, warmup_loader)
+                    
+                    if self.config.pretraining_task == "link_prediction":
+                        metric = eval_metrics.get('auc', 0.0)
+                    else:
+                        metric = eval_metrics.get('accuracy', 0.0)
+                    
+                    if metric > best_metric:
+                        best_metric = metric
+                        patience_counter = 0
+                    else:
+                        patience_counter += 1
+                    
+                    if patience_counter >= patience:
+                        break
+            
+            return best_metric
+        
+        # Run optimization
+        study = optuna.create_study(direction='maximize')
+        study.optimize(
+            objective, 
+            n_trials=self.config.n_trials,
+            timeout=self.config.optimization_timeout
+        )
+        
+        print(f"Hyperopt completed: Best metric = {study.best_value:.4f}")
+        print(f"Best params: {study.best_params}")
+        
+        return {
+            'best_params': study.best_params,
+            'best_value': study.best_value,
+            'n_trials': len(study.trials)
+        }
+    
+    def _sample_hyperparameters(self, trial: optuna.Trial) -> Dict[str, Any]:
+        """Sample hyperparameters for optimization."""
+        params = {}
+        
+        # Common parameters
+        params['learning_rate'] = trial.suggest_float('learning_rate', 1e-4, 1e-2, log=True)
+        params['weight_decay'] = trial.suggest_float('weight_decay', 1e-6, 1e-3, log=True)
+        params['hidden_dim'] = trial.suggest_int('hidden_dim', 64, 256, step=32)
+        params['num_layers'] = trial.suggest_int('num_layers', 2, 4)
+        params['dropout'] = trial.suggest_float('dropout', 0.0, 0.5)
+        
+        # Task-specific parameters
+        # if self.config.pretraining_task in ["link_prediction", "both"]:
+        #     params['negative_sampling_ratio'] = trial.suggest_float('negative_sampling_ratio', 0.5, 2.0)
+        
+        if self.config.pretraining_task in ["contrastive", "both"]:
+            params['contrastive_temperature'] = trial.suggest_float('contrastive_temperature', 0.01, 0.2)
+            params['corruption_rate'] = trial.suggest_float('corruption_rate', 0.1, 0.5)
+        
+        return params
+    
+    def _train_model(self, pretraining_graphs: List, optimized_params: Optional[Dict] = None) -> Tuple[torch.nn.Module, Dict]:
+        """Train model on pretraining graphs."""
+        
+        # Update config with optimized parameters
+        if optimized_params:
+            for key, value in optimized_params.items():
+                if hasattr(self.config, key):
+                    setattr(self.config, key, value)
+            print(f"Using optimized parameters: {optimized_params}")
+        
+        # Create dataloader
+        train_loader = create_pretraining_dataloader(
+            pretraining_graphs,
+            batch_size=self.config.batch_size,
+            shuffle=True
+        )
+        
+        # Get input dimension
+        sample_batch = next(iter(train_loader))
+        input_dim = sample_batch.x.shape[1]
+        
+        # Create task and model
+        task = create_ssl_task(self.config)
+        if isinstance(task, list):
+            task = task[0]
+        
+        model = task.create_model(input_dim).to(self.device)
+        
+        # Setup optimizer
+        optimizer = torch.optim.Adam(
+            model.parameters(),
+            lr=self.config.learning_rate,
+            weight_decay=self.config.weight_decay
+        )
+        
+        # Training loop
+        training_history = {
+            'train_loss': [],
+            'eval_loss': [],
+            'eval_metric': []
+        }
+        
+        best_metric = float('-inf')
+        best_model_state = None
+        patience_counter = 0
+        
+        print(f"Training for {self.config.epochs} epochs...")
+        
+        for epoch in range(self.config.epochs):
+            # Training phase
+            model.train()
+            epoch_loss = 0.0
+            n_batches = 0
+            
+            for batch in train_loader:
+                batch = batch.to(self.device)
+                optimizer.zero_grad()
+                
+                loss = task.compute_loss(model, batch)
+                loss.backward()
+                optimizer.step()
+                
+                epoch_loss += loss.item()
+                n_batches += 1
+            
+            avg_train_loss = epoch_loss / n_batches
+            training_history['train_loss'].append(avg_train_loss)
+            
+            # Evaluation every 10 epochs
+            if epoch % 10 == 0 or epoch == self.config.epochs - 1:
+                eval_metrics = task.evaluate(model, train_loader)
+                eval_loss = eval_metrics['loss']
+                
+                if self.config.pretraining_task == "link_prediction":
+                    primary_metric = eval_metrics.get('auc', 0.0)
+                else:
+                    primary_metric = eval_metrics.get('accuracy', 0.0)
+                
+                training_history['eval_loss'].append(eval_loss)
+                training_history['eval_metric'].append(primary_metric)
+                
+                # Model selection
+                if primary_metric > best_metric:
+                    best_metric = primary_metric
+                    best_model_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
+                    patience_counter = 0
+                else:
+                    patience_counter += 1
+                
+                # Logging
+                if epoch % 50 == 0:
+                    print(f"Epoch {epoch:4d}: Loss: {avg_train_loss:.4f}, Metric: {primary_metric:.4f}")
+                
+                # Early stopping
+                if patience_counter >= self.config.patience:
+                    print(f"Early stopping at epoch {epoch}")
+                    break
+        
+        # Load best model
+        if best_model_state is not None:
+            model.load_state_dict(best_model_state)
+        
+        # Final evaluation
+        final_metrics = task.evaluate(model, train_loader)
+        
+        print(f"Training completed! Best metric: {best_metric:.4f}")
+        
+        return model, {
+            'training_history': training_history,
+            'final_metrics': final_metrics,
+            'best_metric': best_metric,
+            'total_epochs': epoch + 1
+        }
+    
+class PreTrainingExperiment:
+    """High-level experiment runner for multiple pre-training configurations."""
+    
+    def __init__(self, base_output_dir: str = "ssl_experiments"):
+        self.base_output_dir = base_output_dir
+        os.makedirs(base_output_dir, exist_ok=True)
+    
+    def run_pretraining_sweep(
+        self,
+        graph_family: List,
+        gnn_types: List[str] = ["gcn", "sage"],
+        pretraining_tasks: List[str] = ["link_prediction", "contrastive"],
+        base_config: Optional[PreTrainingConfig] = None
+    ) -> Dict[str, Any]:
+        """Run pre-training experiments across multiple configurations."""
+        
+        if base_config is None:
+            base_config = PreTrainingConfig()
+        
+        all_results = {}
+        experiment_start = time.time()
+        
+        print("="*100)
+        print("MULTI-CONFIGURATION PRE-TRAINING SWEEP")
+        print("="*100)
+        print(f"GNN Types: {gnn_types}")
+        print(f"Pre-training Tasks: {pretraining_tasks}")
+        print(f"Total configurations: {len(gnn_types) * len(pretraining_tasks)}")
+        
+        for gnn_type in gnn_types:
+            for task in pretraining_tasks:
+                config_name = f"{gnn_type}_{task}"
+                print(f"\n{'='*50}")
+                print(f"CONFIGURATION: {config_name}")
+                print(f"{'='*50}")
+                
+                # Create configuration for this run
+                config = PreTrainingConfig(
+                    **{**asdict(base_config), 
+                       'gnn_type': gnn_type,
+                       'pretraining_task': task,
+                       'output_dir': os.path.join(self.base_output_dir, config_name),
+                       'experiment_name': f"sweep_{config_name}"
+                    }
+                )
+                
+                try:
+                    # Run pre-training
+                    runner = PreTrainingRunner(config)
+                    results = runner.run_full_pipeline(graph_family, save_model=True)
+                    
+                    all_results[config_name] = {
+                        'status': 'success',
+                        'results': results,
+                        'config': asdict(config)
+                    }
+                    
+                    print(f"✓ {config_name} completed successfully")
+                    
+                except Exception as e:
+                    print(f"✗ {config_name} failed: {str(e)}")
+                    logger.error(f"Error in {config_name}: {str(e)}", exc_info=True)
+                    
+                    all_results[config_name] = {
+                        'status': 'failed',
+                        'error': str(e),
+                        'config': asdict(config)
+                    }
+        
+        # Save sweep results
+        total_sweep_time = time.time() - experiment_start
+        sweep_summary = {
+            'sweep_results': all_results,
+            'total_time': total_sweep_time,
+            'successful_configs': [k for k, v in all_results.items() if v['status'] == 'success'],
+            'failed_configs': [k for k, v in all_results.items() if v['status'] == 'failed'],
+            'timestamp': time.time()
+        }
+        
+        # Save summary
+        summary_path = os.path.join(self.base_output_dir, "sweep_summary.json")
+        with open(summary_path, 'w') as f:
+            json.dump(sweep_summary, f, indent=2, default=str)
+        
+        print(f"\n{'='*100}")
+        print("SWEEP COMPLETED")
+        print(f"{'='*100}")
+        print(f"Total time: {total_sweep_time:.2f} seconds")
+        print(f"Successful: {len(sweep_summary['successful_configs'])}")
+        print(f"Failed: {len(sweep_summary['failed_configs'])}")
+        print(f"Results saved to: {summary_path}")
+        
+        return sweep_summary
+
+def run_pretraining_with_saved_graphs(
+    gnn_type: str = "gcn",
+    pretraining_task: str = "link_prediction",
+    n_graphs: int = 50,
+    n_extra_graphs_for_finetuning: int = 30,
+    output_dir: str = "pretrained_models",
+    **kwargs
+) -> Dict[str, Any]:
+    """Convenience function for pre-training with saved graphs."""
+    
+    config = EnhancedPreTrainingConfig(
+        gnn_type=gnn_type,
+        pretraining_task=pretraining_task,
+        n_graphs=n_graphs,
+        n_extra_graphs_for_finetuning=n_extra_graphs_for_finetuning,
+        output_dir=output_dir,
+        **kwargs
+    )
+    
+    runner = PreTrainingRunner(config)
+    return runner.run_pretraining_only()
+
+def list_graph_families(graph_family_dir: str = "graph_families") -> List[Dict]:
+    """List available graph families."""
+    config = PreTrainingConfig(graph_family_dir=graph_family_dir)
+    manager = GraphFamilyManager(config)
+    return manager.list_families()
+
+def load_graphs_for_finetuning(family_id: str, graph_family_dir: str = "graph_families") -> Tuple[List, Dict]:
+    """Load fine-tuning graphs from a saved family."""
+    config = PreTrainingConfig(graph_family_dir=graph_family_dir)
+    manager = GraphFamilyManager(config)
+    
+    family_graphs, metadata = manager.load_family(family_id)
+    graph_splits = manager.get_graph_splits(family_graphs, metadata)
+    
+    return graph_splits['finetuning'], metadata
 
 def run_inductive_experiment(config) -> Dict[str, Any]:
     """Convenience function to run an inductive experiment."""
     experiment = InductiveExperiment(config)
     return experiment.run()
+
+def load_pretrained_model(self, model_id: str, model_type: str = 'gnn'):
+    """Load a pre-trained model for fine-tuning."""
+    from experiments.inductive.data import PreTrainedModelSaver
+    
+    model_saver = PreTrainedModelSaver("pretrained_models")
+    model, metadata = model_saver.load_model(model_id, self.device)
+    
+    print(f"Loaded pre-trained model: {model_id}")
+    print(f"  Pre-training task: {metadata['config']['pretraining_task']}")
+    print(f"  Architecture: {metadata['architecture']}")
+    
+    return model, metadata
+
+def load_finetuning_graphs_from_model(
+    config: InductiveExperimentConfig
+) -> Optional[List]:
+    """
+    Load fine-tuning graphs based on config specification.
+    Can use explicit family ID or auto-load from pre-trained model.
+    """
+    
+    family_id = None
+    
+    # Method 1: Explicit family ID provided
+    if config.graph_family_id:
+        family_id = config.graph_family_id
+        print(f"📁 Using explicitly specified graph family: {family_id}")
+    
+    # Method 2: Auto-load family from pre-trained model
+    elif config.auto_load_family and config.pretrained_model_id:
+        try:
+            from experiments.inductive.self_supervised_task import PreTrainedModelSaver
+            
+            model_saver = PreTrainedModelSaver(config.pretrained_model_dir)
+            _, metadata = model_saver.load_model(config.pretrained_model_id)
+            
+            family_id = metadata.get('family_id')
+            if family_id:
+                print(f"📁 Auto-loaded graph family from model: {family_id}")
+            else:
+                print(f"⚠️  Pre-trained model has no associated graph family")
+                return None
+                
+        except Exception as e:
+            print(f"⚠️  Failed to auto-load graph family: {e}")
+            return None
+    
+    # Method 3: No family specified - generate new graphs
+    else:
+        print(f"📁 No graph family specified - will generate new graphs")
+        return None
+    
+    # Load the graph family
+    if family_id:
+        try:
+            from experiments.inductive.data import GraphFamilyManager
+            from experiments.inductive.config import PreTrainingConfig
+            
+            # Create temporary config for family loading
+            temp_config = PreTrainingConfig(graph_family_dir=config.graph_family_dir)
+            family_manager = GraphFamilyManager(temp_config)
+            
+            family_graphs, family_metadata = family_manager.load_family(family_id)
+            graph_splits = family_manager.get_graph_splits(family_graphs, family_metadata)
+            
+            # Use fine-tuning graphs
+            finetuning_graphs = graph_splits['finetuning']
+            
+            print(f"✅ Loaded {len(finetuning_graphs)} fine-tuning graphs from family {family_id}")
+            print(f"   Total family size: {len(family_graphs)} graphs")
+            print(f"   Family metadata: {family_metadata.get('creation_timestamp', 'Unknown')}")
+            
+            return finetuning_graphs
+            
+        except Exception as e:
+            print(f"❌ Failed to load graph family {family_id}: {e}")
+            return None
+    
+    return None
+
+def create_model_from_pretrained(self, pretrained_model, metadata, output_dim: int, is_regression: bool):
+    """Create a fine-tuning model from pre-trained model."""
+    
+    # Extract encoder from pre-trained model
+    if hasattr(pretrained_model, 'encoder'):
+        encoder = pretrained_model.encoder
+    else:
+        encoder = pretrained_model
+    
+    # Create new classification/regression head
+    if is_regression:
+        head = torch.nn.Linear(encoder.output_dim, output_dim)
+    else:
+        head = torch.nn.Sequential(
+            torch.nn.Linear(encoder.output_dim, output_dim),
+            torch.nn.LogSoftmax(dim=-1)
+        )
+    
+    # Combine into new model
+    class FineTuningModel(torch.nn.Module):
+        def __init__(self, encoder, head, freeze_encoder=False):
+            super().__init__()
+            self.encoder = encoder
+            self.head = head
+            
+            if freeze_encoder:
+                for param in self.encoder.parameters():
+                    param.requires_grad = False
+        
+        def forward(self, x, edge_index=None):
+            if edge_index is not None:
+                embeddings = self.encoder(x, edge_index)
+            else:
+                embeddings = self.encoder(x)
+            return self.head(embeddings)
+    
+    return FineTuningModel(encoder, head)

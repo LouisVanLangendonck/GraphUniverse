@@ -9,10 +9,367 @@ from torch_geometric.data import Data, Batch
 from typing import Dict, List, Optional, Tuple, Union, Any
 import networkx as nx
 from collections import defaultdict
+from datetime import datetime
+import json
+import pickle
+import os
+import time
+from dataclasses import asdict
+import pandas as pd
 
 from mmsb.model import GraphSample, GraphUniverse
 from mmsb.feature_regimes import graphsample_to_pyg
 from utils.metapath_analysis import MetapathAnalyzer, UniverseMetapathSelector, FamilyMetapathEvaluator
+from experiments.inductive.config import PreTrainingConfig
+
+class GraphFamilyManager:
+    """Manages graph family generation, saving, and loading for SSL experiments."""
+    
+    def __init__(self, config: PreTrainingConfig):
+        self.config = config
+        self.graph_family_dir = config.graph_family_dir
+        os.makedirs(self.graph_family_dir, exist_ok=True)
+    
+    def generate_and_save_family(self, family_id: Optional[str] = None) -> Tuple[List, str]:
+        """Generate graph family and save it for later use."""
+        
+        if family_id is None:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            family_id = f"family_{self.config.gnn_type}_{self.config.pretraining_task}_{timestamp}"
+        
+        print(f"\nGenerating graph family: {family_id}")
+        print(f"Total graphs: {self.config.get_total_graphs()}")
+        print(f"Pretraining graphs: {self.config.n_graphs}")
+        print(f"Extra fine-tuning graphs: {self.config.n_extra_graphs_for_finetuning}")
+        
+        # Generate graph family using existing infrastructure
+        family_graphs = self._generate_graph_family()
+        
+        # Save the family
+        if self.config.save_graph_family:
+            self._save_family(family_graphs, family_id)
+        
+        return family_graphs, family_id
+    
+    def _generate_graph_family(self) -> List:
+        """Generate the graph family using existing infrastructure."""
+        from mmsb.model import GraphUniverse
+        from mmsb.graph_family import GraphFamilyGenerator
+        
+        # Create universe
+        universe = GraphUniverse(
+            K=self.config.universe_K,
+            feature_dim=self.config.universe_feature_dim,
+            edge_density=self.config.universe_edge_density,
+            homophily=self.config.universe_homophily,
+            seed=self.config.seed
+        )
+        
+        # Create family generator
+        family_generator = GraphFamilyGenerator(
+            universe=universe,
+            n_graphs=self.config.get_total_graphs(),  # Generate ALL graphs at once
+            min_n_nodes=self.config.min_n_nodes,
+            max_n_nodes=self.config.max_n_nodes,
+            min_communities=self.config.min_communities,
+            max_communities=self.config.max_communities,
+            use_dccc_sbm=self.config.use_dccc_sbm,
+            degree_distribution=self.config.degree_distribution,
+            seed=self.config.seed
+        )
+        
+        # Generate family
+        print("Generating complete graph family...")
+        start_time = time.time()
+        family_graphs = family_generator.generate_family(show_progress=True)
+        generation_time = time.time() - start_time
+        
+        print(f"Family generation completed in {generation_time:.2f} seconds")
+        print(f"Generated {len(family_graphs)} graphs total")
+        
+        return family_graphs
+    
+    def _save_family(self, family_graphs: List, family_id: str) -> None:
+        """Save graph family to disk."""
+        family_dir = os.path.join(self.graph_family_dir, family_id)
+        os.makedirs(family_dir, exist_ok=True)
+        
+        print(f"Saving graph family to: {family_dir}")
+        
+        # Save graphs
+        graphs_file = os.path.join(family_dir, "graphs.pkl")
+        with open(graphs_file, 'wb') as f:
+            pickle.dump(family_graphs, f)
+        
+        # Save metadata
+        n_actual_pretraining, n_warmup, n_finetuning = self.config.get_graph_splits()
+        
+        metadata = {
+            'family_id': family_id,
+            'creation_timestamp': datetime.now().isoformat(),
+            'total_graphs': len(family_graphs),
+            'n_actual_pretraining': n_actual_pretraining,
+            'n_warmup': n_warmup,
+            'n_finetuning': n_finetuning,
+            'config': asdict(self.config),
+            'graphs_file': graphs_file,
+            'splits': {
+                'pretraining': list(range(n_actual_pretraining)),
+                'warmup': list(range(n_actual_pretraining, n_actual_pretraining + n_warmup)),
+                'finetuning': list(range(n_actual_pretraining + n_warmup, len(family_graphs)))
+            }
+        }
+        
+        metadata_file = os.path.join(family_dir, "metadata.json")
+        with open(metadata_file, 'w') as f:
+            json.dump(metadata, f, indent=2, default=str)
+        
+        print(f"✓ Saved {len(family_graphs)} graphs")
+        print(f"✓ Metadata saved to: {metadata_file}")
+    
+    def load_family(self, family_id: str) -> Tuple[List, Dict]:
+        """Load saved graph family."""
+        family_dir = os.path.join(self.graph_family_dir, family_id)
+        
+        if not os.path.exists(family_dir):
+            raise FileNotFoundError(f"Graph family not found: {family_id}")
+        
+        # Load metadata
+        metadata_file = os.path.join(family_dir, "metadata.json")
+        with open(metadata_file, 'r') as f:
+            metadata = json.load(f)
+        
+        # Load graphs
+        graphs_file = os.path.join(family_dir, "graphs.pkl")
+        with open(graphs_file, 'rb') as f:
+            family_graphs = pickle.load(f)
+        
+        print(f"Loaded graph family: {family_id}")
+        print(f"Total graphs: {len(family_graphs)}")
+        print(f"Splits - Pretraining: {len(metadata['splits']['pretraining'])}, "
+              f"Warmup: {len(metadata['splits']['warmup'])}, "
+              f"Fine-tuning: {len(metadata['splits']['finetuning'])}")
+        
+        return family_graphs, metadata
+    
+    def get_graph_splits(self, family_graphs: List, metadata: Dict) -> Dict[str, List]:
+        """Get graph splits based on metadata."""
+        splits = metadata['splits']
+        
+        return {
+            'pretraining': [family_graphs[i] for i in splits['pretraining']],
+            'warmup': [family_graphs[i] for i in splits['warmup']],
+            'finetuning': [family_graphs[i] for i in splits['finetuning']]
+        }
+    
+    def list_families(self) -> List[Dict]:
+        """List all available graph families."""
+        families = []
+        
+        if not os.path.exists(self.graph_family_dir):
+            return families
+        
+        for family_id in os.listdir(self.graph_family_dir):
+            family_dir = os.path.join(self.graph_family_dir, family_id)
+            metadata_file = os.path.join(family_dir, "metadata.json")
+            
+            if os.path.exists(metadata_file):
+                with open(metadata_file, 'r') as f:
+                    metadata = json.load(f)
+                
+                families.append({
+                    'family_id': family_id,
+                    'creation_timestamp': metadata.get('creation_timestamp'),
+                    'total_graphs': metadata.get('total_graphs', 0),
+                    'config': metadata.get('config', {}),
+                    'n_finetuning': metadata.get('n_finetuning', 0)
+                })
+        
+        return sorted(families, key=lambda x: x.get('creation_timestamp', ''), reverse=True)
+
+class PreTrainedModelSaver:
+    """Handles saving and loading of pre-trained models."""
+    
+    def __init__(self, output_dir: str):
+        self.output_dir = output_dir
+        os.makedirs(output_dir, exist_ok=True)
+    
+    def save_model(
+        self,
+        model: torch.nn.Module,
+        config: PreTrainingConfig,
+        training_history: Dict[str, List[float]],
+        metrics: Dict[str, float],
+        hyperopt_results: Optional[Dict] = None,
+        enhanced_metadata: Optional[Dict] = None,
+        model_id: Optional[str] = None
+    ) -> str:
+        """Save pre-trained model with enhanced metadata including family references."""
+        
+        if model_id is None:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            model_id = f"{config.gnn_type}_{config.pretraining_task}_{timestamp}"
+        
+        model_dir = os.path.join(self.output_dir, model_id)
+        os.makedirs(model_dir, exist_ok=True)
+        
+        # Save model weights
+        model_path = os.path.join(model_dir, "model.pth")
+        model_copy = copy.deepcopy(model)
+        torch.save(model_copy.state_dict(), model_path)
+        
+        # Save model architecture info
+        arch_info = {
+            'model_class': model.__class__.__name__,
+            'encoder_class': model.encoder.__class__.__name__,
+            'input_dim': getattr(model.encoder, 'input_dim', None),
+            'hidden_dim': config.hidden_dim,
+            'num_layers': config.num_layers,
+            'gnn_type': config.gnn_type,
+            'dropout': config.dropout
+        }
+        
+        # Create complete metadata with enhanced info
+        metadata = {
+            'model_id': model_id,
+            'creation_timestamp': datetime.now().isoformat(),
+            'config': config.__dict__,
+            'architecture': arch_info,
+            'training_history': training_history,
+            'final_metrics': metrics,
+            'hyperopt_results': hyperopt_results,
+            'model_path': model_path
+        }
+        
+        # Add enhanced metadata (family info, etc.)
+        if enhanced_metadata:
+            metadata['enhanced_info'] = enhanced_metadata
+            
+            # Special handling for family info
+            if 'family_id' in enhanced_metadata:
+                metadata['family_id'] = enhanced_metadata['family_id']
+                metadata['finetuning_ready'] = enhanced_metadata.get('finetuning_graphs_available', 0) > 0
+        
+        # Save metadata
+        metadata_path = os.path.join(model_dir, "metadata.json")
+        with open(metadata_path, 'w') as f:
+            json.dump(metadata, f, indent=2, default=str)
+        
+        # Save config separately for easy loading
+        config_path = os.path.join(model_dir, "config.json")
+        with open(config_path, 'w') as f:
+            json.dump(config.__dict__, f, indent=2)
+        
+        # Save family reference file for easy lookup
+        if enhanced_metadata and 'family_id' in enhanced_metadata:
+            family_ref = {
+                'family_id': enhanced_metadata['family_id'],
+                'model_id': model_id,
+                'finetuning_graphs_available': enhanced_metadata.get('finetuning_graphs_available', 0),
+                'pretraining_graphs_used': enhanced_metadata.get('pretraining_graphs_used', 0),
+                'creation_timestamp': datetime.now().isoformat()
+            }
+            
+            family_ref_path = os.path.join(model_dir, "family_reference.json")
+            with open(family_ref_path, 'w') as f:
+                json.dump(family_ref, f, indent=2)
+        
+        print(f"Saved pre-trained model to: {model_dir}")
+        if enhanced_metadata and 'family_id' in enhanced_metadata:
+            print(f"✓ Linked to graph family: {enhanced_metadata['family_id']}")
+            print(f"✓ Fine-tuning graphs available: {enhanced_metadata.get('finetuning_graphs_available', 0)}")
+        
+        return model_id
+    
+    def load_model(self, model_id: str, device: Optional[torch.device] = None) -> Tuple[torch.nn.Module, Dict]:
+        """Load pre-trained model and metadata."""
+        model_dir = os.path.join(self.output_dir, model_id)
+        
+        if not os.path.exists(model_dir):
+            raise FileNotFoundError(f"Model directory not found: {model_dir}")
+        
+        # Load metadata
+        metadata_path = os.path.join(model_dir, "metadata.json")
+        with open(metadata_path, 'r') as f:
+            metadata = json.load(f)
+        
+        # Load config
+        config_path = os.path.join(model_dir, "config.json")
+        with open(config_path, 'r') as f:
+            config_dict = json.load(f)
+        
+        config = PreTrainingConfig(**config_dict)
+        
+        # Recreate model architecture
+        from experiments.inductive.self_supervised_task import LinkPredictionTask, ContrastiveTask
+        
+        if metadata['config']['pretraining_task'] == 'link_prediction':
+            task = LinkPredictionTask(config)
+        elif metadata['config']['pretraining_task'] == 'contrastive':
+            task = ContrastiveTask(config)
+        else:
+            raise ValueError(f"Unknown task: {metadata['config']['pretraining_task']}")
+        
+        # Need input_dim to create model
+        input_dim = metadata['architecture']['input_dim']
+        if input_dim is None:
+            raise ValueError("Cannot recreate model: input_dim not saved in metadata")
+        
+        model = task.create_model(input_dim)
+        
+        # Load weights
+        model_path = os.path.join(model_dir, "model.pth")
+        if device is None:
+            device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        
+        model.load_state_dict(torch.load(model_path, map_location=device))
+        model.to(device)
+        
+        return model, metadata
+    
+    def list_models(self) -> List[Dict[str, Any]]:
+        """List all available pre-trained models with enhanced info."""
+        models = []
+        
+        if not os.path.exists(self.output_dir):
+            return models
+        
+        for model_id in os.listdir(self.output_dir):
+            model_dir = os.path.join(self.output_dir, model_id)
+            metadata_path = os.path.join(model_dir, "metadata.json")
+            
+            if os.path.exists(metadata_path):
+                with open(metadata_path, 'r') as f:
+                    metadata = json.load(f)
+                
+                model_info = {
+                    'model_id': model_id,
+                    'task': metadata['config']['pretraining_task'],
+                    'gnn_type': metadata['config']['gnn_type'],
+                    'creation_timestamp': metadata.get('creation_timestamp'),
+                    'final_metrics': metadata.get('final_metrics', {}),
+                    'model_dir': model_dir,
+                    'family_id': metadata.get('family_id', None),
+                    'finetuning_ready': metadata.get('finetuning_ready', False)
+                }
+                
+                # Add enhanced info if available
+                if 'enhanced_info' in metadata:
+                    enhanced = metadata['enhanced_info']
+                    model_info.update({
+                        'finetuning_graphs_available': enhanced.get('finetuning_graphs_available', 0),
+                        'pretraining_graphs_used': enhanced.get('pretraining_graphs_used', 0),
+                        'family_total_graphs': enhanced.get('family_total_graphs', 0)
+                    })
+                
+                models.append(model_info)
+        
+        return sorted(models, key=lambda x: x.get('creation_timestamp', ''), reverse=True)
+    
+    def get_models_by_family(self, family_id: str) -> List[Dict[str, Any]]:
+        """Get all models trained on a specific graph family."""
+        all_models = self.list_models()
+        return [model for model in all_models if model.get('family_id') == family_id]
 
 def prepare_inductive_data(
     family_graphs: List[GraphSample],
@@ -863,3 +1220,23 @@ def prepare_inductive_data_with_universe_metapaths(
         }
     
     return inductive_data
+
+def load_graphs_for_finetuning(family_id: str, graph_family_dir: str = "graph_families") -> Tuple[List, Dict]:
+    """Load fine-tuning graphs from a saved family."""
+    from experiments.inductive.config import PreTrainingConfig
+    
+    config = PreTrainingConfig(graph_family_dir=graph_family_dir)
+    manager = GraphFamilyManager(config)
+    
+    family_graphs, metadata = manager.load_family(family_id)
+    graph_splits = manager.get_graph_splits(family_graphs, metadata)
+    
+    return graph_splits['finetuning'], metadata
+
+def list_graph_families(graph_family_dir: str = "graph_families") -> List[Dict]:
+    """List available graph families."""
+    from experiments.inductive.config import PreTrainingConfig
+    
+    config = PreTrainingConfig(graph_family_dir=graph_family_dir)
+    manager = GraphFamilyManager(config)
+    return manager.list_families()
