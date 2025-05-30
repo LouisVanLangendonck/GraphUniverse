@@ -306,6 +306,12 @@ class PreTrainingConfig:
     hidden_dim: int = 128
     num_layers: int = 3
     dropout: float = 0.1
+    residual: bool = True
+    norm_type: str = "batch"
+    agg_type: str = "mean"
+    # GAT-specific parameters
+    heads: int = 4
+    concat_heads: bool = True
     
     # === TRAINING PARAMETERS ===
     epochs: int = 300

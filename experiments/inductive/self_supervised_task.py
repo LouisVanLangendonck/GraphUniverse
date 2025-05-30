@@ -101,7 +101,12 @@ class LinkPredictionTask(SelfSupervisedTask):
             num_layers=self.config.num_layers,
             dropout=self.config.dropout,
             gnn_type=self.config.gnn_type,
-            is_regression=True  # Output continuous embeddings
+            residual=self.config.residual,
+            norm_type=self.config.norm_type,
+            agg_type=self.config.agg_type,
+            heads=self.config.heads,
+            concat_heads=self.config.concat_heads,
+            is_regression=False  # Output continuous embeddings
         )
         
         # Link prediction head
@@ -216,7 +221,12 @@ class ContrastiveTask(SelfSupervisedTask):
             num_layers=self.config.num_layers,
             dropout=self.config.dropout,
             gnn_type=self.config.gnn_type,
-            is_regression=True
+            is_regression=True,
+            residual=self.config.residual,
+            norm_type=self.config.norm_type,
+            agg_type=self.config.agg_type,
+            heads=self.config.heads,
+            concat_heads=self.config.concat_heads,
         )
         
         # Global discriminator for graph-level representations
@@ -434,7 +444,12 @@ class PreTrainedModelSaver:
             'hidden_dim': config.hidden_dim,
             'num_layers': config.num_layers,
             'gnn_type': config.gnn_type,
-            'dropout': config.dropout
+            'dropout': config.dropout,
+            'residual': config.residual,
+            'norm_type': config.norm_type,
+            'agg_type': config.agg_type,
+            'heads': config.heads,
+            'concat_heads': config.concat_heads
         }
         
         # Create complete metadata with enhanced info

@@ -71,7 +71,7 @@ def parse_args():
                         help='Degree distribution type for DCCC-SBM')
     
     # === PRE-TRAINING TASK ===
-    parser.add_argument('--pretraining_task', type=str, default='link_prediction',
+    parser.add_argument('--pretraining_task', type=str, default='contrastive',
                         choices=['link_prediction', 'contrastive'],
                         help='Self-supervised pre-training task')
     
@@ -117,10 +117,10 @@ def parse_args():
     # Contrastive learning
     parser.add_argument('--contrastive_temperature', type=float, default=0.07,
                         help='Temperature for contrastive learning')
-    parser.add_argument('--corruption_type', type=str, default='feature_shuffle',
+    parser.add_argument('--corruption_type', type=str, default='edge_dropout',
                         choices=['feature_shuffle', 'edge_dropout'],
                         help='Type of corruption for contrastive learning')
-    parser.add_argument('--corruption_rate', type=float, default=0.2,
+    parser.add_argument('--corruption_rate', type=float, default=0.5,
                         help='Corruption rate for contrastive learning')
     
     # === GRAPH FAMILY MANAGEMENT ===

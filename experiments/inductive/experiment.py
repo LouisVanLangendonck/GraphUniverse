@@ -978,14 +978,13 @@ class PreTrainingRunner:
             """Optuna objective function."""
             
             # Sample hyperparameters (NOT task parameters)
-            suggested_config = self._sample_hyperparameters(trial)
+            suggested_config = self._sample_hyperparameters(trial, self.config.gnn_type)
             
             # Create temporary config with suggested hyperparameters
             temp_config_dict = self.config.to_dict()
             temp_config_dict.update(suggested_config)
             
-            from enhanced_pretraining_config import EnhancedPreTrainingConfig
-            temp_config = EnhancedPreTrainingConfig.from_dict(temp_config_dict)
+            temp_config = PreTrainingConfig.from_dict(temp_config_dict)
             temp_task = create_ssl_task(temp_config)
             
             model = temp_task.create_model(input_dim).to(self.device)
@@ -1049,7 +1048,7 @@ class PreTrainingRunner:
             'n_trials': len(study.trials)
         }
     
-    def _sample_hyperparameters(self, trial: optuna.Trial) -> Dict[str, Any]:
+    def _sample_hyperparameters(self, trial: optuna.Trial, gnn_type: str) -> Dict[str, Any]:
         """Sample hyperparameters for optimization (NOT task parameters)."""
         params = {}
         
@@ -1059,6 +1058,19 @@ class PreTrainingRunner:
         params['hidden_dim'] = trial.suggest_int('hidden_dim', 64, 256, step=32)
         params['num_layers'] = trial.suggest_int('num_layers', 2, 4)
         params['dropout'] = trial.suggest_float('dropout', 0.0, 0.5)
+
+        # General GNN hyperparameters
+        params['residual'] = trial.suggest_categorical('residual', [True, False])
+        params['norm_type'] = trial.suggest_categorical('norm_type', ['none', 'batch', 'layer'])
+        params['agg_type'] = trial.suggest_categorical('agg_type', ['mean', 'max', 'sum'])
+
+        # GNN-specific parameters
+        if gnn_type == "gat":
+            heads = trial.suggest_int('heads', 1, 8)
+            concat_heads = trial.suggest_categorical('concat_heads', [True, False])
+        else:
+            heads = 1
+            concat_heads = True
         
         # NOTE: Task parameters are NOT optimized here, they come from config or sweeps
         
@@ -1090,10 +1102,12 @@ class PreTrainingRunner:
         model = task.create_model(input_dim).to(self.device)
         
         print(f"Training with task parameters:")
-        print(f"  Negative sampling ratio: {self.config.negative_sampling_ratio}")
-        print(f"  Contrastive temperature: {self.config.contrastive_temperature}")
-        print(f"  Corruption type: {self.config.corruption_type}")
-        print(f"  Corruption rate: {self.config.corruption_rate}")
+        if self.config.pretraining_task == "link_prediction":
+            print(f"  Negative sampling ratio: {self.config.negative_sampling_ratio}")
+        elif self.config.pretraining_task == "contrastive":
+            print(f"  Contrastive temperature: {self.config.contrastive_temperature}")
+            print(f"  Corruption type: {self.config.corruption_type}")
+            print(f"  Corruption rate: {self.config.corruption_rate}")
         
         # Setup optimizer
         optimizer = torch.optim.Adam(

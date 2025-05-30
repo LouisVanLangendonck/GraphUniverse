@@ -69,30 +69,7 @@ from utils.parameter_analysis import (
     visualize_community_connectivity,
 )
 from motif_and_role_analysis_integration import add_motif_role_analysis_page
-from utils.metapath_analysis import (
-    analyze_metapaths,
-    visualize_community_metapath_graph,
-    visualize_metapaths,
-    metapath_node_classification,
-    run_all_classifications,
-    run_all_metapath_tasks,
-    optimize_hyperparameters,
-    multi_metapath_node_classification,
-    feature_regime_metapath_classification,
-    visualize_model_performance,
-    GCNMultiLabel,
-    GraphSAGEMultiLabel,
-    prepare_node_features,
-    create_consistent_train_val_test_split,
-    find_metapath_instances,
-    multi_metapath_node_classification_improved,
-    optimize_hyperparameters_for_metapath_improved,
-    khop_metapath_detection,
-    visualize_khop_metapath_detection,
-    visualize_regime_prediction_performance,
-    optimize_hyperparameters_for_regime_prediction,
-    khop_regime_prediction
-)
+
 
 def create_graph_dashboard(graph):
     # Create tabs for different visualizations
