@@ -41,7 +41,7 @@ def parse_args():
     
     # Task configuration
     parser.add_argument('--tasks', type=str, nargs='+', 
-                        default=['metapath'],
+                        default=['community', 'k_hop_community_counts'],
                         choices=['community', 'k_hop_community_counts', 'metapath'],
                         help='Learning tasks to run')
     parser.add_argument('--khop_k', type=int, default=2,
@@ -56,8 +56,12 @@ def parse_args():
                         help='Minimum nodes per graph')
     parser.add_argument('--max_n_nodes', type=int, default=100,
                         help='Maximum nodes per graph')
-    parser.add_argument('--universe_K', type=int, default=5,
+    parser.add_argument('--universe_K', type=int, default=10,
                         help='Number of communities in universe')
+    parser.add_argument('--min_communities', type=int, default=3,
+                        help='Minimum number of communities')
+    parser.add_argument('--max_communities', type=int, default=7,
+                        help='Maximum number of communities')
     
     # Method selection
     parser.add_argument('--use_dccc_sbm', action='store_true',
@@ -112,8 +116,8 @@ def create_custom_experiment(args) -> CleanMultiExperimentConfig:
         n_graphs=args.n_graphs,
         min_n_nodes=args.min_n_nodes,
         max_n_nodes=args.max_n_nodes,
-        min_communities=5,
-        max_communities=5,
+        min_communities=args.min_communities,
+        max_communities=args.max_communities,
         universe_K=args.universe_K,
         universe_feature_dim=32,
         
@@ -158,13 +162,13 @@ def create_custom_experiment(args) -> CleanMultiExperimentConfig:
         'universe_homophily': ParameterRange(
             min_val=0.0,
             max_val=1.0,
-            step=0.2,
+            step=0.5,
             is_sweep=True
         ),
         'universe_edge_density': ParameterRange(
             min_val=0.02,
-            max_val=0.20,
-            step=0.05,
+            max_val=0.22,
+            step=0.2,
             is_sweep=True
         )
     }

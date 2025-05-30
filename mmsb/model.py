@@ -890,6 +890,9 @@ class GraphSample:
             # Update community labels and degree factors with new indices
             self.community_labels = self.community_labels[kept_nodes]
             self.degree_factors = self.degree_factors[kept_nodes]
+
+            # Update community labels at universe level
+            self.community_labels_universe_level = np.array([self.community_id_mapping[idx] for idx in self.community_labels])
             
             # Update adjacency matrix
             self.adjacency = nx.adjacency_matrix(self.graph)
@@ -930,7 +933,7 @@ class GraphSample:
         if universe.feature_dim > 0:
             # Get community assignments and map to universe community IDs
             local_community_assignments = self.community_labels
-            universe_community_assignments = np.array([self.community_id_mapping[idx] for idx in local_community_assignments])
+            universe_community_assignments = np.array(self.community_labels_universe_level)
             
             # Generate node clusters based on universe community assignments
             self.node_clusters = universe.feature_generator.assign_node_clusters(universe_community_assignments)

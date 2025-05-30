@@ -114,7 +114,6 @@ def train_inductive_model(
         Dictionary with training results and metrics
     """
     is_regression = config.is_regression.get(task, False)
-    print(f"!!!! Is regression: {is_regression} !!!")
     
     # Handle sklearn models separately
     if isinstance(model, SklearnModel):
@@ -163,7 +162,7 @@ def train_inductive_model(
         train_predictions = []
         train_targets = []
         
-        for batch in train_loader:
+        for batch_idx, batch in enumerate(train_loader):
             batch = batch.to(device)
             optimizer.zero_grad()
             
@@ -484,10 +483,7 @@ def optimize_inductive_hyperparameters(
     sample_batch = next(iter(dataloaders['train']))
     input_dim = sample_batch.x.shape[1]
     
-    if is_regression:
-        output_dim = sample_batch.y.shape[1] if len(sample_batch.y.shape) > 1 else 1
-    else:
-        output_dim = len(torch.unique(sample_batch.y))
+    output_dim = config.universe_K
     
     def objective(trial: Trial) -> float:
         # Common hyperparameters

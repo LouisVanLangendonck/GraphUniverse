@@ -20,6 +20,7 @@ import traceback
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from experiments.inductive.config import PreTrainingConfig
+from experiments.run_multi_inductive_experiments import ParameterRange
 from experiments.inductive.experiment import PreTrainingRunner
 from experiments.inductive.data import GraphFamilyManager, PreTrainedModelSaver
 
@@ -32,26 +33,14 @@ class SSLMultiExperimentConfig:
         output_dir: str = "multi_ssl_experiments",
         experiment_name: str = "ssl_sweep",
         
-        # Graph family parameters (lists for sweeping)
-        n_graphs: List[int] = None,
-        n_extra_graphs: List[int] = None,
-        universe_K_values: List[int] = None,
-        universe_homophily_values: List[float] = None,
-        universe_edge_density_values: List[float] = None,
-        use_dccc_sbm_values: List[bool] = None,
-        degree_distribution_values: List[str] = None,
+        # Base configuration
+        base_config: PreTrainingConfig = None,
         
-        # Model parameters (lists for sweeping)
-        gnn_types: List[str] = None,
-        pretraining_tasks: List[str] = None,
-        hidden_dims: List[int] = None,
-        num_layers_values: List[int] = None,
+        # Parameter sweeps
+        sweep_parameters: Dict[str, ParameterRange] = None,
         
-        # Training parameters
-        epochs: int = 300,
-        optimize_hyperparams: bool = True,
-        n_trials: int = 20,
-        optimization_timeout: int = 1200,
+        # Random parameters
+        random_parameters: Dict[str, ParameterRange] = None,
         
         # Execution parameters
         n_repetitions: int = 1,
@@ -63,89 +52,76 @@ class SSLMultiExperimentConfig:
         reuse_families: bool = True,  # Reuse graph families across experiments
         
         # Random seed management
-        base_seed: int = 42
+        base_seed: int = 42,
+        
+        # Model management
+        gnn_models: List[str] = None
     ):
         self.output_dir = output_dir
         self.experiment_name = experiment_name
-        
-        # Set defaults if None
-        self.n_graphs = n_graphs or [50]
-        self.n_extra_graphs = n_extra_graphs or [30]
-        self.universe_K_values = universe_K_values or [8, 10]
-        self.universe_homophily_values = universe_homophily_values or [0.6, 0.8]
-        self.universe_edge_density_values = universe_edge_density_values or [0.08, 0.12]
-        self.use_dccc_sbm_values = use_dccc_sbm_values or [False, True]
-        self.degree_distribution_values = degree_distribution_values or ['power_law', 'exponential']
-        
-        self.gnn_types = gnn_types or ['gcn', 'sage']
-        self.pretraining_tasks = pretraining_tasks or ['link_prediction', 'contrastive']
-        self.hidden_dims = hidden_dims or [128, 256]
-        self.num_layers_values = num_layers_values or [2, 3]
-        
-        self.epochs = epochs
-        self.optimize_hyperparams = optimize_hyperparams
-        self.n_trials = n_trials
-        self.optimization_timeout = optimization_timeout
-        
+        self.base_config = base_config
+        self.sweep_parameters = sweep_parameters or {}
+        self.random_parameters = random_parameters or {}
         self.n_repetitions = n_repetitions
         self.continue_on_failure = continue_on_failure
         self.save_individual_results = save_individual_results
-        
         self.max_concurrent_families = max_concurrent_families
         self.reuse_families = reuse_families
         self.base_seed = base_seed
+        self.gnn_models = gnn_models or []
     
     def get_family_configurations(self) -> List[Dict[str, Any]]:
         """Get all unique graph family configurations."""
-        family_params = [
-            'n_graphs', 'n_extra_graphs', 'universe_K_values', 
-            'universe_homophily_values', 'universe_edge_density_values',
-            'use_dccc_sbm_values', 'degree_distribution_values'
-        ]
+        # Get all combinations of sweep parameters
+        sweep_values = {}
+        for param, param_range in self.sweep_parameters.items():
+            if param_range.is_sweep:
+                sweep_values[param] = param_range.get_sweep_values()
+            else:
+                sweep_values[param] = [param_range.min_val]
         
-        # Get all combinations of family parameters
-        param_combinations = itertools.product(
-            self.n_graphs,
-            self.n_extra_graphs,
-            self.universe_K_values,
-            self.universe_homophily_values,
-            self.universe_edge_density_values,
-            self.use_dccc_sbm_values,
-            self.degree_distribution_values
-        )
+        # Generate all combinations
+        param_names = list(sweep_values.keys())
+        param_values = list(sweep_values.values())
+        combinations = list(itertools.product(*param_values))
         
         family_configs = []
-        for i, combo in enumerate(param_combinations):
+        for i, combo in enumerate(combinations):
+            # Start with base configuration values
             family_config = {
                 'family_id': f"family_{self.experiment_name}_{i:03d}",
-                'n_graphs': combo[0],
-                'n_extra_graphs': combo[1],
-                'universe_K': combo[2],
-                'universe_homophily': combo[3],
-                'universe_edge_density': combo[4],
-                'use_dccc_sbm': combo[5],
-                'degree_distribution': combo[6]
+                'n_graphs': self.base_config.n_graphs,
+                'n_extra_graphs': self.base_config.n_extra_graphs_for_finetuning,
+                'universe_K': self.base_config.universe_K,
+                'universe_feature_dim': self.base_config.universe_feature_dim,
+                'use_dccc_sbm': self.base_config.use_dccc_sbm,
+                'degree_distribution': self.base_config.degree_distribution,
+                'min_n_nodes': self.base_config.min_n_nodes,
+                'max_n_nodes': self.base_config.max_n_nodes,
+                'min_communities': self.base_config.min_communities,
+                'max_communities': self.base_config.max_communities
             }
+            
+            # Add sweep parameter values
+            family_config.update(dict(zip(param_names, combo)))
+            
             family_configs.append(family_config)
         
         return family_configs
     
     def get_model_configurations(self) -> List[Dict[str, Any]]:
         """Get all model configurations."""
-        model_combinations = itertools.product(
-            self.gnn_types,
-            self.pretraining_tasks,
-            self.hidden_dims,
-            self.num_layers_values
-        )
-        
+        # For SSL, we'll use the base config's model parameters
+        if not self.base_config:
+            return []
+            
         model_configs = []
-        for combo in model_combinations:
+        for gnn_type in self.gnn_models:
             model_config = {
-                'gnn_type': combo[0],
-                'pretraining_task': combo[1],
-                'hidden_dim': combo[2],
-                'num_layers': combo[3]
+                'gnn_type': gnn_type,
+                'pretraining_task': self.base_config.pretraining_task,
+                'hidden_dim': self.base_config.hidden_dim,
+                'num_layers': self.base_config.num_layers
             }
             model_configs.append(model_config)
         
@@ -192,24 +168,32 @@ class SSLMultiExperimentRunner:
             'family_configurations': len(self.config.get_family_configurations()),
             'model_configurations': len(self.config.get_model_configurations()),
             'parameters': {
-                'n_graphs': self.config.n_graphs,
-                'n_extra_graphs': self.config.n_extra_graphs,
-                'universe_K_values': self.config.universe_K_values,
-                'universe_homophily_values': self.config.universe_homophily_values,
-                'universe_edge_density_values': self.config.universe_edge_density_values,
-                'use_dccc_sbm_values': self.config.use_dccc_sbm_values,
-                'degree_distribution_values': self.config.degree_distribution_values,
-                'gnn_types': self.config.gnn_types,
-                'pretraining_tasks': self.config.pretraining_tasks,
-                'hidden_dims': self.config.hidden_dims,
-                'num_layers_values': self.config.num_layers_values
-            },
-            'execution_config': {
                 'n_repetitions': self.config.n_repetitions,
-                'optimize_hyperparams': self.config.optimize_hyperparams,
-                'n_trials': self.config.n_trials,
-                'reuse_families': self.config.reuse_families
-            }
+                'continue_on_failure': self.config.continue_on_failure,
+                'save_individual_results': self.config.save_individual_results,
+                'max_concurrent_families': self.config.max_concurrent_families,
+                'reuse_families': self.config.reuse_families,
+                'base_seed': self.config.base_seed
+            },
+            'sweep_parameters': {
+                param: {
+                    'min_val': range_obj.min_val,
+                    'max_val': range_obj.max_val,
+                    'step': range_obj.step,
+                    'is_sweep': range_obj.is_sweep,
+                    'distribution': getattr(range_obj, 'distribution', None)
+                } for param, range_obj in self.config.sweep_parameters.items()
+            },
+            'random_parameters': {
+                param: {
+                    'min_val': range_obj.min_val,
+                    'max_val': range_obj.max_val,
+                    'distribution': range_obj.distribution,
+                    'is_sweep': range_obj.is_sweep
+                } for param, range_obj in self.config.random_parameters.items()
+            },
+            'base_config': self.config.base_config.to_dict() if self.config.base_config else None,
+            'gnn_models': self.config.gnn_models
         }
         
         config_path = os.path.join(self.output_dir, "experiment_config.json")
@@ -331,10 +315,10 @@ class SSLMultiExperimentRunner:
                 num_layers=model_config['num_layers'],
                 
                 # Training parameters
-                epochs=self.config.epochs,
-                optimize_hyperparams=self.config.optimize_hyperparams,
-                n_trials=self.config.n_trials,
-                optimization_timeout=self.config.optimization_timeout,
+                epochs=self.config.base_config.epochs,
+                optimize_hyperparams=self.config.base_config.optimize_hyperparams,
+                n_trials=self.config.base_config.n_trials,
+                optimization_timeout=self.config.base_config.optimization_timeout,
                 
                 # Graph family management
                 graph_family_dir=os.path.join(self.output_dir, "graph_families"),
@@ -577,10 +561,6 @@ def parse_args():
                         help='Base output directory')
     parser.add_argument('--experiment_name', type=str, default='ssl_sweep',
                         help='Name for this experiment sweep')
-    parser.add_argument('--preset', type=str, 
-                        choices=['quick', 'standard', 'comprehensive', 'custom'],
-                        default='standard',
-                        help='Preset experiment configuration')
     
     # === EXECUTION PARAMETERS ===
     parser.add_argument('--n_repetitions', type=int, default=1,
@@ -590,6 +570,87 @@ def parse_args():
     parser.add_argument('--reuse_families', action='store_true', default=True,
                         help='Reuse graph families across experiments')
     
+    # === GRAPH FAMILY PARAMETERS ===
+    parser.add_argument('--n_graphs', type=int, default=50,
+                        help='Number of graphs per family')
+    parser.add_argument('--n_extra_graphs', type=int, default=30,
+                        help='Number of extra graphs for finetuning')
+    parser.add_argument('--min_n_nodes', type=int, default=80,
+                        help='Minimum nodes per graph')
+    parser.add_argument('--max_n_nodes', type=int, default=120,
+                        help='Maximum nodes per graph')
+    parser.add_argument('--min_communities', type=int, default=3,
+                        help='Minimum number of communities')
+    parser.add_argument('--max_communities', type=int, default=7,
+                        help='Maximum number of communities')
+    parser.add_argument('--universe_K', type=int, default=10,
+                        help='Number of communities in universe')
+    parser.add_argument('--use_dccc_sbm', action='store_true',
+                        help='Use DCCC-SBM instead of DC-SBM')
+    parser.add_argument('--degree_distribution', type=str, default='power_law',
+                        choices=['standard', 'power_law', 'exponential', 'uniform'],
+                        help='Degree distribution for DCCC-SBM')
+    
+    # === SWEEP PARAMETERS ===
+    # Homophily sweep
+    parser.add_argument('--homophily_min', type=float, default=0.2,
+                        help='Minimum homophily value for sweep')
+    parser.add_argument('--homophily_max', type=float, default=0.8,
+                        help='Maximum homophily value for sweep')
+    parser.add_argument('--homophily_step', type=float, default=0.4,
+                        help='Step size for homophily sweep')
+    
+    # Density sweep
+    parser.add_argument('--density_min', type=float, default=0.05,
+                        help='Minimum edge density value for sweep')
+    parser.add_argument('--density_max', type=float, default=0.15,
+                        help='Maximum edge density value for sweep')
+    parser.add_argument('--density_step', type=float, default=0.10,
+                        help='Step size for density sweep')
+    
+    # === MODEL PARAMETERS ===
+    parser.add_argument('--gnn_types', type=str, nargs='+', 
+                        default=['gcn'],
+                        choices=['gcn', 'sage', 'gat'],
+                        help='GNN types to test')
+    parser.add_argument('--pretraining_task', type=str,
+                        default='link_prediction',
+                        choices=['link_prediction', 'contrastive'],
+                        help='Pre-training task to use')
+    parser.add_argument('--hidden_dim', type=int, default=128,
+                        help='Hidden dimension for GNN')
+    parser.add_argument('--num_layers', type=int, default=2,
+                        help='Number of GNN layers')
+    
+    # === TASK-SPECIFIC HYPERPARAMETERS ===
+    # Link prediction parameters
+    parser.add_argument('--neg_sampling_ratio_min', type=float, default=1.0,
+                        help='Minimum negative sampling ratio for link prediction')
+    parser.add_argument('--neg_sampling_ratio_max', type=float, default=5.0,
+                        help='Maximum negative sampling ratio for link prediction')
+    parser.add_argument('--neg_sampling_ratio_step', type=float, default=5.0,
+                        help='Step size for negative sampling ratio sweep')
+    parser.add_argument('--link_pred_threshold_min', type=float, default=0.3,
+                        help='Minimum link prediction threshold')
+    parser.add_argument('--link_pred_threshold_max', type=float, default=0.7,
+                        help='Maximum link prediction threshold')
+    parser.add_argument('--link_pred_threshold_step', type=float, default=0.4,
+                        help='Step size for link prediction threshold sweep')
+    
+    # Contrastive learning parameters
+    parser.add_argument('--temperature_min', type=float, default=0.1,
+                        help='Minimum temperature for contrastive learning')
+    parser.add_argument('--temperature_max', type=float, default=1.0,
+                        help='Maximum temperature for contrastive learning')
+    parser.add_argument('--temperature_step', type=float, default=0.5,
+                        help='Step size for temperature sweep')
+    parser.add_argument('--aug_strength_min', type=float, default=0.1,
+                        help='Minimum augmentation strength')
+    parser.add_argument('--aug_strength_max', type=float, default=0.5,
+                        help='Maximum augmentation strength')
+    parser.add_argument('--aug_strength_step', type=float, default=0.25,
+                        help='Step size for augmentation strength sweep')
+    
     # === TRAINING PARAMETERS ===
     parser.add_argument('--epochs', type=int, default=300,
                         help='Training epochs for pre-training')
@@ -597,22 +658,12 @@ def parse_args():
                         help='Enable hyperparameter optimization')
     parser.add_argument('--n_trials', type=int, default=20,
                         help='Number of hyperparameter optimization trials')
+    parser.add_argument('--optimization_timeout', type=int, default=1200,
+                        help='Timeout in seconds for hyperparameter optimization')
     
-    # === CUSTOM PARAMETERS (for preset='custom') ===
-    parser.add_argument('--gnn_types', type=str, nargs='+', 
-                        default=['gcn', 'sage'],
-                        choices=['gcn', 'sage', 'gat'],
-                        help='GNN types to test')
-    parser.add_argument('--pretraining_tasks', type=str, nargs='+',
-                        default=['link_prediction', 'contrastive'],
-                        choices=['link_prediction', 'contrastive'],
-                        help='Pre-training tasks to test')
-    parser.add_argument('--universe_K_values', type=int, nargs='+',
-                        default=[8, 10],
-                        help='Universe K values to test')
-    parser.add_argument('--use_dccc_sbm_values', type=str, nargs='+',
-                        default=['False', 'True'],
-                        help='Whether to use DCCC-SBM (True/False)')
+    # === RANDOM SEED ===
+    parser.add_argument('--seed', type=int, default=42,
+                        help='Random seed')
     
     return parser.parse_args()
 
@@ -660,7 +711,7 @@ def create_preset_config(preset: str, args) -> SSLMultiExperimentConfig:
             use_dccc_sbm_values=[False, True],
             degree_distribution_values=['power_law', 'exponential'],
             
-            gnn_types=['gcn', 'sage'],
+            gnn_types=['sage'],
             pretraining_tasks=['link_prediction', 'contrastive'],
             hidden_dims=[128, 256],
             num_layers_values=[2, 3],
@@ -729,19 +780,202 @@ def create_preset_config(preset: str, args) -> SSLMultiExperimentConfig:
         raise ValueError(f"Unknown preset: {preset}")
 
 
+def create_custom_experiment(args) -> SSLMultiExperimentConfig:
+    """Create a custom experiment configuration from arguments."""
+    from experiments.inductive.config import PreTrainingConfig
+    
+    # Base configuration
+    base_config = PreTrainingConfig(
+        n_graphs=args.n_graphs,
+        n_extra_graphs_for_finetuning=args.n_extra_graphs,
+        universe_K=args.universe_K,
+        universe_feature_dim=32,
+        universe_edge_density=args.density_min,
+        universe_homophily=args.homophily_min,
+        use_dccc_sbm=args.use_dccc_sbm,
+        degree_distribution=args.degree_distribution,
+        
+        # Graph size parameters
+        min_n_nodes=args.min_n_nodes,
+        max_n_nodes=args.max_n_nodes,
+        min_communities=args.min_communities,
+        max_communities=args.max_communities,
+        
+        # Model parameters - use first values as base
+        gnn_type=args.gnn_types[0],  # Will be overridden for each model
+        pretraining_task=args.pretraining_task,  # Single task
+        hidden_dim=args.hidden_dim,
+        num_layers=args.num_layers,
+        
+        # Training parameters
+        epochs=args.epochs,
+        optimize_hyperparams=args.optimize_hyperparams,
+        n_trials=args.n_trials,
+        optimization_timeout=args.optimization_timeout,
+        
+        # Graph family management
+        graph_family_dir=os.path.join(args.output_dir, "graph_families"),
+        save_graph_family=True,
+        
+        # Seed
+        seed=args.seed
+    )
+    
+    # Define sweep parameters
+    sweep_parameters = {
+        'universe_homophily': ParameterRange(
+            min_val=args.homophily_min,
+            max_val=args.homophily_max,
+            step=args.homophily_step,
+            is_sweep=True
+        ),
+        'universe_edge_density': ParameterRange(
+            min_val=args.density_min,
+            max_val=args.density_max,
+            step=args.density_step,
+            is_sweep=True
+        )
+    }
+    
+    # Add pre-training task specific hyperparameters only for the selected task
+    if args.pretraining_task == 'link_prediction':
+        sweep_parameters.update({
+            'negative_sampling_ratio': ParameterRange(
+                min_val=args.neg_sampling_ratio_min,
+                max_val=args.neg_sampling_ratio_max,
+                step=args.neg_sampling_ratio_step,
+                is_sweep=True
+            ),
+            'link_prediction_threshold': ParameterRange(
+                min_val=args.link_pred_threshold_min,
+                max_val=args.link_pred_threshold_max,
+                step=args.link_pred_threshold_step,
+                is_sweep=True
+            )
+        })
+    elif args.pretraining_task == 'contrastive':
+        sweep_parameters.update({
+            'temperature': ParameterRange(
+                min_val=args.temperature_min,
+                max_val=args.temperature_max,
+                step=args.temperature_step,
+                is_sweep=True
+            ),
+            'augmentation_strength': ParameterRange(
+                min_val=args.aug_strength_min,
+                max_val=args.aug_strength_max,
+                step=args.aug_strength_step,
+                is_sweep=True
+            )
+        })
+    
+    # Define random parameters
+    random_parameters = {
+        'homophily_range_width': ParameterRange(
+            min_val=0.0,
+            max_val=0.2,
+            distribution="uniform",
+            is_sweep=False
+        ),
+        'density_range_width': ParameterRange(
+            min_val=0.0,
+            max_val=0.05,
+            distribution="uniform",
+            is_sweep=False
+        ),
+        'degree_heterogeneity': ParameterRange(
+            min_val=0.0,
+            max_val=1.0,
+            distribution="uniform",
+            is_sweep=False
+        ),
+        'edge_noise': ParameterRange(
+            min_val=0.0,
+            max_val=0.1,
+            distribution="uniform",
+            is_sweep=False
+        ),
+        'cluster_count_factor': ParameterRange(
+            min_val=0.5,
+            max_val=1.5,
+            distribution="uniform",
+            is_sweep=False
+        ),
+        'cluster_variance': ParameterRange(
+            min_val=0.01,
+            max_val=0.5,
+            distribution="uniform",
+            is_sweep=False
+        ),
+        'center_variance': ParameterRange(
+            min_val=0.01,
+            max_val=1.5,
+            distribution="uniform",
+            is_sweep=False
+        ),
+        'assignment_skewness': ParameterRange(
+            min_val=0.0,
+            max_val=0.5,
+            distribution="uniform",
+            is_sweep=False
+        ),
+        'community_exclusivity': ParameterRange(
+            min_val=0.6,
+            max_val=1.0,
+            distribution="uniform",
+            is_sweep=False
+        ),
+        'universe_randomness_factor': ParameterRange(
+            min_val=0.0,
+            max_val=1.0,
+            distribution="uniform",
+            is_sweep=False
+        )
+    }
+    
+    # Add DCCC-specific random parameters if needed
+    if args.use_dccc_sbm:
+        random_parameters.update({
+            'community_imbalance_range_width': ParameterRange(
+                min_val=0.0,
+                max_val=0.5,
+                distribution="uniform",
+                is_sweep=False
+            ),
+            'degree_separation_range_width': ParameterRange(
+                min_val=0.3,
+                max_val=1.0,
+                distribution="uniform",
+                is_sweep=False
+            )
+        })
+    
+    return SSLMultiExperimentConfig(
+        base_config=base_config,
+        sweep_parameters=sweep_parameters,
+        random_parameters=random_parameters,
+        n_repetitions=args.n_repetitions,
+        experiment_name=args.experiment_name,
+        output_dir=args.output_dir,
+        continue_on_failure=True,
+        save_individual_results=True,
+        reuse_families=args.reuse_families,
+        gnn_models=args.gnn_types  # List of GNN models to test
+    )
+
+
 def main():
     """Main function to run multi-SSL experiments."""
     args = parse_args()
     
     print("MULTI-EXPERIMENT SSL BENCHMARK SUITE")
     print("=" * 80)
-    print(f"Preset: {args.preset}")
     print(f"Output directory: {args.output_dir}")
     print(f"Experiment name: {args.experiment_name}")
     
     try:
         # Create configuration
-        config = create_preset_config(args.preset, args)
+        config = create_custom_experiment(args)
         
         print(f"\nExperiment Configuration:")
         print(f"  Total experiments: {config.get_total_experiments()}")
@@ -749,7 +983,22 @@ def main():
         print(f"  Model configurations: {len(config.get_model_configurations())}")
         print(f"  Repetitions: {config.n_repetitions}")
         print(f"  Reuse families: {config.reuse_families}")
-        print(f"  Hyperparameter optimization: {config.optimize_hyperparams}")
+        print(f"  Hyperparameter optimization: {config.base_config.optimize_hyperparams}")
+        
+        print(f"\nSweep parameters ({len(config.sweep_parameters)}):")
+        for param, param_range in config.sweep_parameters.items():
+            if hasattr(param_range, 'get_sweep_values'):
+                try:
+                    values = param_range.get_sweep_values()
+                    print(f"  {param}: {len(values)} values from {min(values)} to {max(values)}")
+                except:
+                    print(f"  {param}: {param_range.min_val} to {param_range.max_val}")
+            else:
+                print(f"  {param}: {param_range.min_val} to {param_range.max_val}")
+        
+        print(f"\nRandom parameters ({len(config.random_parameters)}):")
+        for param, param_range in config.random_parameters.items():
+            print(f"  {param}: [{param_range.min_val}, {param_range.max_val}] ({param_range.distribution})")
         
         # Confirm before starting large experiments
         if config.get_total_experiments() > 10:

@@ -75,8 +75,10 @@ def parse_args():
                         help='Feature dimension for universe')
     parser.add_argument('--universe_edge_density', type=float, default=0.1,
                         help='Base edge density for universe')
-    parser.add_argument('--universe_homophily', type=float, default=0.8,
+    parser.add_argument('--universe_homophily', type=float, default=0.2,
                         help='Homophily parameter for universe')
+    parser.add_argument('--universe_randomness_factor', type=float, default=1.0,
+                        help='Randomness factor for universe')
     
     # === METHOD SELECTION ===
     parser.add_argument('--use_dccc_sbm', action='store_true',
@@ -114,7 +116,7 @@ def parse_args():
                         help='Maximum allowed participation rate per community')
     
     # === MODELS ===
-    parser.add_argument('--gnn_types', type=str, nargs='+', default=['gcn'],
+    parser.add_argument('--gnn_types', type=str, nargs='+', default=['gcn', 'sage'],
                         choices=['gcn', 'gat', 'sage'],
                         help='Types of GNN models to run')
     parser.add_argument('--run_mlp', action='store_true', default=True,
@@ -148,6 +150,21 @@ def parse_args():
     parser.add_argument('--optimize_hyperparams', action='store_true',
                         help='Enable hyperparameter optimization')
     
+    # === FEATURE GENERATION ===
+    parser.add_argument('--cluster_count_factor', type=float, default=1.0,
+                        help='Factor for cluster count')
+    parser.add_argument('--center_variance', type=float, default=0.1,
+                        help='Variance for center of clusters')
+    parser.add_argument('--cluster_variance', type=float, default=1.0,
+                        help='Variance for cluster sizes')
+    parser.add_argument('--assignment_skewness', type=float, default=0.0,
+                        help='Skewness for feature assignment')
+    parser.add_argument('--community_exclusivity', type=float, default=1.0,
+                        help='Exclusivity for community assignment')
+    parser.add_argument('--degree_center_method', type=str, default='linear',
+                        choices=["linear", "random", "shuffled"],
+                        help='Degree center method')
+
     return parser.parse_args()
 
 
@@ -198,6 +215,7 @@ def create_config_from_args(args) -> InductiveExperimentConfig:
         universe_feature_dim=args.universe_feature_dim,
         universe_edge_density=args.universe_edge_density,
         universe_homophily=args.universe_homophily,
+        universe_randomness_factor=args.universe_randomness_factor,
         
         # === METHOD SELECTION ===
         use_dccc_sbm=args.use_dccc_sbm,
@@ -212,6 +230,14 @@ def create_config_from_args(args) -> InductiveExperimentConfig:
         # === DCCC-SBM PARAMETERS ===
         community_imbalance_range=tuple(args.community_imbalance_range),
         degree_separation_range=tuple(args.degree_separation_range),
+
+        # === FEATURE GENERATION ===
+        cluster_count_factor=args.cluster_count_factor,
+        center_variance=args.center_variance,
+        cluster_variance=args.cluster_variance,
+        assignment_skewness=args.assignment_skewness,
+        community_exclusivity=args.community_exclusivity,
+        degree_center_method=args.degree_center_method,
         
         # === MODELS ===
         gnn_types=args.gnn_types,
