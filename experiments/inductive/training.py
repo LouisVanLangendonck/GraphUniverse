@@ -497,17 +497,30 @@ def optimize_inductive_hyperparameters(
             num_layers = trial.suggest_int('num_layers', 1, 4)
             dropout = trial.suggest_float('dropout', 0.1, 0.7)
             
+            # Initialize default values
+            heads = 1
+            concat_heads = True
+            eps = 0.3
+            residual = False
+            norm_type = 'none'
+            agg_type = 'mean'
+            
             # GNN-specific parameters
             if gnn_type == "gat":
                 heads = trial.suggest_int('heads', 1, 8)
                 concat_heads = trial.suggest_categorical('concat_heads', [True, False])
-            else:
-                heads = 1
-                concat_heads = True
-            
-            residual = trial.suggest_categorical('residual', [True, False])
-            norm_type = trial.suggest_categorical('norm_type', ['none', 'batch', 'layer'])
-            agg_type = trial.suggest_categorical('agg_type', ['mean', 'max', 'sum'])
+                residual = trial.suggest_categorical('residual', [True, False])
+                norm_type = trial.suggest_categorical('norm_type', ['none', 'batch', 'layer'])
+                agg_type = trial.suggest_categorical('agg_type', ['mean', 'max', 'sum'])
+            elif gnn_type == "fagcn":
+                # FAGCN-specific parameters
+                eps = trial.suggest_float('eps', 0.0, 1.0)
+                # Don't optimize irrelevant parameters for FAGCN
+            elif gnn_type in ["gcn", "sage"]:
+                residual = trial.suggest_categorical('residual', [True, False])
+                norm_type = trial.suggest_categorical('norm_type', ['none', 'batch', 'layer'])
+                if gnn_type == "sage":
+                    agg_type = trial.suggest_categorical('agg_type', ['mean', 'max', 'sum'])
             
             # Create model
             model = model_creator(
@@ -522,9 +535,10 @@ def optimize_inductive_hyperparameters(
                 agg_type=agg_type,
                 heads=heads,
                 concat_heads=concat_heads,
+                eps=eps,
                 is_regression=is_regression
             ).to(device)
-            
+                
         elif model_type == "mlp":
             hidden_dim = trial.suggest_int('hidden_dim', 32, 256)
             num_layers = trial.suggest_int('num_layers', 1, 4)
@@ -1072,29 +1086,40 @@ def train_and_evaluate_inductive(
                         output_dim = get_total_classes_from_dataloaders(dataloaders)
                     
                     if isinstance(model, GNNModel):
-                        # Handle GAT-specific parameters
+                        # Handle model-specific parameters
                         if gnn_type == "gat":
                             heads = best_params.get('heads', 1)
                             concat_heads = best_params.get('concat_heads', True)
-                            # For GAT, adjust hidden_dim based on concat_heads
-                            effective_hidden_dim = best_params.get('hidden_dim', config.hidden_dim) * heads if concat_heads else best_params.get('hidden_dim', config.hidden_dim)
                         else:
                             heads = 1
                             concat_heads = True
-                            effective_hidden_dim = best_params.get('hidden_dim', config.hidden_dim)
+                        
+                        # Handle FAGCN-specific parameters
+                        if gnn_type == "fagcn":
+                            eps = best_params.get('eps', 0.3)
+                            # Use default values for irrelevant parameters
+                            residual = False
+                            norm_type = 'none'
+                            agg_type = 'mean'
+                        else:
+                            eps = 0.3  # Default value for non-FAGCN models
+                            residual = best_params.get('residual', False)
+                            norm_type = best_params.get('norm_type', 'none')
+                            agg_type = best_params.get('agg_type', 'mean')
                         
                         model = GNNModel(
                             input_dim=input_dim,
-                            hidden_dim=effective_hidden_dim,
+                            hidden_dim=best_params.get('hidden_dim', config.hidden_dim),
                             output_dim=output_dim,
                             num_layers=best_params.get('num_layers', config.num_layers),
                             dropout=best_params.get('dropout', config.dropout),
                             gnn_type=gnn_type,
-                            residual=best_params.get('residual', False),
-                            norm_type=best_params.get('norm_type', 'none'),
-                            agg_type=best_params.get('agg_type', 'mean'),
+                            residual=residual,
+                            norm_type=norm_type,
+                            agg_type=agg_type,
                             heads=heads,
                             concat_heads=concat_heads,
+                            eps=eps,
                             is_regression=is_regression
                         )
                     else:  # MLPModel
@@ -1106,7 +1131,7 @@ def train_and_evaluate_inductive(
                             dropout=best_params.get('dropout', config.dropout),
                             is_regression=is_regression
                         )
-                    
+
                     # Update learning rate and weight decay
                     config.learning_rate = best_params.get('lr', config.learning_rate)
                     config.weight_decay = best_params.get('weight_decay', config.weight_decay)

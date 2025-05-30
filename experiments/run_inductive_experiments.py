@@ -116,8 +116,8 @@ def parse_args():
                         help='Maximum allowed participation rate per community')
     
     # === MODELS ===
-    parser.add_argument('--gnn_types', type=str, nargs='+', default=['gcn', 'sage'],
-                        choices=['gcn', 'gat', 'sage'],
+    parser.add_argument('--gnn_types', type=str, nargs='+', default=['gat'],
+                        choices=['gcn', 'fagcn', 'sage', 'gat'],
                         help='Types of GNN models to run')
     parser.add_argument('--run_mlp', action='store_true', default=True,
                         help='Run MLP model')

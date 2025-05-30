@@ -743,17 +743,6 @@ def train_gnn_model(
     """
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     
-    # Add diagnostic prints for shapes and indices
-    if verbose:
-        print("\nDiagnostic Information:")
-        print(f"Features shape: {features.shape}")
-        print(f"Labels shape: {labels.shape}")
-        print(f"Number of unique labels: {len(torch.unique(labels))}")
-        print(f"Label range: [{labels.min()}, {labels.max()}]")
-        print(f"Train indices range: [{train_idx.min()}, {train_idx.max()}] (length: {len(train_idx)})")
-        print(f"Val indices range: [{val_idx.min()}, {val_idx.max()}] (length: {len(val_idx)})")
-        print(f"Test indices range: [{test_idx.min()}, {test_idx.max()}] (length: {len(test_idx)})")
-    
     # Create label remapping to handle missing classes
     unique_labels = torch.unique(labels)
     n_classes = len(unique_labels)

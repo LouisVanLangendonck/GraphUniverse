@@ -340,14 +340,26 @@ class InductiveExperiment:
                 try:
                     # Create model
                     if model_name in self.config.gnn_types:
-                        model = GNNModel(
-                            input_dim=input_dim,
-                            hidden_dim=self.config.hidden_dim,
-                            output_dim=output_dim,
-                            num_layers=self.config.num_layers,
-                            dropout=self.config.dropout,
-                            gnn_type=model_name,
-                            is_regression=is_regression
+                        if model_name == 'fagcn':
+                            model = GNNModel(
+                                input_dim=input_dim,
+                                hidden_dim=self.config.hidden_dim,
+                                output_dim=output_dim,
+                                num_layers=self.config.num_layers,
+                                dropout=self.config.dropout,
+                                gnn_type=model_name,
+                                is_regression=is_regression,
+                                eps=self.config.eps
+                            )
+                        else:
+                            model = GNNModel(
+                                input_dim=input_dim,
+                                hidden_dim=self.config.hidden_dim,
+                                output_dim=output_dim,
+                                num_layers=self.config.num_layers,
+                                dropout=self.config.dropout,
+                                gnn_type=model_name,
+                                is_regression=is_regression
                         )
                     elif model_name == 'mlp':
                         model = MLPModel(

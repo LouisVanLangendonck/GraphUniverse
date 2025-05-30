@@ -117,6 +117,8 @@ class InductiveExperimentConfig:
     hidden_dim: int = 64
     num_layers: int = 2
     dropout: float = 0.5
+    # Special parameter for FAGCN
+    eps: float = 0.2
     
     # === HYPERPARAMETER OPTIMIZATION ===
     optimize_hyperparams: bool = False
