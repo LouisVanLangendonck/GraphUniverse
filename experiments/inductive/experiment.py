@@ -311,16 +311,13 @@ class InductiveExperiment:
             
             task_results = {}
             task_dataloaders = self.dataloaders[task]
-            is_regression = self.config.is_regression.get(task, False)
+            # If task is k_hop_community_counts, it is a regression task, else not
+            is_regression = task == 'k_hop_community_counts'
             
             # Get dimensions
             sample_batch = next(iter(task_dataloaders['train']))
             input_dim = sample_batch.x.shape[1]
-            
-            if not is_regression:
-                output_dim = get_total_classes_from_dataloaders(task_dataloaders)
-            else:
-                output_dim = sample_batch.y.shape[1] if len(sample_batch.y.shape) > 1 else 1
+            output_dim = get_total_classes_from_dataloaders(task_dataloaders)
             
             print(f"Model configuration:")
             print(f"  Input dim: {input_dim}")
@@ -740,14 +737,14 @@ class PreTrainingRunner:
         family_id: Optional[str] = None,
         use_existing_family: bool = False
     ) -> Dict[str, Any]:
-        """Run pre-training only, generating and saving graphs for later fine-tuning."""
+        """Run pre-training with full parameter control."""
         
         print("="*80)
-        print("ENHANCED SSL PRE-TRAINING (GRAPHS SAVED FOR LATER)")
+        print("ENHANCED SSL PRE-TRAINING WITH FULL PARAMETER CONTROL")
         print("="*80)
         
         pipeline_start = time.time()
-        results = {'config': asdict(self.config)}
+        results = {'config': self.config.to_dict()}
         
         # Step 1: Generate or load graph family
         if use_existing_family and family_id:
@@ -758,9 +755,9 @@ class PreTrainingRunner:
             results['used_existing_family'] = True
             results['family_metadata'] = family_metadata
         else:
-            print(f"\nStep 1: Generating new graph family")
+            print(f"\nStep 1: Generating new graph family with full parameter control")
             print("-" * 50)
-            family_graphs, family_id = self.family_manager.generate_and_save_family(family_id)
+            family_graphs, family_id = self._generate_controlled_family(family_id)
             
             # Create splits
             n_actual_pretraining, n_warmup, n_finetuning = self.config.get_graph_splits()
@@ -786,9 +783,6 @@ class PreTrainingRunner:
             print(f"Using {len(warmup_graphs)} warmup graphs for hyperopt")
             
             task = create_ssl_task(self.config)
-            if isinstance(task, list):
-                task = task[0]  # Use first task for optimization
-            
             hyperopt_results = self._optimize_hyperparameters(warmup_graphs, task)
             results['hyperopt_results'] = hyperopt_results
         else:
@@ -818,7 +812,8 @@ class PreTrainingRunner:
             'family_total_graphs': len(family_graphs),
             'finetuning_graphs_available': len(graph_splits['finetuning']),
             'pretraining_graphs_used': len(pretraining_graphs),
-            'warmup_graphs_used': len(graph_splits['warmup'])
+            'warmup_graphs_used': len(graph_splits['warmup']),
+            'graph_family_parameters': self._get_family_generation_summary(family_graphs)
         }
         
         model_id = self.model_saver.save_model(
@@ -827,7 +822,7 @@ class PreTrainingRunner:
             training_history=training_results['training_history'],
             metrics=training_results['final_metrics'],
             hyperopt_results=hyperopt_results,
-            enhanced_metadata=enhanced_metadata  # Add family info
+            enhanced_metadata=enhanced_metadata
         )
         
         results['model_id'] = model_id
@@ -837,17 +832,133 @@ class PreTrainingRunner:
         results['total_time'] = total_time
         
         print(f"\n" + "="*80)
-        print("PRE-TRAINING COMPLETED SUCCESSFULLY")
+        print("ENHANCED PRE-TRAINING COMPLETED SUCCESSFULLY")
         print("="*80)
         print(f"Model ID: {model_id}")
         print(f"Graph family ID: {family_id}")
         print(f"Graphs available for fine-tuning: {len(graph_splits['finetuning'])}")
         print(f"Total time: {total_time:.2f} seconds")
-        print(f"✓ Ready for fine-tuning with: python run_ssl_experiments.py --mode finetune --model_id {model_id}")
+        print(f"✓ Ready for fine-tuning")
         
         return results
     
-    def _optimize_hyperparameters(self, warmup_graphs: List, task: SelfSupervisedTask) -> Dict[str, Any]:
+    def _generate_controlled_family(self, family_id: Optional[str] = None) -> Tuple[List, str]:
+        """Generate graph family with full parameter control."""
+        
+        if family_id is None:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            family_id = f"enhanced_{self.config.gnn_type}_{self.config.pretraining_task}_{timestamp}"
+        
+        print(f"Generating graph family: {family_id}")
+        print(f"Universe parameters:")
+        print(f"  K: {self.config.universe_K}")
+        print(f"  Feature dim: {self.config.universe_feature_dim}")
+        print(f"  Edge density: {self.config.universe_edge_density}")
+        print(f"  Homophily: {self.config.universe_homophily}")
+        print(f"  DCCC-SBM: {self.config.use_dccc_sbm}")
+        if self.config.use_dccc_sbm:
+            print(f"  Degree distribution: {self.config.degree_distribution}")
+        
+        # Create universe with controlled parameters
+        universe = GraphUniverse(**self.config.to_universe_params())
+        
+        # Create family generator with controlled parameters
+        family_generator = GraphFamilyGenerator(
+            universe=universe,
+            **self.config.to_graph_family_params()
+        )
+        
+        # Generate family
+        print(f"Generating {self.config.get_total_graphs()} graphs total...")
+        start_time = time.time()
+        family_graphs = family_generator.generate_family(show_progress=True)
+        generation_time = time.time() - start_time
+        
+        print(f"Family generation completed in {generation_time:.2f} seconds")
+        print(f"Generated {len(family_graphs)} graphs")
+        
+        # Save the family if requested
+        if self.config.save_graph_family:
+            self._save_enhanced_family(family_graphs, family_id, family_generator)
+        
+        return family_graphs, family_id
+    
+    def _save_enhanced_family(self, family_graphs: List, family_id: str, family_generator) -> None:
+        """Save graph family with enhanced metadata."""
+        family_dir = os.path.join(self.config.graph_family_dir, family_id)
+        os.makedirs(family_dir, exist_ok=True)
+        
+        print(f"Saving enhanced graph family to: {family_dir}")
+        
+        # Save graphs
+        import pickle
+        graphs_file = os.path.join(family_dir, "graphs.pkl")
+        with open(graphs_file, 'wb') as f:
+            pickle.dump(family_graphs, f)
+        
+        # Save enhanced metadata
+        n_actual_pretraining, n_warmup, n_finetuning = self.config.get_graph_splits()
+        
+        metadata = {
+            'family_id': family_id,
+            'creation_timestamp': datetime.now().isoformat(),
+            'total_graphs': len(family_graphs),
+            'n_actual_pretraining': n_actual_pretraining,
+            'n_warmup': n_warmup,
+            'n_finetuning': n_finetuning,
+            'config': self.config.to_dict(),
+            'graphs_file': graphs_file,
+            'splits': {
+                'pretraining': list(range(n_actual_pretraining)),
+                'warmup': list(range(n_actual_pretraining, n_actual_pretraining + n_warmup)),
+                'finetuning': list(range(n_actual_pretraining + n_warmup, len(family_graphs)))
+            },
+            'generation_stats': family_generator.generation_stats,
+            'family_summary': self._get_family_generation_summary(family_graphs)
+        }
+        
+        metadata_file = os.path.join(family_dir, "metadata.json")
+        with open(metadata_file, 'w') as f:
+            json.dump(metadata, f, indent=2, default=str)
+        
+        print(f"✓ Saved {len(family_graphs)} graphs with enhanced metadata")
+    
+    def _get_family_generation_summary(self, family_graphs: List) -> Dict[str, Any]:
+        """Get summary of graph family generation parameters."""
+        if not family_graphs:
+            return {}
+        
+        # Extract generation parameters from graphs
+        generation_methods = [g.generation_method for g in family_graphs]
+        node_counts = [g.n_nodes for g in family_graphs]
+        edge_counts = [g.graph.number_of_edges() for g in family_graphs]
+        community_counts = [len(g.communities) for g in family_graphs]
+        
+        summary = {
+            'generation_methods': list(set(generation_methods)),
+            'node_count_stats': {
+                'mean': float(np.mean(node_counts)),
+                'std': float(np.std(node_counts)),
+                'min': int(np.min(node_counts)),
+                'max': int(np.max(node_counts))
+            },
+            'edge_count_stats': {
+                'mean': float(np.mean(edge_counts)),
+                'std': float(np.std(edge_counts)),
+                'min': int(np.min(edge_counts)),
+                'max': int(np.max(edge_counts))
+            },
+            'community_count_stats': {
+                'mean': float(np.mean(community_counts)),
+                'std': float(np.std(community_counts)),
+                'min': int(np.min(community_counts)),
+                'max': int(np.max(community_counts))
+            }
+        }
+        
+        return summary
+
+    def _optimize_hyperparameters(self, warmup_graphs: List, task) -> Dict[str, Any]:
         """Optimize hyperparameters using warmup graphs."""
         
         print(f"Optimizing hyperparameters using {len(warmup_graphs)} warmup graphs")
@@ -866,15 +977,16 @@ class PreTrainingRunner:
         def objective(trial: optuna.Trial) -> float:
             """Optuna objective function."""
             
-            # Sample hyperparameters
+            # Sample hyperparameters (NOT task parameters)
             suggested_config = self._sample_hyperparameters(trial)
             
-            # Create temporary config
-            temp_config = PreTrainingConfig(**{**asdict(self.config), **suggested_config})
-            temp_task = create_ssl_task(temp_config)
+            # Create temporary config with suggested hyperparameters
+            temp_config_dict = self.config.to_dict()
+            temp_config_dict.update(suggested_config)
             
-            if isinstance(temp_task, list):
-                temp_task = temp_task[0]
+            from enhanced_pretraining_config import EnhancedPreTrainingConfig
+            temp_config = EnhancedPreTrainingConfig.from_dict(temp_config_dict)
+            temp_task = create_ssl_task(temp_config)
             
             model = temp_task.create_model(input_dim).to(self.device)
             
@@ -938,35 +1050,29 @@ class PreTrainingRunner:
         }
     
     def _sample_hyperparameters(self, trial: optuna.Trial) -> Dict[str, Any]:
-        """Sample hyperparameters for optimization."""
+        """Sample hyperparameters for optimization (NOT task parameters)."""
         params = {}
         
-        # Common parameters
+        # Model architecture hyperparameters
         params['learning_rate'] = trial.suggest_float('learning_rate', 1e-4, 1e-2, log=True)
         params['weight_decay'] = trial.suggest_float('weight_decay', 1e-6, 1e-3, log=True)
         params['hidden_dim'] = trial.suggest_int('hidden_dim', 64, 256, step=32)
         params['num_layers'] = trial.suggest_int('num_layers', 2, 4)
         params['dropout'] = trial.suggest_float('dropout', 0.0, 0.5)
         
-        # Task-specific parameters
-        # if self.config.pretraining_task in ["link_prediction", "both"]:
-        #     params['negative_sampling_ratio'] = trial.suggest_float('negative_sampling_ratio', 0.5, 2.0)
-        
-        if self.config.pretraining_task in ["contrastive", "both"]:
-            params['contrastive_temperature'] = trial.suggest_float('contrastive_temperature', 0.01, 0.2)
-            params['corruption_rate'] = trial.suggest_float('corruption_rate', 0.1, 0.5)
+        # NOTE: Task parameters are NOT optimized here, they come from config or sweeps
         
         return params
     
     def _train_model(self, pretraining_graphs: List, optimized_params: Optional[Dict] = None) -> Tuple[torch.nn.Module, Dict]:
         """Train model on pretraining graphs."""
         
-        # Update config with optimized parameters
+        # Update config with optimized parameters (only hyperparams, not task params)
         if optimized_params:
             for key, value in optimized_params.items():
                 if hasattr(self.config, key):
                     setattr(self.config, key, value)
-            print(f"Using optimized parameters: {optimized_params}")
+            print(f"Using optimized hyperparameters: {optimized_params}")
         
         # Create dataloader
         train_loader = create_pretraining_dataloader(
@@ -979,12 +1085,15 @@ class PreTrainingRunner:
         sample_batch = next(iter(train_loader))
         input_dim = sample_batch.x.shape[1]
         
-        # Create task and model
+        # Create task and model with current config (including task parameters)
         task = create_ssl_task(self.config)
-        if isinstance(task, list):
-            task = task[0]
-        
         model = task.create_model(input_dim).to(self.device)
+        
+        print(f"Training with task parameters:")
+        print(f"  Negative sampling ratio: {self.config.negative_sampling_ratio}")
+        print(f"  Contrastive temperature: {self.config.contrastive_temperature}")
+        print(f"  Corruption type: {self.config.corruption_type}")
+        print(f"  Corruption rate: {self.config.corruption_rate}")
         
         # Setup optimizer
         optimizer = torch.optim.Adam(

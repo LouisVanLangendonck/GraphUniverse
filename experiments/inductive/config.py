@@ -91,7 +91,7 @@ class InductiveExperimentConfig:
     
     # === TASKS ===
     tasks: List[str] = field(default_factory=lambda: ['community'])
-    is_regression: Dict[str, bool] = field(default_factory=lambda: {'community': False})
+    is_regression: Dict[str, bool] = field(default_factory=lambda: {'community': False, 'k_hop_community_counts': True, 'metapath_classification': False})
     khop_community_counts_k: int = 2
 
     # === METAPATH TASK SETTINGS ===
@@ -232,40 +232,77 @@ class PreTrainingConfig:
     """Configuration for self-supervised pre-training."""
     
     # === EXPERIMENT SETUP ===
-    output_dir: str = "pretrained_models"
+    output_dir: str = "ssl_experiments"
     experiment_name: str = "ssl_pretraining"
     seed: int = 42
     device_id: int = 0
     force_cpu: bool = False
     
     # === PRE-TRAINING TASK ===
-    pretraining_task: str = "link_prediction"  # "link_prediction", "contrastive", "both"
-
+    pretraining_task: str = "link_prediction"  # "link_prediction", "contrastive"
+    
     # === GRAPH FAMILY PERSISTENCE ===
-    n_extra_graphs_for_finetuning: int = 30  # Extra graphs to generate for later fine-tuning
-    save_graph_family: bool = True  # Save the entire graph family
-    graph_family_dir: str = "graph_families"  # Directory to save graph families
+    n_extra_graphs_for_finetuning: int = 30
+    save_graph_family: bool = True
+    graph_family_dir: str = "graph_families"
+    pretraining_graph_ratio: float = 0.7
+    warmup_graph_ratio: float = 0.3
     
-    # === PRE-TRAINING DATA SPLIT ===
-    pretraining_graph_ratio: float = 0.7  # Ratio of total graphs used for pre-training
-    warmup_graph_ratio: float = 0.3  # Ratio of pre-training graphs used for hyperopt warmup
-    
-    # === FAMILY GENERATION ===
-    # These will be used to generate the graph family
-    n_graphs: int = 50  # Base number of graphs for pre-training
+    # === GRAPH FAMILY GENERATION (Full Control) ===
+    n_graphs: int = 50
     min_n_nodes: int = 80
     max_n_nodes: int = 120
     min_communities: int = 3
     max_communities: int = 7
+    min_component_size: int = 10
+    
+    # === UNIVERSE PARAMETERS ===
     universe_K: int = 10
     universe_feature_dim: int = 32
     universe_edge_density: float = 0.1
     universe_homophily: float = 0.8
+    universe_randomness_factor: float = 0.0
+    
+    # === FEATURE GENERATION PARAMETERS ===
+    cluster_count_factor: float = 1.0
+    center_variance: float = 1.0
+    cluster_variance: float = 0.1
+    assignment_skewness: float = 0.0
+    community_exclusivity: float = 1.0
+    degree_center_method: str = "linear"  # "linear", "random", "shuffled"
+    
+    # === GRAPH FAMILY VARIATION ===
+    homophily_range: Tuple[float, float] = (0.0, 0.2)
+    density_range: Tuple[float, float] = (0.0, 0.2)
+    degree_heterogeneity: float = 0.5
+    edge_noise: float = 0.1
+    
+    # === GENERATION METHOD SELECTION ===
     use_dccc_sbm: bool = False
-    degree_distribution: str = "power_law"
+    degree_distribution: str = "standard"  # "standard", "power_law", "exponential", "uniform"
+    
+    # === DCCC-SBM PARAMETERS ===
+    community_imbalance_range: Tuple[float, float] = (0.0, 0.3)
+    degree_separation_range: Tuple[float, float] = (0.0, 1.0)
+    
+    # Degree distribution specific parameters
+    power_law_exponent_range: Tuple[float, float] = (2.0, 3.5)
+    power_law_x_min: float = 1.0
+    exponential_rate_range: Tuple[float, float] = (0.3, 1.0)
+    uniform_min_factor_range: Tuple[float, float] = (0.3, 0.7)
+    uniform_max_factor_range: Tuple[float, float] = (1.3, 2.0)
+    
+    # === GENERATION CONSTRAINTS ===
+    max_parameter_search_attempts: int = 20
+    parameter_search_range: float = 0.5
+    max_retries: int = 10
+    min_edge_density: float = 0.005
+    disable_deviation_limiting: bool = False
+    max_mean_community_deviation: float = 0.10
+    max_max_community_deviation: float = 0.20
     
     # === MODEL CONFIGURATION ===
-    gnn_type: str = "gcn"  # "gcn", "sage", "gat"
+    gnn_type: str = "gcn"
     hidden_dim: int = 128
     num_layers: int = 3
     dropout: float = 0.1
@@ -279,28 +316,27 @@ class PreTrainingConfig:
     
     # === HYPERPARAMETER OPTIMIZATION ===
     optimize_hyperparams: bool = True
-    n_warmup_graphs: int = 5  # Number of graphs for hyperparameter tuning
     n_trials: int = 20
-    optimization_timeout: int = 1200  # 20 minutes
+    optimization_timeout: int = 1200
     
-    # === TASK-SPECIFIC PARAMETERS ===
+    # === PRE-TRAINING TASK-SPECIFIC PARAMETERS ===
     # Link prediction
     negative_sampling_ratio: float = 1.0
     link_pred_loss: str = "bce"  # "bce", "margin"
     
-    # Contrastive learning (Deep Graph InfoMax style)
+    # Contrastive learning
     contrastive_temperature: float = 0.07
     corruption_type: str = "feature_shuffle"  # "feature_shuffle", "edge_dropout"
     corruption_rate: float = 0.2
     
     # === SAVING CONFIGURATION ===
     save_checkpoints: bool = True
-    checkpoint_frequency: int = 50  # Save every N epochs
+    checkpoint_frequency: int = 50
     save_best_only: bool = True
     
     def __post_init__(self):
         """Validate configuration."""
-        valid_tasks = ["link_prediction", "contrastive", "both"]
+        valid_tasks = ["link_prediction", "contrastive"]
         if self.pretraining_task not in valid_tasks:
             raise ValueError(f"pretraining_task must be one of {valid_tasks}")
         
@@ -317,6 +353,12 @@ class PreTrainingConfig:
         if not (0.0 < self.warmup_graph_ratio <= 1.0):
             raise ValueError("warmup_graph_ratio must be in (0, 1]")
         
+        # Validate DCCC-SBM parameters
+        if self.use_dccc_sbm:
+            valid_distributions = ["standard", "power_law", "exponential", "uniform"]
+            if self.degree_distribution not in valid_distributions:
+                raise ValueError(f"Invalid degree distribution: {self.degree_distribution}")
+    
     def get_total_graphs(self) -> int:
         """Get total number of graphs that will be generated."""
         return self.n_graphs + self.n_extra_graphs_for_finetuning
@@ -329,3 +371,92 @@ class PreTrainingConfig:
         n_finetuning = self.n_extra_graphs_for_finetuning
         
         return n_actual_pretraining, n_warmup, n_finetuning
+    
+    def to_graph_family_params(self) -> Dict[str, Any]:
+        """Convert to parameters for GraphFamilyGenerator."""
+        return {
+            'n_graphs': self.get_total_graphs(),
+            'min_n_nodes': self.min_n_nodes,
+            'max_n_nodes': self.max_n_nodes,
+            'min_communities': self.min_communities,
+            'max_communities': self.max_communities,
+            'min_component_size': self.min_component_size,
+            'homophily_range': self.homophily_range,
+            'density_range': self.density_range,
+            'use_dccc_sbm': self.use_dccc_sbm,
+            'community_imbalance_range': self.community_imbalance_range,
+            'degree_separation_range': self.degree_separation_range,
+            'degree_distribution': self.degree_distribution,
+            'power_law_exponent_range': self.power_law_exponent_range,
+            'exponential_rate_range': self.exponential_rate_range,
+            'uniform_min_factor_range': self.uniform_min_factor_range,
+            'uniform_max_factor_range': self.uniform_max_factor_range,
+            'degree_heterogeneity': self.degree_heterogeneity,
+            'edge_noise': self.edge_noise,
+            'max_parameter_search_attempts': self.max_parameter_search_attempts,
+            'parameter_search_range': self.parameter_search_range,
+            'max_retries': self.max_retries,
+            'min_edge_density': self.min_edge_density,
+            'disable_deviation_limiting': self.disable_deviation_limiting,
+            'max_mean_community_deviation': self.max_mean_community_deviation,
+            'max_max_community_deviation': self.max_max_community_deviation,
+            'seed': self.seed
+        }
+    
+    def to_universe_params(self) -> Dict[str, Any]:
+        """Convert to parameters for GraphUniverse."""
+        return {
+            'K': self.universe_K,
+            'feature_dim': self.universe_feature_dim,
+            'edge_density': self.universe_edge_density,
+            'homophily': self.universe_homophily,
+            'randomness_factor': self.universe_randomness_factor,
+            'cluster_count_factor': self.cluster_count_factor,
+            'center_variance': self.center_variance,
+            'cluster_variance': self.cluster_variance,
+            'assignment_skewness': self.assignment_skewness,
+            'community_exclusivity': self.community_exclusivity,
+            'degree_center_method': self.degree_center_method,
+            'seed': self.seed
+        }
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert config to dictionary for serialization."""
+        result = {}
+        for key, value in self.__dict__.items():
+            if isinstance(value, tuple):
+                result[key] = list(value)
+            else:
+                result[key] = value
+        return result
+    
+    @classmethod
+    def from_dict(cls, config_dict: Dict[str, Any]) -> 'PreTrainingConfig':
+        """Create config from dictionary."""
+        # Convert lists back to tuples where needed
+        tuple_fields = [
+            'homophily_range', 'density_range', 'community_imbalance_range',
+            'degree_separation_range', 'power_law_exponent_range', 
+            'exponential_rate_range', 'uniform_min_factor_range',
+            'uniform_max_factor_range'
+        ]
+        
+        processed_dict = config_dict.copy()
+        for field in tuple_fields:
+            if field in processed_dict and isinstance(processed_dict[field], list):
+                processed_dict[field] = tuple(processed_dict[field])
+        
+        return cls(**processed_dict)
+    
+    def save(self, filepath: str) -> None:
+        """Save configuration to JSON file."""
+        os.makedirs(os.path.dirname(filepath), exist_ok=True)
+        with open(filepath, 'w') as f:
+            json.dump(self.to_dict(), f, indent=2)
+    
+    @classmethod
+    def load(cls, filepath: str) -> 'PreTrainingConfig':
+        """Load configuration from JSON file."""
+        with open(filepath, 'r') as f:
+            config_dict = json.load(f)
+        return cls.from_dict(config_dict)

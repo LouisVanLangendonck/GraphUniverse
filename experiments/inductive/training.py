@@ -66,35 +66,32 @@ def start_optuna_dashboard(experiment_name: Optional[str] = None, port: int = 80
     subprocess.run(cmd)
 
 def get_total_classes_from_dataloaders(dataloaders: Dict[str, DataLoader]) -> int:
-    """Get the total number of unique classes across all data splits."""
-    all_labels = set()
+    """Get the total number of classes based on the universe's K."""
+    # Get metadata which contains the output dimension
+    if 'metadata' in dataloaders:
+        output_dim = dataloaders['metadata']['output_dim']
+        print(f"Using output dimension from metadata: {output_dim}")
+        return output_dim
     
-    # Skip metadata entry
+    # Fallback: Get from first batch if metadata not available
+    sample_batch = next(iter(dataloaders['train']))
+    if hasattr(sample_batch, 'universe_K'):
+        output_dim = sample_batch.universe_K
+        print(f"Using universe K from batch: {output_dim}")
+        return output_dim
+    
+    # Last resort: Try to infer from labels
+    all_labels = set()
     for split_name, dataloader in dataloaders.items():
         if split_name == 'metadata':
             continue
-            
-        # Process all batches in this dataloader
         for batch in dataloader:
-            # Get labels from batch
             labels = batch.y
             all_labels.update(labels.cpu().numpy().tolist())
     
-    # Get the maximum label value and add 1 to get number of classes
-    # This ensures we handle non-contiguous labels correctly
-    n_classes = max(all_labels) + 1
-    
-    print(f"Total unique classes found across all splits: {sorted(all_labels)}")
-    print(f"Number of classes for model: {n_classes}")
-    print(f"Label range: {min(all_labels)} to {max(all_labels)}")
-    
-    # Verify we have all classes
-    expected_classes = set(range(n_classes))
-    missing_classes = expected_classes - all_labels
-    if missing_classes:
-        print(f"Warning: Missing classes in data: {missing_classes}")
-    
-    return n_classes
+    output_dim = max(all_labels) + 1
+    print(f"Warning: Inferring output dimension from labels: {output_dim}")
+    return output_dim
 
 def train_inductive_model(
     model: Union[GNNModel, MLPModel, SklearnModel],
@@ -117,6 +114,7 @@ def train_inductive_model(
         Dictionary with training results and metrics
     """
     is_regression = config.is_regression.get(task, False)
+    print(f"!!!! Is regression: {is_regression} !!!")
     
     # Handle sklearn models separately
     if isinstance(model, SklearnModel):
@@ -928,6 +926,7 @@ def train_and_evaluate_inductive(
     """Complete training and evaluation pipeline for inductive learning."""
     
     is_regression = config.is_regression.get(task, False)
+    print(f"🔄 Task: {task}, is_regression: {is_regression}")
     pretrained_model = None
     pretrained_metadata = None
     

@@ -677,6 +677,10 @@ class GraphSample:
         self.min_edge_density = min_edge_density
         self.max_retries = max_retries
 
+        # Create mapping between local community indices and universe community IDs
+        self.community_id_mapping = {i: comm_id for i, comm_id in enumerate(sorted(communities))}
+        self.reverse_community_id_mapping = {comm_id: i for i, comm_id in self.community_id_mapping.items()}
+
         # Initialize generation method and parameters
         self.generation_method = "standard"
         self.generation_params = {
@@ -731,8 +735,8 @@ class GraphSample:
         # Extract the submatrix of the probability matrix for these communities
         K_sub = len(communities)
         self.P_sub = np.zeros((K_sub, K_sub))
-        for i, ci in enumerate(communities):
-            for j, cj in enumerate(communities):
+        for i, ci in enumerate(sorted(communities)):
+            for j, cj in enumerate(sorted(communities)):
                 self.P_sub[i, j] = universe.P[ci, cj]
 
         # Scale the probability matrix
@@ -752,6 +756,10 @@ class GraphSample:
         else:
             # Standard membership generation
             self.community_labels = self._generate_memberships(n_nodes, K_sub)  # Now returns 1D array
+
+        # Create a new array that maps the community labels to the universe community IDs
+        self.community_labels_universe_level = np.array([self.community_id_mapping[idx] for idx in self.community_labels])
+        
         self.timing_info['memberships'] = time.time() - start
         
         # Time: Generate degree factors
@@ -920,11 +928,12 @@ class GraphSample:
         # Time: Feature generation
         start = time.time()
         if universe.feature_dim > 0:
-            # Get community assignments directly from community_labels
-            community_assignments = self.community_labels
+            # Get community assignments and map to universe community IDs
+            local_community_assignments = self.community_labels
+            universe_community_assignments = np.array([self.community_id_mapping[idx] for idx in local_community_assignments])
             
-            # Generate node clusters based on community assignments
-            self.node_clusters = universe.feature_generator.assign_node_clusters(community_assignments)
+            # Generate node clusters based on universe community assignments
+            self.node_clusters = universe.feature_generator.assign_node_clusters(universe_community_assignments)
             
             # Generate features based on node clusters
             self.features = universe.feature_generator.generate_node_features(self.node_clusters)
@@ -947,13 +956,13 @@ class GraphSample:
     def _add_node_attributes(self):
         """Add node attributes to the graph."""
         for i, node in enumerate(self.graph.nodes()):
-            # Get community label directly
-            community_idx = self.community_labels[i]
-            primary_comm = self.communities[community_idx]
+            # Get community label and map to universe community ID
+            local_comm_idx = self.community_labels[i]
+            universe_comm_id = self.community_id_mapping[local_comm_idx]
             
             # Create node attributes dictionary
             node_attrs = {
-                "community": int(primary_comm),  # Store the actual community ID
+                "community": int(universe_comm_id),  # Store the actual universe community ID
                 "degree_factor": float(self.degree_factors[i])
             }
             
@@ -1084,13 +1093,20 @@ class GraphSample:
         sorted_degrees = np.sort(raw_degrees)
         assigned_indices = np.zeros(n_nodes, dtype=bool)
 
-        community_ids = np.unique(community_labels)
-        K = len(community_ids)
+        # Get unique communities and their universe IDs
+        local_comm_ids = np.unique(community_labels)
+        K = len(local_comm_ids)
         total_nodes = n_nodes
 
+        # Get universe degree centers for our communities
+        universe_degree_centers = np.array([
+            self.universe.degree_centers[self.community_id_mapping[local_comm_id]]
+            for local_comm_id in local_comm_ids
+        ])
+
         # Order communities by universe degree center (lowest to highest)
-        comm_order = np.argsort([self.universe.degree_centers[comm] for comm in community_ids])
-        ordered_comms = community_ids[comm_order]
+        comm_order = np.argsort(universe_degree_centers)
+        ordered_comms = local_comm_ids[comm_order]
 
         # Decide window width:
         # At separation=0: full width; at 1: just enough for community size
@@ -1103,7 +1119,6 @@ class GraphSample:
             centers = [total_nodes // 2]
         else:
             centers = np.linspace(window_width // 2, total_nodes - window_width // 2, K, dtype=int)
-        # Or: alternative is to space centers more according to universe.degree_centers if desired.
 
         # For each community, assign its nodes to available degree indices within its window
         for comm_idx, comm in enumerate(ordered_comms):
@@ -2446,14 +2461,15 @@ class GraphSample:
         if self.universe.feature_generator is None:
             return
             
-        # Get community assignments directly from community_labels
-        community_assignments = self.community_labels
+        # Get community assignments and map to universe community IDs
+        local_community_assignments = self.community_labels
+        universe_community_assignments = np.array([self.community_id_mapping[idx] for idx in local_community_assignments])
         
-        # Generate node clusters based on community assignments
-        node_clusters = self.universe.feature_generator.assign_node_clusters(community_assignments)
+        # Generate node clusters based on universe community assignments
+        self.node_clusters = self.universe.feature_generator.assign_node_clusters(universe_community_assignments)
         
         # Generate features based on node clusters
-        self.features = self.universe.feature_generator.generate_node_features(node_clusters)
+        self.features = self.universe.feature_generator.generate_node_features(self.node_clusters)
         
         # Update node attributes in the graph
         for i in range(self.n_nodes):

@@ -1,7 +1,0 @@
-{
-  "family_id": "family_gcn_link_prediction_20250529_175110",
-  "model_id": "gcn_link_prediction_20250529_175535",
-  "finetuning_graphs_available": 30,
-  "pretraining_graphs_used": 35,
-  "creation_timestamp": "2025-05-29T17:55:35.283935"
-}

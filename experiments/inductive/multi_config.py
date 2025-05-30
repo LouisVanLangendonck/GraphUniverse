@@ -9,8 +9,7 @@ import json
 import os
 import numpy as np
 import itertools
-from experiments.inductive.config import InductiveExperimentConfig
-
+from experiments.inductive.config import InductiveExperimentConfig, PreTrainingConfig
 
 @dataclass
 class ParameterRange:
@@ -293,9 +292,363 @@ class CleanMultiExperimentConfig:
         )
 
 
-# =============================================================================
-# PREDEFINED EXPERIMENT CONFIGURATIONS
-# =============================================================================
+
+@dataclass 
+class SSLMultiExperimentConfig:
+    """Configuration for running multiple SSL pre-training experiments with parameter variations."""
+    
+    # Base configuration for all runs
+    base_config: 'PreTrainingConfig' = field(default_factory=lambda: PreTrainingConfig())
+    
+    # Parameters that are swept systematically
+    sweep_parameters: Dict[str, ParameterRange] = field(default_factory=dict)
+    
+    # Parameters that are randomly sampled for each run
+    random_parameters: Dict[str, ParameterRange] = field(default_factory=dict)
+    
+    # Number of repetitions for each parameter combination
+    n_repetitions: int = 1
+    
+    # Output configuration
+    output_dir: str = "multi_ssl_results"
+    experiment_name: str = "ssl_sweep"
+    save_individual_configs: bool = False
+    save_individual_results: bool = False
+    
+    # Experiment control
+    max_concurrent_runs: int = 1
+    continue_on_failure: bool = True
+    
+    # Result aggregation
+    aggregate_results: bool = True
+    create_summary_plots: bool = False
+    
+    def __post_init__(self):
+        """Validate multi-experiment configuration."""
+        # Ensure all sweep parameters have is_sweep=True
+        for param_name, param_range in self.sweep_parameters.items():
+            param_range.is_sweep = True
+        
+        # Ensure all random parameters have is_sweep=False
+        for param_name, param_range in self.random_parameters.items():
+            param_range.is_sweep = False
+    
+    def get_parameter_combinations(self) -> List[Dict[str, float]]:
+        """Get all parameter combinations for systematic sweeps."""
+        if not self.sweep_parameters:
+            return [{}]
+        
+        # Get all sweep values
+        sweep_values = {}
+        for param_name, param_range in self.sweep_parameters.items():
+            sweep_values[param_name] = param_range.get_sweep_values()
+        
+        # Generate all combinations
+        param_names = list(sweep_values.keys())
+        param_value_lists = list(sweep_values.values())
+        
+        combinations = []
+        for combo in itertools.product(*param_value_lists):
+            combinations.append(dict(zip(param_names, combo)))
+        
+        return combinations
+    
+    def sample_random_parameters(self) -> Dict[str, float]:
+        """Sample random values for all random parameters."""
+        random_values = {}
+        for param_name, param_range in self.random_parameters.items():
+            values = param_range.sample_random(1)
+            random_values[param_name] = values[0]
+        
+        return random_values
+    
+    def create_run_config(
+        self,
+        sweep_params: Dict[str, float],
+        random_params: Dict[str, float],
+        run_id: int
+    ) -> 'PreTrainingConfig':
+        """Create a configuration for a single run."""
+        # Start with base config
+        config_dict = self.base_config.to_dict()
+        
+        # Override with sweep parameters
+        config_dict.update(sweep_params)
+        
+        # Override with random parameters
+        config_dict.update(random_params)
+        
+        # Process tuple parameters (ranges)
+        config_dict = self._process_tuple_parameters(config_dict)
+        
+        # Set unique output directory
+        config_dict['output_dir'] = os.path.join(
+            self.output_dir,
+            f"{self.experiment_name}_run_{run_id:04d}"
+        )
+        
+        # Create config object
+        from enhanced_pretraining_config import PreTrainingConfig
+        return PreTrainingConfig.from_dict(config_dict)
+    
+    def _process_tuple_parameters(self, config_dict: Dict[str, Any]) -> Dict[str, Any]:
+        """Process parameters that need to be converted to tuples (like ranges)."""
+        processed = config_dict.copy()
+        
+        # Convert range parameters from single values to tuples
+        range_params = {
+            'homophily_range': 'homophily_range_width',
+            'density_range': 'density_range_width',
+            'community_imbalance_range': 'community_imbalance_range_width',
+            'degree_separation_range': 'degree_separation_range_width',
+            'power_law_exponent_range': 'power_law_exponent_range_width',
+            'exponential_rate_range': 'exponential_rate_range_width',
+            'uniform_min_factor_range': 'uniform_min_factor_range_width',
+            'uniform_max_factor_range': 'uniform_max_factor_range_width'
+        }
+        
+        for range_param, width_param in range_params.items():
+            if width_param in processed:
+                width = processed.pop(width_param)
+                if range_param in processed:
+                    center = processed[range_param]
+                    if isinstance(center, (list, tuple)):
+                        # Already a range, don't modify
+                        continue
+                    else:
+                        # Convert single value to range
+                        processed[range_param] = (max(0, center - width/2), center + width/2)
+        
+        return processed
+    
+    def get_total_runs(self) -> int:
+        """Calculate total number of experiment runs."""
+        n_combinations = len(self.get_parameter_combinations())
+        return n_combinations * self.n_repetitions
+
+
+# Predefined SSL experiment configurations
+def create_ssl_method_comparison() -> SSLMultiExperimentConfig:
+    """Create configuration for comparing SSL methods across different graph families."""
+    from enhanced_pretraining_config import PreTrainingConfig
+    
+    base_config = PreTrainingConfig(
+        n_graphs=40,
+        n_extra_graphs_for_finetuning=25,
+        min_n_nodes=60,
+        max_n_nodes=100,
+        universe_K=8,
+        universe_feature_dim=32,
+        gnn_type='gcn',
+        epochs=200,
+        patience=30,
+        optimize_hyperparams=True,
+        n_trials=15
+    )
+    
+    # Sweep SSL methods and graph generation methods
+    sweep_parameters = {
+        'pretraining_task': ParameterRange(
+            min_val=0,  # Will be mapped to tasks
+            max_val=1,
+            step=1,
+            is_sweep=True
+        ),
+        'use_dccc_sbm': ParameterRange(
+            min_val=0,  # False
+            max_val=1,  # True
+            step=1,
+            is_sweep=True
+        ),
+        'universe_homophily': ParameterRange(
+            min_val=0.5,
+            max_val=0.9,
+            step=0.2,
+            is_sweep=True
+        )
+    }
+    
+    # Randomize other parameters
+    random_parameters = {
+        'universe_edge_density': ParameterRange(
+            min_val=0.06,
+            max_val=0.14,
+            distribution="uniform",
+            is_sweep=False
+        ),
+        'homophily_range_width': ParameterRange(
+            min_val=0.0,
+            max_val=0.3,
+            distribution="uniform",
+            is_sweep=False
+        ),
+        'degree_heterogeneity': ParameterRange(
+            min_val=0.2,
+            max_val=0.8,
+            distribution="uniform",
+            is_sweep=False
+        ),
+        'negative_sampling_ratio': ParameterRange(
+            min_val=0.5,
+            max_val=2.0,
+            distribution="uniform",
+            is_sweep=False
+        ),
+        'contrastive_temperature': ParameterRange(
+            min_val=0.01,
+            max_val=0.2,
+            distribution="log_uniform",
+            is_sweep=False
+        )
+    }
+    
+    return SSLMultiExperimentConfig(
+        base_config=base_config,
+        sweep_parameters=sweep_parameters,
+        random_parameters=random_parameters,
+        n_repetitions=2,
+        experiment_name="ssl_method_comparison",
+        output_dir="results/ssl_comparison",
+        continue_on_failure=True
+    )
+
+
+def create_ssl_dccc_exploration() -> SSLMultiExperimentConfig:
+    """Create configuration for exploring DCCC-SBM parameters with SSL."""
+    from enhanced_pretraining_config import PreTrainingConfig
+    
+    base_config = PreTrainingConfig(
+        n_graphs=35,
+        n_extra_graphs_for_finetuning=20,
+        universe_K=6,
+        use_dccc_sbm=True,
+        pretraining_task='link_prediction',
+        gnn_type='sage',
+        epochs=150,
+        optimize_hyperparams=True
+    )
+    
+    # Sweep DCCC-SBM parameters
+    sweep_parameters = {
+        'degree_distribution': ParameterRange(
+            min_val=0,  # Will be mapped to distributions
+            max_val=2,  # power_law, exponential, uniform
+            step=1,
+            is_sweep=True
+        ),
+        'community_imbalance_range_width': ParameterRange(
+            min_val=0.0,
+            max_val=0.5,
+            step=0.25,
+            is_sweep=True
+        ),
+        'degree_separation_range_width': ParameterRange(
+            min_val=0.2,
+            max_val=0.8,
+            step=0.3,
+            is_sweep=True
+        )
+    }
+    
+    # Randomize distribution-specific parameters
+    random_parameters = {
+        'power_law_exponent_range_width': ParameterRange(
+            min_val=0.3,
+            max_val=1.0,
+            distribution="uniform",
+            is_sweep=False
+        ),
+        'exponential_rate_range_width': ParameterRange(
+            min_val=0.2,
+            max_val=0.6,
+            distribution="uniform",
+            is_sweep=False
+        ),
+        'universe_homophily': ParameterRange(
+            min_val=0.4,
+            max_val=0.8,
+            distribution="uniform",
+            is_sweep=False
+        ),
+        'edge_noise': ParameterRange(
+            min_val=0.0,
+            max_val=0.25,
+            distribution="uniform",
+            is_sweep=False
+        )
+    }
+    
+    return SSLMultiExperimentConfig(
+        base_config=base_config,
+        sweep_parameters=sweep_parameters,
+        random_parameters=random_parameters,
+        n_repetitions=3,
+        experiment_name="ssl_dccc_exploration",
+        output_dir="results/ssl_dccc",
+        continue_on_failure=True
+    )
+
+
+def create_ssl_task_parameter_sweep() -> SSLMultiExperimentConfig:
+    """Create configuration for sweeping SSL task-specific parameters."""
+    from enhanced_pretraining_config import PreTrainingConfig
+    
+    base_config = PreTrainingConfig(
+        n_graphs=30,
+        n_extra_graphs_for_finetuning=15,
+        universe_K=5,
+        epochs=100,
+        optimize_hyperparams=False  # Focus on task parameters
+    )
+    
+    # Sweep task-specific parameters
+    sweep_parameters = {
+        'pretraining_task': ParameterRange(
+            min_val=0,  # link_prediction
+            max_val=1,  # contrastive
+            step=1,
+            is_sweep=True
+        ),
+        'negative_sampling_ratio': ParameterRange(
+            min_val=0.5,
+            max_val=2.0,
+            step=0.5,
+            is_sweep=True
+        ),
+        'contrastive_temperature': ParameterRange(
+            min_val=0.01,
+            max_val=0.2,
+            step=0.05,  # Note: Will be mapped appropriately
+            is_sweep=True
+        )
+    }
+    
+    # Randomize graph parameters
+    random_parameters = {
+        'universe_homophily': ParameterRange(
+            min_val=0.5,
+            max_val=0.9,
+            distribution="uniform",
+            is_sweep=False
+        ),
+        'degree_heterogeneity': ParameterRange(
+            min_val=0.3,
+            max_val=0.7,
+            distribution="uniform",
+            is_sweep=False
+        )
+    }
+    
+    return SSLMultiExperimentConfig(
+        base_config=base_config,
+        sweep_parameters=sweep_parameters,
+        random_parameters=random_parameters,
+        n_repetitions=2,
+        experiment_name="ssl_task_params",
+        output_dir="results/ssl_task_sweep",
+        continue_on_failure=True
+    )
+
 
 def create_homophily_density_sweep() -> CleanMultiExperimentConfig:
     """Create configuration for homophily vs density sweep."""
