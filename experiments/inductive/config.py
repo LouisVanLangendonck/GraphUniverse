@@ -115,14 +115,30 @@ class InductiveExperimentConfig:
     patience: int = 50
     batch_size: int = 1
     hidden_dim: int = 64
-    num_layers: int = 2
+    num_layers: int = 15
     dropout: float = 0.5
     # Special parameter for FAGCN
     eps: float = 0.2
+
+    # === GRAPH TRANSFORMER CONFIGURATION ===
+    transformer_types: List[str] = field(default_factory=lambda: ['graphormer'])
+    run_transformers: bool = False
+    
+    # Transformer-specific parameters
+    transformer_num_heads: int = 8
+    transformer_max_nodes: int = 200
+    transformer_max_path_length: int = 10
+    transformer_precompute_encodings: bool = True
+    transformer_cache_encodings: bool = True
+    
+    # GraphGPS specific
+    local_gnn_type: str = "gcn"
+    global_model_type: str = "transformer"
+    transformer_prenorm: bool = True
     
     # === HYPERPARAMETER OPTIMIZATION ===
     optimize_hyperparams: bool = False
-    n_trials: int = 20
+    n_trials: int = 2
     optimization_timeout: int = 600
     
     # === ANALYSIS ===

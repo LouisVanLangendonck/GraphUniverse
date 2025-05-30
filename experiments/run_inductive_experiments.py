@@ -116,9 +116,17 @@ def parse_args():
                         help='Maximum allowed participation rate per community')
     
     # === MODELS ===
-    parser.add_argument('--gnn_types', type=str, nargs='+', default=['gat'],
-                        choices=['gcn', 'fagcn', 'sage', 'gat'],
+    parser.add_argument('--gnn_types', type=str, nargs='+', default=['gat', 'gcn', 'sage', 'fagcn'],
+                        choices=['gcn', 'fagcn', 'sage', 'gat', 'gin'],
                         help='Types of GNN models to run')
+    parser.add_argument('--transformer_types', type=str, nargs='+', 
+                        default=['graphormer', 'graphgps'], 
+                        choices=['graphormer', 'graphgps'],
+                        help='Types of Graph Transformer models to run')
+    parser.add_argument('--run_transformers', action='store_true',
+                        help='Run Graph Transformer models')
+    parser.add_argument('--no_transformers', action='store_false', dest='run_transformers',
+                        help='Skip Graph Transformer models')
     parser.add_argument('--run_mlp', action='store_true', default=True,
                         help='Run MLP model')
     parser.add_argument('--run_rf', action='store_true', default=True,
@@ -165,6 +173,30 @@ def parse_args():
                         choices=["linear", "random", "shuffled"],
                         help='Degree center method')
 
+    # Transformer-specific parameters
+    parser.add_argument('--transformer_num_heads', type=int, default=8,
+                        help='Number of attention heads for transformers')
+    parser.add_argument('--transformer_max_nodes', type=int, default=200,
+                        help='Maximum nodes for encoding precomputation')
+    parser.add_argument('--transformer_max_path_length', type=int, default=10,
+                        help='Maximum path length for shortest path encoding')
+    parser.add_argument('--transformer_precompute_encodings', action='store_true', default=True,
+                        help='Precompute structural encodings for transformers')
+    parser.add_argument('--no_precompute_encodings', action='store_false', 
+                        dest='transformer_precompute_encodings',
+                        help='Disable encoding precomputation')
+    parser.add_argument('--transformer_cache_encodings', action='store_true', default=True,
+                        help='Cache structural encodings between graphs')
+    
+    # GraphGPS specific
+    parser.add_argument('--local_gnn_type', type=str, default='gcn',
+                        choices=['gcn', 'sage'],
+                        help='Local GNN type for GraphGPS')
+    parser.add_argument('--global_model_type', type=str, default='transformer',
+                        help='Global model type for GraphGPS')
+    parser.add_argument('--transformer_prenorm', action='store_true', default=True,
+                        help='Use pre-normalization in transformers')
+
     return parser.parse_args()
 
 
@@ -173,6 +205,7 @@ def create_config_from_args(args) -> InductiveExperimentConfig:
     
     # Determine which models to run
     run_gnn = getattr(args, 'run_gnn', True)
+    run_transformers = getattr(args, 'run_transformers', False)
     
     config = InductiveExperimentConfig(
         # === EXPERIMENT SETUP ===
@@ -244,6 +277,18 @@ def create_config_from_args(args) -> InductiveExperimentConfig:
         run_gnn=run_gnn,
         run_mlp=args.run_mlp,
         run_rf=args.run_rf,
+
+        # === GRAPH TRANSFORMER CONFIGURATION ===
+        transformer_types=args.transformer_types,
+        run_transformers=run_transformers,
+        transformer_num_heads=args.transformer_num_heads,
+        transformer_max_nodes=args.transformer_max_nodes,
+        transformer_max_path_length=args.transformer_max_path_length,
+        transformer_precompute_encodings=args.transformer_precompute_encodings,
+        transformer_cache_encodings=getattr(args, 'transformer_cache_encodings', True),
+        local_gnn_type=args.local_gnn_type,
+        global_model_type=args.global_model_type,
+        transformer_prenorm=getattr(args, 'transformer_prenorm', True),
         
         # === TRAINING ===
         epochs=args.epochs,

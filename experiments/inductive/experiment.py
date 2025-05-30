@@ -294,7 +294,7 @@ class InductiveExperiment:
         return dataloaders
     
     def run_experiments(self) -> Dict[str, Any]:
-        """Run inductive learning experiments."""
+        """Updated run_experiments with transformer support."""
         print("\n" + "="*60)
         print("RUNNING INDUCTIVE EXPERIMENTS")
         print("="*60)
@@ -311,7 +311,6 @@ class InductiveExperiment:
             
             task_results = {}
             task_dataloaders = self.dataloaders[task]
-            # If task is k_hop_community_counts, it is a regression task, else not
             is_regression = task == 'k_hop_community_counts'
             
             # Get dimensions
@@ -328,6 +327,8 @@ class InductiveExperiment:
             models_to_run = []
             if self.config.run_gnn:
                 models_to_run.extend(self.config.gnn_types)
+            if self.config.run_transformers:  # NEW
+                models_to_run.extend(self.config.transformer_types)
             if self.config.run_mlp:
                 models_to_run.append('mlp')
             if self.config.run_rf:
@@ -340,6 +341,7 @@ class InductiveExperiment:
                 try:
                     # Create model
                     if model_name in self.config.gnn_types:
+                        # Existing GNN model creation
                         if model_name == 'fagcn':
                             model = GNNModel(
                                 input_dim=input_dim,
@@ -360,7 +362,33 @@ class InductiveExperiment:
                                 dropout=self.config.dropout,
                                 gnn_type=model_name,
                                 is_regression=is_regression
+                            )
+                    
+                    elif model_name in self.config.transformer_types:  # NEW TRANSFORMER SUPPORT
+                        from experiments.core.models import GraphTransformerModel
+                        model = GraphTransformerModel(
+                            input_dim=input_dim,
+                            hidden_dim=self.config.hidden_dim,
+                            output_dim=output_dim,
+                            transformer_type=model_name,
+                            num_layers=self.config.num_layers,
+                            dropout=self.config.dropout,
+                            is_regression=is_regression,
+                            num_heads=self.config.transformer_num_heads,
+                            max_nodes=self.config.transformer_max_nodes,
+                            max_path_length=self.config.transformer_max_path_length,
+                            precompute_encodings=self.config.transformer_precompute_encodings,
+                            cache_encodings=self.config.transformer_cache_encodings,
+                            local_gnn_type=self.config.local_gnn_type,
+                            global_model_type=self.config.global_model_type,
+                            prenorm=self.config.transformer_prenorm
                         )
+                        
+                        # Share precomputed cache if available
+                        if hasattr(self, 'transformer_caches') and model_name in self.transformer_caches:
+                            model._encoding_cache = self.transformer_caches[model_name]
+                            print(f"✅ Using precomputed cache with {len(model._encoding_cache)} entries")
+                    
                     elif model_name == 'mlp':
                         model = MLPModel(
                             input_dim=input_dim,
@@ -370,14 +398,8 @@ class InductiveExperiment:
                             dropout=self.config.dropout,
                             is_regression=is_regression
                         )
-                    elif model_name == 'rf':
-                        model = SklearnModel(
-                            input_dim=input_dim,
-                            output_dim=output_dim,
-                            is_regression=is_regression
-                        )
                     
-                    # Train model
+                    # Train model (unchanged for all model types)
                     results = train_and_evaluate_inductive(
                         model=model,
                         dataloaders=task_dataloaders,
@@ -559,16 +581,19 @@ class InductiveExperiment:
             # Generate graph family
             family_graphs = self.generate_graph_family()
             
-            # Analyze family consistency (NEW)
+            # Analyze family consistency
             family_consistency = self.analyze_family_consistency()
             
-            # Calculate community signals (NEW)
+            # Calculate community signals
             graph_signals = self.calculate_graph_signals()
+            
+            # Precompute transformer encodings if needed
+            self.precompute_transformer_encodings()
             
             # Prepare data
             dataloaders = self.prepare_data()
             
-            # Run experiments
+            # Run experiments (unchanged)
             results = self.run_experiments()
             
             # Save results
@@ -612,6 +637,47 @@ class InductiveExperiment:
             
             raise
     
+    def precompute_transformer_encodings(self):
+        """Precompute encodings for transformer models if enabled."""
+        if not self.config.run_transformers or not self.config.transformer_precompute_encodings:
+            return
+        
+        if self.family_graphs is None:
+            raise ValueError("Must generate graph family before precomputing encodings")
+        
+        print("\n" + "="*60)
+        print("PRECOMPUTING TRANSFORMER ENCODINGS")
+        print("="*60)
+        
+        from experiments.core.models import GraphTransformerModel
+        
+        # Create a temporary transformer model for precomputation
+        sample_graph = self.family_graphs[0]
+        input_dim = sample_graph.features.shape[1] if sample_graph.features is not None else 32
+        
+        for transformer_type in self.config.transformer_types:
+            print(f"\nPrecomputing encodings for {transformer_type}...")
+            
+            temp_model = GraphTransformerModel(
+                input_dim=input_dim,
+                hidden_dim=self.config.hidden_dim,
+                output_dim=self.config.universe_K,
+                transformer_type=transformer_type,
+                max_nodes=self.config.transformer_max_nodes,
+                max_path_length=self.config.transformer_max_path_length,
+                precompute_encodings=True,
+                cache_encodings=True
+            )
+            
+            # Precompute for all graphs
+            from experiments.core.models import precompute_family_encodings
+            precompute_family_encodings(self.family_graphs, temp_model)
+            
+            # Store the cache globally for use during training
+            if not hasattr(self, 'transformer_caches'):
+                self.transformer_caches = {}
+            self.transformer_caches[transformer_type] = temp_model._encoding_cache
+
     def generate_summary_report(self) -> str:
         """Generate comprehensive summary report."""
         if not self.results:
