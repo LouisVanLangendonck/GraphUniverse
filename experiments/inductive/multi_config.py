@@ -84,36 +84,70 @@ class ParameterRange:
 
 @dataclass
 class CleanMultiExperimentConfig:
-    """Configuration for running multiple clean inductive experiments with parameter variations."""
+    """Configuration for clean multi-experiment sweeps."""
     
-    # Base configuration for all runs
-    base_config: InductiveExperimentConfig = field(default_factory=InductiveExperimentConfig)
-    
-    # Parameters that are swept systematically
-    sweep_parameters: Dict[str, ParameterRange] = field(default_factory=dict)
-    
-    # Parameters that are randomly sampled for each run
-    random_parameters: Dict[str, ParameterRange] = field(default_factory=dict)
-    
-    # Number of repetitions for each parameter combination
-    n_repetitions: int = 1
-    
-    # Output configuration
-    output_dir: str = "multi_inductive_results"
-    experiment_name: str = "multi_inductive"
-    save_individual_configs: bool = False
-    save_individual_results: bool = False
-    
-    # Experiment control
-    max_concurrent_runs: int = 1
-    continue_on_failure: bool = True
-    
-    # Result aggregation
-    aggregate_results: bool = True
-    create_summary_plots: bool = False
-    
-    def __post_init__(self):
-        """Validate multi-experiment configuration."""
+    def __init__(
+        self,
+        output_dir: str = "multi_results",
+        experiment_name: str = "multi_sweep",
+        
+        # Base configuration
+        base_config: InductiveExperimentConfig = None,
+        
+        # Parameter sweeps
+        sweep_parameters: Dict[str, ParameterRange] = None,
+        
+        # Random parameters
+        random_parameters: Dict[str, ParameterRange] = None,
+        
+        # Execution parameters
+        n_repetitions: int = 1,
+        continue_on_failure: bool = True,
+        save_individual_results: bool = True,
+        
+        # Resource management
+        max_concurrent_families: int = 1,  # Number of graph families to generate concurrently
+        reuse_families: bool = True,  # Reuse graph families across experiments
+        
+        # Random seed management
+        base_seed: int = 42,
+        
+        # Model management
+        gnn_models: List[str] = None,
+        
+        # Transformer configuration
+        transformer_models: List[str] = None,  # List of transformer models to run
+        run_transformers: bool = False,  # Whether to run transformer models
+        transformer_params: Dict[str, Any] = None  # Additional transformer parameters
+    ):
+        """Initialize multi-experiment configuration."""
+        self.output_dir = output_dir
+        self.experiment_name = experiment_name
+        self.base_config = base_config or InductiveExperimentConfig()
+        self.sweep_parameters = sweep_parameters or {}
+        self.random_parameters = random_parameters or {}
+        self.n_repetitions = n_repetitions
+        self.continue_on_failure = continue_on_failure
+        self.save_individual_results = save_individual_results
+        self.max_concurrent_families = max_concurrent_families
+        self.reuse_families = reuse_families
+        self.base_seed = base_seed
+        
+        # Model configuration
+        self.gnn_models = gnn_models or ['gcn', 'sage']
+        self.transformer_models = transformer_models or ['graphormer']
+        self.run_transformers = run_transformers
+        self.transformer_params = transformer_params or {
+            'transformer_num_heads': 8,
+            'transformer_max_nodes': 200,
+            'transformer_max_path_length': 10,
+            'transformer_precompute_encodings': True,
+            'transformer_cache_encodings': True,
+            'local_gnn_type': 'gcn',
+            'global_model_type': 'transformer',
+            'transformer_prenorm': True
+        }
+        
         # Ensure all sweep parameters have is_sweep=True
         for param_name, param_range in self.sweep_parameters.items():
             param_range.is_sweep = True
@@ -247,12 +281,14 @@ class CleanMultiExperimentConfig:
             'n_repetitions': self.n_repetitions,
             'output_dir': self.output_dir,
             'experiment_name': self.experiment_name,
-            'save_individual_configs': self.save_individual_configs,
             'save_individual_results': self.save_individual_results,
-            'max_concurrent_runs': self.max_concurrent_runs,
-            'continue_on_failure': self.continue_on_failure,
-            'aggregate_results': self.aggregate_results,
-            'create_summary_plots': self.create_summary_plots
+            'max_concurrent_families': self.max_concurrent_families,
+            'reuse_families': self.reuse_families,
+            'base_seed': self.base_seed,
+            'gnn_models': self.gnn_models,
+            'transformer_models': self.transformer_models,
+            'run_transformers': self.run_transformers,
+            'transformer_params': self.transformer_params
         }
         
         with open(filepath, 'w') as f:
@@ -281,14 +317,15 @@ class CleanMultiExperimentConfig:
             sweep_parameters=sweep_parameters,
             random_parameters=random_parameters,
             n_repetitions=config_dict['n_repetitions'],
-            output_dir=config_dict['output_dir'],
-            experiment_name=config_dict['experiment_name'],
-            save_individual_configs=config_dict['save_individual_configs'],
-            save_individual_results=config_dict['save_individual_results'],
-            max_concurrent_runs=config_dict['max_concurrent_runs'],
             continue_on_failure=config_dict['continue_on_failure'],
-            aggregate_results=config_dict['aggregate_results'],
-            create_summary_plots=config_dict['create_summary_plots']
+            save_individual_results=config_dict['save_individual_results'],
+            max_concurrent_families=config_dict['max_concurrent_families'],
+            reuse_families=config_dict['reuse_families'],
+            base_seed=config_dict['base_seed'],
+            gnn_models=config_dict['gnn_models'],
+            transformer_models=config_dict['transformer_models'],
+            run_transformers=config_dict['run_transformers'],
+            transformer_params=config_dict['transformer_params']
         )
 
 

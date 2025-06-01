@@ -572,6 +572,53 @@ class CleanMultiExperimentRunner:
         else:
             return obj
 
+    def get_model_configurations(self) -> List[Dict[str, Any]]:
+        """Get all model configurations to run."""
+        model_configs = []
+        
+        # Add GNN models if enabled
+        if self.config.base_config.run_gnn:
+            for gnn_type in self.config.gnn_models:
+                model_configs.append({
+                    'gnn_types': [gnn_type],
+                    'run_gnn': True,
+                    'run_mlp': False,
+                    'run_rf': False,
+                    'run_transformers': False
+                })
+        
+        # Add transformer models if enabled
+        if self.config.run_transformers:
+            for transformer_type in self.config.transformer_models:
+                model_configs.append({
+                    'transformer_types': [transformer_type],
+                    'run_gnn': False,
+                    'run_mlp': False,
+                    'run_rf': False,
+                    'run_transformers': True,
+                    **self.config.transformer_params
+                })
+        
+        # Add MLP model if enabled
+        if self.config.base_config.run_mlp:
+            model_configs.append({
+                'run_gnn': False,
+                'run_mlp': True,
+                'run_rf': False,
+                'run_transformers': False
+            })
+        
+        # Add Random Forest model if enabled
+        if self.config.base_config.run_rf:
+            model_configs.append({
+                'run_gnn': False,
+                'run_mlp': False,
+                'run_rf': True,
+                'run_transformers': False
+            })
+        
+        return model_configs
+
 
 def run_clean_multi_experiments(config: CleanMultiExperimentConfig) -> Dict[str, Any]:
     """Convenience function to run multi-experiments."""

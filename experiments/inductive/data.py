@@ -208,7 +208,9 @@ class PreTrainedModelSaver:
         
         if model_id is None:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            model_id = f"{config.gnn_type}_{config.pretraining_task}_{timestamp}"
+            # Use transformer_type for transformer models, otherwise use gnn_type
+            model_type = config.transformer_type if config.run_transformers else config.gnn_type
+            model_id = f"{model_type}_{config.pretraining_task}_{timestamp}"
         
         model_dir = os.path.join(self.output_dir, model_id)
         os.makedirs(model_dir, exist_ok=True)

@@ -143,6 +143,12 @@ def train_inductive_model(
     patience_counter = 0
     best_model_state = None
     
+    # Get the effective patience value - take max of original and optimized if available
+    effective_patience = config.patience
+    if hasattr(config, 'optimized_patience') and config.optimized_patience is not None:
+        effective_patience = max(config.patience, config.optimized_patience)
+        print(f"Using effective patience of {effective_patience} (max of original {config.patience} and optimized {config.optimized_patience})")
+    
     train_loader = dataloaders['train']
     val_loader = dataloaders['val']
     
@@ -154,6 +160,9 @@ def train_inductive_model(
     }
     
     start_time = time.time()
+    
+    print(f"\nStarting training with patience={effective_patience}")
+    print("Early stopping will trigger if validation metric doesn't improve for", effective_patience, "epochs")
     
     for epoch in range(config.epochs):
         # Training
@@ -199,10 +208,9 @@ def train_inductive_model(
             for batch in val_loader:
                 batch = batch.to(device)
                 
-                # Forward pass - check if model requires edge_index
                 if hasattr(model, 'gnn_type') or hasattr(model, 'transformer_type'):
                     out = model(batch.x, batch.edge_index)
-                else:  # MLPModel or other non-GNN model
+                else:
                     out = model(batch.x)
                 
                 loss = criterion(out, batch.y)
@@ -210,41 +218,41 @@ def train_inductive_model(
                 
                 if is_regression:
                     val_predictions.append(out.detach().cpu())
-                    val_targets.append(batch.y.detach().cpu())
                 else:
                     val_predictions.append(out.argmax(dim=1).detach().cpu())
-                    val_targets.append(batch.y.detach().cpu())
+                
+                val_targets.append(batch.y.detach().cpu())
         
         # Calculate metrics
-        train_loss /= len(train_loader)
-        val_loss /= len(val_loader)
-        
-        # Concatenate predictions
         train_pred = torch.cat(train_predictions, dim=0).numpy()
         train_true = torch.cat(train_targets, dim=0).numpy()
         val_pred = torch.cat(val_predictions, dim=0).numpy()
         val_true = torch.cat(val_targets, dim=0).numpy()
         
-        # Compute performance metrics
         train_metrics = compute_metrics(train_true, train_pred, is_regression)
         val_metrics = compute_metrics(val_true, val_pred, is_regression)
         
+        # Get primary metrics
         if is_regression:
-            train_metric = train_metrics['mae']
-            val_metric = val_metrics['mae']
+            if config.regression_loss == 'mae':
+                train_metric = train_metrics['mae']
+                val_metric = val_metrics['mae']
+            else:
+                train_metric = train_metrics['r2']
+                val_metric = val_metrics['r2']
         else:
             train_metric = train_metrics['f1_macro']
             val_metric = val_metrics['f1_macro']
         
-        # Store history
-        training_history['train_loss'].append(train_loss)
-        training_history['val_loss'].append(val_loss)
+        # Store metrics
+        training_history['train_loss'].append(train_loss / len(train_loader))
+        training_history['val_loss'].append(val_loss / len(val_loader))
         training_history['train_metric'].append(train_metric)
         training_history['val_metric'].append(val_metric)
         
         # Print progress
         if epoch % 10 == 0 or epoch == config.epochs - 1:
-            print(f"Epoch {epoch:3d}: Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}, "
+            print(f"Epoch {epoch:3d}: Train Loss: {train_loss/len(train_loader):.4f}, Val Loss: {val_loss/len(val_loader):.4f}, "
                   f"Train Metric: {train_metric:.4f}, Val Metric: {val_metric:.4f}")
         
         # Model selection
@@ -266,12 +274,12 @@ def train_inductive_model(
         
         if improved:
             best_val_metric = val_metric
-            best_model_state = {k: v.cpu() for k, v in model.state_dict().items()}
+            best_model_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
             patience_counter = 0
         else:
             patience_counter += 1
-            if patience_counter >= config.patience:
-                print(f"Early stopping at epoch {epoch}")
+            if patience_counter >= effective_patience:
+                print(f"Early stopping triggered at epoch {epoch}!")
                 break
     
     train_time = time.time() - start_time
@@ -279,6 +287,7 @@ def train_inductive_model(
     # Load best model
     if best_model_state is not None:
         model.load_state_dict(best_model_state)
+        print("Loaded best model weights")
     
     # Final evaluation on test set
     test_metrics = evaluate_inductive_model(model, dataloaders['test'], is_regression, device)
@@ -288,7 +297,8 @@ def train_inductive_model(
         'best_val_metric': best_val_metric,
         'test_metrics': test_metrics,
         'training_history': training_history,
-        'model': model
+        'model': model,
+        'effective_patience': effective_patience
     }
 
 def train_sklearn_inductive(
@@ -706,6 +716,20 @@ def optimize_inductive_hyperparameters(
                 return best_val_metric  # Positive because we maximize R²
         else:
             return best_val_metric  # Positive because we maximize F1
+        
+    # ADD THIS: Create study with early termination
+    def should_terminate(study, trial):
+        """Check if we should terminate optimization early."""
+        if is_regression:
+            if config.regression_loss == 'mae':
+                # For MAE, perfect score is 0, but we return negative values
+                return trial.value >= -1e-6  # Essentially 0 MAE
+            else:
+                # For R², perfect score is 1.0
+                return trial.value >= 0.999
+        else:
+            # For classification metrics (F1, accuracy), perfect score is 1.0
+            return trial.value >= 0.999
     
     # Create study with storage if experiment info provided
     # Create study
@@ -713,7 +737,7 @@ def optimize_inductive_hyperparameters(
     study = create_study(direction='maximize')
     
     # Run optimization
-    study.optimize(objective, n_trials=n_trials, timeout=timeout)
+    study.optimize(objective, n_trials=n_trials, timeout=timeout, callbacks=[lambda study, trial: study.stop() if should_terminate(study, trial) else None])
     
     # study_name = f"{model_type}_{gnn_type if gnn_type else ''}_{'regression' if is_regression else 'classification'}"
     # if experiment_name and run_id is not None:
@@ -882,6 +906,16 @@ def optimize_finetuning_hyperparameters(
         else:
             return best_val_metric  # Positive because we maximize F1
     
+    # ADD EARLY TERMINATION
+    def should_terminate_finetuning(study, trial):
+        """Check if we should terminate fine-tuning optimization early."""
+        if is_regression:
+            # For MSE, perfect score is 0, but we return negative values
+            return trial.value >= -1e-6  # Essentially 0 MSE
+        else:
+            # For F1, perfect score is 1.0
+            return trial.value >= 0.999
+
     # Create study with storage if experiment info provided
     study_name = f"finetuning_{metadata['config']['gnn_type']}_{metadata['config']['pretraining_task']}"
     if experiment_name and run_id is not None:
@@ -896,7 +930,12 @@ def optimize_finetuning_hyperparameters(
         study = create_study(direction='maximize')
     
     # Run optimization
-    study.optimize(objective, n_trials=n_trials, timeout=timeout)
+    study.optimize(
+        objective, 
+        n_trials=n_trials, 
+        timeout=timeout,
+        callbacks=[lambda study, trial: study.stop() if should_terminate_finetuning(study, trial) else None]
+    )
     
     return {
         'best_params': study.best_params,
@@ -1171,438 +1210,245 @@ def train_and_evaluate_inductive(
                     input_dim=input_dim,
                     hidden_dim=hidden_dim,
                     output_dim=output_dim,
-                    transformer_type=model.transformer_type,
-                    num_layers=best_params.get('num_layers', config.num_layers),
-                    dropout=best_params.get('dropout', config.dropout),
+                    transformer_type=transformer_type,
+                    num_layers=best_params.get('num_layers', 2),
+                    dropout=best_params.get('dropout', 0.1),
                     is_regression=is_regression,
                     num_heads=num_heads,
-                    max_path_length=best_params.get('max_path_length', config.transformer_max_path_length),
-                    precompute_encodings=best_params.get('precompute_encodings', config.transformer_precompute_encodings),
+                    max_path_length=best_params.get('max_path_length', 10),
+                    precompute_encodings=best_params.get('precompute_encodings', True),
                     cache_encodings=config.transformer_cache_encodings,
-                    local_gnn_type=best_params.get('local_gnn_type', config.local_gnn_type),
-                    prenorm=best_params.get('prenorm', config.transformer_prenorm)
-                )
+                    local_gnn_type=best_params.get('local_gnn_type', 'gcn'),
+                    prenorm=best_params.get('prenorm', True)
+                ).to(device)
                 
                 # Restore cache if available
-                if hasattr(config, 'transformer_caches') and model.transformer_type in config.transformer_caches:
-                    model._encoding_cache = config.transformer_caches[model.transformer_type]
+                if hasattr(config, 'transformer_caches') and transformer_type in config.transformer_caches:
+                    model._encoding_cache = config.transformer_caches[transformer_type]
                 
                 # Update config with optimized parameters
                 config.learning_rate = best_params.get('lr', config.learning_rate)
                 config.weight_decay = best_params.get('weight_decay', config.weight_decay)
                 config.patience = best_params.get('patience', config.patience)
-                
-                hyperopt_results = {
-                    'best_params': best_params,
-                    'best_value': study.best_value,
-                    'n_trials': len(study.trials),
-                    'study_name': study_name
-                }
+                config.optimized_patience = best_params.get('patience', config.patience)
     
-    pretrained_model = None
-    pretrained_metadata = None
-    
-    # Check if we should use pre-trained model
-    if config.use_pretrained and isinstance(model, GNNModel):
-        print(f"🔄 Setting up fine-tuning with pre-trained model...")
+    # Handle GNN models
+    elif hasattr(model, 'gnn_type'):
+        print(f"🔄 Training GNN: {model.gnn_type}")
         
-        # Get output dimension
-        sample_batch = next(iter(dataloaders['train']))
-        if is_regression:
-            output_dim = sample_batch.y.shape[1] if len(sample_batch.y.shape) > 1 else 1
-        else:
-            output_dim = get_total_classes_from_dataloaders(dataloaders)
-        
-        # Find compatible pre-trained model
-        pretrained_model_id = find_compatible_pretrained_model(
-            config, model.gnn_type, config.pretrained_model_dir
-        )
-        
-        if pretrained_model_id:
-            try:
-                # Load pre-trained model
-                finetuning_model, pretrained_metadata = load_pretrained_model_for_task(
-                    pretrained_model_id,
-                    output_dim,
-                    is_regression,
-                    config.freeze_encoder,
-                    config.pretrained_model_dir,
-                    device
-                )
-                
-                # Store original for hyperopt
-                pretrained_model = finetuning_model
-                model = finetuning_model.to(device)
-                
-                print(f"✅ Using pre-trained model: {pretrained_model_id}")
-                print(f"   Freeze encoder: {config.freeze_encoder}")
-                
-            except Exception as e:
-                print(f"⚠️  Failed to load pre-trained model: {e}")
-                print(f"   Falling back to random initialization")
-    
-    # Hyperparameter optimization for non-transformer models
-    hyperopt_results = None
-    if optimize_hyperparams is None:
-        optimize_hyperparams = config.optimize_hyperparams
-    
-    if optimize_hyperparams and not isinstance(model, SklearnModel) and not hasattr(model, 'transformer_type'):
-        if pretrained_model and pretrained_metadata:
-            # Use fine-tuning specific hyperparameter optimization
-            print(f"🎯 Optimizing fine-tuning hyperparameters (n_trials={config.n_trials//2})...")
+        # Update hyperparameter optimization for GNNs
+        if optimize_hyperparams and not isinstance(model, SklearnModel):
+            print(f"🎯 Optimizing GNN hyperparameters...")
             
-            # Get output dimension
+            # Get model creator function for GNNs
+            model_creator = lambda **kwargs: GNNModel(**kwargs)
+            
+            # Get sample batch to determine dimensions
             sample_batch = next(iter(dataloaders['train']))
+            input_dim = sample_batch.x.shape[1]
+            
             if is_regression:
                 output_dim = sample_batch.y.shape[1] if len(sample_batch.y.shape) > 1 else 1
             else:
                 output_dim = get_total_classes_from_dataloaders(dataloaders)
             
-            hyperopt_results = optimize_finetuning_hyperparameters(
-                pretrained_model,
-                pretrained_metadata,
-                dataloaders,
-                config,
-                output_dim,
-                is_regression,
-                n_trials=max(5, config.n_trials // 2),  # Fewer trials for fine-tuning
-                timeout=config.optimization_timeout // 2,  # Shorter timeout
-                device=device,
-                experiment_name=experiment_name,
-                run_id=run_id
-            )
+            # Create a single optimization study
+            import optuna
+            from optuna import create_study, Trial
             
-            # Apply optimized parameters to model and config
-            if hyperopt_results and 'best_params' in hyperopt_results:
-                best_params = hyperopt_results['best_params']
-                print(f"🎯 Applying optimized fine-tuning parameters:")
+            study_name = f"gnn_{model.gnn_type}_{'regression' if is_regression else 'classification'}"
+            study = create_study(direction='maximize')
+            
+            # Store GNN type for the objective function
+            gnn_type = model.gnn_type
+            
+            def objective(trial: Trial) -> float:
+                # Common hyperparameters
+                lr = trial.suggest_float('lr', 1e-4, 1e-2, log=True)
+                weight_decay = trial.suggest_float('weight_decay', 1e-5, 1e-2, log=True)
+                patience = trial.suggest_int('patience', 10, 50)
+                
+                # GNN-specific hyperparameters
+                hidden_dim = trial.suggest_int('hidden_dim', 32, 256)
+                num_layers = trial.suggest_int('num_layers', 1, 4)
+                dropout = trial.suggest_float('dropout', 0.1, 0.7)
+                
+                # Initialize default values
+                heads = 1
+                concat_heads = True
+                eps = 0.3
+                residual = False
+                norm_type = 'none'
+                agg_type = 'mean'
+                
+                # GNN-specific parameters
+                if gnn_type == "gat":
+                    heads = trial.suggest_int('heads', 1, 8)
+                    concat_heads = trial.suggest_categorical('concat_heads', [True, False])
+                    residual = trial.suggest_categorical('residual', [True, False])
+                    norm_type = trial.suggest_categorical('norm_type', ['none', 'batch', 'layer'])
+                    agg_type = trial.suggest_categorical('agg_type', ['mean', 'max', 'sum'])
+                elif gnn_type == "fagcn":
+                    eps = trial.suggest_float('eps', 0.0, 1.0)
+                elif gnn_type in ["gcn", "sage"]:
+                    residual = trial.suggest_categorical('residual', [True, False])
+                    norm_type = trial.suggest_categorical('norm_type', ['none', 'batch', 'layer'])
+                    if gnn_type == "sage":
+                        agg_type = trial.suggest_categorical('agg_type', ['mean', 'max', 'sum'])
+                
+                # Create GNN model with all parameters
+                trial_model = GNNModel(
+                    input_dim=input_dim,
+                    hidden_dim=hidden_dim,
+                    output_dim=output_dim,
+                    num_layers=num_layers,
+                    dropout=dropout,
+                    gnn_type=gnn_type,
+                    residual=residual,
+                    norm_type=norm_type,
+                    agg_type=agg_type,
+                    heads=heads,
+                    concat_heads=concat_heads,
+                    eps=eps,
+                    is_regression=is_regression
+                ).to(device)
+                
+                # Train model with reduced epochs for speed
+                optimizer = torch.optim.Adam(trial_model.parameters(), lr=lr, weight_decay=weight_decay)
+                
+                # Set up loss function
+                if is_regression:
+                    if config.regression_loss == 'mae':
+                        criterion = torch.nn.L1Loss()
+                    else:
+                        criterion = torch.nn.MSELoss()
+                else:
+                    criterion = torch.nn.CrossEntropyLoss()
+                
+                # Quick training loop
+                max_epochs = min(50, config.epochs // 4)  # Reduced epochs for hyperopt
+                best_val_metric = float('inf') if is_regression else 0.0
+                patience_counter = 0
+                
+                for epoch in range(max_epochs):
+                    # Training
+                    trial_model.train()
+                    for batch in dataloaders['train']:
+                        batch = batch.to(device)
+                        optimizer.zero_grad()
+                        out = trial_model(batch.x, batch.edge_index)
+                        loss = criterion(out, batch.y)
+                        loss.backward()
+                        optimizer.step()
+                    
+                    # Validation
+                    trial_model.eval()
+                    val_predictions = []
+                    val_targets = []
+                    
+                    with torch.no_grad():
+                        for batch in dataloaders['val']:
+                            batch = batch.to(device)
+                            out = trial_model(batch.x, batch.edge_index)
+                            
+                            if is_regression:
+                                val_predictions.append(out.detach().cpu())
+                            else:
+                                val_predictions.append(out.argmax(dim=1).detach().cpu())
+                            
+                            val_targets.append(batch.y.detach().cpu())
+                    
+                    # Calculate validation metric
+                    val_pred = torch.cat(val_predictions, dim=0).numpy()
+                    val_true = torch.cat(val_targets, dim=0).numpy()
+                    val_metrics = compute_metrics(val_true, val_pred, is_regression)
+                    
+                    if is_regression:
+                        if config.regression_loss == 'mae':
+                            val_metric = val_metrics['mae']
+                            if val_metric < best_val_metric:  # Lower is better for MAE
+                                best_val_metric = val_metric
+                                patience_counter = 0
+                            else:
+                                patience_counter += 1
+                        else:
+                            val_metric = val_metrics['r2']
+                            if val_metric > best_val_metric:  # Higher is better for R²
+                                best_val_metric = val_metric
+                                patience_counter = 0
+                            else:
+                                patience_counter += 1
+                    else:
+                        val_metric = val_metrics['f1_macro']
+                        if val_metric > best_val_metric:  # Higher is better for F1
+                            best_val_metric = val_metric
+                            patience_counter = 0
+                        else:
+                            patience_counter += 1
+                    
+                    if patience_counter >= patience:
+                        break
+                
+                # Return metric for optimization
+                if is_regression:
+                    if config.regression_loss == 'mae':
+                        return -best_val_metric  # Negative because we minimize MAE
+                    else:
+                        return best_val_metric  # Positive because we maximize R²
+                else:
+                    return best_val_metric  # Positive because we maximize F1
+            
+            # Run optimization
+            study.optimize(objective, n_trials=config.n_trials, timeout=config.optimization_timeout)
+            
+            # Apply optimized parameters
+            if study.best_params:
+                best_params = study.best_params
+                print(f"🎯 Applying optimized parameters:")
                 for key, value in best_params.items():
                     print(f"   {key}: {value}")
                 
+                # Recreate model with optimized parameters
+                model = GNNModel(
+                    input_dim=input_dim,
+                    hidden_dim=best_params.get('hidden_dim', 64),
+                    output_dim=output_dim,
+                    num_layers=best_params.get('num_layers', 2),
+                    dropout=best_params.get('dropout', 0.5),
+                    gnn_type=gnn_type,
+                    residual=best_params.get('residual', False),
+                    norm_type=best_params.get('norm_type', 'none'),
+                    agg_type=best_params.get('agg_type', 'mean'),
+                    heads=best_params.get('heads', 1),
+                    concat_heads=best_params.get('concat_heads', True),
+                    eps=best_params.get('eps', 0.3),
+                    is_regression=is_regression
+                ).to(device)
+                
                 # Update config with optimized parameters
-                config.learning_rate = best_params.get('base_lr', config.learning_rate)
+                config.learning_rate = best_params.get('lr', config.learning_rate)
                 config.weight_decay = best_params.get('weight_decay', config.weight_decay)
                 config.patience = best_params.get('patience', config.patience)
-                
-                # Recreate model with optimized parameters
-                if 'head_dropout' in best_params or 'use_hidden_head' in best_params:
-                    model = create_optimized_finetuning_model(
-                        pretrained_model,
-                        pretrained_metadata,
-                        output_dim,
-                        is_regression,
-                        config.freeze_encoder,
-                        best_params.get('head_dropout', 0.0),
-                        best_params.get('use_hidden_head', False),
-                        best_params.get('head_hidden_dim', None)
-                    ).to(device)
-        else:
-            # Use standard hyperparameter optimization for random initialization
-            print(f"Optimizing hyperparameters for random initialization...")
+                config.optimized_patience = best_params.get('patience', config.patience)
     
-            # Use config setting if optimize_hyperparams not explicitly set
-            if optimize_hyperparams is None:
-                optimize_hyperparams = config.optimize_hyperparams
-            
-            # Hyperparameter optimization if requested
-            hyperopt_results = None
-            if optimize_hyperparams and not isinstance(model, SklearnModel):
-                print(f"Optimizing hyperparameters for inductive learning (n_trials={config.n_trials}, timeout={config.optimization_timeout}s)...")
-                
-                # Get model creator function
-                if isinstance(model, GNNModel):
-                    model_creator = lambda **kwargs: GNNModel(**kwargs)
-                    model_type = "gnn"
-                    gnn_type = model.gnn_type
-                else:  # MLPModel
-                    model_creator = lambda **kwargs: MLPModel(**kwargs)
-                    model_type = "mlp"
-                    gnn_type = None
-                
-                hyperopt_results = optimize_inductive_hyperparameters(
-                    model_creator=model_creator,
-                    dataloaders=dataloaders,
-                    config=config,
-                    model_type=model_type,
-                    gnn_type=gnn_type,
-                    n_trials=config.n_trials,
-                    timeout=config.optimization_timeout,
-                    device=device,
-                    is_regression=is_regression,
-                    experiment_name=experiment_name,
-                    run_id=run_id
-                )
-                
-                # Update model with best parameters
-                if hyperopt_results and 'best_params' in hyperopt_results:
-                    best_params = hyperopt_results['best_params']
-                    print(f"Using optimized parameters: {best_params}")
-                    
-                    # Recreate model with best parameters
-                    sample_batch = next(iter(dataloaders['train']))
-                    input_dim = sample_batch.x.shape[1]
-                    
-                    if is_regression:
-                        output_dim = sample_batch.y.shape[1] if len(sample_batch.y.shape) > 1 else 1
-                    else:
-                        output_dim = get_total_classes_from_dataloaders(dataloaders)
-                    
-                    if isinstance(model, GNNModel):
-                        # Handle model-specific parameters
-                        if gnn_type == "gat":
-                            heads = best_params.get('heads', 1)
-                            concat_heads = best_params.get('concat_heads', True)
-                        else:
-                            heads = 1
-                            concat_heads = True
-                        
-                        # Handle FAGCN-specific parameters
-                        if gnn_type == "fagcn":
-                            eps = best_params.get('eps', 0.3)
-                            # Use default values for irrelevant parameters
-                            residual = False
-                            norm_type = 'none'
-                            agg_type = 'mean'
-                        else:
-                            eps = 0.3  # Default value for non-FAGCN models
-                            residual = best_params.get('residual', False)
-                            norm_type = best_params.get('norm_type', 'none')
-                            agg_type = best_params.get('agg_type', 'mean')
-                        
-                        model = GNNModel(
-                            input_dim=input_dim,
-                            hidden_dim=best_params.get('hidden_dim', config.hidden_dim),
-                            output_dim=output_dim,
-                            num_layers=best_params.get('num_layers', config.num_layers),
-                            dropout=best_params.get('dropout', config.dropout),
-                            gnn_type=gnn_type,
-                            residual=residual,
-                            norm_type=norm_type,
-                            agg_type=agg_type,
-                            heads=heads,
-                            concat_heads=concat_heads,
-                            eps=eps,
-                            is_regression=is_regression
-                        )
-                    else:  # MLPModel
-                        model = MLPModel(
-                            input_dim=input_dim,
-                            hidden_dim=best_params.get('hidden_dim', config.hidden_dim),
-                            output_dim=output_dim,
-                            num_layers=best_params.get('num_layers', config.num_layers),
-                            dropout=best_params.get('dropout', config.dropout),
-                            is_regression=is_regression
-                        )
-
-                    # Update learning rate and weight decay
-                    config.learning_rate = best_params.get('lr', config.learning_rate)
-                    config.weight_decay = best_params.get('weight_decay', config.weight_decay)
-                    config.patience = best_params.get('patience', config.patience)
-            
-    # Train the model
-    results = train_inductive_model(model, dataloaders, config, task, device)
-    
-    # Add fine-tuning specific info to results
-    if config.use_pretrained:
-        results['used_pretrained'] = True
-        results['freeze_encoder'] = config.freeze_encoder
-        results['fine_tune_lr_multiplier'] = config.fine_tune_lr_multiplier
-        if pretrained_metadata:
-            results['pretrained_task'] = pretrained_metadata['config']['pretraining_task']
-            results['pretrained_model_id'] = pretrained_metadata['model_id']
-    
-    if hyperopt_results:
-        results['hyperopt_results'] = hyperopt_results
-        
-    return results
-
-def train_with_pretrained_model(
-    pretrained_model_id: str,
-    dataloaders: Dict[str, DataLoader],
-    config: InductiveExperimentConfig,
-    task: str,
-    device: torch.device,
-    freeze_encoder: bool = False,
-    lr_multiplier: float = 0.1
-) -> Dict[str, Any]:
-    """Train using a pre-trained model."""
-    
-    from experiments.inductive.data import PreTrainedModelSaver
-    
-    # Load pre-trained model
-    model_saver = PreTrainedModelSaver("pretrained_models")
-    pretrained_model, metadata = model_saver.load_model(pretrained_model_id, device)
-    
-    # Get task info
-    is_regression = config.is_regression.get(task, False)
-    sample_batch = next(iter(dataloaders['train']))
-    output_dim = len(torch.unique(sample_batch.y)) if not is_regression else 1
-    
-    # Create fine-tuning model
-    model = create_finetuning_model_from_pretrained(
-        pretrained_model, metadata, output_dim, is_regression, freeze_encoder
+    # Train the model (either original or optimized)
+    results = train_inductive_model(
+        model=model,
+        dataloaders=dataloaders,
+        config=config,
+        task=task,
+        device=device
     )
     
-    # Adjust learning rate
-    if freeze_encoder:
-        # Only optimize head parameters
-        optimizer = torch.optim.Adam(
-            model.head.parameters(),
-            lr=config.learning_rate * lr_multiplier
-        )
-    else:
-        # Different learning rates for encoder and head
-        optimizer = torch.optim.Adam([
-            {'params': model.encoder.parameters(), 'lr': config.learning_rate * lr_multiplier},
-            {'params': model.head.parameters(), 'lr': config.learning_rate}
-        ])
-    
-    # Train the model (use existing training loop with modifications)
-    results = train_inductive_model(model, dataloaders, config, task, device)
-    
-    # Add pre-training info to results
-    results['pretrained_model_id'] = pretrained_model_id
-    results['pretrained_metadata'] = metadata
-    results['freeze_encoder'] = freeze_encoder
-    
-    return results
-
-def load_pretrained_model_for_task(
-    model_id: str,
-    output_dim: int,
-    is_regression: bool,
-    freeze_encoder: bool = False,
-    pretrained_model_dir: str = "pretrained_models",
-    device: torch.device = None
-) -> Tuple[nn.Module, Dict[str, Any]]:
-    """Load a pre-trained model and adapt it for a specific task."""
-    
-    # Import here to avoid circular imports
-    try:
-        from experiments.inductive.self_supervised_task import PreTrainedModelSaver
-    except ImportError:
-        # Fallback import path
-        import sys
-        import os
-        sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-        from self_supervised_task import PreTrainedModelSaver
-    
-    # Load pre-trained model
-    model_saver = PreTrainedModelSaver(pretrained_model_dir)
-    pretrained_model, metadata = model_saver.load_model(model_id, device)
-    
-    print(f"✅ Loaded pre-trained model: {model_id}")
-    print(f"   Pre-training task: {metadata['config']['pretraining_task']}")
-    print(f"   Architecture: {metadata['config']['gnn_type']}")
-    print(f"   Hidden dim: {metadata['config']['hidden_dim']}")
-    
-    # Create fine-tuning model
-    finetuning_model = create_finetuning_model_from_pretrained(
-        pretrained_model, metadata, output_dim, is_regression, freeze_encoder
+    # Evaluate on test set
+    test_results = evaluate_inductive_model(
+        model=model,
+        test_loader=dataloaders['test'],
+        is_regression=is_regression,
+        device=device
     )
     
-    return finetuning_model, metadata
-
-def create_finetuning_model_from_pretrained(
-    pretrained_model, 
-    metadata: Dict[str, Any], 
-    output_dim: int, 
-    is_regression: bool, 
-    freeze_encoder: bool = False
-) -> nn.Module:
-    """Helper function to create fine-tuning model from pre-trained model."""
+    # Combine results
+    results['test_metrics'] = test_results
     
-    # Extract encoder from pre-trained model
-    if hasattr(pretrained_model, 'encoder'):
-        encoder = pretrained_model.encoder
-    else:
-        encoder = pretrained_model
-    
-    # Get encoder output dimension
-    encoder_dim = metadata['config']['hidden_dim']
-    
-    # Create classification/regression head
-    if is_regression:
-        head = nn.Linear(encoder_dim, output_dim)
-    else:
-        head = nn.Sequential(
-            nn.Linear(encoder_dim, output_dim)
-            # Note: Don't add LogSoftmax here as CrossEntropyLoss expects raw logits
-        )
-    
-    # Combine into fine-tuning model
-    class FineTuningModel(nn.Module):
-        def __init__(self, encoder, head, freeze_encoder=False):
-            super().__init__()
-            self.encoder = encoder
-            self.head = head
-            self.gnn_type = getattr(encoder, 'gnn_type', 'gcn')
-            
-            if freeze_encoder:
-                for param in self.encoder.parameters():
-                    param.requires_grad = False
-        
-        def forward(self, x, edge_index=None):
-            # Get embeddings from encoder
-            if hasattr(self.encoder, 'convs'):  # This is a GNN model
-                if edge_index is None:
-                    raise ValueError("GNN model requires edge_index")
-                embeddings = self.encoder(x, edge_index)
-            else:  # This is an MLP or other non-GNN model
-                embeddings = self.encoder(x)
-            
-            # Apply head
-            return self.head(embeddings)
-    
-    return FineTuningModel(encoder, head, freeze_encoder)
-
-def find_compatible_pretrained_model(
-    config: InductiveExperimentConfig,
-    gnn_type: str,
-    pretrained_model_dir: str
-) -> Optional[str]:
-    """Find a compatible pre-trained model for the given configuration."""
-    
-    # Import here to avoid circular imports
-    try:
-        from experiments.inductive.self_supervised_task import PreTrainedModelSaver
-    except ImportError:
-        try:
-            # Alternative import path
-            import sys
-            import os
-            sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-            from self_supervised_task import PreTrainedModelSaver
-        except ImportError:
-            print("⚠️  Cannot import PreTrainedModelSaver")
-            return None
-    
-    # If specific model ID provided, use that
-    if hasattr(config, 'pretrained_model_id') and config.pretrained_model_id:
-        print(f"✅ Using specified model ID: {config.pretrained_model_id}")
-        return config.pretrained_model_id
-    
-    # Otherwise, find compatible model
-    try:
-        model_saver = PreTrainedModelSaver(pretrained_model_dir)
-        available_models = model_saver.list_models()
-        
-        # Filter by GNN type and fine-tuning readiness
-        compatible_models = [
-            model for model in available_models
-            if (model['gnn_type'] == gnn_type and 
-                model.get('finetuning_ready', False))
-        ]
-        
-        if compatible_models:
-            # Return the most recent compatible model
-            latest_model = max(compatible_models, key=lambda x: x.get('creation_timestamp', ''))
-            print(f"✅ Auto-selected compatible model: {latest_model['model_id']}")
-            return latest_model['model_id']
-        else:
-            print(f"⚠️  No compatible {gnn_type.upper()} models found")
-            return None
-            
-    except Exception as e:
-        print(f"⚠️  Error finding compatible models: {e}")
-        return None
+    return results

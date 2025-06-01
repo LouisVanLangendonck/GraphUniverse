@@ -1,0 +1,7 @@
+{
+  "family_id": "family_ssl_sweep_000",
+  "model_id": "gcn_link_prediction_20250601_000824",
+  "finetuning_graphs_available": 30,
+  "pretraining_graphs_used": 40,
+  "creation_timestamp": "2025-06-01T00:08:24.104177"
+}

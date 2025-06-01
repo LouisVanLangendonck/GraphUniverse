@@ -1109,12 +1109,22 @@ class PreTrainingRunner:
             
             return best_metric
         
+        def should_terminate_pretraining(study, trial):
+            """Check if we should terminate pre-training optimization early."""
+            if self.config.pretraining_task == "link_prediction":
+                # AUC perfect score is 1.0
+                return trial.value >= 0.999
+            else:  # contrastive
+                # Accuracy perfect score is 1.0
+                return trial.value >= 0.999
+        
         # Run optimization
         study = optuna.create_study(direction='maximize')
         study.optimize(
             objective, 
             n_trials=self.config.n_trials,
-            timeout=self.config.optimization_timeout
+            timeout=self.config.optimization_timeout,
+            callbacks=[lambda study, trial: study.stop() if should_terminate_pretraining(study, trial) else None]
         )
         
         print(f"Hyperopt completed: Best metric = {study.best_value:.4f}")
@@ -1130,25 +1140,41 @@ class PreTrainingRunner:
         """Sample hyperparameters for optimization (NOT task parameters)."""
         params = {}
         
-        # Model architecture hyperparameters
+        # Common hyperparameters
         params['learning_rate'] = trial.suggest_float('learning_rate', 1e-4, 1e-2, log=True)
         params['weight_decay'] = trial.suggest_float('weight_decay', 1e-6, 1e-3, log=True)
         params['hidden_dim'] = trial.suggest_int('hidden_dim', 64, 256, step=32)
         params['num_layers'] = trial.suggest_int('num_layers', 2, 4)
         params['dropout'] = trial.suggest_float('dropout', 0.0, 0.5)
 
-        # General GNN hyperparameters
-        params['residual'] = trial.suggest_categorical('residual', [True, False])
-        params['norm_type'] = trial.suggest_categorical('norm_type', ['none', 'batch', 'layer'])
-        params['agg_type'] = trial.suggest_categorical('agg_type', ['mean', 'max', 'sum'])
+        if self.config.model_type == "transformer":
+            # Sample num_heads first, then ensure hidden_dim is divisible
+            num_heads = trial.suggest_categorical('transformer_num_heads', [4, 6, 8, 12, 16])
+            
+            # Sample a base dimension and multiply by num_heads to ensure divisibility
+            base_dim = trial.suggest_int('base_dim_multiplier', 8, 32, step=4)  # 8, 12, 16, 20, 24, 28, 32
+            hidden_dim = base_dim * num_heads
 
-        # GNN-specific parameters
-        if gnn_type == "gat":
-            heads = trial.suggest_int('heads', 1, 8)
-            concat_heads = trial.suggest_categorical('concat_heads', [True, False])
+            # Transformer-specific hyperparameters
+            params['hidden_dim'] = hidden_dim
+            params['transformer_num_heads'] = num_heads
+            params['transformer_max_nodes'] = trial.suggest_int('transformer_max_nodes', 100, 500)
+            params['transformer_max_path_length'] = trial.suggest_int('transformer_max_path_length', 3, 8)
+            params['transformer_prenorm'] = trial.suggest_categorical('transformer_prenorm', [True, False])
+            params['local_gnn_type'] = trial.suggest_categorical('local_gnn_type', ['gcn', 'gat', 'sage'])
+            params['global_model_type'] = trial.suggest_categorical('global_model_type', ['transformer', 'performer'])
         else:
-            heads = 1
-            concat_heads = True
+            # GNN-specific parameters
+            params['residual'] = trial.suggest_categorical('residual', [True, False])
+            params['norm_type'] = trial.suggest_categorical('norm_type', ['none', 'batch', 'layer'])
+            params['agg_type'] = trial.suggest_categorical('agg_type', ['mean', 'max', 'sum'])
+
+            if gnn_type == "gat":
+                heads = trial.suggest_int('heads', 1, 8)
+                concat_heads = trial.suggest_categorical('concat_heads', [True, False])
+            else:
+                heads = 1
+                concat_heads = True
         
         # NOTE: Task parameters are NOT optimized here, they come from config or sweeps
         
@@ -1205,6 +1231,8 @@ class PreTrainingRunner:
         best_model_state = None
         patience_counter = 0
         
+        print(f"\nStarting pre-training with patience={self.config.patience}")
+        print("Early stopping will trigger if validation metric doesn't improve for", self.config.patience, "epochs")
         print(f"Training for {self.config.epochs} epochs...")
         
         for epoch in range(self.config.epochs):
@@ -1227,8 +1255,9 @@ class PreTrainingRunner:
             avg_train_loss = epoch_loss / n_batches
             training_history['train_loss'].append(avg_train_loss)
             
-            # Evaluation every 10 epochs
-            if epoch % 10 == 0 or epoch == self.config.epochs - 1:
+            # Evaluation every epoch
+            model.eval()
+            with torch.no_grad():
                 eval_metrics = task.evaluate(model, train_loader)
                 eval_loss = eval_metrics['loss']
                 
@@ -1245,21 +1274,24 @@ class PreTrainingRunner:
                     best_metric = primary_metric
                     best_model_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
                     patience_counter = 0
+                    # print(f"✅ New best metric: {best_metric:.4f} (patience reset to 0)")
                 else:
                     patience_counter += 1
-                
-                # Logging
-                if epoch % 50 == 0:
-                    print(f"Epoch {epoch:4d}: Loss: {avg_train_loss:.4f}, Metric: {primary_metric:.4f}")
+                    # print(f"❌ No improvement for {patience_counter}/{self.config.patience} epochs (best: {best_metric:.4f})")
                 
                 # Early stopping
                 if patience_counter >= self.config.patience:
-                    print(f"Early stopping at epoch {epoch}")
+                    print(f"🛑 Early stopping triggered at epoch {epoch}!")
                     break
+            
+            # Logging every 10 epochs
+            if epoch % 10 == 0:
+                print(f"Epoch {epoch:4d}: Train Loss = {avg_train_loss:.4f}, Val Loss = {eval_loss:.4f}, Metric = {primary_metric:.4f}")
         
         # Load best model
         if best_model_state is not None:
             model.load_state_dict(best_model_state)
+            print("Loaded best model weights")
         
         # Final evaluation
         final_metrics = task.evaluate(model, train_loader)

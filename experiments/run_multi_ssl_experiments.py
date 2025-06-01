@@ -55,7 +55,14 @@ class SSLMultiExperimentConfig:
         base_seed: int = 42,
         
         # Model management
-        gnn_models: List[str] = None
+        gnn_models: List[str] = None,
+        
+        # Transformer configuration
+        transformer_models: List[str] = None,  # List of transformer models to run
+        run_transformers: bool = False,  # Whether to run transformer models
+        transformer_params: Dict[str, Any] = None,  # Additional transformer parameters
+        skip_gnn: bool = False,  # Whether to skip running GNN models
+        patience: int = 50  # Added patience parameter
     ):
         self.output_dir = output_dir
         self.experiment_name = experiment_name
@@ -69,6 +76,20 @@ class SSLMultiExperimentConfig:
         self.reuse_families = reuse_families
         self.base_seed = base_seed
         self.gnn_models = gnn_models or []
+        self.transformer_models = transformer_models or ['graphormer']
+        self.run_transformers = run_transformers
+        self.transformer_params = transformer_params or {
+            'transformer_num_heads': 8,
+            'transformer_max_nodes': 200,
+            'transformer_max_path_length': 10,
+            'transformer_precompute_encodings': True,
+            'transformer_cache_encodings': True,
+            'local_gnn_type': 'gcn',
+            'global_model_type': 'transformer',
+            'transformer_prenorm': True
+        }
+        self.skip_gnn = skip_gnn
+        self.patience = patience
     
     def get_family_configurations(self) -> List[Dict[str, Any]]:
         """Get all unique graph family configurations."""
@@ -116,14 +137,33 @@ class SSLMultiExperimentConfig:
             return []
             
         model_configs = []
-        for gnn_type in self.gnn_models:
-            model_config = {
-                'gnn_type': gnn_type,
-                'pretraining_task': self.base_config.pretraining_task,
-                'hidden_dim': self.base_config.hidden_dim,
-                'num_layers': self.base_config.num_layers
-            }
-            model_configs.append(model_config)
+        
+        # Add GNN models only if not skipping GNNs and gnn_models is not empty
+        if not self.skip_gnn and self.gnn_models:
+            for gnn_type in self.gnn_models:
+                model_config = {
+                    'gnn_type': gnn_type,
+                    'pretraining_task': self.base_config.pretraining_task,
+                    'hidden_dim': self.base_config.hidden_dim,
+                    'num_layers': self.base_config.num_layers,
+                    'run_transformers': False,
+                    'model_type': 'gnn'
+                }
+                model_configs.append(model_config)
+        
+        # Add transformer models
+        if self.run_transformers:
+            for transformer_type in self.transformer_models:
+                model_config = {
+                    'transformer_type': transformer_type,
+                    'pretraining_task': self.base_config.pretraining_task,
+                    'hidden_dim': self.base_config.hidden_dim,
+                    'num_layers': self.base_config.num_layers,
+                    'run_transformers': True,
+                    'model_type': 'transformer',
+                    **self.transformer_params
+                }
+                model_configs.append(model_config)
         
         return model_configs
     
@@ -193,7 +233,12 @@ class SSLMultiExperimentRunner:
                 } for param, range_obj in self.config.random_parameters.items()
             },
             'base_config': self.config.base_config.to_dict() if self.config.base_config else None,
-            'gnn_models': self.config.gnn_models
+            'gnn_models': self.config.gnn_models,
+            'transformer_models': self.config.transformer_models,
+            'run_transformers': self.config.run_transformers,
+            'transformer_params': self.config.transformer_params,
+            'skip_gnn': self.config.skip_gnn,
+            'patience': self.config.patience
         }
         
         config_path = os.path.join(self.output_dir, "experiment_config.json")
@@ -267,19 +312,16 @@ class SSLMultiExperimentRunner:
     
     def run_single_experiment(
         self,
-        family_config: Dict[str, Any],
-        model_config: Dict[str, Any],
+        exp_id: int,
         rep: int,
-        exp_id: int
-    ) -> Optional[Dict[str, Any]]:
-        """Run a single SSL experiment."""
+        family_config: Dict[str, Any],
+        model_config: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Run a single experiment with given configurations."""
         
-        print(f"\n{'='*60}")
-        print(f"EXPERIMENT {exp_id:03d} (Rep {rep+1}/{self.config.n_repetitions})")
-        print(f"{'='*60}")
-        print(f"Family: {family_config['family_id']}")
-        print(f"Model: {model_config['gnn_type']} + {model_config['pretraining_task']}")
-        print(f"{'='*60}")
+        print(f"\nRunning experiment {exp_id} (repetition {rep})")
+        print(f"Family config: {family_config}")
+        print(f"Model config: {model_config}")
         
         try:
             # Generate or reuse graph family
@@ -309,20 +351,36 @@ class SSLMultiExperimentRunner:
                 max_communities=7,
                 
                 # Model parameters
-                gnn_type=model_config['gnn_type'],
+                gnn_type=model_config.get('gnn_type', 'gcn'),  # Default to gcn if not specified
                 pretraining_task=model_config['pretraining_task'],
                 hidden_dim=model_config['hidden_dim'],
                 num_layers=model_config['num_layers'],
                 
+                # Transformer configuration
+                transformer_type=model_config.get('transformer_type', 'graphormer'),
+                run_transformers=model_config.get('run_transformers', False),
+                transformer_num_heads=model_config.get('transformer_num_heads', 8),
+                transformer_max_nodes=model_config.get('transformer_max_nodes', 200),
+                transformer_max_path_length=model_config.get('transformer_max_path_length', 10),
+                transformer_precompute_encodings=model_config.get('transformer_precompute_encodings', True),
+                transformer_cache_encodings=model_config.get('transformer_cache_encodings', True),
+                local_gnn_type=model_config.get('local_gnn_type', 'gcn'),
+                global_model_type=model_config.get('global_model_type', 'transformer'),
+                transformer_prenorm=model_config.get('transformer_prenorm', True),
+                
                 # Training parameters
                 epochs=self.config.base_config.epochs,
+                patience=self.config.patience,
                 optimize_hyperparams=self.config.base_config.optimize_hyperparams,
                 n_trials=self.config.base_config.n_trials,
                 optimization_timeout=self.config.base_config.optimization_timeout,
                 
                 # Graph family management
                 graph_family_dir=os.path.join(self.output_dir, "graph_families"),
-                save_graph_family=True
+                save_graph_family=True,
+                
+                # Model type for hyperparameter optimization
+                model_type="transformer" if model_config.get('run_transformers', False) else "gnn"
             )
             
             # Run pre-training
@@ -345,30 +403,22 @@ class SSLMultiExperimentRunner:
                 'success': True
             }
             
-            print(f"✅ Experiment {exp_id:03d} completed successfully")
-            print(f"   Model ID: {results['model_id']}")
-            print(f"   Family ID: {family_id}")
-            
             return experiment_result
             
         except Exception as e:
-            error_info = {
+            print(f"❌ Experiment {exp_id} failed: {str(e)}")
+            if not self.config.continue_on_failure:
+                raise
+            
+            return {
                 'exp_id': exp_id,
                 'repetition': rep,
                 'timestamp': datetime.now().strftime("%Y%m%d_%H%M%S"),
                 'family_config': family_config,
                 'model_config': model_config,
                 'error': str(e),
-                'traceback': traceback.format_exc(),
                 'success': False
             }
-            
-            print(f"❌ Experiment {exp_id:03d} failed: {str(e)}")
-            
-            if not self.config.continue_on_failure:
-                raise
-            
-            return error_info
     
     def run_all_experiments(self) -> Dict[str, Any]:
         """Run all configured experiments."""
@@ -398,10 +448,10 @@ class SSLMultiExperimentRunner:
                     for rep in range(self.config.n_repetitions):
                         
                         result = self.run_single_experiment(
-                            family_config=family_config,
-                            model_config=model_config,
+                            exp_id=exp_id,
                             rep=rep,
-                            exp_id=exp_id
+                            family_config=family_config,
+                            model_config=model_config
                         )
                         
                         if result:
@@ -554,21 +604,54 @@ class SSLMultiExperimentRunner:
 
 def parse_args():
     """Parse command line arguments."""
-    parser = argparse.ArgumentParser(description='Run multiple SSL experiments')
+    parser = argparse.ArgumentParser(description='Run multi-experiment SSL sweeps')
     
     # === EXPERIMENT SETUP ===
     parser.add_argument('--output_dir', type=str, default='multi_ssl_experiments',
                         help='Base output directory')
     parser.add_argument('--experiment_name', type=str, default='ssl_sweep',
-                        help='Name for this experiment sweep')
-    
-    # === EXECUTION PARAMETERS ===
+                        help='Name for this experiment')
     parser.add_argument('--n_repetitions', type=int, default=1,
                         help='Number of repetitions per configuration')
-    parser.add_argument('--continue_on_failure', action='store_true', default=True,
-                        help='Continue experiments even if some fail')
-    parser.add_argument('--reuse_families', action='store_true', default=True,
-                        help='Reuse graph families across experiments')
+    
+    # === MODEL SELECTION ===
+    parser.add_argument('--gnn_models', type=str, nargs='+', 
+                        default=['gcn', 'sage', 'gat'],
+                        choices=['gcn', 'sage', 'gat'],
+                        help='GNN models to run')
+    parser.add_argument('--skip_gnn', action='store_true',
+                        help='Skip running GNN models (only run transformers if specified)')
+    parser.add_argument('--pretraining_task', type=str, default='contrastive',
+                        choices=['link_prediction', 'contrastive'],
+                        help='Self-supervised pre-training task')
+    parser.add_argument('--transformer_models', type=str, nargs='+', 
+                        default=['graphormer', 'graphgps'],
+                        choices=['graphormer', 'graphgps'],
+                        help='Transformer models to run')
+    parser.add_argument('--run_transformers', action='store_true',
+                        help='Run transformer models')
+    
+    # === TRANSFORMER CONFIGURATION ===
+    parser.add_argument('--transformer_num_heads', type=int, default=8,
+                        help='Number of attention heads for transformers')
+    parser.add_argument('--transformer_max_nodes', type=int, default=200,
+                        help='Maximum nodes for encoding precomputation')
+    parser.add_argument('--transformer_max_path_length', type=int, default=10,
+                        help='Maximum path length for shortest path encoding')
+    parser.add_argument('--transformer_precompute_encodings', action='store_true', default=True,
+                        help='Precompute structural encodings for transformers')
+    parser.add_argument('--no_precompute_encodings', action='store_false', 
+                        dest='transformer_precompute_encodings',
+                        help='Disable encoding precomputation')
+    parser.add_argument('--transformer_cache_encodings', action='store_true', default=True,
+                        help='Cache structural encodings between graphs')
+    parser.add_argument('--local_gnn_type', type=str, default='gcn',
+                        choices=['gcn', 'sage'],
+                        help='Local GNN type for GraphGPS')
+    parser.add_argument('--global_model_type', type=str, default='transformer',
+                        help='Global model type for GraphGPS')
+    parser.add_argument('--transformer_prenorm', action='store_true', default=True,
+                        help='Use pre-normalization in transformers')
     
     # === GRAPH FAMILY PARAMETERS ===
     parser.add_argument('--n_graphs', type=int, default=50,
@@ -593,11 +676,11 @@ def parse_args():
     
     # === SWEEP PARAMETERS ===
     # Homophily sweep
-    parser.add_argument('--homophily_min', type=float, default=0.2,
+    parser.add_argument('--homophily_min', type=float, default=0.0,
                         help='Minimum homophily value for sweep')
-    parser.add_argument('--homophily_max', type=float, default=0.8,
+    parser.add_argument('--homophily_max', type=float, default=1.0,
                         help='Maximum homophily value for sweep')
-    parser.add_argument('--homophily_step', type=float, default=0.4,
+    parser.add_argument('--homophily_step', type=float, default=0.25,
                         help='Step size for homophily sweep')
     
     # Density sweep
@@ -605,18 +688,10 @@ def parse_args():
                         help='Minimum edge density value for sweep')
     parser.add_argument('--density_max', type=float, default=0.15,
                         help='Maximum edge density value for sweep')
-    parser.add_argument('--density_step', type=float, default=0.10,
+    parser.add_argument('--density_step', type=float, default=0.05,
                         help='Step size for density sweep')
     
     # === MODEL PARAMETERS ===
-    parser.add_argument('--gnn_types', type=str, nargs='+', 
-                        default=['gcn'],
-                        choices=['gcn', 'sage', 'gat'],
-                        help='GNN types to test')
-    parser.add_argument('--pretraining_task', type=str,
-                        default='link_prediction',
-                        choices=['link_prediction', 'contrastive'],
-                        help='Pre-training task to use')
     parser.add_argument('--hidden_dim', type=int, default=128,
                         help='Hidden dimension for GNN')
     parser.add_argument('--num_layers', type=int, default=2,
@@ -626,25 +701,25 @@ def parse_args():
     # Link prediction parameters
     parser.add_argument('--neg_sampling_ratio_min', type=float, default=1.0,
                         help='Minimum negative sampling ratio for link prediction')
-    parser.add_argument('--neg_sampling_ratio_max', type=float, default=5.0,
+    parser.add_argument('--neg_sampling_ratio_max', type=float, default=3.0,
                         help='Maximum negative sampling ratio for link prediction')
-    parser.add_argument('--neg_sampling_ratio_step', type=float, default=5.0,
+    parser.add_argument('--neg_sampling_ratio_step', type=float, default=3.0,
                         help='Step size for negative sampling ratio sweep')
-    parser.add_argument('--link_pred_threshold_min', type=float, default=0.3,
+    parser.add_argument('--link_pred_threshold_min', type=float, default=0.5,
                         help='Minimum link prediction threshold')
-    parser.add_argument('--link_pred_threshold_max', type=float, default=0.7,
+    parser.add_argument('--link_pred_threshold_max', type=float, default=0.6,
                         help='Maximum link prediction threshold')
     parser.add_argument('--link_pred_threshold_step', type=float, default=0.4,
                         help='Step size for link prediction threshold sweep')
     
     # Contrastive learning parameters
-    parser.add_argument('--temperature_min', type=float, default=0.1,
+    parser.add_argument('--temperature_min', type=float, default=0.3,
                         help='Minimum temperature for contrastive learning')
     parser.add_argument('--temperature_max', type=float, default=1.0,
                         help='Maximum temperature for contrastive learning')
-    parser.add_argument('--temperature_step', type=float, default=0.5,
+    parser.add_argument('--temperature_step', type=float, default=2.0,
                         help='Step size for temperature sweep')
-    parser.add_argument('--aug_strength_min', type=float, default=0.1,
+    parser.add_argument('--aug_strength_min', type=float, default=0.4,
                         help='Minimum augmentation strength')
     parser.add_argument('--aug_strength_max', type=float, default=0.5,
                         help='Maximum augmentation strength')
@@ -654,6 +729,8 @@ def parse_args():
     # === TRAINING PARAMETERS ===
     parser.add_argument('--epochs', type=int, default=300,
                         help='Training epochs for pre-training')
+    parser.add_argument('--patience', type=int, default=50,
+                        help='Number of epochs to wait for improvement before early stopping')
     parser.add_argument('--optimize_hyperparams', action='store_true', default=True,
                         help='Enable hyperparameter optimization')
     parser.add_argument('--n_trials', type=int, default=20,
@@ -692,6 +769,7 @@ def create_preset_config(preset: str, args) -> SSLMultiExperimentConfig:
             num_layers_values=[2],
             
             epochs=100,
+            patience=args.patience,
             optimize_hyperparams=False,
             n_repetitions=1
         )
@@ -717,6 +795,7 @@ def create_preset_config(preset: str, args) -> SSLMultiExperimentConfig:
             num_layers_values=[2, 3],
             
             epochs=args.epochs,
+            patience=args.patience,
             optimize_hyperparams=args.optimize_hyperparams,
             n_trials=args.n_trials,
             n_repetitions=args.n_repetitions
@@ -743,6 +822,7 @@ def create_preset_config(preset: str, args) -> SSLMultiExperimentConfig:
             num_layers_values=[2, 3, 4],
             
             epochs=args.epochs,
+            patience=args.patience,
             optimize_hyperparams=args.optimize_hyperparams,
             n_trials=args.n_trials,
             n_repetitions=args.n_repetitions
@@ -771,6 +851,7 @@ def create_preset_config(preset: str, args) -> SSLMultiExperimentConfig:
             num_layers_values=[2, 3],
             
             epochs=args.epochs,
+            patience=args.patience,
             optimize_hyperparams=args.optimize_hyperparams,
             n_trials=args.n_trials,
             n_repetitions=args.n_repetitions
@@ -781,7 +862,7 @@ def create_preset_config(preset: str, args) -> SSLMultiExperimentConfig:
 
 
 def create_custom_experiment(args) -> SSLMultiExperimentConfig:
-    """Create a custom experiment configuration from arguments."""
+    """Create a custom experiment configuration."""
     from experiments.inductive.config import PreTrainingConfig
     
     # Base configuration
@@ -802,13 +883,14 @@ def create_custom_experiment(args) -> SSLMultiExperimentConfig:
         max_communities=args.max_communities,
         
         # Model parameters - use first values as base
-        gnn_type=args.gnn_types[0],  # Will be overridden for each model
-        pretraining_task=args.pretraining_task,  # Single task
+        gnn_type=args.gnn_models[0],  # Will be overridden for each model
+        pretraining_task=args.pretraining_task,
         hidden_dim=args.hidden_dim,
         num_layers=args.num_layers,
         
         # Training parameters
         epochs=args.epochs,
+        patience=args.patience,
         optimize_hyperparams=args.optimize_hyperparams,
         n_trials=args.n_trials,
         optimization_timeout=args.optimization_timeout,
@@ -950,18 +1032,32 @@ def create_custom_experiment(args) -> SSLMultiExperimentConfig:
             )
         })
     
-    return SSLMultiExperimentConfig(
+    # Create multi-experiment configuration
+    config = SSLMultiExperimentConfig(
+        output_dir=args.output_dir,
+        experiment_name=args.experiment_name,
         base_config=base_config,
         sweep_parameters=sweep_parameters,
         random_parameters=random_parameters,
         n_repetitions=args.n_repetitions,
-        experiment_name=args.experiment_name,
-        output_dir=args.output_dir,
-        continue_on_failure=True,
-        save_individual_results=True,
-        reuse_families=args.reuse_families,
-        gnn_models=args.gnn_types  # List of GNN models to test
+        gnn_models=[] if args.skip_gnn else args.gnn_models,
+        transformer_models=args.transformer_models,
+        run_transformers=args.run_transformers,
+        transformer_params={
+            'transformer_num_heads': args.transformer_num_heads,
+            'transformer_max_nodes': args.transformer_max_nodes,
+            'transformer_max_path_length': args.transformer_max_path_length,
+            'transformer_precompute_encodings': args.transformer_precompute_encodings,
+            'transformer_cache_encodings': getattr(args, 'transformer_cache_encodings', True),
+            'local_gnn_type': args.local_gnn_type,
+            'global_model_type': args.global_model_type,
+            'transformer_prenorm': getattr(args, 'transformer_prenorm', True)
+        },
+        skip_gnn=args.skip_gnn,
+        patience=args.patience
     )
+    
+    return config
 
 
 def main():

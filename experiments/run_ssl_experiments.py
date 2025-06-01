@@ -86,6 +86,33 @@ def parse_args():
     parser.add_argument('--dropout', type=float, default=0.1,
                         help='Dropout rate')
     
+    # === GRAPH TRANSFORMER CONFIGURATION ===
+    parser.add_argument('--transformer_type', type=str, default='graphgps',
+                        choices=['graphormer', 'graphgps'],
+                        help='Type of Graph Transformer to use')
+    parser.add_argument('--run_transformers', action='store_true',
+                        help='Run Graph Transformer models')
+    parser.add_argument('--transformer_num_heads', type=int, default=8,
+                        help='Number of attention heads for transformers')
+    parser.add_argument('--transformer_max_nodes', type=int, default=200,
+                        help='Maximum nodes for encoding precomputation')
+    parser.add_argument('--transformer_max_path_length', type=int, default=10,
+                        help='Maximum path length for shortest path encoding')
+    parser.add_argument('--transformer_precompute_encodings', action='store_true', default=True,
+                        help='Precompute structural encodings for transformers')
+    parser.add_argument('--no_precompute_encodings', action='store_false', 
+                        dest='transformer_precompute_encodings',
+                        help='Disable encoding precomputation')
+    parser.add_argument('--transformer_cache_encodings', action='store_true', default=True,
+                        help='Cache structural encodings between graphs')
+    parser.add_argument('--local_gnn_type', type=str, default='gcn',
+                        choices=['gcn', 'sage'],
+                        help='Local GNN type for GraphGPS')
+    parser.add_argument('--global_model_type', type=str, default='transformer',
+                        help='Global model type for GraphGPS')
+    parser.add_argument('--transformer_prenorm', action='store_true', default=True,
+                        help='Use pre-normalization in transformers')
+    
     # === TRAINING PARAMETERS ===
     parser.add_argument('--epochs', type=int, default=300,
                         help='Maximum number of training epochs')
@@ -182,6 +209,18 @@ def create_config_from_args(args) -> PreTrainingConfig:
         hidden_dim=args.hidden_dim,
         num_layers=args.num_layers,
         dropout=args.dropout,
+        
+        # === GRAPH TRANSFORMER CONFIGURATION ===
+        transformer_type=args.transformer_type,
+        run_transformers=args.run_transformers,
+        transformer_num_heads=args.transformer_num_heads,
+        transformer_max_nodes=args.transformer_max_nodes,
+        transformer_max_path_length=args.transformer_max_path_length,
+        transformer_precompute_encodings=args.transformer_precompute_encodings,
+        transformer_cache_encodings=getattr(args, 'transformer_cache_encodings', True),
+        local_gnn_type=args.local_gnn_type,
+        global_model_type=args.global_model_type,
+        transformer_prenorm=getattr(args, 'transformer_prenorm', True),
         
         # === TRAINING PARAMETERS ===
         epochs=args.epochs,

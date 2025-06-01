@@ -93,21 +93,41 @@ class LinkPredictionTask(SelfSupervisedTask):
     
     def create_model(self, input_dim: int) -> nn.Module:
         """Create GNN model with link prediction head."""
-        # Base GNN encoder
-        encoder = GNNModel(
-            input_dim=input_dim,
-            hidden_dim=self.config.hidden_dim,
-            output_dim=self.config.hidden_dim,  # Output embeddings
-            num_layers=self.config.num_layers,
-            dropout=self.config.dropout,
-            gnn_type=self.config.gnn_type,
-            residual=self.config.residual,
-            norm_type=self.config.norm_type,
-            agg_type=self.config.agg_type,
-            heads=self.config.heads,
-            concat_heads=self.config.concat_heads,
-            is_regression=False  # Output continuous embeddings
-        )
+        # Check if we should use transformer
+        if self.config.model_type == "transformer" or self.config.run_transformers:
+            from experiments.core.models import GraphTransformerModel
+            encoder = GraphTransformerModel(
+                input_dim=input_dim,
+                hidden_dim=self.config.hidden_dim,
+                output_dim=self.config.hidden_dim,
+                transformer_type=self.config.transformer_type,
+                num_layers=self.config.num_layers,
+                dropout=self.config.dropout,
+                is_regression=False,
+                num_heads=self.config.transformer_num_heads,
+                max_nodes=self.config.transformer_max_nodes,
+                max_path_length=self.config.transformer_max_path_length,
+                precompute_encodings=self.config.transformer_precompute_encodings,
+                cache_encodings=self.config.transformer_cache_encodings,
+                local_gnn_type=self.config.local_gnn_type,
+                prenorm=self.config.transformer_prenorm
+            )
+        else:
+            # Base GNN encoder
+            encoder = GNNModel(
+                input_dim=input_dim,
+                hidden_dim=self.config.hidden_dim,
+                output_dim=self.config.hidden_dim,  # Output embeddings
+                num_layers=self.config.num_layers,
+                dropout=self.config.dropout,
+                gnn_type=self.config.gnn_type,
+                residual=self.config.residual,
+                norm_type=self.config.norm_type,
+                agg_type=self.config.agg_type,
+                heads=self.config.heads,
+                concat_heads=self.config.concat_heads,
+                is_regression=False  # Output continuous embeddings
+            )
         
         # Link prediction head
         link_predictor = nn.Sequential(
@@ -213,8 +233,28 @@ class ContrastiveTask(SelfSupervisedTask):
     
     def create_model(self, input_dim: int) -> nn.Module:
         """Create GNN model with contrastive learning head."""
-        # Base GNN encoder
-        encoder = GNNModel(
+        # Check if we should use transformer
+        if self.config.model_type == "transformer" or self.config.run_transformers:
+            from experiments.core.models import GraphTransformerModel
+            encoder = GraphTransformerModel(
+                input_dim=input_dim,
+                hidden_dim=self.config.hidden_dim,
+                output_dim=self.config.hidden_dim,
+                transformer_type=self.config.transformer_type,
+                num_layers=self.config.num_layers,
+                dropout=self.config.dropout,
+                is_regression=False,
+                num_heads=self.config.transformer_num_heads,
+                max_nodes=self.config.transformer_max_nodes,
+                max_path_length=self.config.transformer_max_path_length,
+                precompute_encodings=self.config.transformer_precompute_encodings,
+                cache_encodings=self.config.transformer_cache_encodings,
+                local_gnn_type=self.config.local_gnn_type,
+                prenorm=self.config.transformer_prenorm
+            )
+        else:
+            # Base GNN encoder
+            encoder = GNNModel(
             input_dim=input_dim,
             hidden_dim=self.config.hidden_dim,
             output_dim=self.config.hidden_dim,
@@ -396,7 +436,12 @@ class PreTrainedModelSaver:
         
         if model_id is None:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            model_id = f"{config.gnn_type}_{config.pretraining_task}_{timestamp}"
+            # Use transformer_type for transformer models, otherwise use gnn_type
+            if config.run_transformers or config.model_type == "transformer":
+                model_type = config.transformer_type
+            else:
+                model_type = config.gnn_type
+            model_id = f"{model_type}_{config.pretraining_task}_{timestamp}"
         
         model_dir = os.path.join(self.output_dir, model_id)
         os.makedirs(model_dir, exist_ok=True)

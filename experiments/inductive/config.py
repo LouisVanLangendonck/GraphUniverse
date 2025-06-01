@@ -113,6 +113,7 @@ class InductiveExperimentConfig:
     weight_decay: float = 5e-4
     epochs: int = 200
     patience: int = 50
+    optimized_patience: Optional[int] = None  # Store optimized patience value if available
     batch_size: int = 1
     hidden_dim: int = 64
     num_layers: int = 15
@@ -247,70 +248,48 @@ class SSLInductiveConfig(InductiveExperimentConfig):
 
 @dataclass
 class PreTrainingConfig:
-    """Configuration for self-supervised pre-training."""
+    """Configuration for self-supervised pre-training experiments."""
     
     # === EXPERIMENT SETUP ===
     output_dir: str = "ssl_experiments"
-    experiment_name: str = "ssl_pretraining"
+    experiment_name: str = "ssl_experiment"
     seed: int = 42
     device_id: int = 0
     force_cpu: bool = False
     
     # === PRE-TRAINING TASK ===
-    pretraining_task: str = "link_prediction"  # "link_prediction", "contrastive"
+    pretraining_task: str = "contrastive"  # "link_prediction" or "contrastive"
     
     # === GRAPH FAMILY PERSISTENCE ===
     n_extra_graphs_for_finetuning: int = 30
     save_graph_family: bool = True
     graph_family_dir: str = "graph_families"
-    pretraining_graph_ratio: float = 0.7
-    warmup_graph_ratio: float = 0.3
     
-    # === GRAPH FAMILY GENERATION (Full Control) ===
+    # === GRAPH SPLIT RATIOS ===
+    pretraining_graph_ratio: float = 0.8  # Ratio of graphs used for pre-training
+    warmup_graph_ratio: float = 0.2  # Ratio of pre-training graphs used for warmup
+    
+    # === FAMILY GENERATION ===
     n_graphs: int = 50
     min_n_nodes: int = 80
     max_n_nodes: int = 120
     min_communities: int = 3
     max_communities: int = 7
-    min_component_size: int = 10
-    
-    # === UNIVERSE PARAMETERS ===
     universe_K: int = 10
     universe_feature_dim: int = 32
     universe_edge_density: float = 0.1
     universe_homophily: float = 0.8
-    universe_randomness_factor: float = 0.0
-    
-    # === FEATURE GENERATION PARAMETERS ===
+    universe_randomness_factor: float = 1.0
+    use_dccc_sbm: bool = False
+    degree_distribution: str = "power_law"
     cluster_count_factor: float = 1.0
     center_variance: float = 1.0
     cluster_variance: float = 0.1
     assignment_skewness: float = 0.0
     community_exclusivity: float = 1.0
-    degree_center_method: str = "linear"  # "linear", "random", "shuffled"
-    
-    # === GRAPH FAMILY VARIATION ===
-    homophily_range: Tuple[float, float] = (0.0, 0.2)
-    density_range: Tuple[float, float] = (0.0, 0.2)
+    degree_center_method: str = "linear"
     degree_heterogeneity: float = 0.5
     edge_noise: float = 0.1
-    
-    # === GENERATION METHOD SELECTION ===
-    use_dccc_sbm: bool = False
-    degree_distribution: str = "standard"  # "standard", "power_law", "exponential", "uniform"
-    
-    # === DCCC-SBM PARAMETERS ===
-    community_imbalance_range: Tuple[float, float] = (0.0, 0.3)
-    degree_separation_range: Tuple[float, float] = (0.0, 1.0)
-    
-    # Degree distribution specific parameters
-    power_law_exponent_range: Tuple[float, float] = (2.0, 3.5)
-    power_law_x_min: float = 1.0
-    exponential_rate_range: Tuple[float, float] = (0.3, 1.0)
-    uniform_min_factor_range: Tuple[float, float] = (0.3, 0.7)
-    uniform_max_factor_range: Tuple[float, float] = (1.3, 2.0)
-    
-    # === GENERATION CONSTRAINTS ===
     max_parameter_search_attempts: int = 20
     parameter_search_range: float = 0.5
     max_retries: int = 10
@@ -318,18 +297,41 @@ class PreTrainingConfig:
     disable_deviation_limiting: bool = False
     max_mean_community_deviation: float = 0.10
     max_max_community_deviation: float = 0.20
+    min_component_size: int = 10
+    homophily_range: Tuple[float, float] = (0.0, 0.2)
+    density_range: Tuple[float, float] = (0.0, 0.2)
+    community_imbalance_range: Tuple[float, float] = (0.0, 0.3)
+    degree_separation_range: Tuple[float, float] = (0.0, 1.0)
+    power_law_exponent_range: Tuple[float, float] = (2.0, 3.5)
+    exponential_rate_range: Tuple[float, float] = (0.3, 1.0)
+    uniform_min_factor_range: Tuple[float, float] = (0.3, 0.7)
+    uniform_max_factor_range: Tuple[float, float] = (1.3, 2.0)
     
     # === MODEL CONFIGURATION ===
+    model_type: str = "gnn"  # "gnn" or "transformer"
     gnn_type: str = "gcn"
     hidden_dim: int = 128
     num_layers: int = 3
     dropout: float = 0.1
-    residual: bool = True
-    norm_type: str = "batch"
-    agg_type: str = "mean"
+    
+    # === GRAPH TRANSFORMER CONFIGURATION ===
+    transformer_type: str = "graphormer"  # "graphormer" or "graphgps"
+    run_transformers: bool = False
+    transformer_num_heads: int = 8
+    transformer_max_nodes: int = 200
+    transformer_max_path_length: int = 10
+    transformer_precompute_encodings: bool = True
+    transformer_cache_encodings: bool = True
+    local_gnn_type: str = "gcn"
+    global_model_type: str = "transformer"
+    transformer_prenorm: bool = True
+    residual: bool = True  # Whether to use residual connections in transformer
+    norm_type: str = "layer"  # Type of normalization to use ("layer", "batch", or "none")
+    agg_type: str = "mean"  # Type of aggregation to use ("mean", "max", or "sum")
+    
     # GAT-specific parameters
-    heads: int = 4
-    concat_heads: bool = True
+    heads: int = 1  # Number of attention heads for GAT
+    concat_heads: bool = True  # Whether to concatenate or average attention heads
     
     # === TRAINING PARAMETERS ===
     epochs: int = 300
@@ -343,26 +345,26 @@ class PreTrainingConfig:
     n_trials: int = 20
     optimization_timeout: int = 1200
     
-    # === PRE-TRAINING TASK-SPECIFIC PARAMETERS ===
-    # Link prediction
+    # === TASK-SPECIFIC PARAMETERS ===
     negative_sampling_ratio: float = 1.0
-    link_pred_loss: str = "bce"  # "bce", "margin"
-    
-    # Contrastive learning
+    link_pred_loss: str = "bce"
     contrastive_temperature: float = 0.07
-    corruption_type: str = "feature_shuffle"  # "feature_shuffle", "edge_dropout"
-    corruption_rate: float = 0.2
-    
-    # === SAVING CONFIGURATION ===
-    save_checkpoints: bool = True
-    checkpoint_frequency: int = 50
-    save_best_only: bool = True
+    corruption_type: str = "edge_dropout"
+    corruption_rate: float = 0.5
     
     def __post_init__(self):
         """Validate configuration."""
         valid_tasks = ["link_prediction", "contrastive"]
         if self.pretraining_task not in valid_tasks:
             raise ValueError(f"pretraining_task must be one of {valid_tasks}")
+        
+        # Set model_type based on run_transformers
+        if self.run_transformers:
+            self.model_type = "transformer"
+        
+        valid_model_types = ["gnn", "transformer"]
+        if self.model_type not in valid_model_types:
+            raise ValueError(f"model_type must be one of {valid_model_types}")
         
         valid_gnn_types = ["gcn", "sage", "gat"]
         if self.gnn_type not in valid_gnn_types:

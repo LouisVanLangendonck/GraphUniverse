@@ -36,12 +36,12 @@ def parse_args():
                         help='Name for custom experiment')
     parser.add_argument('--output_dir', type=str, default='multi_results',
                         help='Base output directory')
-    parser.add_argument('--n_repetitions', type=int, default=2,
+    parser.add_argument('--n_repetitions', type=int, default=1,
                         help='Number of repetitions per parameter combination')
     
     # Task configuration
     parser.add_argument('--tasks', type=str, nargs='+', 
-                        default=['community', 'k_hop_community_counts'],
+                        default=['community'],
                         choices=['community', 'k_hop_community_counts', 'metapath'],
                         help='Learning tasks to run')
     parser.add_argument('--khop_k', type=int, default=2,
@@ -71,11 +71,11 @@ def parse_args():
                         help='Degree distribution for DCCC-SBM')
     
     # Training settings
-    parser.add_argument('--epochs', type=int, default=100,
+    parser.add_argument('--epochs', type=int, default=150,
                         help='Training epochs')
-    parser.add_argument('--patience', type=int, default=20,
+    parser.add_argument('--patience', type=int, default=50,
                         help='Early stopping patience')
-    parser.add_argument('--batch_size', type=int, default=1,
+    parser.add_argument('--batch_size', type=int, default=2,
                         help='Batch size for training (per graph)')
     
     # Hyperparameter optimization settings
@@ -99,6 +99,34 @@ def parse_args():
                         help='Skip MLP model')
     parser.add_argument('--no_rf', action='store_false', dest='run_rf',
                         help='Skip Random Forest model')
+    
+    # Transformer configuration
+    parser.add_argument('--transformer_types', type=str, nargs='+', 
+                        default=['graphormer', 'graphgps'], 
+                        choices=['graphormer', 'graphgps'],
+                        help='Types of Graph Transformer models to run')
+    parser.add_argument('--run_transformers', action='store_true',
+                        help='Run Graph Transformer models')
+    parser.add_argument('--transformer_num_heads', type=int, default=8,
+                        help='Number of attention heads for transformers')
+    parser.add_argument('--transformer_max_nodes', type=int, default=200,
+                        help='Maximum nodes for encoding precomputation')
+    parser.add_argument('--transformer_max_path_length', type=int, default=10,
+                        help='Maximum path length for shortest path encoding')
+    parser.add_argument('--transformer_precompute_encodings', action='store_true', default=True,
+                        help='Precompute structural encodings for transformers')
+    parser.add_argument('--no_precompute_encodings', action='store_false', 
+                        dest='transformer_precompute_encodings',
+                        help='Disable encoding precomputation')
+    parser.add_argument('--transformer_cache_encodings', action='store_true', default=True,
+                        help='Cache structural encodings between graphs')
+    parser.add_argument('--local_gnn_type', type=str, default='gcn',
+                        choices=['gcn', 'sage'],
+                        help='Local GNN type for GraphGPS')
+    parser.add_argument('--global_model_type', type=str, default='transformer',
+                        help='Global model type for GraphGPS')
+    parser.add_argument('--transformer_prenorm', action='store_true', default=True,
+                        help='Use pre-normalization in transformers')
     
     # Random seed
     parser.add_argument('--seed', type=int, default=42,
@@ -138,6 +166,18 @@ def create_custom_experiment(args) -> CleanMultiExperimentConfig:
         run_gnn=args.run_gnn,
         run_mlp=args.run_mlp,
         run_rf=args.run_rf,
+        
+        # Transformer configuration
+        transformer_types=args.transformer_types,
+        run_transformers=args.run_transformers,
+        transformer_num_heads=args.transformer_num_heads,
+        transformer_max_nodes=args.transformer_max_nodes,
+        transformer_max_path_length=args.transformer_max_path_length,
+        transformer_precompute_encodings=args.transformer_precompute_encodings,
+        transformer_cache_encodings=getattr(args, 'transformer_cache_encodings', True),
+        local_gnn_type=args.local_gnn_type,
+        global_model_type=args.global_model_type,
+        transformer_prenorm=getattr(args, 'transformer_prenorm', True),
         
         # Training
         epochs=args.epochs,
@@ -270,9 +310,7 @@ def create_custom_experiment(args) -> CleanMultiExperimentConfig:
         n_repetitions=args.n_repetitions,
         experiment_name=args.experiment_name,
         output_dir=args.output_dir,
-        continue_on_failure=True,
-        aggregate_results=True,
-        create_summary_plots=args.create_plots
+        continue_on_failure=True
     )
 
 
@@ -359,7 +397,7 @@ def main():
             print(f"  Total time: {stats['total_time']:.1f}s ({stats['total_time']/3600:.2f}h)")
         
         # Create analysis plots if requested
-        if config.create_summary_plots and results['summary_stats']['successful_runs'] > 0:
+        if args.create_plots and results['summary_stats']['successful_runs'] > 0:
             print(f"\nCreating analysis plots...")
             
             # Find the output directory from results
