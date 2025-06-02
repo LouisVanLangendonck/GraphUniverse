@@ -31,10 +31,13 @@ class ParameterRange:
     # Whether this is a sweep parameter (systematic) or random parameter
     is_sweep: bool = False
     
+    # For non-continuous parameters, provide a list of possible values
+    discrete_values: Optional[List[Any]] = None
+    
     def __post_init__(self):
         """Validate parameter range configuration."""
-        if self.is_sweep and self.step is None:
-            raise ValueError("Sweep parameters must have a step size")
+        if self.is_sweep and self.step is None and self.discrete_values is None:
+            raise ValueError("Sweep parameters must have either a step size or discrete_values")
         
         if not self.is_sweep and self.n_samples is None:
             self.n_samples = 1
@@ -43,11 +46,16 @@ class ParameterRange:
             self.mean = (self.min_val + self.max_val) / 2
             self.std = (self.max_val - self.min_val) / 6
     
-    def get_sweep_values(self) -> List[float]:
+    def get_sweep_values(self) -> List[Any]:
         """Get systematic sweep values."""
         if not self.is_sweep:
             raise ValueError("Cannot get sweep values for non-sweep parameter")
         
+        # If discrete values are provided, use those
+        if self.discrete_values is not None:
+            return self.discrete_values
+        
+        # Otherwise use numeric range logic
         if isinstance(self.min_val, int) and isinstance(self.max_val, int) and isinstance(self.step, int):
             return list(range(int(self.min_val), int(self.max_val) + 1, int(self.step)))
         else:
@@ -58,13 +66,18 @@ class ParameterRange:
                 current += self.step
             return values
     
-    def sample_random(self, n_samples: Optional[int] = None) -> List[float]:
+    def sample_random(self, n_samples: Optional[int] = None) -> List[Any]:
         """Get random samples from the range."""
         if self.is_sweep:
             raise ValueError("Cannot sample random values for sweep parameter")
         
         n = n_samples or self.n_samples
         
+        # If discrete values are provided, sample from those
+        if self.discrete_values is not None:
+            return np.random.choice(self.discrete_values, n).tolist()
+        
+        # Otherwise use numeric sampling logic
         if self.distribution == "uniform":
             return np.random.uniform(self.min_val, self.max_val, n).tolist()
         
@@ -478,7 +491,7 @@ def create_ssl_method_comparison() -> SSLMultiExperimentConfig:
         universe_feature_dim=32,
         gnn_type='gcn',
         epochs=200,
-        patience=30,
+        patience=50,
         optimize_hyperparams=True,
         n_trials=15
     )
@@ -705,7 +718,7 @@ def create_homophily_density_sweep() -> CleanMultiExperimentConfig:
         run_mlp=True,
         run_rf=True,
         epochs=100,
-        patience=20,
+        patience=250,
         collect_signal_metrics=True,
         require_consistency_check=False
     )
@@ -783,7 +796,7 @@ def create_dccc_method_comparison() -> CleanMultiExperimentConfig:
         run_mlp=True,
         run_rf=False,
         epochs=80,
-        patience=15,
+        patience=50,
         collect_signal_metrics=True,
         require_consistency_check=False
     )
@@ -856,7 +869,7 @@ def create_large_scale_benchmark() -> CleanMultiExperimentConfig:
         run_mlp=True,
         run_rf=True,
         epochs=120,
-        patience=25,
+        patience=50,
         collect_signal_metrics=True,
         require_consistency_check=True
     )

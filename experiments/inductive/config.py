@@ -258,7 +258,17 @@ class PreTrainingConfig:
     force_cpu: bool = False
     
     # === PRE-TRAINING TASK ===
-    pretraining_task: str = "contrastive"  # "link_prediction" or "contrastive"
+    pretraining_task: str = "link_prediction"  # "link_prediction" or "dgi" or "graphcl"
+    
+    # === DGI SPECIFIC PARAMETERS ===
+    corruption_type: str = "feature_shuffle"  # "feature_shuffle", "edge_dropout", "subgraph"
+    num_corruptions: int = 1  # Number of corrupted versions to generate
+    use_infonce: bool = False  # Whether to use InfoNCE loss instead of BCE
+    temperature: float = 0.1  # Temperature parameter for InfoNCE loss
+    
+    # === GRAPHCL SPECIFIC PARAMETERS ===
+    augmentation_types: List[str] = field(default_factory=lambda: ["edge_dropout", "feature_dropout", "subgraph"])
+    num_augmentations: int = 2  # Number of augmentations to apply per view
     
     # === GRAPH FAMILY PERSISTENCE ===
     n_extra_graphs_for_finetuning: int = 30
@@ -348,15 +358,31 @@ class PreTrainingConfig:
     # === TASK-SPECIFIC PARAMETERS ===
     negative_sampling_ratio: float = 1.0
     link_pred_loss: str = "bce"
-    contrastive_temperature: float = 0.07
-    corruption_type: str = "edge_dropout"
-    corruption_rate: float = 0.5
     
     def __post_init__(self):
         """Validate configuration."""
-        valid_tasks = ["link_prediction", "contrastive"]
+        valid_tasks = ["link_prediction", "dgi", "graphcl"]
         if self.pretraining_task not in valid_tasks:
             raise ValueError(f"pretraining_task must be one of {valid_tasks}")
+        
+        # Validate DGI parameters
+        if self.pretraining_task == "dgi":
+            valid_corruption_types = ["feature_shuffle", "edge_dropout", "subgraph"]
+            if self.corruption_type not in valid_corruption_types:
+                raise ValueError(f"corruption_type must be one of {valid_corruption_types}")
+            if self.num_corruptions < 1:
+                raise ValueError("num_corruptions must be >= 1")
+            if self.temperature <= 0:
+                raise ValueError("temperature must be > 0")
+        
+        # Validate GraphCL parameters
+        if self.pretraining_task == "graphcl":
+            valid_augmentation_types = ["edge_dropout", "feature_dropout", "subgraph"]
+            for aug_type in self.augmentation_types:
+                if aug_type not in valid_augmentation_types:
+                    raise ValueError(f"augmentation_type must be one of {valid_augmentation_types}")
+            if self.num_augmentations < 1:
+                raise ValueError("num_augmentations must be >= 1")
         
         # Set model_type based on run_transformers
         if self.run_transformers:

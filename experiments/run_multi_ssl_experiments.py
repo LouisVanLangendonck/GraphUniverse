@@ -221,6 +221,7 @@ class SSLMultiExperimentRunner:
                     'max_val': range_obj.max_val,
                     'step': range_obj.step,
                     'is_sweep': range_obj.is_sweep,
+                    'discrete_values': range_obj.discrete_values,
                     'distribution': getattr(range_obj, 'distribution', None)
                 } for param, range_obj in self.config.sweep_parameters.items()
             },
@@ -284,10 +285,10 @@ class SSLMultiExperimentRunner:
             
             # Use default values for other parameters
             universe_feature_dim=32,
-            min_n_nodes=80,
-            max_n_nodes=120,
-            min_communities=3,
-            max_communities=7,
+            min_n_nodes=family_config['min_n_nodes'],
+            max_n_nodes=family_config['max_n_nodes'],
+            min_communities=family_config['min_communities'],
+            max_communities=family_config['max_communities'],
             
             # Dummy values for model config (not used for family generation)
             gnn_type='gcn',
@@ -345,10 +346,10 @@ class SSLMultiExperimentRunner:
                 degree_distribution=family_config['degree_distribution'],
                 
                 # Graph size parameters
-                min_n_nodes=80,
-                max_n_nodes=120,
-                min_communities=3,
-                max_communities=7,
+                min_n_nodes=family_config['min_n_nodes'],
+                max_n_nodes=family_config['max_n_nodes'],
+                min_communities=family_config['min_communities'],
+                max_communities=family_config['max_communities'],
                 
                 # Model parameters
                 gnn_type=model_config.get('gnn_type', 'gcn'),  # Default to gcn if not specified
@@ -374,6 +375,9 @@ class SSLMultiExperimentRunner:
                 optimize_hyperparams=self.config.base_config.optimize_hyperparams,
                 n_trials=self.config.base_config.n_trials,
                 optimization_timeout=self.config.base_config.optimization_timeout,
+
+                # SSL specific parameters
+
                 
                 # Graph family management
                 graph_family_dir=os.path.join(self.output_dir, "graph_families"),
@@ -614,6 +618,29 @@ def parse_args():
     parser.add_argument('--n_repetitions', type=int, default=1,
                         help='Number of repetitions per configuration')
     
+    # === PRETRAINING TASK ===
+    parser.add_argument('--pretraining_task', type=str, default='dgi',
+                        choices=['link_prediction', 'dgi', 'graphcl'],
+                        help='Self-supervised pre-training task')
+    # === DGI SPECIFIC PARAMETERS ===
+    parser.add_argument('--corruption_type', type=str, default='feature_shuffle',
+                    choices=['feature_shuffle', 'edge_dropout', 'subgraph'],
+                    help='Corruption type for contrastive learning')
+    parser.add_argument('--num_corruptions', type=int, default=1,
+                    help='Number of corrupted versions to generate for DGI')
+    parser.add_argument('--use_infonce', action='store_true',
+                    help='Use InfoNCE loss instead of BCE for DGI')
+    parser.add_argument('--temperature', type=float, default=0.1,
+                    help='Temperature parameter for InfoNCE loss')
+    
+    # === GRAPHCL SPECIFIC PARAMETERS ===
+    parser.add_argument('--augmentation_types', type=str, nargs='+',
+                    default=['edge_dropout', 'feature_dropout', 'subgraph'],
+                    choices=['edge_dropout', 'feature_dropout', 'subgraph'],
+                    help='Types of augmentations to use for GraphCL')
+    parser.add_argument('--num_augmentations', type=int, default=3,
+                    help='Number of augmentations to apply per view in GraphCL')
+    
     # === MODEL SELECTION ===
     parser.add_argument('--gnn_models', type=str, nargs='+', 
                         default=['gcn', 'sage', 'gat'],
@@ -621,9 +648,6 @@ def parse_args():
                         help='GNN models to run')
     parser.add_argument('--skip_gnn', action='store_true',
                         help='Skip running GNN models (only run transformers if specified)')
-    parser.add_argument('--pretraining_task', type=str, default='contrastive',
-                        choices=['link_prediction', 'contrastive'],
-                        help='Self-supervised pre-training task')
     parser.add_argument('--transformer_models', type=str, nargs='+', 
                         default=['graphormer', 'graphgps'],
                         choices=['graphormer', 'graphgps'],
@@ -712,19 +736,16 @@ def parse_args():
     parser.add_argument('--link_pred_threshold_step', type=float, default=0.4,
                         help='Step size for link prediction threshold sweep')
     
-    # Contrastive learning parameters
-    parser.add_argument('--temperature_min', type=float, default=0.3,
+    # DGI Specific parameters
+    parser.add_argument('--temperature_min', type=float, default=0.05,
                         help='Minimum temperature for contrastive learning')
-    parser.add_argument('--temperature_max', type=float, default=1.0,
+    parser.add_argument('--temperature_max', type=float, default=0.2,
                         help='Maximum temperature for contrastive learning')
-    parser.add_argument('--temperature_step', type=float, default=2.0,
+    parser.add_argument('--temperature_step', type=float, default=0.1,
                         help='Step size for temperature sweep')
-    parser.add_argument('--aug_strength_min', type=float, default=0.4,
-                        help='Minimum augmentation strength')
-    parser.add_argument('--aug_strength_max', type=float, default=0.5,
-                        help='Maximum augmentation strength')
-    parser.add_argument('--aug_strength_step', type=float, default=0.25,
-                        help='Step size for augmentation strength sweep')
+    parser.add_argument('--corruption_types', type=str, nargs='+', default=['feature_shuffle', 'edge_dropout', 'subgraph'],
+                        choices=['feature_shuffle', 'edge_dropout', 'subgraph'],
+                        help='Corruption type for DGI')
     
     # === TRAINING PARAMETERS ===
     parser.add_argument('--epochs', type=int, default=300,
@@ -747,88 +768,88 @@ def parse_args():
 
 def create_preset_config(preset: str, args) -> SSLMultiExperimentConfig:
     """Create configuration based on preset."""
+    # if preset == 'quick':
+    #     # Quick test configuration
+    #     return SSLMultiExperimentConfig(
+    #         output_dir=args.output_dir,
+    #         experiment_name=args.experiment_name,
+            
+    #         # Minimal parameter sweep
+    #         n_graphs=[20],
+    #         n_extra_graphs=[10],
+    #         universe_K_values=[5],
+    #         universe_homophily_values=[0.7],
+    #         universe_edge_density_values=[0.1],
+    #         use_dccc_sbm_values=[False],
+    #         degree_distribution_values=['power_law'],
+            
+    #         gnn_types=['gcn'],
+    #         pretraining_tasks=['link_prediction'],
+    #         hidden_dims=[64],
+    #         num_layers_values=[2],
+            
+    #         epochs=100,
+    #         patience=args.patience,
+    #         optimize_hyperparams=False,
+    #         n_repetitions=1
+    #     )
     
-    if preset == 'quick':
-        # Quick test configuration
-        return SSLMultiExperimentConfig(
-            output_dir=args.output_dir,
-            experiment_name=args.experiment_name,
+    # elif preset == 'standard':
+    #     # Standard configuration for thorough testing
+    #     return SSLMultiExperimentConfig(
+    #         output_dir=args.output_dir,
+    #         experiment_name=args.experiment_name,
             
-            # Minimal parameter sweep
-            n_graphs=[20],
-            n_extra_graphs=[10],
-            universe_K_values=[5],
-            universe_homophily_values=[0.7],
-            universe_edge_density_values=[0.1],
-            use_dccc_sbm_values=[False],
-            degree_distribution_values=['power_law'],
+    #         # Moderate parameter sweep
+    #         n_graphs=[40, 60],
+    #         n_extra_graphs=[20, 30],
+    #         universe_K_values=[8, 10],
+    #         universe_homophily_values=[0.6, 0.8],
+    #         universe_edge_density_values=[0.08, 0.12],
+    #         use_dccc_sbm_values=[False, True],
+    #         degree_distribution_values=['power_law', 'exponential'],
             
-            gnn_types=['gcn'],
-            pretraining_tasks=['link_prediction'],
-            hidden_dims=[64],
-            num_layers_values=[2],
+    #         gnn_types=['sage'],
+    #         pretraining_tasks=['link_prediction', 'contrastive'],
+    #         hidden_dims=[128, 256],
+    #         num_layers_values=[2, 3],
             
-            epochs=100,
-            patience=args.patience,
-            optimize_hyperparams=False,
-            n_repetitions=1
-        )
+    #         epochs=args.epochs,
+    #         patience=args.patience,
+    #         optimize_hyperparams=args.optimize_hyperparams,
+    #         n_trials=args.n_trials,
+    #         n_repetitions=args.n_repetitions
+    #     )
     
-    elif preset == 'standard':
-        # Standard configuration for thorough testing
-        return SSLMultiExperimentConfig(
-            output_dir=args.output_dir,
-            experiment_name=args.experiment_name,
+    # elif preset == 'comprehensive':
+    #     # Comprehensive configuration for full evaluation
+    #     return SSLMultiExperimentConfig(
+    #         output_dir=args.output_dir,
+    #         experiment_name=args.experiment_name,
             
-            # Moderate parameter sweep
-            n_graphs=[40, 60],
-            n_extra_graphs=[20, 30],
-            universe_K_values=[8, 10],
-            universe_homophily_values=[0.6, 0.8],
-            universe_edge_density_values=[0.08, 0.12],
-            use_dccc_sbm_values=[False, True],
-            degree_distribution_values=['power_law', 'exponential'],
+    #         # Full parameter sweep
+    #         n_graphs=[30, 50, 70],
+    #         n_extra_graphs=[20, 30, 40],
+    #         universe_K_values=[6, 8, 10, 12],
+    #         universe_homophily_values=[0.5, 0.7, 0.9],
+    #         universe_edge_density_values=[0.06, 0.1, 0.14],
+    #         use_dccc_sbm_values=[False, True],
+    #         degree_distribution_values=['standard', 'power_law', 'exponential', 'uniform'],
             
-            gnn_types=['sage'],
-            pretraining_tasks=['link_prediction', 'contrastive'],
-            hidden_dims=[128, 256],
-            num_layers_values=[2, 3],
+    #         gnn_types=['gcn', 'sage', 'gat'],
+    #         pretraining_tasks=['link_prediction', 'contrastive'],
+    #         hidden_dims=[64, 128, 256],
+    #         num_layers_values=[2, 3, 4],
             
-            epochs=args.epochs,
-            patience=args.patience,
-            optimize_hyperparams=args.optimize_hyperparams,
-            n_trials=args.n_trials,
-            n_repetitions=args.n_repetitions
-        )
+    #         epochs=args.epochs,
+    #         patience=args.patience,
+    #         optimize_hyperparams=args.optimize_hyperparams,
+    #         n_trials=args.n_trials,
+    #         n_repetitions=args.n_repetitions
+    #     )
     
-    elif preset == 'comprehensive':
-        # Comprehensive configuration for full evaluation
-        return SSLMultiExperimentConfig(
-            output_dir=args.output_dir,
-            experiment_name=args.experiment_name,
-            
-            # Full parameter sweep
-            n_graphs=[30, 50, 70],
-            n_extra_graphs=[20, 30, 40],
-            universe_K_values=[6, 8, 10, 12],
-            universe_homophily_values=[0.5, 0.7, 0.9],
-            universe_edge_density_values=[0.06, 0.1, 0.14],
-            use_dccc_sbm_values=[False, True],
-            degree_distribution_values=['standard', 'power_law', 'exponential', 'uniform'],
-            
-            gnn_types=['gcn', 'sage', 'gat'],
-            pretraining_tasks=['link_prediction', 'contrastive'],
-            hidden_dims=[64, 128, 256],
-            num_layers_values=[2, 3, 4],
-            
-            epochs=args.epochs,
-            patience=args.patience,
-            optimize_hyperparams=args.optimize_hyperparams,
-            n_trials=args.n_trials,
-            n_repetitions=args.n_repetitions
-        )
     
-    elif preset == 'custom':
+    if preset == 'custom':
         # Custom configuration from command line arguments
         use_dccc_sbm_values = [s.lower() == 'true' for s in args.use_dccc_sbm_values]
         
@@ -854,7 +875,7 @@ def create_preset_config(preset: str, args) -> SSLMultiExperimentConfig:
             patience=args.patience,
             optimize_hyperparams=args.optimize_hyperparams,
             n_trials=args.n_trials,
-            n_repetitions=args.n_repetitions
+            n_repetitions=args.n_repetitions,
         )
     
     else:
@@ -900,7 +921,17 @@ def create_custom_experiment(args) -> SSLMultiExperimentConfig:
         save_graph_family=True,
         
         # Seed
-        seed=args.seed
+        seed=args.seed,
+        
+        # DGI specific parameters
+        corruption_type=args.corruption_type,
+        num_corruptions=args.num_corruptions,
+        use_infonce=args.use_infonce,
+        temperature=args.temperature,
+        
+        # GraphCL specific parameters
+        augmentation_types=args.augmentation_types,
+        num_augmentations=args.num_augmentations
     )
     
     # Define sweep parameters
@@ -935,7 +966,7 @@ def create_custom_experiment(args) -> SSLMultiExperimentConfig:
                 is_sweep=True
             )
         })
-    elif args.pretraining_task == 'contrastive':
+    elif args.pretraining_task == 'dgi':
         sweep_parameters.update({
             'temperature': ParameterRange(
                 min_val=args.temperature_min,
@@ -943,10 +974,25 @@ def create_custom_experiment(args) -> SSLMultiExperimentConfig:
                 step=args.temperature_step,
                 is_sweep=True
             ),
-            'augmentation_strength': ParameterRange(
-                min_val=args.aug_strength_min,
-                max_val=args.aug_strength_max,
-                step=args.aug_strength_step,
+            'corruption_type': ParameterRange(
+                min_val=0,
+                max_val=1,
+                discrete_values=args.corruption_types,
+                is_sweep=True
+            )
+        })
+    elif args.pretraining_task == 'graphcl':
+        sweep_parameters.update({
+            'temperature': ParameterRange(
+                min_val=args.temperature_min,
+                max_val=args.temperature_max,
+                step=args.temperature_step,
+                is_sweep=True
+            ),
+            'num_augmentations': ParameterRange(
+                min_val=1,
+                max_val=3,
+                step=1,
                 is_sweep=True
             )
         })

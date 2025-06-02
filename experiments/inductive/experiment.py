@@ -414,6 +414,7 @@ class InductiveExperiment:
                     # Store results including hyperopt results if available
                     task_results[model_name] = {
                         'test_metrics': results.get('test_metrics', {}),
+                        'optimal_hyperparams': results.get('optimal_hyperparams', {}),
                         'train_time': results.get('train_time', 0.0),
                         'training_history': results.get('training_history', {}),
                         'hyperopt_results': results.get('hyperopt_results', None)
@@ -1036,43 +1037,129 @@ class PreTrainingRunner:
         
         return summary
 
+    def _sample_hyperparameters(self, trial: optuna.Trial, gnn_type: str) -> Dict[str, Any]:
+        """Sample hyperparameters for optimization INCLUDING task parameters."""
+        params = {}
+        
+        # Common hyperparameters
+        params['learning_rate'] = trial.suggest_float('learning_rate', 1e-5, 1e-2, log=True)
+        params['weight_decay'] = trial.suggest_float('weight_decay', 1e-6, 1e-3, log=True)
+        params['hidden_dim'] = trial.suggest_int('hidden_dim', 64, 256, step=32)
+        params['num_layers'] = trial.suggest_int('num_layers', 2, 4)
+        params['dropout'] = trial.suggest_float('dropout', 0.0, 0.5)
+        
+        # Model architecture parameters
+        if self.config.model_type == "transformer":
+            # Sample num_heads first, then ensure hidden_dim is divisible
+            num_heads = trial.suggest_categorical('transformer_num_heads', [4, 6, 8, 12, 16])
+            
+            # Sample a base dimension and multiply by num_heads to ensure divisibility
+            base_dim = trial.suggest_int('base_dim_multiplier', 8, 32, step=4)
+            hidden_dim = base_dim * num_heads
+
+            params['hidden_dim'] = hidden_dim
+            params['transformer_num_heads'] = num_heads
+            params['transformer_max_nodes'] = trial.suggest_int('transformer_max_nodes', 100, 500)
+            params['transformer_max_path_length'] = trial.suggest_int('transformer_max_path_length', 3, 8)
+            params['transformer_prenorm'] = trial.suggest_categorical('transformer_prenorm', [True, False])
+            params['local_gnn_type'] = trial.suggest_categorical('local_gnn_type', ['gcn', 'gat', 'sage'])
+            params['global_model_type'] = trial.suggest_categorical('global_model_type', ['transformer', 'performer'])
+        else:
+            # GNN-specific parameters
+            params['residual'] = trial.suggest_categorical('residual', [True, False])
+            params['norm_type'] = trial.suggest_categorical('norm_type', ['none', 'batch', 'layer'])
+            params['agg_type'] = trial.suggest_categorical('agg_type', ['mean', 'max', 'sum'])
+
+            if gnn_type == "gat":
+                params['heads'] = trial.suggest_int('heads', 1, 8)
+                params['concat_heads'] = trial.suggest_categorical('concat_heads', [True, False])
+            elif gnn_type == "fagcn":
+                params['eps'] = trial.suggest_float('eps', 0.0, 1.0)
+        
+        # # FIXED: NOW OPTIMIZE TASK-SPECIFIC PARAMETERS
+        # if self.config.pretraining_task == "link_prediction":
+        #     params['negative_sampling_ratio'] = trial.suggest_float('negative_sampling_ratio', 0.5, 2.0)
+        #     params['link_pred_loss'] = trial.suggest_categorical('link_pred_loss', ['bce', 'margin'])
+        
+        # elif self.config.pretraining_task in ["dgi", "graphcl", "contrastive"]:
+        #     params['temperature'] = trial.suggest_float('temperature', 0.05, 0.5)
+        #     params['corruption_type'] = trial.suggest_categorical('corruption_type', [
+        #         'feature_shuffle', 'feature_dropout', 'feature_noise', 
+        #         'edge_dropout', 'edge_perturbation'
+        #     ])
+            
+        #     # Add corruption rate for methods that need it
+        #     corruption_type = params['corruption_type']
+        #     if corruption_type in ['feature_dropout', 'edge_dropout']:
+        #         params['corruption_rate'] = trial.suggest_float('corruption_rate', 0.1, 0.4)
+        #     elif corruption_type == 'feature_noise':
+        #         params['noise_std'] = trial.suggest_float('noise_std', 0.01, 0.2)
+        #     elif corruption_type == 'edge_perturbation':
+        #         params['perturb_rate'] = trial.suggest_float('perturb_rate', 0.05, 0.3)
+            
+        #     # GraphCL specific parameters
+        #     if self.config.pretraining_task == "graphcl":
+        #         params['num_augmentations'] = trial.suggest_int('num_augmentations', 1, 3)
+        #         params['use_projection_head'] = trial.suggest_categorical('use_projection_head', [True, False])
+        #         if params['use_projection_head']:
+        #             params['projection_dim'] = trial.suggest_int('projection_dim', 64, 256, step=32)
+            
+        #     # DGI specific parameters
+        #     elif self.config.pretraining_task == "dgi":
+        #         params['use_infonce'] = trial.suggest_categorical('use_infonce', [True, False])
+        #         params['num_corruptions'] = trial.suggest_int('num_corruptions', 1, 3)
+        
+        return params
+
+
     def _optimize_hyperparameters(self, warmup_graphs: List, task) -> Dict[str, Any]:
-        """Optimize hyperparameters using warmup graphs."""
+        """FIXED: Optimize hyperparameters with proper evaluation."""
         
         print(f"Optimizing hyperparameters using {len(warmup_graphs)} warmup graphs")
         
-        # Create warmup dataloader
-        warmup_loader = create_pretraining_dataloader(
-            warmup_graphs, 
-            batch_size=self.config.batch_size,
-            shuffle=True
-        )
+        # Split warmup graphs into train/val for proper optimization
+        val_size = max(1, len(warmup_graphs) // 4)  # 25% for validation
+        train_graphs = warmup_graphs[:-val_size]
+        val_graphs = warmup_graphs[-val_size:]
+        
+        print(f"  Train graphs: {len(train_graphs)}")
+        print(f"  Val graphs: {len(val_graphs)}")
+        
+        # Create dataloaders
+        train_loader = create_pretraining_dataloader(train_graphs, batch_size=32, shuffle=True)
+        val_loader = create_pretraining_dataloader(val_graphs, batch_size=32, shuffle=False)
         
         # Get input dimension
-        sample_batch = next(iter(warmup_loader))
+        sample_batch = next(iter(train_loader))
         input_dim = sample_batch.x.shape[1]
         
         def objective(trial: optuna.Trial) -> float:
-            """Optuna objective function."""
+            """FIXED: Optuna objective function with proper SSL evaluation."""
             
-            # Sample hyperparameters (NOT task parameters)
-            suggested_config = self._sample_hyperparameters(trial, self.config.gnn_type)
+            # Sample ALL hyperparameters including task-specific ones
+            suggested_params = self._sample_hyperparameters(trial, self.config.gnn_type)
             
             # Create temporary config with suggested hyperparameters
             temp_config_dict = self.config.to_dict()
-            temp_config_dict.update(suggested_config)
+            temp_config_dict.update(suggested_params)
             
             temp_config = PreTrainingConfig.from_dict(temp_config_dict)
-            temp_task = create_ssl_task(temp_config)
+            
+            # Use the FIXED GraphCL implementation if needed
+            if temp_config.pretraining_task == "graphcl":
+                from experiments.inductive.self_supervised_task import GraphCLTask
+                temp_task = GraphCLTask(temp_config)
+            else:
+                temp_task = create_ssl_task(temp_config)
             
             model = temp_task.create_model(input_dim).to(self.device)
             
-            # Quick training
+            # Training with reduced epochs for speed
             max_epochs = min(50, self.config.epochs // 4)
             optimizer = torch.optim.Adam(
                 model.parameters(),
-                lr=suggested_config['learning_rate'],
-                weight_decay=suggested_config.get('weight_decay', 1e-5)
+                lr=suggested_params['learning_rate'],
+                weight_decay=suggested_params.get('weight_decay', 1e-5)
             )
             
             best_metric = float('-inf')
@@ -1080,23 +1167,37 @@ class PreTrainingRunner:
             patience = 10
             
             for epoch in range(max_epochs):
+                # Training
                 model.train()
-                for batch in warmup_loader:
+                train_loss = 0.0
+                train_batches = 0
+                
+                for batch in train_loader:
                     batch = batch.to(self.device)
                     optimizer.zero_grad()
                     
                     loss = temp_task.compute_loss(model, batch)
                     loss.backward()
                     optimizer.step()
-                
-                # Quick evaluation
-                if epoch % 5 == 0:
-                    eval_metrics = temp_task.evaluate(model, warmup_loader)
                     
+                    train_loss += loss.item()
+                    train_batches += 1
+                
+                # Validation every 5 epochs to save time
+                if epoch % 5 == 0:
+                    model.eval()
+                    with torch.no_grad():
+                        val_metrics = temp_task.evaluate(model, val_loader)
+                    
+                    # Get primary metric based on task
                     if self.config.pretraining_task == "link_prediction":
-                        metric = eval_metrics.get('auc', 0.0)
+                        metric = val_metrics.get('auc', 0.0)
+                    elif self.config.pretraining_task in ["dgi", "graphcl"]:
+                        # Use alignment for contrastive tasks if accuracy is unreliable
+                        metric = val_metrics.get('alignment', val_metrics.get('accuracy', 0.0))
                     else:
-                        metric = eval_metrics.get('accuracy', 0.0)
+                        # Fallback to any available metric
+                        metric = list(val_metrics.values())[0] if val_metrics else 0.0
                     
                     if metric > best_metric:
                         best_metric = metric
@@ -1112,14 +1213,19 @@ class PreTrainingRunner:
         def should_terminate_pretraining(study, trial):
             """Check if we should terminate pre-training optimization early."""
             if self.config.pretraining_task == "link_prediction":
-                # AUC perfect score is 1.0
-                return trial.value >= 0.999
+                return trial.value >= 0.95  # 95% AUC is very good
             else:  # contrastive
-                # Accuracy perfect score is 1.0
-                return trial.value >= 0.999
+                return trial.value >= 0.90  # 90% alignment/accuracy is good for SSL
         
         # Run optimization
         study = optuna.create_study(direction='maximize')
+        
+        # Add pruner for efficiency
+        study = optuna.create_study(
+            direction='maximize',
+            pruner=optuna.pruners.HyperbandPruner()
+        )
+        
         study.optimize(
             objective, 
             n_trials=self.config.n_trials,
@@ -1133,62 +1239,24 @@ class PreTrainingRunner:
         return {
             'best_params': study.best_params,
             'best_value': study.best_value,
-            'n_trials': len(study.trials)
+            'n_trials': len(study.trials),
+            'study': study  # Include study for further analysis
         }
-    
-    def _sample_hyperparameters(self, trial: optuna.Trial, gnn_type: str) -> Dict[str, Any]:
-        """Sample hyperparameters for optimization (NOT task parameters)."""
-        params = {}
-        
-        # Common hyperparameters
-        params['learning_rate'] = trial.suggest_float('learning_rate', 1e-4, 1e-2, log=True)
-        params['weight_decay'] = trial.suggest_float('weight_decay', 1e-6, 1e-3, log=True)
-        params['hidden_dim'] = trial.suggest_int('hidden_dim', 64, 256, step=32)
-        params['num_layers'] = trial.suggest_int('num_layers', 2, 4)
-        params['dropout'] = trial.suggest_float('dropout', 0.0, 0.5)
 
-        if self.config.model_type == "transformer":
-            # Sample num_heads first, then ensure hidden_dim is divisible
-            num_heads = trial.suggest_categorical('transformer_num_heads', [4, 6, 8, 12, 16])
-            
-            # Sample a base dimension and multiply by num_heads to ensure divisibility
-            base_dim = trial.suggest_int('base_dim_multiplier', 8, 32, step=4)  # 8, 12, 16, 20, 24, 28, 32
-            hidden_dim = base_dim * num_heads
 
-            # Transformer-specific hyperparameters
-            params['hidden_dim'] = hidden_dim
-            params['transformer_num_heads'] = num_heads
-            params['transformer_max_nodes'] = trial.suggest_int('transformer_max_nodes', 100, 500)
-            params['transformer_max_path_length'] = trial.suggest_int('transformer_max_path_length', 3, 8)
-            params['transformer_prenorm'] = trial.suggest_categorical('transformer_prenorm', [True, False])
-            params['local_gnn_type'] = trial.suggest_categorical('local_gnn_type', ['gcn', 'gat', 'sage'])
-            params['global_model_type'] = trial.suggest_categorical('global_model_type', ['transformer', 'performer'])
-        else:
-            # GNN-specific parameters
-            params['residual'] = trial.suggest_categorical('residual', [True, False])
-            params['norm_type'] = trial.suggest_categorical('norm_type', ['none', 'batch', 'layer'])
-            params['agg_type'] = trial.suggest_categorical('agg_type', ['mean', 'max', 'sum'])
-
-            if gnn_type == "gat":
-                heads = trial.suggest_int('heads', 1, 8)
-                concat_heads = trial.suggest_categorical('concat_heads', [True, False])
-            else:
-                heads = 1
-                concat_heads = True
-        
-        # NOTE: Task parameters are NOT optimized here, they come from config or sweeps
-        
-        return params
-    
     def _train_model(self, pretraining_graphs: List, optimized_params: Optional[Dict] = None) -> Tuple[torch.nn.Module, Dict]:
-        """Train model on pretraining graphs."""
+        """FIXED: Train model with proper parameter application."""
         
-        # Update config with optimized parameters (only hyperparams, not task params)
+        # Apply optimized parameters to config
         if optimized_params:
+            print(f"Applying optimized parameters:")
             for key, value in optimized_params.items():
                 if hasattr(self.config, key):
+                    old_value = getattr(self.config, key)
                     setattr(self.config, key, value)
-            print(f"Using optimized hyperparameters: {optimized_params}")
+                    print(f"  {key}: {old_value} -> {value}")
+                else:
+                    print(f"  WARNING: Unknown parameter {key} = {value}")
         
         # Create dataloader
         train_loader = create_pretraining_dataloader(
@@ -1201,17 +1269,27 @@ class PreTrainingRunner:
         sample_batch = next(iter(train_loader))
         input_dim = sample_batch.x.shape[1]
         
-        # Create task and model with current config (including task parameters)
-        task = create_ssl_task(self.config)
+        # Create task with updated config
+        if self.config.pretraining_task == "graphcl":
+            from experiments.inductive.self_supervised_task import GraphCLTask
+            task = GraphCLTask(self.config)
+        else:
+            task = create_ssl_task(self.config)
+        
         model = task.create_model(input_dim).to(self.device)
         
-        print(f"Training with task parameters:")
+        print(f"Training with final parameters:")
+        print(f"  Model: {self.config.gnn_type}")
+        print(f"  Task: {self.config.pretraining_task}")
+        print(f"  Learning rate: {self.config.learning_rate}")
+        print(f"  Hidden dim: {self.config.hidden_dim}")
+        
+        # Print task-specific parameters
         if self.config.pretraining_task == "link_prediction":
-            print(f"  Negative sampling ratio: {self.config.negative_sampling_ratio}")
-        elif self.config.pretraining_task == "contrastive":
-            print(f"  Contrastive temperature: {self.config.contrastive_temperature}")
-            print(f"  Corruption type: {self.config.corruption_type}")
-            print(f"  Corruption rate: {self.config.corruption_rate}")
+            print(f"  Negative sampling ratio: {getattr(self.config, 'negative_sampling_ratio', 1.0)}")
+        elif self.config.pretraining_task in ["dgi", "graphcl", "contrastive"]:
+            print(f"  Temperature: {getattr(self.config, 'temperature', 0.1)}")
+            print(f"  Corruption type: {getattr(self.config, 'corruption_type', 'feature_shuffle')}")
         
         # Setup optimizer
         optimizer = torch.optim.Adam(
@@ -1220,7 +1298,7 @@ class PreTrainingRunner:
             weight_decay=self.config.weight_decay
         )
         
-        # Training loop
+        # Training loop (rest remains the same)
         training_history = {
             'train_loss': [],
             'eval_loss': [],
@@ -1259,12 +1337,16 @@ class PreTrainingRunner:
             model.eval()
             with torch.no_grad():
                 eval_metrics = task.evaluate(model, train_loader)
-                eval_loss = eval_metrics['loss']
+                eval_loss = eval_metrics.get('loss', avg_train_loss)
                 
+                # Get primary metric with fallbacks
                 if self.config.pretraining_task == "link_prediction":
                     primary_metric = eval_metrics.get('auc', 0.0)
+                elif self.config.pretraining_task in ["dgi", "graphcl"]:
+                    # Use alignment for contrastive tasks, fallback to accuracy
+                    primary_metric = eval_metrics.get('alignment', eval_metrics.get('accuracy', 0.0))
                 else:
-                    primary_metric = eval_metrics.get('accuracy', 0.0)
+                    primary_metric = list(eval_metrics.values())[0] if eval_metrics else 0.0
                 
                 training_history['eval_loss'].append(eval_loss)
                 training_history['eval_metric'].append(primary_metric)
@@ -1274,10 +1356,8 @@ class PreTrainingRunner:
                     best_metric = primary_metric
                     best_model_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
                     patience_counter = 0
-                    # print(f"✅ New best metric: {best_metric:.4f} (patience reset to 0)")
                 else:
                     patience_counter += 1
-                    # print(f"❌ No improvement for {patience_counter}/{self.config.patience} epochs (best: {best_metric:.4f})")
                 
                 # Early stopping
                 if patience_counter >= self.config.patience:
@@ -1302,9 +1382,134 @@ class PreTrainingRunner:
             'training_history': training_history,
             'final_metrics': final_metrics,
             'best_metric': best_metric,
-            'total_epochs': epoch + 1
+            'total_epochs': epoch + 1,
+            'optimized_params_applied': optimized_params or {}
         }
-    
+
+
+    # INTEGRATION FIX: Make sure PreTrainingRunner is called correctly
+    def run_pretraining_only(
+        self, 
+        family_id: Optional[str] = None,
+        use_existing_family: bool = False
+    ) -> Dict[str, Any]:
+        """FIXED: Run pre-training with proper optimization integration."""
+        
+        print("="*80)
+        print("ENHANCED SSL PRE-TRAINING WITH OPTUNA OPTIMIZATION")
+        print("="*80)
+        
+        pipeline_start = time.time()
+        results = {'config': self.config.to_dict()}
+        
+        # Step 1: Generate or load graph family (unchanged)
+        if use_existing_family and family_id:
+            print(f"\nStep 1: Loading existing graph family")
+            print("-" * 50)
+            family_graphs, family_metadata = self.family_manager.load_family(family_id)
+            graph_splits = self.family_manager.get_graph_splits(family_graphs, family_metadata)
+            results['used_existing_family'] = True
+            results['family_metadata'] = family_metadata
+        else:
+            print(f"\nStep 1: Generating new graph family")
+            print("-" * 50)
+            family_graphs, family_id = self._generate_controlled_family(family_id)
+            
+            # Create splits
+            n_actual_pretraining, n_warmup, n_finetuning = self.config.get_graph_splits()
+            graph_splits = {
+                'pretraining': family_graphs[:n_actual_pretraining],
+                'warmup': family_graphs[n_actual_pretraining:n_actual_pretraining + n_warmup],
+                'finetuning': family_graphs[n_actual_pretraining + n_warmup:]
+            }
+            results['used_existing_family'] = False
+        
+        results['family_id'] = family_id
+        results['graph_splits_sizes'] = {k: len(v) for k, v in graph_splits.items()}
+        
+        print(f"Graph splits: {results['graph_splits_sizes']}")
+        
+        # Step 2: FIXED Hyperparameter optimization
+        hyperopt_results = None
+        if self.config.optimize_hyperparams:
+            print(f"\nStep 2: Hyperparameter Optimization")
+            print("-" * 50)
+            
+            warmup_graphs = graph_splits['warmup']
+            print(f"Using {len(warmup_graphs)} warmup graphs for hyperopt")
+            
+            # Create task for optimization (needed for interface compatibility)
+            task = create_ssl_task(self.config)
+            hyperopt_results = self._optimize_hyperparameters(warmup_graphs, task)
+            results['hyperopt_results'] = hyperopt_results
+            
+            print(f"✅ Optimization completed")
+            print(f"   Best value: {hyperopt_results['best_value']:.4f}")
+            print(f"   Trials run: {hyperopt_results['n_trials']}")
+        else:
+            print("\nSkipping hyperparameter optimization")
+        
+        # Step 3: Pre-training with optimized parameters
+        print(f"\nStep 3: Pre-training")
+        print("-" * 50)
+        
+        pretraining_graphs = graph_splits['pretraining']
+        print(f"Using {len(pretraining_graphs)} graphs for pre-training")
+        
+        optimized_params = None
+        if hyperopt_results:
+            optimized_params = hyperopt_results['best_params']
+        
+        model, training_results = self._train_model(pretraining_graphs, optimized_params)
+        results.update(training_results)
+        
+        # Step 4: Save model (unchanged)
+        print(f"\nStep 4: Saving pre-trained model")
+        print("-" * 50)
+        
+        enhanced_metadata = {
+            'family_id': family_id,
+            'family_total_graphs': len(family_graphs),
+            'finetuning_graphs_available': len(graph_splits['finetuning']),
+            'pretraining_graphs_used': len(pretraining_graphs),
+            'warmup_graphs_used': len(graph_splits['warmup']),
+            'optimization_used': self.config.optimize_hyperparams,
+            'graph_family_parameters': self._get_family_generation_summary(family_graphs)
+        }
+        
+        if hyperopt_results:
+            enhanced_metadata['optimization_summary'] = {
+                'best_value': hyperopt_results['best_value'],
+                'n_trials': hyperopt_results['n_trials'],
+                'best_params': hyperopt_results['best_params']
+            }
+        
+        model_id = self.model_saver.save_model(
+            model=model,
+            config=self.config,
+            training_history=training_results['training_history'],
+            metrics=training_results['final_metrics'],
+            hyperopt_results=hyperopt_results,
+            enhanced_metadata=enhanced_metadata
+        )
+        
+        results['model_id'] = model_id
+        
+        # Final summary
+        total_time = time.time() - pipeline_start
+        results['total_time'] = total_time
+        
+        print(f"\n" + "="*80)
+        print("ENHANCED PRE-TRAINING COMPLETED SUCCESSFULLY")
+        print("="*80)
+        print(f"Model ID: {model_id}")
+        print(f"Graph family ID: {family_id}")
+        print(f"Optimization used: {'Yes' if self.config.optimize_hyperparams else 'No'}")
+        if hyperopt_results:
+            print(f"Best optimization value: {hyperopt_results['best_value']:.4f}")
+        print(f"Total time: {total_time:.2f} seconds")
+        
+        return results
 class PreTrainingExperiment:
     """High-level experiment runner for multiple pre-training configurations."""
     

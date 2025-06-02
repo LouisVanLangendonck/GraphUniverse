@@ -66,8 +66,8 @@ def process_results_to_dataframe(data):
             for model_name, model_data in task_results.items():
                 if model_data['success']:
                     for metric, value in model_data['test_metrics'].items():
-                        base_row[f'{task_name}_{model_name}_{metric}'] = value
-                    base_row[f'{task_name}_{model_name}_train_time'] = model_data['train_time']
+                        base_row[f'{task_name}-{model_name}-{metric}'] = value
+                    base_row[f'{task_name}-{model_name}-train_time'] = model_data['train_time']
         
         rows.append(base_row)
     
@@ -79,29 +79,24 @@ def get_available_tasks_and_metrics(df):
     
     # Find all task_model_metric columns
     for col in df.columns:
-        if '_' in col and not col.startswith(('sweep_', 'random_', 'family_', 'consistency_', 'signal_')) and not col.endswith('_train_time'):
-            parts = col.split('_')
+        if '-' in col and not col.startswith(('sweep_', 'random_', 'family_', 'consistency_', 'signal_')):
+            parts = col.split('-')
             if len(parts) >= 3:
-                # Handle label-specific metrics (e.g., k_hop_community_counts_gcn_mse_label_0)
+                # Handle label-specific metrics (e.g., k_hop_community_counts-gcn-mse-label-0)
                 if 'label' in parts:
                     label_idx = parts.index('label')
                     # Everything before 'label' minus the last part (which is the base metric)
                     task_model_parts = parts[:label_idx-1]
                     metric_part = parts[label_idx-1]  # The base metric name
                 else:
-                    # Regular format: task_model_metric
+                    # Regular format: task-model-metric
                     task_model_parts = parts[:-1]  # Everything except the last part
                     metric_part = parts[-1]  # The metric name
                 
                 if len(task_model_parts) >= 2:
                     # The task could be multi-word (e.g., k_hop_community_counts)
                     # We need to figure out where task ends and model begins
-                    # Strategy: try different splits and see which ones make sense
-                    
-                    # For now, let's assume the model is the last part of task_model_parts
-                    # and everything before is the task
-                    task_parts = task_model_parts[:-1]
-                    task = '_'.join(task_parts) if len(task_parts) > 1 else task_parts[0]
+                    task = task_model_parts[0]  # First part is always the task
                     
                     if task not in tasks:
                         tasks[task] = set()
@@ -130,76 +125,33 @@ def is_higher_better_metric(metric):
         # Default assumption: higher is better (can be customized)
         return True
 
-def calculate_model_rankings(df, task='community', metric='accuracy'):
-    """Calculate model rankings for each run and overall averages."""
-    model_columns = [col for col in df.columns if f'{task}_' in col and f'_{metric}' in col and 'train_time' not in col and 'label' not in col]
-    model_names = [col.replace(f'{task}_', '').replace(f'_{metric}', '') for col in model_columns]
-    
-    # Filter out runs that have NaN values for any model in this task/metric
-    df_clean = df[model_columns].copy()
-    
-    # Remove rows with any NaN values
-    initial_count = len(df_clean)
-    df_clean = df_clean.dropna()
-    final_count = len(df_clean)
-    
-    if final_count < initial_count:
-        st.warning(f"⚠️ Filtered out {initial_count - final_count} runs with NaN values. Using {final_count} complete runs.")
-    
-    if len(df_clean) == 0:
-        st.error("❌ No complete runs found for the selected task/metric combination!")
-        return None, None, None, None, None
-    
-    # Per-run rankings (1 = best)
-    ranking_df = df_clean.copy()
-    higher_better = is_higher_better_metric(metric)
-    
-    for idx, row in ranking_df.iterrows():
-        if higher_better:
-            # Higher metric = better = lower rank number
-            ranks = rankdata(-row.values, method='min')
-        else:
-            # Lower metric = better = lower rank number  
-            ranks = rankdata(row.values, method='min')
-        ranking_df.loc[idx] = ranks
-    
-    # Rename columns to indicate rankings
-    ranking_df.columns = [f'{task}_{name}_rank' for name in model_names]
-    
-    # Calculate average rankings
-    avg_rankings = ranking_df.mean()
-    
-    # Calculate distance from average ranking for each run
-    distance_df = ranking_df.copy()
-    for col in ranking_df.columns:
-        distance_df[col] = ranking_df[col] - avg_rankings[col]
-    
-    # Return the indices of clean runs so we can filter the main dataframe too
-    clean_indices = df_clean.index
-    
-    return ranking_df, distance_df, avg_rankings, model_names, clean_indices
-
-def create_2d_parameter_manifold(df, param1, param2, model, task='community', metric='accuracy', distance_data=None):
+def create_2d_parameter_manifold(df, param1, param2, model, task='community', metric='accuracy', distance_data=None, shared_colorscale_range=None):
     """Create a 2D manifold plot showing model performance across parameter space."""
     if distance_data is not None:
         distance_df, distance_type = distance_data
         
         if distance_type == 'performance':
-            # Performance distance: positive = good (red), negative = bad (blue)
-            z_col = f'{task}_{model}_rank'
+            # Performance distance: need to consider metric direction
+            z_col = f'{task}-{model}-rank'
             z_values = distance_df[z_col].values
             title = f'{model.upper()}'
             colorbar_title = 'Performance Distance from Average'
-            colorscale = 'RdBu_r'  # Reversed so positive (good) is red
+            
+            # For metrics where lower is better (like MAE, MSE), flip the sign
+            # so that positive distance = better performance (above average)
+            if not is_higher_better_metric(metric):
+                z_values = -z_values  # Flip sign for lower-is-better metrics
+            
+            colorscale = 'RdBu_r'  # Red = good (positive), Blue = bad (negative)
         else:  # ranking - show average ranking spot
-            z_col = f'{task}_{model}_rank'
+            z_col = f'{task}-{model}-rank'
             z_values = distance_df[z_col].values  # These are the actual rankings
             title = f'{model.upper()}'
             colorbar_title = 'Average Ranking'
-            colorscale = 'Oranges'  # Use a built-in colorscale that goes from grey to orange
+            colorscale = 'RdYlBu'  # Lower rank (better) = red, higher rank (worse) = blue
     else:
         # Use raw metric values
-        z_col = f'{task}_{model}_{metric}'
+        z_col = f'{task}-{model}-{metric}'
         z_values = df[z_col].values
         title = f'{model.upper()}'
         colorbar_title = metric.capitalize()
@@ -209,6 +161,12 @@ def create_2d_parameter_manifold(df, param1, param2, model, task='community', me
     y_values = df[param2].values
     
     fig = go.Figure()
+    
+    # Use shared colorscale range if provided
+    if shared_colorscale_range is not None:
+        zmin, zmax = shared_colorscale_range
+    else:
+        zmin, zmax = z_values.min(), z_values.max()
     
     # Only try interpolation if we have enough unique points (at least 4) and they're not all collinear
     unique_points = len(set(zip(x_values, y_values)))
@@ -248,14 +206,16 @@ def create_2d_parameter_manifold(df, param1, param2, model, task='community', me
                     y=yi,
                     z=zi,
                     colorscale=colorscale,
-                    showscale=False,  # Hide colorbar for contour to avoid duplication
-                    opacity=0.7,
+                    showscale=False,  # Hide colorbar for contour
+                    opacity=0.6,
                     contours=dict(
                         showlabels=True,
                         labelfont=dict(size=8, color='white')
                     ),
-                    name='Interpolated Surface',
-                    showlegend=False  # Hide the interpolated surface from legend
+                    name='Surface',
+                    showlegend=False,
+                    zmin=zmin,
+                    zmax=zmax
                 ))
         except Exception as e:
             # If interpolation fails, just show scatter plot
@@ -269,12 +229,14 @@ def create_2d_parameter_manifold(df, param1, param2, model, task='community', me
         marker=dict(
             size=10,
             color=z_values,
-            colorscale=colorscale,  # Use the same colorscale as defined above
+            colorscale=colorscale,
             line=dict(width=2, color='white'),
-            colorbar=dict(title=colorbar_title)
+            showscale=False,  # We'll handle the colorbar separately
+            cmin=zmin,
+            cmax=zmax
         ),
         name='Data Points',
-        showlegend=False,  # Hide the scatter plot legend
+        showlegend=False,
         text=[f'{param1}: {x:.3f}<br>{param2}: {y:.3f}<br>{colorbar_title}: {z:.3f}' 
               for x, y, z in zip(x_values, y_values, z_values)],
         hovertemplate='%{text}<extra></extra>'
@@ -282,14 +244,80 @@ def create_2d_parameter_manifold(df, param1, param2, model, task='community', me
     
     fig.update_layout(
         title=title,
-        showlegend=False,  # Hide all legends
+        showlegend=False,
         width=400,
         height=400,
-        margin=dict(t=50, b=50, l=50, r=50)
+        margin=dict(t=50, b=50, l=50, r=50),
+        xaxis_title=param1,
+        yaxis_title=param2
     )
     
-    return fig
+    return fig, z_values, colorbar_title, colorscale
 
+def calculate_model_rankings(df, task='community', metric='accuracy'):
+    """Calculate model rankings for each run and overall averages."""
+    model_columns = [col for col in df.columns if f'{task}-' in col and f'-{metric}' in col and 'train_time' not in col and 'label' not in col]
+    model_names = [col.replace(f'{task}-', '').replace(f'-{metric}', '') for col in model_columns]
+    
+    # Filter out runs that have NaN values for any model in this task/metric
+    df_clean = df[model_columns].copy()
+    
+    # Remove rows with any NaN values
+    initial_count = len(df_clean)
+    df_clean = df_clean.dropna()
+    final_count = len(df_clean)
+    
+    if final_count < initial_count:
+        st.warning(f"⚠️ Filtered out {initial_count - final_count} runs with NaN values. Using {final_count} complete runs.")
+    
+    if len(df_clean) == 0:
+        st.error("❌ No complete runs found for the selected task/metric combination!")
+        return None, None, None, None, None
+    
+    # Per-run rankings (1 = best)
+    ranking_df = df_clean.copy()
+    higher_better = is_higher_better_metric(metric)
+    
+    for idx, row in ranking_df.iterrows():
+        if higher_better:
+            # Higher metric = better = lower rank number
+            ranks = rankdata(-row.values, method='min')
+        else:
+            # Lower metric = better = lower rank number  
+            ranks = rankdata(row.values, method='min')
+        ranking_df.loc[idx] = ranks
+    
+    # Rename columns to indicate rankings
+    ranking_df.columns = [f'{task}-{name}-rank' for name in model_names]
+    
+    # Calculate average rankings
+    avg_rankings = ranking_df.mean()
+    
+    # Calculate distance from average for each run - but for PERFORMANCE, not ranking
+    # We want to show how much better/worse each model performed compared to average
+    performance_distance_df = pd.DataFrame(index=df_clean.index)
+    avg_performance_per_run = df_clean.mean(axis=1)  # Average performance across models for each run
+    
+    for i, model_name in enumerate(model_names):
+        original_col = model_columns[i]
+        model_performance = df_clean[original_col]
+        
+        # Calculate distance from run average
+        distance = model_performance - avg_performance_per_run
+        
+        # For lower-is-better metrics, we need to flip the interpretation
+        # A positive distance means the model performed worse than average (higher value)
+        # A negative distance means the model performed better than average (lower value)
+        # But we want positive to mean "better than average" for visualization
+        if not higher_better:
+            distance = -distance  # Flip for lower-is-better metrics
+        
+        performance_distance_df[f'{task}-{model_name}-rank'] = distance
+    
+    # Return the indices of clean runs so we can filter the main dataframe too
+    clean_indices = df_clean.index
+    
+    return ranking_df, performance_distance_df, avg_rankings, model_names, clean_indices
        
 def get_models_for_task(df, task):
     """Get all model names for a specific task."""
@@ -297,24 +325,24 @@ def get_models_for_task(df, task):
     
     # Find all columns that match this task
     for col in df.columns:
-        if col.startswith(f'{task}_') and not col.endswith('_train_time'):
+        if col.startswith(f'{task}-') and not col.endswith('train_time'):
             # Remove the task prefix
-            remaining = col[len(task)+1:]  # +1 for the underscore
+            remaining = col[len(task)+1:]  # +1 for the hyphen
             
             # Split the remaining part
-            parts = remaining.split('_')
+            parts = remaining.split('-')
             
-            # Handle label-specific metrics (e.g., gcn_mse_label_0)
+            # Handle label-specific metrics (e.g., gcn-mse-label-0)
             if 'label' in parts:
                 label_idx = parts.index('label')
                 # Model is everything before the metric (which is before 'label')
                 model_parts = parts[:label_idx-1]
             else:
-                # Regular format: model_metric
+                # Regular format: model-metric
                 model_parts = parts[:-1]  # Everything except the last part (metric)
             
             if model_parts:
-                model = '_'.join(model_parts) if len(model_parts) > 1 else model_parts[0]
+                model = '-'.join(model_parts) if len(model_parts) > 1 else model_parts[0]
                 models.add(model)
     
     return sorted(list(models))
@@ -390,7 +418,7 @@ def main():
             # Filter out runs with NaN values for the selected models
             relevant_columns = []
             for model in selected_models:
-                model_col = f'{selected_task}_{model}_{y_metric}'
+                model_col = f'{selected_task}-{model}-{y_metric}'
                 if model_col in df.columns:
                     relevant_columns.append(model_col)
             
@@ -406,7 +434,7 @@ def main():
                 fig = go.Figure()
                 
                 for model in selected_models:
-                    model_col = f'{selected_task}_{model}_{y_metric}'
+                    model_col = f'{selected_task}-{model}-{y_metric}'
                     if model_col in df_plot.columns:
                         fig.add_trace(go.Scatter(
                             x=df_plot[x_param],
@@ -474,7 +502,7 @@ def main():
             cols = st.columns(len(model_names))
             for i, model in enumerate(model_names):
                 with cols[i]:
-                    rank_col = f'{task}_{model}_rank'
+                    rank_col = f'{task}-{model}-rank'
                     fig_dist = px.histogram(
                         ranking_df, 
                         x=rank_col,
@@ -511,30 +539,33 @@ def main():
             if result[0] is None:  # No complete runs found
                 st.error("Cannot create manifolds - no complete data available for the selected task/metric.")
             else:
-                ranking_df, distance_df, avg_rankings, model_names, clean_indices = result
+                ranking_df, performance_distance_df, avg_rankings, model_names, clean_indices = result
                 
                 # Filter the main dataframe to only include clean runs
                 df_clean = df.loc[clean_indices]
                 
                 # Calculate the appropriate distance data
                 if viz_type == "Performance Distance from Average":
-                    # Get the metric columns for the selected task
-                    metric_cols = [col for col in df_clean.columns if f'{manifold_task}_' in col and f'_{manifold_metric}' in col and 'train_time' not in col and 'label' not in col]
-                    
-                    # Calculate average performance for each run
-                    avg_performance = df_clean[metric_cols].mean(axis=1)
-                    
-                    # Calculate distance from average for each model
-                    performance_distance_df = pd.DataFrame(index=df_clean.index)
-                    for col in metric_cols:
-                        model_name = col.replace(f'{manifold_task}_', '').replace(f'_{manifold_metric}', '')
-                        performance_distance_df[f'{manifold_task}_{model_name}_rank'] = df_clean[col] - avg_performance
-                    
                     distance_data = (performance_distance_df, 'performance')
                 else:  # Average Ranking
                     distance_data = (ranking_df, 'ranking')
                 
-                # Always show as single grid plot
+                # Calculate shared colorscale range across all models
+                all_z_values = []
+                for model in model_names:
+                    if viz_type == "Performance Distance from Average":
+                        z_col = f'{manifold_task}-{model}-rank'
+                        z_values = performance_distance_df[z_col].values
+                        if not is_higher_better_metric(manifold_metric):
+                            z_values = -z_values  # Apply the same flip as in the plotting function
+                    else:
+                        z_col = f'{manifold_task}-{model}-rank'
+                        z_values = ranking_df[z_col].values
+                    all_z_values.extend(z_values)
+                
+                shared_colorscale_range = (min(all_z_values), max(all_z_values))
+                
+                # Create subplot grid
                 n_models = len(model_names)
                 n_cols = int(np.ceil(np.sqrt(n_models)))
                 n_rows = int(np.ceil(n_models / n_cols))
@@ -545,45 +576,79 @@ def main():
                     rows=n_rows,
                     cols=n_cols,
                     subplot_titles=subplot_titles,
-                    vertical_spacing=0.1,
+                    vertical_spacing=0.15,
                     horizontal_spacing=0.1,
                     shared_xaxes=True,
                     shared_yaxes=True
                 )
+                
+                # Store colorbar info from first plot
+                colorbar_title = None
+                colorscale = None
                 
                 for i, model in enumerate(model_names):
                     row = (i // n_cols) + 1
                     col = (i % n_cols) + 1
                     
                     # Create individual manifold
-                    individual_fig = create_2d_parameter_manifold(
+                    individual_fig, z_values, cb_title, cs = create_2d_parameter_manifold(
                         df_clean, param1, param2, model, manifold_task, manifold_metric,
-                        distance_data
+                        distance_data, shared_colorscale_range
                     )
                     
+                    # Store colorbar info from first plot
+                    if i == 0:
+                        colorbar_title = cb_title
+                        colorscale = cs
+                    
                     # Add traces to subplot
-                    for j, trace in enumerate(individual_fig.data):
-                        trace.showlegend = (i == 0)  # Only show legend for first plot
+                    for trace in individual_fig.data:
+                        trace.showlegend = False
                         fig.add_trace(trace, row=row, col=col)
                 
-                # Update layout with shared axis titles
+                # Add a single shared colorbar
+                # Create a dummy trace for the colorbar
+                fig.add_trace(go.Scatter(
+                    x=[None], y=[None],
+                    mode='markers',
+                    marker=dict(
+                        colorscale=colorscale,
+                        showscale=True,
+                        cmin=shared_colorscale_range[0],
+                        cmax=shared_colorscale_range[1],
+                        colorbar=dict(
+                            title=colorbar_title,
+                            titleside='right',
+                            x=1.02,
+                            len=0.8
+                        )
+                    ),
+                    showlegend=False,
+                    hoverinfo='skip'
+                ))
+                
+                # Update layout
                 fig.update_layout(
                     title=f"Parameter Space Analysis: {param1} vs {param2} ({viz_type})",
                     height=400 * n_rows,
-                    width=400 * n_cols,
-                    showlegend=True,
-                    legend=dict(
-                        orientation="v",
-                        yanchor="top",
-                        y=1,
-                        xanchor="left",
-                        x=1.02
-                    )
+                    showlegend=False
                 )
                 
                 # Add shared axis titles
-                fig.update_xaxes(title_text=param1, row=n_rows, col=1)
-                fig.update_yaxes(title_text=param2, row=1, col=1)
+                for i in range(1, n_cols + 1):
+                    fig.update_xaxes(title_text=param1, row=n_rows, col=i)
+                for i in range(1, n_rows + 1):
+                    fig.update_yaxes(title_text=param2, row=i, col=1)
+                
+                # Show metric direction info
+                higher_better = is_higher_better_metric(manifold_metric)
+                if viz_type == "Performance Distance from Average":
+                    if higher_better:
+                        st.info(f"ℹ️ For {manifold_metric}: Red = above average (better), Blue = below average (worse)")
+                    else:
+                        st.info(f"ℹ️ For {manifold_metric}: Red = below average (better), Blue = above average (worse)")
+                else:
+                    st.info("ℹ️ Rankings: Red = better rank (lower number), Blue = worse rank (higher number)")
                 
                 st.plotly_chart(fig, use_container_width=True)
         else:
@@ -658,7 +723,7 @@ def main():
         all_metric_columns = []
         for task, metrics in available_tasks_metrics.items():
             for metric in metrics:
-                task_model_columns = [col for col in df.columns if f'{task}_' in col and f'_{metric}' in col and 'train_time' not in col and 'label' not in col]
+                task_model_columns = [col for col in df.columns if f'{task}-' in col and f'-{metric}' in col and 'train_time' not in col and 'label' not in col]
                 all_metric_columns.extend(task_model_columns)
         
         display_columns = st.multiselect(
@@ -687,7 +752,7 @@ def main():
         for result in data['all_results']:
             for task_name, task_results in result['model_results'].items():
                 for model_name, model_data in task_results.items():
-                    if model_data.get('success') and 'optimal_hyperparams' in model_data:
+                    if model_data.get('success') and model_data.get('optimal_hyperparams'):
                         if (task_name, model_name) not in models_with_hyperopt:
                             models_with_hyperopt.append((task_name, model_name))
         
@@ -708,7 +773,7 @@ def main():
             for result in data['all_results']:
                 if selected_task in result['model_results'] and selected_model in result['model_results'][selected_task]:
                     model_data = result['model_results'][selected_task][selected_model]
-                    if model_data.get('success') and 'optimal_hyperparams' in model_data:
+                    if model_data.get('success') and model_data.get('optimal_hyperparams'):
                         hyperparams.update(model_data['optimal_hyperparams'].keys())
             
             if not hyperparams:
@@ -740,7 +805,7 @@ def main():
                 for result in data['all_results']:
                     if selected_task in result['model_results'] and selected_model in result['model_results'][selected_task]:
                         model_data = result['model_results'][selected_task][selected_model]
-                        if model_data.get('success') and 'optimal_hyperparams' in model_data:
+                        if model_data.get('success') and model_data.get('optimal_hyperparams'):
                             if selected_hyperparam in model_data['optimal_hyperparams']:
                                 hyperparam_values.append(model_data['optimal_hyperparams'][selected_hyperparam])
                                 # Use the selected performance metric

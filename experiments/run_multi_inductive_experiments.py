@@ -41,7 +41,7 @@ def parse_args():
     
     # Task configuration
     parser.add_argument('--tasks', type=str, nargs='+', 
-                        default=['community'],
+                        default=['community', 'k_hop_community_counts'],
                         choices=['community', 'k_hop_community_counts', 'metapath'],
                         help='Learning tasks to run')
     parser.add_argument('--khop_k', type=int, default=2,
@@ -162,7 +162,7 @@ def create_custom_experiment(args) -> CleanMultiExperimentConfig:
         },
         
         # Tasks and models
-        gnn_types=['gcn', 'sage'],
+        gnn_types=['fagcn', 'gat', 'gcn', 'sage'],
         run_gnn=args.run_gnn,
         run_mlp=args.run_mlp,
         run_rf=args.run_rf,
@@ -202,13 +202,13 @@ def create_custom_experiment(args) -> CleanMultiExperimentConfig:
         'universe_homophily': ParameterRange(
             min_val=0.0,
             max_val=1.0,
-            step=0.5,
+            step=0.2,
             is_sweep=True
         ),
         'universe_edge_density': ParameterRange(
             min_val=0.02,
             max_val=0.22,
-            step=0.2,
+            step=0.1,
             is_sweep=True
         )
     }

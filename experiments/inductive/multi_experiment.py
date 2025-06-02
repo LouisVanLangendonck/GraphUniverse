@@ -267,13 +267,14 @@ class CleanMultiExperimentRunner:
             for model_name, model_results in task_results.items():
                 # Extract key metrics
                 test_metrics = model_results.get('test_metrics', {})
+                optimal_hyperparams = model_results.get('optimal_hyperparams', {})
                 
-                # Extract hyperopt results if available
-                optimal_hyperparams = None
-                if 'hyperopt_results' in model_results and model_results['hyperopt_results'] is not None:
-                    hyperopt = model_results['hyperopt_results']
-                    if isinstance(hyperopt, dict) and 'best_params' in hyperopt:
-                        optimal_hyperparams = hyperopt['best_params']
+                # # Extract hyperopt results if available
+                # optimal_hyperparams = None
+                # if 'hyperopt_results' in model_results and model_results['hyperopt_results'] is not None:
+                #     hyperopt = model_results['hyperopt_results']
+                #     if isinstance(hyperopt, dict) and 'optimal_hyperparams' in hyperopt:
+                #         optimal_hyperparams = hyperopt['optimal_hyperparams']
                 
                 clean_results[task][model_name] = {
                     'test_metrics': test_metrics,

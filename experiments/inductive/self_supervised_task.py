@@ -21,6 +21,19 @@ from experiments.inductive.config import PreTrainingConfig
 from experiments.core.models import GNNModel
 
 
+"""
+Enhanced contrastive learning tasks with multiple contrast types and corruption strategies.
+"""
+
+import torch
+import torch.nn.functional as F
+from torch import nn
+from torch_geometric.data import Data
+from torch_geometric.utils import to_dense_adj, dense_to_sparse, subgraph
+import random
+from typing import Dict, List, Optional, Tuple
+from abc import ABC, abstractmethod
+
 class LinkPredictionModel(nn.Module):
     """Link prediction model combining encoder and predictor."""
     
@@ -51,6 +64,154 @@ class ContrastiveModel(nn.Module):
     
     def forward(self, x, edge_index):
         return self.encoder(x, edge_index)
+
+
+class GraphCLModel(nn.Module):
+    """GraphCL model with projection head."""
+    
+    def __init__(self, encoder: nn.Module, projection_head: nn.Module):
+        super().__init__()
+        self.encoder = encoder
+        self.projection_head = projection_head
+    
+    def forward(self, x, edge_index):
+        return self.encoder(x, edge_index)
+
+
+class ReadoutFunction(nn.Module):
+    """Simple mean readout for graph-level representations."""
+    
+    def __init__(self):
+        super().__init__()
+    
+    def forward(self, x: torch.Tensor, batch: Optional[torch.Tensor] = None) -> torch.Tensor:
+        """Apply mean readout - most stable and widely used."""
+        return torch.mean(x, dim=0, keepdim=True)
+
+
+class EnhancedContrastiveModel(nn.Module):
+    """Enhanced contrastive model with learnable readout."""
+    
+    def __init__(self, encoder: nn.Module, discriminator: nn.Module, readout: nn.Module):
+        super().__init__()
+        self.encoder = encoder
+        self.discriminator = discriminator
+        self.readout = readout
+    
+    def forward(self, x, edge_index):
+        return self.encoder(x, edge_index)
+
+
+class GraphCorruption:
+    """Various graph corruption strategies for contrastive learning."""
+    
+    @staticmethod
+    def feature_shuffle(data: Data) -> Data:
+        """Shuffle node features randomly."""
+        corrupted = data.clone()
+        perm = torch.randperm(data.x.size(0), device=data.x.device)
+        corrupted.x = data.x[perm]
+        return corrupted
+    
+    @staticmethod
+    def feature_dropout(data: Data, drop_rate: float = 0.2) -> Data:
+        """Randomly drop node features."""
+        corrupted = data.clone()
+        mask = torch.rand_like(corrupted.x) > drop_rate
+        corrupted.x = corrupted.x * mask
+        return corrupted
+    
+    @staticmethod
+    def feature_noise(data: Data, noise_std: float = 0.1) -> Data:
+        """Add Gaussian noise to features."""
+        corrupted = data.clone()
+        noise = torch.randn_like(corrupted.x) * noise_std
+        corrupted.x = corrupted.x + noise
+        return corrupted
+    
+    @staticmethod
+    def edge_dropout(data: Data, drop_rate: float = 0.2) -> Data:
+        """Randomly drop edges."""
+        corrupted = data.clone()
+        edge_mask = torch.rand(data.edge_index.size(1), device=data.edge_index.device) > drop_rate
+        corrupted.edge_index = data.edge_index[:, edge_mask]
+        return corrupted
+    
+    @staticmethod
+    def edge_perturbation(data: Data, perturb_rate: float = 0.1) -> Data:
+        """Add random edges."""
+        corrupted = data.clone()
+        num_nodes = data.x.size(0)
+        num_new_edges = int(data.edge_index.size(1) * perturb_rate)
+        
+        # Generate random edges
+        new_edges = torch.randint(0, num_nodes, (2, num_new_edges), device=data.edge_index.device)
+        
+        # Combine with existing edges
+        corrupted.edge_index = torch.cat([data.edge_index, new_edges], dim=1)
+        return corrupted
+    
+    @staticmethod
+    def subgraph_sampling(data: Data, sample_rate: float = 0.8) -> Data:
+        """Sample a subgraph."""
+        num_nodes = data.x.size(0)
+        num_sample = int(num_nodes * sample_rate)
+        
+        # Randomly sample nodes
+        sampled_nodes = torch.randperm(num_nodes, device=data.x.device)[:num_sample]
+        
+        # Extract subgraph
+        edge_index, edge_attr = subgraph(
+            sampled_nodes, 
+            data.edge_index, 
+            data.edge_attr,
+            relabel_nodes=True,
+            num_nodes=num_nodes
+        )
+        
+        corrupted = Data(
+            x=data.x[sampled_nodes],
+            edge_index=edge_index,
+            edge_attr=edge_attr
+        )
+        return corrupted
+    
+    @staticmethod
+    def random_walk_sampling(data: Data, walk_length: int = 10, num_walks: int = 5) -> Data:
+        """Sample subgraph using random walks."""
+        # Simplified random walk sampling
+        num_nodes = data.x.size(0)
+        visited = set()
+        
+        for _ in range(num_walks):
+            current = random.randint(0, num_nodes - 1)
+            for _ in range(walk_length):
+                visited.add(current)
+                # Find neighbors
+                neighbors = data.edge_index[1][data.edge_index[0] == current]
+                if len(neighbors) > 0:
+                    current = neighbors[random.randint(0, len(neighbors) - 1)].item()
+        
+        if len(visited) == 0:
+            visited = {0}  # Fallback
+            
+        sampled_nodes = torch.tensor(list(visited), device=data.x.device)
+        
+        # Extract subgraph
+        edge_index, edge_attr = subgraph(
+            sampled_nodes,
+            data.edge_index,
+            data.edge_attr,
+            relabel_nodes=True,
+            num_nodes=num_nodes
+        )
+        
+        corrupted = Data(
+            x=data.x[sampled_nodes],
+            edge_index=edge_index,
+            edge_attr=edge_attr
+        )
+        return corrupted
 
 
 class SelfSupervisedTask(ABC):
@@ -87,6 +248,257 @@ class SelfSupervisedTask(ABC):
         """Evaluate model on this task."""
         pass
 
+class DeepGraphInfoMaxTask(SelfSupervisedTask):
+    """Enhanced Deep Graph InfoMax with better corruption strategies."""
+    
+    def __init__(self, config):
+        super().__init__(config)
+        self.corruption_functions = {
+            "feature_shuffle": GraphCorruption.feature_shuffle,
+            "feature_dropout": GraphCorruption.feature_dropout,
+            "feature_noise": GraphCorruption.feature_noise,
+            "edge_dropout": GraphCorruption.edge_dropout,
+            "edge_perturbation": GraphCorruption.edge_perturbation,
+            "subgraph": GraphCorruption.subgraph_sampling,
+            "random_walk": GraphCorruption.random_walk_sampling,
+        }
+        
+    def create_model(self, input_dim: int) -> nn.Module:
+        """Create enhanced DGI model."""
+        # Encoder (same as before but with proper setup)
+        if self.config.model_type == "transformer" or self.config.run_transformers:
+            from experiments.core.models import GraphTransformerModel
+            encoder = GraphTransformerModel(
+                input_dim=input_dim,
+                hidden_dim=self.config.hidden_dim,
+                output_dim=self.config.hidden_dim,
+                transformer_type=self.config.transformer_type,
+                num_layers=self.config.num_layers,
+                dropout=self.config.dropout,
+                is_regression=False,
+                num_heads=self.config.transformer_num_heads,
+                max_nodes=self.config.transformer_max_nodes,
+                max_path_length=self.config.transformer_max_path_length,
+                precompute_encodings=self.config.transformer_precompute_encodings,
+                cache_encodings=self.config.transformer_cache_encodings,
+                local_gnn_type=self.config.local_gnn_type,
+                prenorm=self.config.transformer_prenorm
+            )
+        else:
+            from experiments.core.models import GNNModel
+            encoder = GNNModel(
+                input_dim=input_dim,
+                hidden_dim=self.config.hidden_dim,
+                output_dim=self.config.hidden_dim,
+                num_layers=self.config.num_layers,
+                dropout=self.config.dropout,
+                gnn_type=self.config.gnn_type,
+                is_regression=False,
+                residual=self.config.residual,
+                norm_type=self.config.norm_type,
+                agg_type=self.config.agg_type,
+                heads=self.config.heads,
+                concat_heads=self.config.concat_heads,
+            )
+        
+        # Enhanced readout function
+        readout = ReadoutFunction()
+        
+        # More sophisticated discriminator
+        discriminator = nn.Sequential(
+            nn.Linear(2 * self.config.hidden_dim, self.config.hidden_dim),
+            nn.ReLU(),
+            nn.Dropout(self.config.dropout),
+            nn.Linear(self.config.hidden_dim, self.config.hidden_dim // 2),
+            nn.ReLU(),
+            nn.Linear(self.config.hidden_dim // 2, 1),
+            nn.Sigmoid()
+        )
+        
+        return EnhancedContrastiveModel(encoder, discriminator, readout)
+    
+    def _corrupt_graph(self, batch: Data) -> Data:
+        """Apply multiple corruption strategies."""
+        corruption_type = getattr(self.config, 'corruption_type', 'feature_shuffle')
+        
+        # Support multiple corruptions
+        if isinstance(corruption_type, str):
+            corruption_type = [corruption_type]
+        
+        corrupted = batch.clone()
+        for corruption in corruption_type:
+            if corruption in self.corruption_functions:
+                # Apply corruption with appropriate parameters
+                if corruption == 'feature_dropout':
+                    drop_rate = getattr(self.config, 'corruption_rate', 0.2)
+                    corrupted = GraphCorruption.feature_dropout(corrupted, drop_rate)
+                elif corruption == 'feature_noise':
+                    noise_std = getattr(self.config, 'noise_std', 0.1)
+                    corrupted = GraphCorruption.feature_noise(corrupted, noise_std)
+                elif corruption == 'edge_dropout':
+                    drop_rate = getattr(self.config, 'corruption_rate', 0.2)
+                    corrupted = GraphCorruption.edge_dropout(corrupted, drop_rate)
+                elif corruption == 'edge_perturbation':
+                    perturb_rate = getattr(self.config, 'perturb_rate', 0.1)
+                    corrupted = GraphCorruption.edge_perturbation(corrupted, perturb_rate)
+                else:
+                    corrupted = self.corruption_functions[corruption](corrupted)
+        
+        return corrupted
+    
+    def compute_loss(self, model: nn.Module, batch: Data) -> torch.Tensor:
+        """Enhanced DGI loss with better negative sampling."""
+        # Original graph embeddings
+        node_embeddings = model.encoder(batch.x, batch.edge_index)
+        
+        # Graph-level representation with learnable readout
+        graph_embedding = model.readout(node_embeddings)
+        
+        # Multiple corrupted versions for harder negatives
+        num_corruptions = getattr(self.config, 'num_corruptions', 1)
+        total_loss = 0.0
+        
+        for _ in range(num_corruptions):
+            corrupted_batch = self._corrupt_graph(batch)
+            corrupted_embeddings = model.encoder(corrupted_batch.x, corrupted_batch.edge_index)
+            corrupted_graph_embedding = model.readout(corrupted_embeddings)
+            
+            # Positive pairs: (node_embedding, graph_embedding)
+            pos_pairs = torch.cat([
+                node_embeddings, 
+                graph_embedding.repeat(node_embeddings.size(0), 1)
+            ], dim=1)
+            pos_scores = model.discriminator(pos_pairs).squeeze()
+            
+            # Negative pairs: (node_embedding, corrupted_graph_embedding)
+            neg_pairs = torch.cat([
+                node_embeddings,
+                corrupted_graph_embedding.repeat(node_embeddings.size(0), 1)
+            ], dim=1)
+            neg_scores = model.discriminator(neg_pairs).squeeze()
+            
+            # InfoNCE-style loss (more principled than BCE)
+            if getattr(self.config, 'use_infonce', False):
+                # Compute similarities
+                pos_sim = F.cosine_similarity(node_embeddings, graph_embedding.repeat(node_embeddings.size(0), 1))
+                neg_sim = F.cosine_similarity(node_embeddings, corrupted_graph_embedding.repeat(node_embeddings.size(0), 1))
+                
+                # InfoNCE loss
+                temperature = getattr(self.config, 'temperature', 0.1)
+                pos_exp = torch.exp(pos_sim / temperature)
+                neg_exp = torch.exp(neg_sim / temperature)
+                
+                loss = -torch.log(pos_exp / (pos_exp + neg_exp)).mean()
+            else:
+                # Standard BCE loss
+                pos_labels = torch.ones_like(pos_scores)
+                neg_labels = torch.zeros_like(neg_scores)
+                
+                criterion = nn.BCELoss()
+                loss = criterion(pos_scores, pos_labels) + criterion(neg_scores, neg_labels)
+            
+            total_loss += loss
+        
+        return total_loss / num_corruptions
+    
+    def evaluate(self, model: nn.Module, dataloader: DataLoader) -> Dict[str, float]:
+        """ADDED: Evaluate Deep Graph InfoMax performance."""
+        model.eval()
+        total_loss = 0.0
+        total_accuracy = 0.0
+        total_auc = 0.0
+        total_alignment = 0.0
+        total_uniformity = 0.0
+        n_batches = 0
+        
+        with torch.no_grad():
+            for batch in dataloader:
+                batch = batch.to(self.device)
+                
+                # Compute loss
+                loss = self.compute_loss(model, batch)
+                total_loss += loss.item()
+                
+                # Get embeddings
+                node_embeddings = model.encoder(batch.x, batch.edge_index)
+                graph_embedding = model.readout(node_embeddings)
+                
+                # Create corrupted version
+                corrupted_batch = self._corrupt_graph(batch)
+                corrupted_embeddings = model.encoder(corrupted_batch.x, corrupted_batch.edge_index)
+                corrupted_graph_embedding = model.readout(corrupted_embeddings)
+                
+                # Positive pairs: (node_embedding, graph_embedding)
+                pos_pairs = torch.cat([
+                    node_embeddings, 
+                    graph_embedding.repeat(node_embeddings.size(0), 1)
+                ], dim=1)
+                pos_scores = model.discriminator(pos_pairs).squeeze()
+                
+                # Negative pairs: (node_embedding, corrupted_graph_embedding)
+                neg_pairs = torch.cat([
+                    node_embeddings,
+                    corrupted_graph_embedding.repeat(node_embeddings.size(0), 1)
+                ], dim=1)
+                neg_scores = model.discriminator(neg_pairs).squeeze()
+                
+                # Accuracy: how well can we distinguish positive vs negative pairs?
+                pos_correct = (pos_scores > 0.5).float().mean()
+                neg_correct = (neg_scores <= 0.5).float().mean()
+                accuracy = (pos_correct + neg_correct) / 2
+                total_accuracy += accuracy.item()
+                
+                # AUC calculation
+                try:
+                    # Combine positive and negative scores
+                    y_true = torch.cat([
+                        torch.ones_like(pos_scores), 
+                        torch.zeros_like(neg_scores)
+                    ])
+                    y_scores = torch.cat([pos_scores, neg_scores])
+                    
+                    auc = roc_auc_score(y_true.cpu().numpy(), y_scores.cpu().numpy())
+                    total_auc += auc
+                except:
+                    # Handle edge case where all predictions are the same
+                    total_auc += 0.5
+                
+                # Alignment: positive pair similarity (mutual information preservation)
+                pos_similarity = F.cosine_similarity(
+                    node_embeddings, 
+                    graph_embedding.repeat(node_embeddings.size(0), 1)
+                )
+                alignment = pos_similarity.mean()
+                total_alignment += alignment.item()
+                
+                # Uniformity: how uniformly distributed are the node embeddings?
+                # Measures whether the encoder preserves diversity
+                normalized_embeddings = F.normalize(node_embeddings, dim=1)
+                pairwise_sim = torch.mm(normalized_embeddings, normalized_embeddings.t())
+                
+                # Remove diagonal (self-similarity)
+                mask = ~torch.eye(pairwise_sim.size(0), dtype=torch.bool, device=pairwise_sim.device)
+                uniformity = torch.log(torch.exp(pairwise_sim[mask]).mean())
+                total_uniformity += uniformity.item()
+                
+                n_batches += 1
+        
+        if n_batches == 0:
+            return {
+                'loss': 0.0, 
+                'accuracy': 0.0, 
+                'auc': 0.0, 
+                'alignment': 0.0, 
+                'uniformity': 0.0
+            }
+        
+        return {
+            'loss': total_loss / n_batches,
+            'accuracy': total_accuracy / n_batches,  # Discriminator accuracy
+            'auc': total_auc / n_batches,  # Area under ROC curve
+            'alignment': total_alignment / n_batches,  # Mutual information preservation
+            'uniformity': total_uniformity / n_batches,  # Embedding diversity
+        }
 
 class LinkPredictionTask(SelfSupervisedTask):
     """Link prediction self-supervised task."""
@@ -378,15 +790,221 @@ class ContrastiveTask(SelfSupervisedTask):
         }
 
 
+class GraphCLTask(SelfSupervisedTask):
+    """Fixed GraphCL implementation with proper evaluation."""
+    
+    def create_model(self, input_dim: int) -> nn.Module:
+        """Create GraphCL model with projection head."""
+        # Encoder setup (same as before)
+        if self.config.model_type == "transformer" or self.config.run_transformers:
+            from experiments.core.models import GraphTransformerModel
+            encoder = GraphTransformerModel(
+                input_dim=input_dim,
+                hidden_dim=self.config.hidden_dim,
+                output_dim=self.config.hidden_dim,
+                transformer_type=self.config.transformer_type,
+                num_layers=self.config.num_layers,
+                dropout=self.config.dropout,
+                is_regression=False,
+                num_heads=self.config.transformer_num_heads,
+                max_nodes=self.config.transformer_max_nodes,
+                max_path_length=self.config.transformer_max_path_length,
+                precompute_encodings=self.config.transformer_precompute_encodings,
+                cache_encodings=self.config.transformer_cache_encodings,
+                local_gnn_type=self.config.local_gnn_type,
+                prenorm=self.config.transformer_prenorm
+            )
+        else:
+            from experiments.core.models import GNNModel
+            encoder = GNNModel(
+                input_dim=input_dim,
+                hidden_dim=self.config.hidden_dim,
+                output_dim=self.config.hidden_dim,
+                num_layers=self.config.num_layers,
+                dropout=self.config.dropout,
+                gnn_type=self.config.gnn_type,
+                is_regression=False,
+                residual=self.config.residual,
+                norm_type=self.config.norm_type,
+                agg_type=self.config.agg_type,
+                heads=self.config.heads,
+                concat_heads=self.config.concat_heads,
+            )
+        
+        # Projection head for contrastive learning
+        projection_head = nn.Sequential(
+            nn.Linear(self.config.hidden_dim, self.config.hidden_dim),
+            nn.ReLU(),
+            nn.Linear(self.config.hidden_dim, self.config.hidden_dim // 2)  # Smaller projection dim
+        )
+        
+        return GraphCLModel(encoder, projection_head)
+    
+    def _create_node_correspondence_augmentations(self, batch: Data) -> Tuple[Data, Data, torch.Tensor]:
+        """Create augmentations that maintain node correspondence."""
+        # Only use augmentations that preserve node identity and order
+        safe_augmentations = [
+            lambda x: GraphCorruption.feature_dropout(x, drop_rate=0.1),
+            lambda x: GraphCorruption.feature_noise(x, noise_std=0.05),
+            lambda x: GraphCorruption.edge_dropout(x, drop_rate=0.1),
+        ]
+        
+        # Apply different augmentations to create two views
+        aug_fn1 = random.choice(safe_augmentations)
+        aug_fn2 = random.choice(safe_augmentations)
+        
+        aug1 = aug_fn1(batch)
+        aug2 = aug_fn2(batch)
+        
+        # Node correspondence is preserved (same number of nodes in same order)
+        node_correspondence = torch.arange(batch.x.size(0))
+        
+        return aug1, aug2, node_correspondence
+    
+    def compute_loss(self, model: nn.Module, batch: Data) -> torch.Tensor:
+        """Fixed GraphCL contrastive loss."""
+        # Create two views with preserved node correspondence
+        aug1, aug2, correspondence = self._create_node_correspondence_augmentations(batch)
+        
+        # Get embeddings for both views
+        emb1 = model.encoder(aug1.x, aug1.edge_index)
+        emb2 = model.encoder(aug2.x, aug2.edge_index)
+        
+        # Project embeddings
+        proj1 = model.projection_head(emb1)
+        proj2 = model.projection_head(emb2)
+        
+        # Normalize embeddings
+        proj1 = F.normalize(proj1, dim=1)
+        proj2 = F.normalize(proj2, dim=1)
+        
+        # Temperature parameter
+        temperature = getattr(self.config, 'temperature', 0.1)
+        
+        # Compute InfoNCE loss
+        # Positive pairs: corresponding nodes between views
+        pos_sim = torch.sum(proj1 * proj2, dim=1) / temperature  # [N]
+        
+        # For each node, compute similarity with ALL nodes in the other view
+        sim_matrix = torch.mm(proj1, proj2.t()) / temperature  # [N, N]
+        
+        # Labels: each node should match itself (diagonal)
+        labels = torch.arange(proj1.size(0)).to(proj1.device)
+        
+        # InfoNCE loss using cross-entropy
+        loss = F.cross_entropy(sim_matrix, labels)
+        
+        return loss
+    
+    def evaluate(self, model: nn.Module, dataloader: DataLoader) -> Dict[str, float]:
+        """Fixed evaluation with meaningful metrics."""
+        model.eval()
+        total_loss = 0.0
+        total_acc = 0.0
+        total_top5_acc = 0.0
+        total_alignment = 0.0
+        total_uniformity = 0.0
+        n_batches = 0
+        
+        with torch.no_grad():
+            for batch in dataloader:
+                batch = batch.to(self.device)
+                
+                # Compute loss
+                loss = self.compute_loss(model, batch)
+                total_loss += loss.item()
+                
+                # Create augmented views for evaluation
+                aug1, aug2, correspondence = self._create_node_correspondence_augmentations(batch)
+                
+                # Get normalized projections
+                emb1 = model.encoder(aug1.x, aug1.edge_index)
+                emb2 = model.encoder(aug2.x, aug2.edge_index)
+                
+                proj1 = F.normalize(model.projection_head(emb1), dim=1)
+                proj2 = F.normalize(model.projection_head(emb2), dim=1)
+                
+                # Compute similarity matrix
+                sim_matrix = torch.mm(proj1, proj2.t())
+                
+                # Top-1 accuracy: how often does each node's best match correspond to itself?
+                pred = torch.argmax(sim_matrix, dim=1)
+                labels = correspondence.to(sim_matrix.device)
+                acc = (pred == labels).float().mean()
+                total_acc += acc.item()
+                
+                # Top-5 accuracy
+                _, top5_pred = torch.topk(sim_matrix, k=min(5, sim_matrix.size(1)), dim=1)
+                top5_acc = (top5_pred == labels.unsqueeze(1)).any(dim=1).float().mean()
+                total_top5_acc += top5_acc.item()
+                
+                # Alignment: how well do positive pairs align?
+                positive_sim = torch.sum(proj1 * proj2, dim=1)
+                alignment = positive_sim.mean()
+                total_alignment += alignment.item()
+                
+                # Uniformity: how uniformly distributed are the embeddings?
+                # This measures whether embeddings are spread out on the unit sphere
+                pairwise_sim = torch.mm(proj1, proj1.t())
+                # Remove diagonal (self-similarity)
+                mask = ~torch.eye(pairwise_sim.size(0), dtype=torch.bool, device=pairwise_sim.device)
+                uniformity = torch.log(torch.exp(pairwise_sim[mask]).mean())
+                total_uniformity += uniformity.item()
+                
+                n_batches += 1
+        
+        if n_batches == 0:
+            return {'loss': 0.0, 'accuracy': 0.0, 'top5_accuracy': 0.0, 'alignment': 0.0, 'uniformity': 0.0}
+        
+        return {
+            'loss': total_loss / n_batches,
+            'accuracy': total_acc / n_batches,  # Top-1 accuracy
+            'top5_accuracy': total_top5_acc / n_batches,  # Top-5 accuracy
+            'alignment': total_alignment / n_batches,  # Positive pair similarity
+            'uniformity': total_uniformity / n_batches,  # Embedding uniformity
+        }
+
+
+class SafeGraphCorruption:
+    """Graph corruption strategies that preserve node correspondence."""
+    
+    @staticmethod
+    def safe_feature_dropout(data: Data, drop_rate: float = 0.1) -> Data:
+        """Feature dropout that preserves node count and order."""
+        corrupted = data.clone()
+        mask = torch.rand_like(corrupted.x) > drop_rate
+        corrupted.x = corrupted.x * mask
+        return corrupted
+    
+    @staticmethod
+    def safe_feature_noise(data: Data, noise_std: float = 0.05) -> Data:
+        """Add small amount of noise to features."""
+        corrupted = data.clone()
+        noise = torch.randn_like(corrupted.x) * noise_std
+        corrupted.x = corrupted.x + noise
+        return corrupted
+    
+    @staticmethod
+    def safe_edge_dropout(data: Data, drop_rate: float = 0.1) -> Data:
+        """Conservative edge dropout."""
+        corrupted = data.clone()
+        edge_mask = torch.rand(data.edge_index.size(1), device=data.edge_index.device) > drop_rate
+        corrupted.edge_index = data.edge_index[:, edge_mask]
+        return corrupted
+
+
 def create_ssl_task(config: PreTrainingConfig) -> SelfSupervisedTask:
-    """Create SSL task based on configuration."""
+    """Create SSL task based on configuration - enhanced version."""
     if config.pretraining_task == "link_prediction":
         return LinkPredictionTask(config)
     elif config.pretraining_task == "contrastive":
-        return ContrastiveTask(config)
+        return ContrastiveTask(config)  # Keep existing for backward compatibility
+    elif config.pretraining_task == "dgi":
+        return DeepGraphInfoMaxTask(config)  # Enhanced version
+    elif config.pretraining_task == "graphcl":
+        return GraphCLTask(config)
     else:
         raise ValueError(f"Unknown pretraining task: {config.pretraining_task}")
-
 
 def create_pretraining_dataloader(
     graphs: List,

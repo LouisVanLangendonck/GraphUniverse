@@ -602,6 +602,14 @@ def optimize_inductive_hyperparameters(
                 dropout=dropout,
                 is_regression=is_regression
             ).to(device)
+
+        elif model_type == "rf":
+            # Create RF model
+            model = model_creator(
+                input_dim=input_dim,
+                output_dim=output_dim,
+                is_regression=is_regression
+            )
         
         else:  # sklearn
             # Create sklearn model
@@ -1430,6 +1438,292 @@ def train_and_evaluate_inductive(
                 config.weight_decay = best_params.get('weight_decay', config.weight_decay)
                 config.patience = best_params.get('patience', config.patience)
                 config.optimized_patience = best_params.get('patience', config.patience)
+            
+    # Handle MLP models
+    elif isinstance(model, MLPModel):
+        print(f"🔄 Training MLP")
+        
+        # Update hyperparameter optimization for MLPs
+        if optimize_hyperparams:
+            print(f"🎯 Optimizing MLP hyperparameters...")
+            
+            # Get sample batch to determine dimensions
+            sample_batch = next(iter(dataloaders['train']))
+            input_dim = sample_batch.x.shape[1]
+            
+            if is_regression:
+                output_dim = sample_batch.y.shape[1] if len(sample_batch.y.shape) > 1 else 1
+            else:
+                output_dim = get_total_classes_from_dataloaders(dataloaders)
+            
+            # Create optimization study
+            import optuna
+            from optuna import create_study, Trial
+            
+            study_name = f"mlp_{'regression' if is_regression else 'classification'}"
+            study = create_study(direction='maximize')
+            
+            def objective(trial: Trial) -> float:
+                # Common hyperparameters
+                lr = trial.suggest_float('lr', 1e-4, 1e-2, log=True)
+                weight_decay = trial.suggest_float('weight_decay', 1e-5, 1e-2, log=True)
+                patience = trial.suggest_int('patience', 10, 50)
+                
+                # MLP-specific hyperparameters
+                hidden_dim = trial.suggest_int('hidden_dim', 32, 256)
+                num_layers = trial.suggest_int('num_layers', 1, 4)
+                dropout = trial.suggest_float('dropout', 0.1, 0.7)
+                
+                # Create MLP model with all parameters
+                trial_model = MLPModel(
+                    input_dim=input_dim,
+                    hidden_dim=hidden_dim,
+                    output_dim=output_dim,
+                    num_layers=num_layers,
+                    dropout=dropout,
+                    is_regression=is_regression
+                ).to(device)
+                
+                # Train model with reduced epochs for speed
+                optimizer = torch.optim.Adam(trial_model.parameters(), lr=lr, weight_decay=weight_decay)
+                
+                # Set up loss function
+                if is_regression:
+                    if config.regression_loss == 'mae':
+                        criterion = torch.nn.L1Loss()
+                    else:
+                        criterion = torch.nn.MSELoss()
+                else:
+                    criterion = torch.nn.CrossEntropyLoss()
+                
+                # Quick training loop
+                max_epochs = min(50, config.epochs // 4)  # Reduced epochs for hyperopt
+                best_val_metric = float('inf') if is_regression else 0.0
+                patience_counter = 0
+                
+                for epoch in range(max_epochs):
+                    # Training
+                    trial_model.train()
+                    for batch in dataloaders['train']:
+                        batch = batch.to(device)
+                        optimizer.zero_grad()
+                        out = trial_model(batch.x)
+                        loss = criterion(out, batch.y)
+                        loss.backward()
+                        optimizer.step()
+                    
+                    # Validation
+                    trial_model.eval()
+                    val_predictions = []
+                    val_targets = []
+                    
+                    with torch.no_grad():
+                        for batch in dataloaders['val']:
+                            batch = batch.to(device)
+                            out = trial_model(batch.x)
+                            
+                            if is_regression:
+                                val_predictions.append(out.detach().cpu())
+                            else:
+                                val_predictions.append(out.argmax(dim=1).detach().cpu())
+                            
+                            val_targets.append(batch.y.detach().cpu())
+                    
+                    # Calculate validation metric
+                    val_pred = torch.cat(val_predictions, dim=0).numpy()
+                    val_true = torch.cat(val_targets, dim=0).numpy()
+                    val_metrics = compute_metrics(val_true, val_pred, is_regression)
+                    
+                    if is_regression:
+                        if config.regression_loss == 'mae':
+                            val_metric = val_metrics['mae']
+                            if val_metric < best_val_metric:  # Lower is better for MAE
+                                best_val_metric = val_metric
+                                patience_counter = 0
+                            else:
+                                patience_counter += 1
+                        else:
+                            val_metric = val_metrics['r2']
+                            if val_metric > best_val_metric:  # Higher is better for R²
+                                best_val_metric = val_metric
+                                patience_counter = 0
+                            else:
+                                patience_counter += 1
+                    else:
+                        val_metric = val_metrics['f1_macro']
+                        if val_metric > best_val_metric:  # Higher is better for F1
+                            best_val_metric = val_metric
+                            patience_counter = 0
+                        else:
+                            patience_counter += 1
+                    
+                    if patience_counter >= patience:
+                        break
+                
+                # Return metric for optimization
+                if is_regression:
+                    if config.regression_loss == 'mae':
+                        return -best_val_metric  # Negative because we minimize MAE
+                    else:
+                        return best_val_metric  # Positive because we maximize R²
+                else:
+                    return best_val_metric  # Positive because we maximize F1
+            
+            # Run optimization
+            study.optimize(objective, n_trials=config.n_trials, timeout=config.optimization_timeout)
+            
+            # Apply optimized parameters
+            if study.best_params:
+                best_params = study.best_params
+                print(f"🎯 Applying optimized parameters:")
+                for key, value in best_params.items():
+                    print(f"   {key}: {value}")
+                
+                # Recreate model with optimized parameters
+                model = MLPModel(
+                    input_dim=input_dim,
+                    hidden_dim=best_params.get('hidden_dim', 64),
+                    output_dim=output_dim,
+                    num_layers=best_params.get('num_layers', 2),
+                    dropout=best_params.get('dropout', 0.5),
+                    is_regression=is_regression
+                ).to(device)
+                
+                # Update config with optimized parameters
+                config.learning_rate = best_params.get('lr', config.learning_rate)
+                config.weight_decay = best_params.get('weight_decay', config.weight_decay)
+                config.patience = best_params.get('patience', config.patience)
+                config.optimized_patience = best_params.get('patience', config.patience)
+    
+    # Handle sklearn models
+    elif isinstance(model, SklearnModel):
+        print(f"🔄 Training sklearn model: {model.model_type}")
+        
+        # Update hyperparameter optimization for sklearn models
+        if optimize_hyperparams:
+            print(f"🎯 Optimizing sklearn model hyperparameters...")
+            
+            # Get sample batch to determine dimensions
+            sample_batch = next(iter(dataloaders['train']))
+            input_dim = sample_batch.x.shape[1]
+            
+            if is_regression:
+                output_dim = sample_batch.y.shape[1] if len(sample_batch.y.shape) > 1 else 1
+            else:
+                output_dim = get_total_classes_from_dataloaders(dataloaders)
+            
+            # Create optimization study
+            import optuna
+            from optuna import create_study, Trial
+            
+            study_name = f"sklearn_{model.model_type}_{'regression' if is_regression else 'classification'}"
+            study = create_study(direction='maximize')
+            
+            def objective(trial: Trial) -> float:
+                # Model-specific hyperparameters
+                if model.model_type == "rf":  # Random Forest
+                    n_estimators = trial.suggest_int('n_estimators', 50, 500)
+                    max_depth = trial.suggest_int('max_depth', 3, 20)
+                    min_samples_split = trial.suggest_int('min_samples_split', 2, 10)
+                    min_samples_leaf = trial.suggest_int('min_samples_leaf', 1, 5)
+                    
+                    trial_model = SklearnModel(
+                        input_dim=input_dim,
+                        output_dim=output_dim,
+                        model_type="rf",
+                        is_regression=is_regression,
+                        n_estimators=n_estimators,
+                        max_depth=max_depth,
+                        min_samples_split=min_samples_split,
+                        min_samples_leaf=min_samples_leaf
+                    )
+                
+                elif model.model_type == "svm":  # Support Vector Machine
+                    C = trial.suggest_float('C', 0.1, 10.0, log=True)
+                    gamma = trial.suggest_float('gamma', 1e-4, 1.0, log=True)
+                    
+                    trial_model = SklearnModel(
+                        input_dim=input_dim,
+                        output_dim=output_dim,
+                        model_type="svm",
+                        is_regression=is_regression,
+                        C=C,
+                        gamma=gamma
+                    )
+                
+                elif model.model_type == "knn":  # K-Nearest Neighbors
+                    n_neighbors = trial.suggest_int('n_neighbors', 3, 20)
+                    weights = trial.suggest_categorical('weights', ['uniform', 'distance'])
+                    
+                    trial_model = SklearnModel(
+                        input_dim=input_dim,
+                        output_dim=output_dim,
+                        model_type="knn",
+                        is_regression=is_regression,
+                        n_neighbors=n_neighbors,
+                        weights=weights
+                    )
+                
+                else:  # Default to basic model
+                    trial_model = SklearnModel(
+                        input_dim=input_dim,
+                        output_dim=output_dim,
+                        model_type=model.model_type,
+                        is_regression=is_regression
+                    )
+                
+                # Train and evaluate model
+                results = train_sklearn_inductive(trial_model, dataloaders, config, is_regression)
+                
+                # Return metric for optimization
+                if is_regression:
+                    if config.regression_loss == 'mae':
+                        return -results['test_metrics']['mae']  # Negative because we minimize MAE
+                    else:
+                        return results['test_metrics']['r2']  # Positive because we maximize R²
+                else:
+                    return results['test_metrics']['f1_macro']  # Positive because we maximize F1
+            
+            # Run optimization
+            study.optimize(objective, n_trials=config.n_trials, timeout=config.optimization_timeout)
+            
+            # Apply optimized parameters
+            if study.best_params:
+                best_params = study.best_params
+                print(f"🎯 Applying optimized parameters:")
+                for key, value in best_params.items():
+                    print(f"   {key}: {value}")
+                
+                # Recreate model with optimized parameters
+                if model.model_type == "rf":
+                    model = SklearnModel(
+                        input_dim=input_dim,
+                        output_dim=output_dim,
+                        model_type="rf",
+                        is_regression=is_regression,
+                        n_estimators=best_params.get('n_estimators', 100),
+                        max_depth=best_params.get('max_depth', None),
+                        min_samples_split=best_params.get('min_samples_split', 2),
+                        min_samples_leaf=best_params.get('min_samples_leaf', 1)
+                    )
+                elif model.model_type == "svm":
+                    model = SklearnModel(
+                        input_dim=input_dim,
+                        output_dim=output_dim,
+                        model_type="svm",
+                        is_regression=is_regression,
+                        C=best_params.get('C', 1.0),
+                        gamma=best_params.get('gamma', 'scale')
+                    )
+                elif model.model_type == "knn":
+                    model = SklearnModel(
+                        input_dim=input_dim,
+                        output_dim=output_dim,
+                        model_type="knn",
+                        is_regression=is_regression,
+                        n_neighbors=best_params.get('n_neighbors', 5),
+                        weights=best_params.get('weights', 'uniform')
+                    )
     
     # Train the model (either original or optimized)
     results = train_inductive_model(
@@ -1450,5 +1744,6 @@ def train_and_evaluate_inductive(
     
     # Combine results
     results['test_metrics'] = test_results
+    results['optimal_hyperparams'] = best_params
     
     return results
