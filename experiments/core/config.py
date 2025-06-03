@@ -65,9 +65,9 @@ class TransductiveExperimentConfig:
     max_retries: int = 10
     min_edge_density: float = 0.005
     disable_deviation_limiting: bool = False
-    max_mean_community_deviation: float = 0.10
-    max_max_community_deviation: float = 0.20
-    min_component_size: int = 10
+    max_mean_community_deviation: float = 0.90
+    max_max_community_deviation: float = 0.90
+    min_component_size: int = 4
     
     # === TRANSDUCTIVE DATA SPLITS ===
     train_ratio: float = 0.6

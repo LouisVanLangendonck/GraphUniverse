@@ -629,16 +629,20 @@ def main():
                 
                 # Update layout
                 fig.update_layout(
-                    title=f"Parameter Space Analysis: {param1} vs {param2} ({viz_type})",
+                    title=viz_type,
+                    title_x=0.5,  # Center the title
                     height=400 * n_rows,
                     showlegend=False
                 )
                 
-                # Add shared axis titles
-                for i in range(1, n_cols + 1):
-                    fig.update_xaxes(title_text=param1, row=n_rows, col=i)
-                for i in range(1, n_rows + 1):
-                    fig.update_yaxes(title_text=param2, row=i, col=1)
+                # Add shared axis titles only once in the middle
+                # X-axis title only on the bottom row, middle column
+                middle_col = (n_cols + 1) // 2
+                fig.update_xaxes(title_text=param1, row=n_rows, col=middle_col)
+                
+                # Y-axis title only on the leftmost column, middle row
+                middle_row = (n_rows + 1) // 2
+                fig.update_yaxes(title_text=param2, row=middle_row, col=1)
                 
                 # Show metric direction info
                 higher_better = is_higher_better_metric(manifold_metric)
