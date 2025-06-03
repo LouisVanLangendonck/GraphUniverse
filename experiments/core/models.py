@@ -1,5 +1,5 @@
 """
-Model definitions for MMSB graph learning experiments.
+Model definitions for DCCC-SBM graph learning experiments.
 
 This module provides model classes for different types of graph learning models.
 """

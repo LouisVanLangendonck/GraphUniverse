@@ -483,7 +483,7 @@ class TransductiveExperiment:
             return obj
     
     def run(self) -> Dict[str, Any]:
-        """Run complete transductive experiment pipeline."""
+        """Run complete transductive learning experiment pipeline."""
         try:
             print("Starting transductive learning experiment...")
             experiment_start = time.time()
@@ -514,12 +514,13 @@ class TransductiveExperiment:
             total_time = time.time() - experiment_start
             print(f"\nExperiment completed in {total_time:.2f} seconds")
             
+            # Only return serializable data
             return {
-                'graph_sample': graph_sample,
+                'graph_properties': self._get_graph_properties(),
                 'graph_signals': graph_signals,
-                'results': results,
-                'transductive_data': transductive_data,
-                'config': self.config,
+                'results': self._clean_model_results(),
+                'split_info': self._get_split_info(),
+                'config': self.config.to_dict(),
                 'summary_report': summary_report,
                 'total_time': total_time
             }
