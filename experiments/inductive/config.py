@@ -27,7 +27,8 @@ class InductiveExperimentConfig:
     graph_family_dir: str = "graph_families"   # Family directory
     auto_load_family: bool = True              # Auto-load family from model
     freeze_encoder: bool = False
-    compare_pretrained: bool = False
+    only_pretrained_experiments: bool = False
+    max_train_graphs_for_finetuning: int = 10
     fine_tune_lr_multiplier: float = 0.1
     
     # === GRAPH FAMILY GENERATION ===
@@ -103,7 +104,7 @@ class InductiveExperimentConfig:
     n_candidates_per_k: int = 30
     
     # === MODELS ===
-    gnn_types: List[str] = field(default_factory=lambda: ['gcn', 'sage'])
+    gnn_types: List[str] = field(default_factory=lambda: ['gcn', 'sage', 'gat', 'fagcn'])
     run_gnn: bool = True
     run_mlp: bool = True
     run_rf: bool = True
@@ -139,7 +140,7 @@ class InductiveExperimentConfig:
     
     # === HYPERPARAMETER OPTIMIZATION ===
     optimize_hyperparams: bool = False
-    n_trials: int = 2
+    n_trials: int = 20
     optimization_timeout: int = 600
     
     # === ANALYSIS ===
@@ -225,26 +226,6 @@ class InductiveExperimentConfig:
             config_dict = json.load(f)
         return cls.from_dict(config_dict)
 
-@dataclass
-class SSLInductiveConfig(InductiveExperimentConfig):
-    """Extended inductive config with SSL pre-training options."""
-    
-    # === SSL PRE-TRAINING OPTIONS ===
-    use_pretrained_models: bool = False
-    pretrained_model_dir: str = "pretrained_models"
-    
-    # Pre-training configuration (if training from scratch)
-    pretrain_from_scratch: bool = False
-    pretraining_tasks: List[str] = field(default_factory=lambda: ["link_prediction"])
-    pretraining_gnn_types: List[str] = field(default_factory=lambda: ["gcn", "sage"])
-    
-    # Fine-tuning options
-    freeze_encoder: bool = False  # Whether to freeze pre-trained encoder during fine-tuning
-    fine_tune_lr_multiplier: float = 0.1  # Learning rate multiplier for fine-tuning
-    
-    # Model matching
-    auto_match_pretrained: bool = True  # Automatically match pre-trained models to downstream tasks
-    fallback_to_random: bool = True  # Fall back to random initialization if no pre-trained model found
 
 @dataclass
 class PreTrainingConfig:
@@ -358,6 +339,10 @@ class PreTrainingConfig:
     # === TASK-SPECIFIC PARAMETERS ===
     negative_sampling_ratio: float = 1.0
     link_pred_loss: str = "bce"
+
+    # Older deprecated parameters
+    contrastive_temperature: float = 0.1
+    corruption_rate: float = 0.1
     
     def __post_init__(self):
         """Validate configuration."""

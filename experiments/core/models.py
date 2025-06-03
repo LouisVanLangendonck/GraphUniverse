@@ -14,7 +14,6 @@ from torch_geometric.utils import degree, to_dense_adj
 import networkx as nx
 from sklearn.base import BaseEstimator
 from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
-from experiments.core.data import prepare_data
 from collections import deque
 
 
@@ -1084,6 +1083,7 @@ class SklearnModel:
         input_dim: int,
         output_dim: int,
         is_regression: bool = False,
+        model_type: str = 'rf',
         n_estimators: int = 100,
         max_depth: Optional[int] = None,
         min_samples_split: int = 2,
@@ -1097,6 +1097,7 @@ class SklearnModel:
             input_dim: Input feature dimension
             output_dim: Output dimension (number of classes for classification, number of communities for regression)
             is_regression: Whether this is a regression task (True) or classification task (False)
+            model_type: Type of sklearn model to use ('rf' for Random Forest)
             n_estimators: Number of trees in the forest
             max_depth: Maximum depth of the trees
             min_samples_split: Minimum number of samples required to split an internal node
@@ -1106,6 +1107,7 @@ class SklearnModel:
         self.input_dim = input_dim
         self.output_dim = output_dim
         self.is_regression = is_regression
+        self.model_type = model_type
         
         if is_regression:
             # For regression, use RandomForestRegressor

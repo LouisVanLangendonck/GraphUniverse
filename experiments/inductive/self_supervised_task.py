@@ -1184,6 +1184,11 @@ class PreTrainedModelSaver:
         config_path = os.path.join(model_dir, "config.json")
         with open(config_path, 'r') as f:
             config_dict = json.load(f)
+
+        # Load family reference
+        family_ref_path = os.path.join(model_dir, "family_reference.json")
+        with open(family_ref_path, 'r') as f:
+            family_ref = json.load(f)
         
         config = PreTrainingConfig(**config_dict)
         
@@ -1205,7 +1210,7 @@ class PreTrainedModelSaver:
         model.load_state_dict(torch.load(model_path, map_location=device))
         model.to(device)
         
-        return model, metadata
+        return model, metadata, family_ref
     
     def list_models(self) -> List[Dict[str, Any]]:
         """List all available pre-trained models with enhanced info."""

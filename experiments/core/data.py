@@ -1,309 +1,360 @@
 """
-Data preparation utilities for MMSB graph learning experiments.
-
-This module provides functions for preparing data for model training, including
-graph format conversions and feature generation.
+Clean data preparation utilities for transductive graph learning.
+Based on inductive data preparation but adapted for single-graph transductive learning.
 """
 
 import numpy as np
 import torch
-import networkx as nx
-from torch_geometric.utils import from_networkx, to_undirected
+from torch_geometric.data import Data
 from typing import Dict, List, Optional, Tuple, Union, Any
+import networkx as nx
+from collections import defaultdict
 
-from mmsb.model import GraphSample
-from experiments.core.config import ExperimentConfig
-from mmsb.feature_regimes import NeighborhoodFeatureAnalyzer, GenerativeRuleBasedLabeler, SimplifiedFeatureGenerator
-from utils.motif_and_role_analysis import MotifRoleAnalyzer
+from mmsb.model import GraphSample, GraphUniverse
+from mmsb.feature_regimes import graphsample_to_pyg
+from utils.metapath_analysis import MetapathAnalyzer, UniverseMetapathSelector
 
 
-def compute_khop_community_counts(
-    graph: nx.Graph,
-    community_labels: List[int],
-    k: int
-) -> torch.Tensor:
-    """
-    Compute the count of communities in K-hop neighborhood for each node.
-    Only counts nodes that are exactly K hops away.
-    
-    Args:
-        graph: NetworkX graph
-        community_labels: List of community labels for each node
-        k: Number of hops to consider (only nodes exactly k hops away are counted)
-        
-    Returns:
-        Tensor of shape [num_nodes, num_communities] containing community counts
-    """
-    num_nodes = len(graph)
-    num_communities = len(set(community_labels))
-    
-    # Initialize count matrix
-    community_counts = torch.zeros((num_nodes, num_communities), dtype=torch.float)
-    
-    # For each node, compute K-hop neighborhood and count communities
-    for node in range(num_nodes):
-        # Get nodes at exactly k hops away
-        khop_nodes = set(nx.single_source_shortest_path_length(graph, node, cutoff=k).keys())
-        # Remove nodes that are closer than k hops
-        if k > 1:
-            closer_nodes = set(nx.single_source_shortest_path_length(graph, node, cutoff=k-1).keys())
-            khop_nodes = khop_nodes - closer_nodes
-        
-        # Count communities in k-hop neighborhood
-        for neighbor in khop_nodes:
-            community = community_labels[neighbor]
-            community_counts[node, community] += 1
-    
-    return community_counts
-
-def prepare_data(
+def prepare_transductive_data(
     graph_sample: GraphSample,
-    config: ExperimentConfig
+    config
 ) -> Dict[str, Dict[str, Any]]:
     """
-    Prepare data for model training from a GraphSample.
+    Central function to prepare single graph data for transductive learning.
     
     Args:
-        graph_sample: The graph sample to prepare data from
+        graph_sample: Single GraphSample object  
         config: Experiment configuration
         
     Returns:
-        Dictionary containing data for each task
+        Dictionary containing data for each task with train/val/test node splits
     """
-    # Debug information
-    print("\nDebugging graph structure:")
-    print(f"Number of nodes: {len(graph_sample.graph.nodes())}")
-    print(f"Number of edges: {len(graph_sample.graph.edges())}")
-    print(f"Graph is connected: {nx.is_connected(graph_sample.graph)}")
-    print(f"Graph has self loops: {len(list(nx.nodes_with_selfloops(graph_sample.graph)))}")
-    print(f"Graph is directed: {graph_sample.graph.is_directed()}")
-    print(f"Graph density: {nx.density(graph_sample.graph):.4f}")
-    print(f"Average degree: {sum(dict(graph_sample.graph.degree()).values()) / len(graph_sample.graph.nodes()):.2f}")
+    # Get universe from graph sample
+    universe = graph_sample.universe
+    if not universe:
+        raise ValueError("No universe found in graph sample")
     
-    # Convert graph to PyTorch Geometric format
-    try:
-        edges = list(graph_sample.graph.edges())
-        print(f"First few edges: {edges[:5]}")
-        edge_index = torch.tensor(edges, dtype=torch.long).t().contiguous()
-    except Exception as e:
-        print(f"Error converting edges to tensor: {e}")
-        print(f"Edge type: {type(graph_sample.graph.edges())}")
-        print(f"Edge content: {list(graph_sample.graph.edges())[:5]}")
-        raise
+    # Get universe K
+    universe_K = universe.K
+    print(f"\nUsing universe K: {universe_K}")
     
-    # Get features and convert to float
-    features = torch.tensor(graph_sample.features, dtype=torch.float)
+    # Calculate split sizes for nodes
+    n_nodes = graph_sample.n_nodes
+    n_train = int(n_nodes * config.train_ratio)
+    n_val = int(n_nodes * config.val_ratio)
+    n_test = n_nodes - n_train - n_val
     
-    # Split data
-    n_nodes = len(graph_sample.graph.nodes())
-    indices = torch.randperm(n_nodes)
+    print(f"\nSplitting {n_nodes} nodes: {n_train} train, {n_val} val, {n_test} test")
     
-    train_size = int(n_nodes * config.train_ratio)
-    val_size = int(n_nodes * config.val_ratio)
+    # Split nodes randomly
+    np.random.seed(config.seed)
+    indices = np.random.permutation(n_nodes)
     
-    train_idx = indices[:train_size]
-    val_idx = indices[train_size:train_size + val_size]
-    test_idx = indices[train_size + val_size:]
+    train_indices = indices[:n_train].tolist()
+    val_indices = indices[n_train:n_train + n_val].tolist()
+    test_indices = indices[n_train + n_val:].tolist()
+    
+    # Convert to PyG format
+    pyg_data = graphsample_to_pyg(graph_sample)
+    
+    # Add universe K to graph
+    pyg_data.universe_K = universe_K
     
     # Initialize results dictionary
-    task_data = {}
+    transductive_data = {}
     
-    # Prepare data for each task
+    # Generate metapath tasks if enabled
+    metapath_data = None
+    if hasattr(config, 'enable_metapath_tasks') and config.enable_metapath_tasks:
+        print("\nGenerating metapath tasks...")
+        metapath_data = generate_transductive_metapath_tasks(
+            graph_sample=graph_sample,
+            universe=universe,
+            train_indices=train_indices,
+            val_indices=val_indices,
+            test_indices=test_indices,
+            k_values=getattr(config, 'metapath_k_values', [3, 4, 5]),
+            require_loop=getattr(config, 'metapath_require_loop', False),
+            degree_weight=getattr(config, 'metapath_degree_weight', 0.3),
+            max_community_participation=getattr(config, 'max_community_participation', 1.0)
+        )
+    
+    # Process each task
     for task in config.tasks:
+        print(f"\nPreparing transductive data for task: {task}")
+        
+        # Create base data structure
+        task_data = {
+            'features': pyg_data.x,
+            'edge_index': pyg_data.edge_index,
+            'train_idx': torch.tensor(train_indices, dtype=torch.long),
+            'val_idx': torch.tensor(val_indices, dtype=torch.long),
+            'test_idx': torch.tensor(test_indices, dtype=torch.long),
+            'num_nodes': n_nodes
+        }
+        
+        # Generate task-specific labels
         if task == "community":
-            # Community prediction task (original task)
-            labels = torch.tensor(graph_sample.community_labels, dtype=torch.long)
-            num_classes = len(torch.unique(labels))
-            
-            task_data["community"] = {
-                "features": features,
-                "edge_index": edge_index,
-                "labels": labels,
-                "train_idx": train_idx,
-                "val_idx": val_idx,
-                "test_idx": test_idx,
-                "num_classes": num_classes
-            }
+            # Standard community prediction - use universe-indexed labels
+            task_data['labels'] = torch.tensor(graph_sample.community_labels_universe_level, dtype=torch.long)
             
         elif task == "k_hop_community_counts":
-            # K-hop community count prediction task
-            print("\nPreparing community counts task data...")
-            
-            # Get community labels
-            community_labels = graph_sample.community_labels
-            
-            # Compute K-hop community counts
-            community_count_vectors = compute_khop_community_counts(
-                graph=graph_sample.graph,
-                community_labels=community_labels,
-                k=config.khop_community_counts_k
+            # K-hop community counting - already universe-indexed
+            community_counts = compute_khop_community_counts_universe_indexed(
+                graph_sample.graph,
+                graph_sample.community_labels,
+                graph_sample.community_id_mapping,
+                universe_K,
+                getattr(config, 'khop_community_counts_k', 2)
             )
+            task_data['labels'] = community_counts
             
-            task_data["k_hop_community_counts"] = {
-                "features": features,
-                "edge_index": edge_index,
-                "labels": community_count_vectors,
-                "train_idx": train_idx,
-                "val_idx": val_idx,
-                "test_idx": test_idx,
-                "num_classes": len(torch.unique(torch.tensor(community_labels)))
-            }
-            print("Community counts task data preparation complete.")
+        elif task == "metapath" and metapath_data:
+            # Metapath task
+            task_info = list(metapath_data['tasks'].values())[0]
+            metapath_labels = task_info['labels']
+            if metapath_labels is not None:
+                binary_labels = (metapath_labels > 0).astype(int)
+                task_data['labels'] = torch.tensor(binary_labels, dtype=torch.long)
+            else:
+                continue
+        
+        # Add task-specific metadata
+        is_regression = config.is_regression.get(task, False)
+        
+        # Calculate output dimension based on task type
+        if task == "community":
+            # For community prediction, use universe K
+            output_dim = universe_K
+            
+        elif task == "k_hop_community_counts":
+            # For k-hop counting, use universe K
+            output_dim = universe_K
+            
+        elif task == "metapath" and metapath_data:
+            # For metapath tasks, use binary classification
+            output_dim = 2
+        
+        task_data['metadata'] = {
+            'is_regression': is_regression,
+            'output_dim': output_dim,
+            'input_dim': pyg_data.x.shape[1],
+            'task_type': task,
+            'universe_K': universe_K,
+            'num_classes': output_dim  # For compatibility
+        }
+        
+        # Add task-specific metadata
+        if task == "k_hop_community_counts":
+            task_data['metadata'].update({
+                'k_value': getattr(config, 'khop_community_counts_k', 2),
+                'universe_K': universe_K
+            })
+            
+        elif task == "metapath" and metapath_data:
+            task_info = list(metapath_data['tasks'].values())[0]
+            task_data['metadata'].update({
+                'metapath': task_info['metapath'],
+                'universe_probability': task_info['universe_probability'],
+                'coverage': task_info['coverage'],
+                'avg_positive_rate': task_info['avg_positive_rate'],
+                'is_loop_task': task_info['is_loop_task']
+            })
+        
+        transductive_data[task] = task_data
     
-    return task_data
+    # Add metapath analysis if available
+    if metapath_data:
+        transductive_data['metapath_analysis'] = {
+            'evaluation_results': metapath_data['evaluation_results'],
+            'candidate_analysis': metapath_data['candidate_analysis'],
+            'universe_info': metapath_data['universe_info']
+        }
+    
+    return transductive_data
 
-def networkx_to_pyg(
+
+def compute_khop_community_counts_universe_indexed(
     graph: nx.Graph,
-    label_key: str = "label",
-    is_vector_label: bool = False
-) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    community_labels: np.ndarray,
+    universe_communities: Dict[int, int],
+    universe_K: int,
+    k: int
+) -> torch.Tensor:
     """
-    Convert a NetworkX graph to PyTorch tensors for model training.
+    Compute k-hop community counts with universe indexing.
     
     Args:
         graph: NetworkX graph
-        label_key: Node attribute key for labels
-        is_vector_label: Whether the labels are vectors (e.g., community counts) or single values
+        community_labels: Node community labels
+        universe_communities: Mapping from local to universe community indices
+        universe_K: Number of communities in universe
+        k: Number of hops
         
     Returns:
-        Tuple of (features, edge_index, labels)
+        Tensor of shape (n_nodes, universe_K) containing k-hop community counts
     """
-    # Convert to PyG format using from_networkx
-    # Features are automatically extracted from the "features" node attribute
-    data = from_networkx(graph, group_node_attrs=["features"])
+    n_nodes = graph.number_of_nodes()
+    counts = np.zeros((n_nodes, universe_K))
     
-    # Get edge index and ensure undirected
-    edge_index = to_undirected(data.edge_index)
+    # For each node
+    for node in range(n_nodes):
+        # Get k-hop neighborhood
+        neighbors = set([node])
+        for _ in range(k):
+            new_neighbors = set()
+            for n in neighbors:
+                new_neighbors.update(graph.neighbors(n))
+            neighbors.update(new_neighbors)
+        
+        # Count communities in neighborhood
+        for neighbor in neighbors:
+            local_comm = community_labels[neighbor]
+            if local_comm in universe_communities:
+                universe_comm = universe_communities[local_comm]
+                counts[node, universe_comm] += 1
+            else:
+                raise ValueError(f"Community {local_comm} not found in universe communities")
     
-    # Get features from the converted data
-    features = data.x
-    
-    # Get labels
-    if is_vector_label:
-        # For vector labels (e.g., community counts), use float dtype
-        labels = torch.tensor([data[1].get(label_key, torch.zeros(data[1].get(label_key).shape)) 
-                             for data in sorted(graph.nodes(data=True))], 
-                            dtype=torch.float)
-    else:
-        # For single-value labels (e.g., community membership), use long dtype
-        labels = torch.tensor([data[1].get(label_key, 0) 
-                             for data in sorted(graph.nodes(data=True))], 
-                            dtype=torch.long)
-    
-    return features, edge_index, labels
+    return torch.tensor(counts, dtype=torch.float)
 
 
-# def create_sklearn_compatible_data(
-#     features: Union[np.ndarray, torch.Tensor],
-#     edge_index: Union[np.ndarray, torch.Tensor],
-#     labels: Union[np.ndarray, torch.Tensor],
-#     include_graph_features: bool = True
-# ) -> Tuple[np.ndarray, np.ndarray]:
-#     """
-#     Create scikit-learn compatible features by optionally adding graph structure information.
-    
-#     Args:
-#         features: Node features [num_nodes, num_features]
-#         edge_index: Graph connectivity [2, num_edges]
-#         labels: Node labels [num_nodes]
-#         include_graph_features: Whether to include graph structure features
-        
-#     Returns:
-#         Tuple of (X, y) for scikit-learn models
-#     """
-#     # Convert tensors to numpy, ensuring they're on CPU first
-#     if isinstance(features, torch.Tensor):
-#         X = features.cpu().numpy()
-#     else:
-#         X = features
-        
-#     if isinstance(labels, torch.Tensor):
-#         y = labels.cpu().numpy()
-#     else:
-#         y = labels
-    
-#     if include_graph_features:
-#         # Create adjacency-based features
-#         num_nodes = X.shape[0]
-        
-#         if isinstance(edge_index, torch.Tensor):
-#             edge_list = edge_index.t().cpu().numpy()
-#         else:
-#             edge_list = np.array(edge_index).T
-            
-#         # Create mapping to ensure edge indices are within bounds
-#         unique_nodes = np.unique(edge_list.flatten())
-#         node_to_idx = {node: idx for idx, node in enumerate(range(num_nodes))}
-        
-#         # Create adjacency matrix
-#         adjacency = np.zeros((num_nodes, num_nodes))
-#         for edge in edge_list:
-#             u, v = edge[0], edge[1]
-#             if u in node_to_idx and v in node_to_idx:
-#                 u_idx, v_idx = node_to_idx[u], node_to_idx[v]
-#                 adjacency[u_idx, v_idx] = 1
-        
-#         # Feature 1: Node degree
-#         degree = np.sum(adjacency, axis=1, keepdims=True)
-        
-#         # Feature 2: Clustering coefficient (approximated by local triangle count)
-#         triangle_count = np.zeros((num_nodes, 1))
-#         for i in range(num_nodes):
-#             neighbors = np.where(adjacency[i] > 0)[0]
-#             if len(neighbors) >= 2:
-#                 # Count triangles (connections between neighbors)
-#                 for j in range(len(neighbors)):
-#                     for k in range(j+1, len(neighbors)):
-#                         if adjacency[neighbors[j], neighbors[k]] > 0:
-#                             triangle_count[i, 0] += 1
-        
-#         # Feature 3: Average neighbor degree
-#         avg_neighbor_degree = np.zeros((num_nodes, 1))
-#         for i in range(num_nodes):
-#             neighbors = np.where(adjacency[i] > 0)[0]
-#             if len(neighbors) > 0:
-#                 avg_neighbor_degree[i, 0] = np.mean(degree[neighbors])
-        
-#         # Combine all features
-#         graph_features = np.hstack([
-#             degree,
-#             triangle_count,
-#             avg_neighbor_degree
-#         ])
-        
-#         # Normalize graph features
-#         graph_features = (graph_features - np.mean(graph_features, axis=0)) / (np.std(graph_features, axis=0) + 1e-8)
-        
-#         # Combine with original features
-#         X = np.hstack([X, graph_features])
-    
-#     return X, y
-
-
-def generate_graph_statistics(graph_sample: GraphSample) -> Dict[str, float]:
+def generate_transductive_metapath_tasks(
+    graph_sample: GraphSample,
+    universe: 'GraphUniverse',
+    train_indices: List[int],
+    val_indices: List[int], 
+    test_indices: List[int],
+    k_values: List[int] = [3, 4, 5],
+    require_loop: bool = False,
+    degree_weight: float = 0.3,
+    max_community_participation: float = 1.0
+) -> Dict[str, Any]:
     """
-    Generate statistics for a graph sample.
+    Generate metapath tasks for transductive learning on a single graph.
     
     Args:
-        graph_sample: MMSB GraphSample
+        graph_sample: Single graph sample
+        universe: Graph universe
+        train_indices: Training node indices
+        val_indices: Validation node indices
+        test_indices: Test node indices
+        k_values: List of k values for metapath length
+        require_loop: Whether to require loop in metapath
+        degree_weight: Weight for degree-based scoring
+        max_community_participation: Maximum community participation ratio
         
     Returns:
-        Dictionary of graph statistics
+        Dictionary containing metapath task data
     """
-    graph = graph_sample.graph
+    # This would implement the metapath generation logic for single graph
+    # For now, return empty dict as placeholder
+    return {}
+
+
+def analyze_graph_properties(graph_sample: GraphSample) -> Dict[str, Any]:
+    """
+    Analyze properties of a single graph for transductive learning insights.
     
-    stats = {
-        "num_nodes": graph.number_of_nodes(),
-        "num_edges": graph.number_of_edges(),
-        "avg_degree": 2 * graph.number_of_edges() / graph.number_of_nodes(),
-        "density": nx.density(graph),
-        "clustering_coefficient": nx.average_clustering(graph),
-        "num_components": nx.number_connected_components(graph),
-        "largest_component_size": len(max(nx.connected_components(graph), key=len)),
-        "avg_shortest_path": nx.average_shortest_path_length(graph) if nx.is_connected(graph) else float('inf'),
-        "diameter": nx.diameter(graph) if nx.is_connected(graph) else float('inf'),
-        "homophily": graph_sample.homophily if hasattr(graph_sample, 'homophily') else None,
-        "feature_signal": graph_sample.feature_signal if hasattr(graph_sample, 'feature_signal') else None
+    Args:
+        graph_sample: GraphSample object
+        
+    Returns:
+        Dictionary containing graph analysis
+    """
+    properties = {
+        'n_nodes': graph_sample.n_nodes,
+        'n_edges': graph_sample.graph.number_of_edges(),
+        'n_communities': len(np.unique(graph_sample.community_labels)),
+        'density': 0.0,
+        'avg_degree': 0.0,
+        'clustering_coefficient': 0.0
     }
     
-    return stats 
+    if graph_sample.n_nodes > 1:
+        properties['density'] = graph_sample.graph.number_of_edges() / (graph_sample.n_nodes * (graph_sample.n_nodes - 1) / 2)
+    
+    if graph_sample.n_nodes > 0:
+        properties['avg_degree'] = sum(dict(graph_sample.graph.degree()).values()) / graph_sample.n_nodes
+    
+    try:
+        properties['clustering_coefficient'] = nx.average_clustering(graph_sample.graph)
+    except:
+        properties['clustering_coefficient'] = 0.0
+    
+    # Add signal metrics if available
+    if hasattr(graph_sample, 'degree_signal'):
+        properties['degree_signal'] = graph_sample.degree_signal
+    if hasattr(graph_sample, 'structure_signal'):
+        properties['structure_signal'] = graph_sample.structure_signal
+    if hasattr(graph_sample, 'feature_signal'):
+        properties['feature_signal'] = graph_sample.feature_signal
+    
+    return properties
+
+
+def validate_transductive_data(
+    transductive_data: Dict[str, Dict[str, Any]], 
+    config
+) -> Dict[str, Any]:
+    """
+    Validate that the transductive data is properly prepared.
+    
+    Args:
+        transductive_data: Prepared transductive data
+        config: Experiment configuration
+        
+    Returns:
+        Dictionary with validation results
+    """
+    validation_results = {
+        'valid': True,
+        'issues': [],
+        'task_info': {}
+    }
+    
+    for task, task_data in transductive_data.items():
+        if task in ['metapath_analysis']:
+            continue
+            
+        task_info = {
+            'has_features': 'features' in task_data,
+            'has_edges': 'edge_index' in task_data,
+            'has_labels': 'labels' in task_data,
+            'has_splits': all(key in task_data for key in ['train_idx', 'val_idx', 'test_idx'])
+        }
+        
+        # Check data consistency
+        if task_info['has_features'] and task_info['has_labels']:
+            n_nodes_features = task_data['features'].shape[0]
+            if task_data['labels'].dim() == 1:
+                n_nodes_labels = task_data['labels'].shape[0]
+            else:
+                n_nodes_labels = task_data['labels'].shape[0]
+                
+            if n_nodes_features != n_nodes_labels:
+                validation_results['valid'] = False
+                validation_results['issues'].append(
+                    f"Task {task}: Feature and label node counts don't match "
+                    f"({n_nodes_features} vs {n_nodes_labels})"
+                )
+        
+        # Check split sizes
+        if task_info['has_splits']:
+            train_size = len(task_data['train_idx'])
+            val_size = len(task_data['val_idx'])
+            test_size = len(task_data['test_idx'])
+            total_size = train_size + val_size + test_size
+            
+            expected_total = task_data.get('num_nodes', config.num_nodes)
+            
+            if total_size != expected_total:
+                validation_results['valid'] = False
+                validation_results['issues'].append(
+                    f"Task {task}: Split sizes don't sum to total nodes "
+                    f"({total_size} vs {expected_total})"
+                )
+        
+        validation_results['task_info'][task] = task_info
+    
+    return validation_results

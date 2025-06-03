@@ -98,7 +98,8 @@ def train_inductive_model(
     dataloaders: Dict[str, DataLoader],
     config: InductiveExperimentConfig,
     task: str,
-    device: torch.device
+    device: torch.device,
+    finetuning: Optional[bool] = False
 ) -> Dict[str, Any]:
     """
     Train a model for inductive learning on graph families.
@@ -176,7 +177,7 @@ def train_inductive_model(
             optimizer.zero_grad()
             
             # Forward pass - check if model requires edge_index
-            if hasattr(model, 'gnn_type') or hasattr(model, 'transformer_type'):
+            if hasattr(model, 'gnn_type') or hasattr(model, 'transformer_type') or finetuning:
                 out = model(batch.x, batch.edge_index)
             else:  # MLPModel or other non-GNN model
                 out = model(batch.x)
@@ -208,7 +209,7 @@ def train_inductive_model(
             for batch in val_loader:
                 batch = batch.to(device)
                 
-                if hasattr(model, 'gnn_type') or hasattr(model, 'transformer_type'):
+                if hasattr(model, 'gnn_type') or hasattr(model, 'transformer_type') or finetuning:
                     out = model(batch.x, batch.edge_index)
                 else:
                     out = model(batch.x)
@@ -290,7 +291,7 @@ def train_inductive_model(
         print("Loaded best model weights")
     
     # Final evaluation on test set
-    test_metrics = evaluate_inductive_model(model, dataloaders['test'], is_regression, device)
+    test_metrics = evaluate_inductive_model(model, dataloaders['test'], is_regression, device, finetuning)
     
     return {
         'train_time': train_time,
@@ -406,7 +407,8 @@ def evaluate_inductive_model(
     model: Union[GNNModel, MLPModel],
     test_loader: DataLoader,
     is_regression: bool,
-    device: torch.device
+    device: torch.device,
+    finetuning: Optional[bool] = False
 ) -> Dict[str, Any]:
     """
     Evaluate a model on the test set for inductive learning.
@@ -429,7 +431,7 @@ def evaluate_inductive_model(
             batch = batch.to(device)
             
             # Forward pass - check if model requires edge_index
-            if hasattr(model, 'gnn_type') or hasattr(model, 'transformer_type'):
+            if hasattr(model, 'gnn_type') or hasattr(model, 'transformer_type') or finetuning:
                 out = model(batch.x, batch.edge_index)
             else:  # MLPModel or other non-GNN model
                 out = model(batch.x)
@@ -1026,724 +1028,725 @@ def train_and_evaluate_inductive(
     device: torch.device,
     optimize_hyperparams: bool = False,
     experiment_name: Optional[str] = None,
-    run_id: Optional[int] = None
+    run_id: Optional[int] = None, 
+    finetuning: Optional[bool] = False
 ) -> Dict[str, Any]:
     """Complete training and evaluation pipeline for inductive learning."""
     
     is_regression = config.is_regression.get(task, False)
     print(f"🔄 Task: {task}, is_regression: {is_regression}")
 
-    # Handle Graph Transformer models specifically
-    if hasattr(model, 'transformer_type'):
-        print(f"🔄 Training Graph Transformer: {model.transformer_type}")
-        
-        # Share precomputed cache if available
-        if hasattr(config, 'transformer_caches') and model.transformer_type in config.transformer_caches:
-            model._encoding_cache = config.transformer_caches[model.transformer_type]
-            print(f"✅ Using precomputed encodings cache with {len(model._encoding_cache)} entries")
-        
-        # Update hyperparameter optimization for transformers
-        if optimize_hyperparams and not isinstance(model, SklearnModel):
-            print(f"🎯 Optimizing Graph Transformer hyperparameters...")
+    if finetuning:
+        print(f"Finetuning model. No hyperparameter optimization.")
+    else:
+        print(f"Training from scratch")
+
+        # Handle Graph Transformer models specifically
+        if hasattr(model, 'transformer_type'):
+            print(f"🔄 Training Graph Transformer: {model.transformer_type}")
             
-            # Get model creator function for transformers
-            model_creator = lambda **kwargs: GraphTransformerModel(**kwargs)
+            # Share precomputed cache if available
+            if hasattr(config, 'transformer_caches') and model.transformer_type in config.transformer_caches:
+                model._encoding_cache = config.transformer_caches[model.transformer_type]
+                print(f"✅ Using precomputed encodings cache with {len(model._encoding_cache)} entries")
             
-            # Get sample batch to determine dimensions
-            sample_batch = next(iter(dataloaders['train']))
-            input_dim = sample_batch.x.shape[1]
-            
-            if is_regression:
-                output_dim = sample_batch.y.shape[1] if len(sample_batch.y.shape) > 1 else 1
-            else:
-                output_dim = get_total_classes_from_dataloaders(dataloaders)
-            
-            # Create a single optimization study
-            import optuna
-            from optuna import create_study, Trial
-            
-            study_name = f"transformer_{model.transformer_type}_{'regression' if is_regression else 'classification'}"
-            study = create_study(direction='maximize')
-            
-            # Store transformer type for the objective function
-            transformer_type = model.transformer_type
-            
-            def objective(trial: Trial) -> float:
-                # Common hyperparameters
-                lr = trial.suggest_float('lr', 1e-4, 1e-2, log=True)
-                weight_decay = trial.suggest_float('weight_decay', 1e-5, 1e-2, log=True)
-                patience = trial.suggest_int('patience', 10, 50)
+            # Update hyperparameter optimization for transformers
+            if optimize_hyperparams and not isinstance(model, SklearnModel):
+                print(f"🎯 Optimizing Graph Transformer hyperparameters...")
                 
-                # Transformer-specific hyperparameters
-                num_heads = trial.suggest_categorical('num_heads', [4, 8, 16])
-                base_dim = trial.suggest_int('base_dim', 8, 32)
-                hidden_dim = base_dim * num_heads
-                num_layers = trial.suggest_int('num_layers', 2, 6)
-                dropout = trial.suggest_float('dropout', 0.0, 0.3)
+                # Get model creator function for transformers
+                model_creator = lambda **kwargs: GraphTransformerModel(**kwargs)
                 
-                # Transformer-type specific parameters
-                if transformer_type == "graphormer":
-                    max_path_length = trial.suggest_int('max_path_length', 5, 15)
-                    precompute_encodings = trial.suggest_categorical('precompute_encodings', [True, False])
-                    local_gnn_type = "gcn"  # Default for GraphFormer
-                    prenorm = True  # Default for GraphFormer
-                elif transformer_type == "graphgps":
-                    max_path_length = 10  # Default for GraphGPS
-                    precompute_encodings = True  # Default for GraphGPS
-                    local_gnn_type = trial.suggest_categorical('local_gnn_type', ['gcn', 'sage'])
-                    prenorm = trial.suggest_categorical('prenorm', [True, False])
+                # Get sample batch to determine dimensions
+                sample_batch = next(iter(dataloaders['train']))
+                input_dim = sample_batch.x.shape[1]
                 
-                # Create transformer model with all parameters
-                trial_model = GraphTransformerModel(
-                    input_dim=input_dim,
-                    hidden_dim=hidden_dim,
-                    output_dim=output_dim,
-                    transformer_type=transformer_type,
-                    num_layers=num_layers,
-                    dropout=dropout,
-                    is_regression=is_regression,
-                    num_heads=num_heads,
-                    max_path_length=max_path_length,
-                    precompute_encodings=precompute_encodings,
-                    cache_encodings=config.transformer_cache_encodings,
-                    local_gnn_type=local_gnn_type,
-                    prenorm=prenorm
-                ).to(device)
-                
-                # Restore cache if available
-                if hasattr(config, 'transformer_caches') and transformer_type in config.transformer_caches:
-                    trial_model._encoding_cache = config.transformer_caches[transformer_type]
-                
-                # Train model with reduced epochs for speed
-                optimizer = torch.optim.Adam(trial_model.parameters(), lr=lr, weight_decay=weight_decay)
-                
-                # Set up loss function
                 if is_regression:
-                    if config.regression_loss == 'mae':
-                        criterion = torch.nn.L1Loss()
-                    else:
-                        criterion = torch.nn.MSELoss()
+                    output_dim = sample_batch.y.shape[1] if len(sample_batch.y.shape) > 1 else 1
                 else:
-                    criterion = torch.nn.CrossEntropyLoss()
+                    output_dim = get_total_classes_from_dataloaders(dataloaders)
                 
-                # Quick training loop
-                max_epochs = min(50, config.epochs // 4)  # Reduced epochs for hyperopt
-                best_val_metric = float('inf') if is_regression else 0.0
-                patience_counter = 0
+                # Create a single optimization study
+                import optuna
+                from optuna import create_study, Trial
                 
-                for epoch in range(max_epochs):
-                    # Training
-                    trial_model.train()
-                    for batch in dataloaders['train']:
-                        batch = batch.to(device)
-                        optimizer.zero_grad()
-                        out = trial_model(batch.x, batch.edge_index)
-                        loss = criterion(out, batch.y)
-                        loss.backward()
-                        optimizer.step()
+                study_name = f"transformer_{model.transformer_type}_{'regression' if is_regression else 'classification'}"
+                study = create_study(direction='maximize')
+                
+                # Store transformer type for the objective function
+                transformer_type = model.transformer_type
+                
+                def objective(trial: Trial) -> float:
+                    # Common hyperparameters
+                    lr = trial.suggest_float('lr', 1e-4, 1e-2, log=True)
+                    weight_decay = trial.suggest_float('weight_decay', 1e-5, 1e-2, log=True)
+                    patience = trial.suggest_int('patience', 10, 50)
                     
-                    # Validation
-                    trial_model.eval()
-                    val_predictions = []
-                    val_targets = []
+                    # Transformer-specific hyperparameters
+                    num_heads = trial.suggest_categorical('num_heads', [4, 8, 16])
+                    base_dim = trial.suggest_int('base_dim', 8, 32)
+                    hidden_dim = base_dim * num_heads
+                    num_layers = trial.suggest_int('num_layers', 2, 6)
+                    dropout = trial.suggest_float('dropout', 0.0, 0.3)
                     
-                    with torch.no_grad():
-                        for batch in dataloaders['val']:
-                            batch = batch.to(device)
-                            out = trial_model(batch.x, batch.edge_index)
-                            
-                            if is_regression:
-                                val_predictions.append(out.detach().cpu())
-                            else:
-                                val_predictions.append(out.argmax(dim=1).detach().cpu())
-                            
-                            val_targets.append(batch.y.detach().cpu())
+                    # Transformer-type specific parameters
+                    if transformer_type == "graphormer":
+                        max_path_length = trial.suggest_int('max_path_length', 5, 15)
+                        precompute_encodings = trial.suggest_categorical('precompute_encodings', [True, False])
+                        local_gnn_type = "gcn"  # Default for GraphFormer
+                        prenorm = True  # Default for GraphFormer
+                    elif transformer_type == "graphgps":
+                        max_path_length = 10  # Default for GraphGPS
+                        precompute_encodings = True  # Default for GraphGPS
+                        local_gnn_type = trial.suggest_categorical('local_gnn_type', ['gcn', 'sage'])
+                        prenorm = trial.suggest_categorical('prenorm', [True, False])
                     
-                    # Calculate validation metric
-                    val_pred = torch.cat(val_predictions, dim=0).numpy()
-                    val_true = torch.cat(val_targets, dim=0).numpy()
-                    val_metrics = compute_metrics(val_true, val_pred, is_regression)
+                    # Create transformer model with all parameters
+                    trial_model = GraphTransformerModel(
+                        input_dim=input_dim,
+                        hidden_dim=hidden_dim,
+                        output_dim=output_dim,
+                        transformer_type=transformer_type,
+                        num_layers=num_layers,
+                        dropout=dropout,
+                        is_regression=is_regression,
+                        num_heads=num_heads,
+                        max_path_length=max_path_length,
+                        precompute_encodings=precompute_encodings,
+                        cache_encodings=config.transformer_cache_encodings,
+                        local_gnn_type=local_gnn_type,
+                        prenorm=prenorm
+                    ).to(device)
                     
+                    # Restore cache if available
+                    if hasattr(config, 'transformer_caches') and transformer_type in config.transformer_caches:
+                        trial_model._encoding_cache = config.transformer_caches[transformer_type]
+                    
+                    # Train model with reduced epochs for speed
+                    optimizer = torch.optim.Adam(trial_model.parameters(), lr=lr, weight_decay=weight_decay)
+                    
+                    # Set up loss function
                     if is_regression:
                         if config.regression_loss == 'mae':
-                            val_metric = val_metrics['mae']
-                            if val_metric < best_val_metric:  # Lower is better for MAE
-                                best_val_metric = val_metric
-                                patience_counter = 0
-                            else:
-                                patience_counter += 1
+                            criterion = torch.nn.L1Loss()
                         else:
-                            val_metric = val_metrics['r2']
-                            if val_metric > best_val_metric:  # Higher is better for R²
-                                best_val_metric = val_metric
-                                patience_counter = 0
-                            else:
-                                patience_counter += 1
+                            criterion = torch.nn.MSELoss()
                     else:
-                        val_metric = val_metrics['f1_macro']
-                        if val_metric > best_val_metric:  # Higher is better for F1
-                            best_val_metric = val_metric
-                            patience_counter = 0
-                        else:
-                            patience_counter += 1
+                        criterion = torch.nn.CrossEntropyLoss()
                     
-                    if patience_counter >= patience:
-                        break
-                
-                # Return metric for optimization
-                if is_regression:
-                    if config.regression_loss == 'mae':
-                        return -best_val_metric  # Negative because we minimize MAE
+                    # Quick training loop
+                    max_epochs = min(50, config.epochs // 4)  # Reduced epochs for hyperopt
+                    best_val_metric = float('inf') if is_regression else 0.0
+                    patience_counter = 0
+                    
+                    for epoch in range(max_epochs):
+                        # Training
+                        trial_model.train()
+                        for batch in dataloaders['train']:
+                            batch = batch.to(device)
+                            optimizer.zero_grad()
+                            out = trial_model(batch.x, batch.edge_index)
+                            loss = criterion(out, batch.y)
+                            loss.backward()
+                            optimizer.step()
+                        
+                        # Validation
+                        trial_model.eval()
+                        val_predictions = []
+                        val_targets = []
+                        
+                        with torch.no_grad():
+                            for batch in dataloaders['val']:
+                                batch = batch.to(device)
+                                out = trial_model(batch.x, batch.edge_index)
+                                
+                                if is_regression:
+                                    val_predictions.append(out.detach().cpu())
+                                else:
+                                    val_predictions.append(out.argmax(dim=1).detach().cpu())
+                                
+                                val_targets.append(batch.y.detach().cpu())
+                        
+                        # Calculate validation metric
+                        val_pred = torch.cat(val_predictions, dim=0).numpy()
+                        val_true = torch.cat(val_targets, dim=0).numpy()
+                        val_metrics = compute_metrics(val_true, val_pred, is_regression)
+                        
+                        if is_regression:
+                            if config.regression_loss == 'mae':
+                                val_metric = val_metrics['mae']
+                                if val_metric < best_val_metric:  # Lower is better for MAE
+                                    best_val_metric = val_metric
+                                    patience_counter = 0
+                                else:
+                                    patience_counter += 1
+                            else:
+                                val_metric = val_metrics['r2']
+                                if val_metric > best_val_metric:  # Higher is better for R²
+                                    best_val_metric = val_metric
+                                    patience_counter = 0
+                                else:
+                                    patience_counter += 1
+                        else:
+                            val_metric = val_metrics['f1_macro']
+                            if val_metric > best_val_metric:  # Higher is better for F1
+                                best_val_metric = val_metric
+                                patience_counter = 0
+                            else:
+                                patience_counter += 1
+                        
+                        if patience_counter >= patience:
+                            break
+                    
+                    # Return metric for optimization
+                    if is_regression:
+                        if config.regression_loss == 'mae':
+                            return -best_val_metric  # Negative because we minimize MAE
+                        else:
+                            return best_val_metric  # Positive because we maximize R²
                     else:
-                        return best_val_metric  # Positive because we maximize R²
-                else:
-                    return best_val_metric  # Positive because we maximize F1
-            
-            # Run optimization
-            study.optimize(objective, n_trials=config.n_trials, timeout=config.optimization_timeout)
-            
-            # Apply optimized parameters
-            if study.best_params:
-                best_params = study.best_params
-                print(f"🎯 Applying optimized parameters:")
-                for key, value in best_params.items():
-                    print(f"   {key}: {value}")
+                        return best_val_metric  # Positive because we maximize F1
                 
-                # Recreate model with optimized parameters
-                base_dim = best_params.get('base_dim', 8)
-                num_heads = best_params.get('num_heads', 8)
-                hidden_dim = base_dim * num_heads
+                # Run optimization
+                study.optimize(objective, n_trials=config.n_trials, timeout=config.optimization_timeout)
                 
-                model = GraphTransformerModel(
-                    input_dim=input_dim,
-                    hidden_dim=hidden_dim,
-                    output_dim=output_dim,
-                    transformer_type=transformer_type,
-                    num_layers=best_params.get('num_layers', 2),
-                    dropout=best_params.get('dropout', 0.1),
-                    is_regression=is_regression,
-                    num_heads=num_heads,
-                    max_path_length=best_params.get('max_path_length', 10),
-                    precompute_encodings=best_params.get('precompute_encodings', True),
-                    cache_encodings=config.transformer_cache_encodings,
-                    local_gnn_type=best_params.get('local_gnn_type', 'gcn'),
-                    prenorm=best_params.get('prenorm', True)
-                ).to(device)
-                
-                # Restore cache if available
-                if hasattr(config, 'transformer_caches') and transformer_type in config.transformer_caches:
-                    model._encoding_cache = config.transformer_caches[transformer_type]
-                
-                # Update config with optimized parameters
-                config.learning_rate = best_params.get('lr', config.learning_rate)
-                config.weight_decay = best_params.get('weight_decay', config.weight_decay)
-                config.patience = best_params.get('patience', config.patience)
-                config.optimized_patience = best_params.get('patience', config.patience)
-    
-    # Handle GNN models
-    elif hasattr(model, 'gnn_type'):
-        print(f"🔄 Training GNN: {model.gnn_type}")
+                # Apply optimized parameters
+                if study.best_params:
+                    best_params = study.best_params
+                    print(f"🎯 Applying optimized parameters:")
+                    for key, value in best_params.items():
+                        print(f"   {key}: {value}")
+                    
+                    # Recreate model with optimized parameters
+                    base_dim = best_params.get('base_dim', 8)
+                    num_heads = best_params.get('num_heads', 8)
+                    hidden_dim = base_dim * num_heads
+                    
+                    model = GraphTransformerModel(
+                        input_dim=input_dim,
+                        hidden_dim=hidden_dim,
+                        output_dim=output_dim,
+                        transformer_type=transformer_type,
+                        num_layers=best_params.get('num_layers', 2),
+                        dropout=best_params.get('dropout', 0.1),
+                        is_regression=is_regression,
+                        num_heads=num_heads,
+                        max_path_length=best_params.get('max_path_length', 10),
+                        precompute_encodings=best_params.get('precompute_encodings', True),
+                        cache_encodings=config.transformer_cache_encodings,
+                        local_gnn_type=best_params.get('local_gnn_type', 'gcn'),
+                        prenorm=best_params.get('prenorm', True)
+                    ).to(device)
+                    
+                    # Restore cache if available
+                    if hasattr(config, 'transformer_caches') and transformer_type in config.transformer_caches:
+                        model._encoding_cache = config.transformer_caches[transformer_type]
+                    
+                    # Update config with optimized parameters
+                    config.learning_rate = best_params.get('lr', config.learning_rate)
+                    config.weight_decay = best_params.get('weight_decay', config.weight_decay)
+                    config.patience = best_params.get('patience', config.patience)
+                    config.optimized_patience = best_params.get('patience', config.patience)
         
-        # Update hyperparameter optimization for GNNs
-        if optimize_hyperparams and not isinstance(model, SklearnModel):
-            print(f"🎯 Optimizing GNN hyperparameters...")
+        # Handle GNN models
+        elif hasattr(model, 'gnn_type'):
+            print(f"🔄 Training GNN: {model.gnn_type}")
             
-            # Get model creator function for GNNs
-            model_creator = lambda **kwargs: GNNModel(**kwargs)
-            
-            # Get sample batch to determine dimensions
-            sample_batch = next(iter(dataloaders['train']))
-            input_dim = sample_batch.x.shape[1]
-            
-            if is_regression:
-                output_dim = sample_batch.y.shape[1] if len(sample_batch.y.shape) > 1 else 1
-            else:
-                output_dim = get_total_classes_from_dataloaders(dataloaders)
-            
-            # Create a single optimization study
-            import optuna
-            from optuna import create_study, Trial
-            
-            study_name = f"gnn_{model.gnn_type}_{'regression' if is_regression else 'classification'}"
-            study = create_study(direction='maximize')
-            
-            # Store GNN type for the objective function
-            gnn_type = model.gnn_type
-            
-            def objective(trial: Trial) -> float:
-                # Common hyperparameters
-                lr = trial.suggest_float('lr', 1e-4, 1e-2, log=True)
-                weight_decay = trial.suggest_float('weight_decay', 1e-5, 1e-2, log=True)
-                patience = trial.suggest_int('patience', 10, 50)
+            # Update hyperparameter optimization for GNNs
+            if optimize_hyperparams and not isinstance(model, SklearnModel):
+                print(f"🎯 Optimizing GNN hyperparameters...")
                 
-                # GNN-specific hyperparameters
-                hidden_dim = trial.suggest_int('hidden_dim', 32, 256)
-                num_layers = trial.suggest_int('num_layers', 1, 4)
-                dropout = trial.suggest_float('dropout', 0.1, 0.7)
+                # Get model creator function for GNNs
+                model_creator = lambda **kwargs: GNNModel(**kwargs)
                 
-                # Initialize default values
-                heads = 1
-                concat_heads = True
-                eps = 0.3
-                residual = False
-                norm_type = 'none'
-                agg_type = 'mean'
+                # Get sample batch to determine dimensions
+                sample_batch = next(iter(dataloaders['train']))
+                input_dim = sample_batch.x.shape[1]
                 
-                # GNN-specific parameters
-                if gnn_type == "gat":
-                    heads = trial.suggest_int('heads', 1, 8)
-                    concat_heads = trial.suggest_categorical('concat_heads', [True, False])
-                    residual = trial.suggest_categorical('residual', [True, False])
-                    norm_type = trial.suggest_categorical('norm_type', ['none', 'batch', 'layer'])
-                    agg_type = trial.suggest_categorical('agg_type', ['mean', 'max', 'sum'])
-                elif gnn_type == "fagcn":
-                    eps = trial.suggest_float('eps', 0.0, 1.0)
-                elif gnn_type in ["gcn", "sage"]:
-                    residual = trial.suggest_categorical('residual', [True, False])
-                    norm_type = trial.suggest_categorical('norm_type', ['none', 'batch', 'layer'])
-                    if gnn_type == "sage":
+                if is_regression:
+                    output_dim = sample_batch.y.shape[1] if len(sample_batch.y.shape) > 1 else 1
+                else:
+                    output_dim = get_total_classes_from_dataloaders(dataloaders)
+                
+                # Create a single optimization study
+                import optuna
+                from optuna import create_study, Trial
+                
+                study_name = f"gnn_{model.gnn_type}_{'regression' if is_regression else 'classification'}"
+                study = create_study(direction='maximize')
+                
+                # Store GNN type for the objective function
+                gnn_type = model.gnn_type
+                
+                def objective(trial: Trial) -> float:
+                    # Common hyperparameters
+                    lr = trial.suggest_float('lr', 1e-4, 1e-2, log=True)
+                    weight_decay = trial.suggest_float('weight_decay', 1e-5, 1e-2, log=True)
+                    patience = trial.suggest_int('patience', 10, 50)
+                    
+                    # GNN-specific hyperparameters
+                    hidden_dim = trial.suggest_int('hidden_dim', 32, 256)
+                    num_layers = trial.suggest_int('num_layers', 1, 4)
+                    dropout = trial.suggest_float('dropout', 0.1, 0.7)
+                    
+                    # Initialize default values
+                    heads = 1
+                    concat_heads = True
+                    eps = 0.3
+                    residual = False
+                    norm_type = 'none'
+                    agg_type = 'mean'
+                    
+                    # GNN-specific parameters
+                    if gnn_type == "gat":
+                        heads = trial.suggest_int('heads', 1, 8)
+                        concat_heads = trial.suggest_categorical('concat_heads', [True, False])
+                        residual = trial.suggest_categorical('residual', [True, False])
+                        norm_type = trial.suggest_categorical('norm_type', ['none', 'batch', 'layer'])
                         agg_type = trial.suggest_categorical('agg_type', ['mean', 'max', 'sum'])
-                
-                # Create GNN model with all parameters
-                trial_model = GNNModel(
-                    input_dim=input_dim,
-                    hidden_dim=hidden_dim,
-                    output_dim=output_dim,
-                    num_layers=num_layers,
-                    dropout=dropout,
-                    gnn_type=gnn_type,
-                    residual=residual,
-                    norm_type=norm_type,
-                    agg_type=agg_type,
-                    heads=heads,
-                    concat_heads=concat_heads,
-                    eps=eps,
-                    is_regression=is_regression
-                ).to(device)
-                
-                # Train model with reduced epochs for speed
-                optimizer = torch.optim.Adam(trial_model.parameters(), lr=lr, weight_decay=weight_decay)
-                
-                # Set up loss function
-                if is_regression:
-                    if config.regression_loss == 'mae':
-                        criterion = torch.nn.L1Loss()
-                    else:
-                        criterion = torch.nn.MSELoss()
-                else:
-                    criterion = torch.nn.CrossEntropyLoss()
-                
-                # Quick training loop
-                max_epochs = min(50, config.epochs // 4)  # Reduced epochs for hyperopt
-                best_val_metric = float('inf') if is_regression else 0.0
-                patience_counter = 0
-                
-                for epoch in range(max_epochs):
-                    # Training
-                    trial_model.train()
-                    for batch in dataloaders['train']:
-                        batch = batch.to(device)
-                        optimizer.zero_grad()
-                        out = trial_model(batch.x, batch.edge_index)
-                        loss = criterion(out, batch.y)
-                        loss.backward()
-                        optimizer.step()
+                    elif gnn_type == "fagcn":
+                        eps = trial.suggest_float('eps', 0.0, 1.0)
+                    elif gnn_type in ["gcn", "sage"]:
+                        residual = trial.suggest_categorical('residual', [True, False])
+                        norm_type = trial.suggest_categorical('norm_type', ['none', 'batch', 'layer'])
+                        if gnn_type == "sage":
+                            agg_type = trial.suggest_categorical('agg_type', ['mean', 'max', 'sum'])
                     
-                    # Validation
-                    trial_model.eval()
-                    val_predictions = []
-                    val_targets = []
-                    
-                    with torch.no_grad():
-                        for batch in dataloaders['val']:
-                            batch = batch.to(device)
-                            out = trial_model(batch.x, batch.edge_index)
-                            
-                            if is_regression:
-                                val_predictions.append(out.detach().cpu())
-                            else:
-                                val_predictions.append(out.argmax(dim=1).detach().cpu())
-                            
-                            val_targets.append(batch.y.detach().cpu())
-                    
-                    # Calculate validation metric
-                    val_pred = torch.cat(val_predictions, dim=0).numpy()
-                    val_true = torch.cat(val_targets, dim=0).numpy()
-                    val_metrics = compute_metrics(val_true, val_pred, is_regression)
-                    
-                    if is_regression:
-                        if config.regression_loss == 'mae':
-                            val_metric = val_metrics['mae']
-                            if val_metric < best_val_metric:  # Lower is better for MAE
-                                best_val_metric = val_metric
-                                patience_counter = 0
-                            else:
-                                patience_counter += 1
-                        else:
-                            val_metric = val_metrics['r2']
-                            if val_metric > best_val_metric:  # Higher is better for R²
-                                best_val_metric = val_metric
-                                patience_counter = 0
-                            else:
-                                patience_counter += 1
-                    else:
-                        val_metric = val_metrics['f1_macro']
-                        if val_metric > best_val_metric:  # Higher is better for F1
-                            best_val_metric = val_metric
-                            patience_counter = 0
-                        else:
-                            patience_counter += 1
-                    
-                    if patience_counter >= patience:
-                        break
-                
-                # Return metric for optimization
-                if is_regression:
-                    if config.regression_loss == 'mae':
-                        return -best_val_metric  # Negative because we minimize MAE
-                    else:
-                        return best_val_metric  # Positive because we maximize R²
-                else:
-                    return best_val_metric  # Positive because we maximize F1
-            
-            # Run optimization
-            study.optimize(objective, n_trials=config.n_trials, timeout=config.optimization_timeout)
-            
-            # Apply optimized parameters
-            if study.best_params:
-                best_params = study.best_params
-                print(f"🎯 Applying optimized parameters:")
-                for key, value in best_params.items():
-                    print(f"   {key}: {value}")
-                
-                # Recreate model with optimized parameters
-                model = GNNModel(
-                    input_dim=input_dim,
-                    hidden_dim=best_params.get('hidden_dim', 64),
-                    output_dim=output_dim,
-                    num_layers=best_params.get('num_layers', 2),
-                    dropout=best_params.get('dropout', 0.5),
-                    gnn_type=gnn_type,
-                    residual=best_params.get('residual', False),
-                    norm_type=best_params.get('norm_type', 'none'),
-                    agg_type=best_params.get('agg_type', 'mean'),
-                    heads=best_params.get('heads', 1),
-                    concat_heads=best_params.get('concat_heads', True),
-                    eps=best_params.get('eps', 0.3),
-                    is_regression=is_regression
-                ).to(device)
-                
-                # Update config with optimized parameters
-                config.learning_rate = best_params.get('lr', config.learning_rate)
-                config.weight_decay = best_params.get('weight_decay', config.weight_decay)
-                config.patience = best_params.get('patience', config.patience)
-                config.optimized_patience = best_params.get('patience', config.patience)
-            
-    # Handle MLP models
-    elif isinstance(model, MLPModel):
-        print(f"🔄 Training MLP")
-        
-        # Update hyperparameter optimization for MLPs
-        if optimize_hyperparams:
-            print(f"🎯 Optimizing MLP hyperparameters...")
-            
-            # Get sample batch to determine dimensions
-            sample_batch = next(iter(dataloaders['train']))
-            input_dim = sample_batch.x.shape[1]
-            
-            if is_regression:
-                output_dim = sample_batch.y.shape[1] if len(sample_batch.y.shape) > 1 else 1
-            else:
-                output_dim = get_total_classes_from_dataloaders(dataloaders)
-            
-            # Create optimization study
-            import optuna
-            from optuna import create_study, Trial
-            
-            study_name = f"mlp_{'regression' if is_regression else 'classification'}"
-            study = create_study(direction='maximize')
-            
-            def objective(trial: Trial) -> float:
-                # Common hyperparameters
-                lr = trial.suggest_float('lr', 1e-4, 1e-2, log=True)
-                weight_decay = trial.suggest_float('weight_decay', 1e-5, 1e-2, log=True)
-                patience = trial.suggest_int('patience', 10, 50)
-                
-                # MLP-specific hyperparameters
-                hidden_dim = trial.suggest_int('hidden_dim', 32, 256)
-                num_layers = trial.suggest_int('num_layers', 1, 4)
-                dropout = trial.suggest_float('dropout', 0.1, 0.7)
-                
-                # Create MLP model with all parameters
-                trial_model = MLPModel(
-                    input_dim=input_dim,
-                    hidden_dim=hidden_dim,
-                    output_dim=output_dim,
-                    num_layers=num_layers,
-                    dropout=dropout,
-                    is_regression=is_regression
-                ).to(device)
-                
-                # Train model with reduced epochs for speed
-                optimizer = torch.optim.Adam(trial_model.parameters(), lr=lr, weight_decay=weight_decay)
-                
-                # Set up loss function
-                if is_regression:
-                    if config.regression_loss == 'mae':
-                        criterion = torch.nn.L1Loss()
-                    else:
-                        criterion = torch.nn.MSELoss()
-                else:
-                    criterion = torch.nn.CrossEntropyLoss()
-                
-                # Quick training loop
-                max_epochs = min(50, config.epochs // 4)  # Reduced epochs for hyperopt
-                best_val_metric = float('inf') if is_regression else 0.0
-                patience_counter = 0
-                
-                for epoch in range(max_epochs):
-                    # Training
-                    trial_model.train()
-                    for batch in dataloaders['train']:
-                        batch = batch.to(device)
-                        optimizer.zero_grad()
-                        out = trial_model(batch.x)
-                        loss = criterion(out, batch.y)
-                        loss.backward()
-                        optimizer.step()
-                    
-                    # Validation
-                    trial_model.eval()
-                    val_predictions = []
-                    val_targets = []
-                    
-                    with torch.no_grad():
-                        for batch in dataloaders['val']:
-                            batch = batch.to(device)
-                            out = trial_model(batch.x)
-                            
-                            if is_regression:
-                                val_predictions.append(out.detach().cpu())
-                            else:
-                                val_predictions.append(out.argmax(dim=1).detach().cpu())
-                            
-                            val_targets.append(batch.y.detach().cpu())
-                    
-                    # Calculate validation metric
-                    val_pred = torch.cat(val_predictions, dim=0).numpy()
-                    val_true = torch.cat(val_targets, dim=0).numpy()
-                    val_metrics = compute_metrics(val_true, val_pred, is_regression)
-                    
-                    if is_regression:
-                        if config.regression_loss == 'mae':
-                            val_metric = val_metrics['mae']
-                            if val_metric < best_val_metric:  # Lower is better for MAE
-                                best_val_metric = val_metric
-                                patience_counter = 0
-                            else:
-                                patience_counter += 1
-                        else:
-                            val_metric = val_metrics['r2']
-                            if val_metric > best_val_metric:  # Higher is better for R²
-                                best_val_metric = val_metric
-                                patience_counter = 0
-                            else:
-                                patience_counter += 1
-                    else:
-                        val_metric = val_metrics['f1_macro']
-                        if val_metric > best_val_metric:  # Higher is better for F1
-                            best_val_metric = val_metric
-                            patience_counter = 0
-                        else:
-                            patience_counter += 1
-                    
-                    if patience_counter >= patience:
-                        break
-                
-                # Return metric for optimization
-                if is_regression:
-                    if config.regression_loss == 'mae':
-                        return -best_val_metric  # Negative because we minimize MAE
-                    else:
-                        return best_val_metric  # Positive because we maximize R²
-                else:
-                    return best_val_metric  # Positive because we maximize F1
-            
-            # Run optimization
-            study.optimize(objective, n_trials=config.n_trials, timeout=config.optimization_timeout)
-            
-            # Apply optimized parameters
-            if study.best_params:
-                best_params = study.best_params
-                print(f"🎯 Applying optimized parameters:")
-                for key, value in best_params.items():
-                    print(f"   {key}: {value}")
-                
-                # Recreate model with optimized parameters
-                model = MLPModel(
-                    input_dim=input_dim,
-                    hidden_dim=best_params.get('hidden_dim', 64),
-                    output_dim=output_dim,
-                    num_layers=best_params.get('num_layers', 2),
-                    dropout=best_params.get('dropout', 0.5),
-                    is_regression=is_regression
-                ).to(device)
-                
-                # Update config with optimized parameters
-                config.learning_rate = best_params.get('lr', config.learning_rate)
-                config.weight_decay = best_params.get('weight_decay', config.weight_decay)
-                config.patience = best_params.get('patience', config.patience)
-                config.optimized_patience = best_params.get('patience', config.patience)
-    
-    # Handle sklearn models
-    elif isinstance(model, SklearnModel):
-        print(f"🔄 Training sklearn model: {model.model_type}")
-        
-        # Update hyperparameter optimization for sklearn models
-        if optimize_hyperparams:
-            print(f"🎯 Optimizing sklearn model hyperparameters...")
-            
-            # Get sample batch to determine dimensions
-            sample_batch = next(iter(dataloaders['train']))
-            input_dim = sample_batch.x.shape[1]
-            
-            if is_regression:
-                output_dim = sample_batch.y.shape[1] if len(sample_batch.y.shape) > 1 else 1
-            else:
-                output_dim = get_total_classes_from_dataloaders(dataloaders)
-            
-            # Create optimization study
-            import optuna
-            from optuna import create_study, Trial
-            
-            study_name = f"sklearn_{model.model_type}_{'regression' if is_regression else 'classification'}"
-            study = create_study(direction='maximize')
-            
-            def objective(trial: Trial) -> float:
-                # Model-specific hyperparameters
-                if model.model_type == "rf":  # Random Forest
-                    n_estimators = trial.suggest_int('n_estimators', 50, 500)
-                    max_depth = trial.suggest_int('max_depth', 3, 20)
-                    min_samples_split = trial.suggest_int('min_samples_split', 2, 10)
-                    min_samples_leaf = trial.suggest_int('min_samples_leaf', 1, 5)
-                    
-                    trial_model = SklearnModel(
+                    # Create GNN model with all parameters
+                    trial_model = GNNModel(
                         input_dim=input_dim,
+                        hidden_dim=hidden_dim,
                         output_dim=output_dim,
-                        model_type="rf",
-                        is_regression=is_regression,
-                        n_estimators=n_estimators,
-                        max_depth=max_depth,
-                        min_samples_split=min_samples_split,
-                        min_samples_leaf=min_samples_leaf
-                    )
-                
-                elif model.model_type == "svm":  # Support Vector Machine
-                    C = trial.suggest_float('C', 0.1, 10.0, log=True)
-                    gamma = trial.suggest_float('gamma', 1e-4, 1.0, log=True)
-                    
-                    trial_model = SklearnModel(
-                        input_dim=input_dim,
-                        output_dim=output_dim,
-                        model_type="svm",
-                        is_regression=is_regression,
-                        C=C,
-                        gamma=gamma
-                    )
-                
-                elif model.model_type == "knn":  # K-Nearest Neighbors
-                    n_neighbors = trial.suggest_int('n_neighbors', 3, 20)
-                    weights = trial.suggest_categorical('weights', ['uniform', 'distance'])
-                    
-                    trial_model = SklearnModel(
-                        input_dim=input_dim,
-                        output_dim=output_dim,
-                        model_type="knn",
-                        is_regression=is_regression,
-                        n_neighbors=n_neighbors,
-                        weights=weights
-                    )
-                
-                else:  # Default to basic model
-                    trial_model = SklearnModel(
-                        input_dim=input_dim,
-                        output_dim=output_dim,
-                        model_type=model.model_type,
+                        num_layers=num_layers,
+                        dropout=dropout,
+                        gnn_type=gnn_type,
+                        residual=residual,
+                        norm_type=norm_type,
+                        agg_type=agg_type,
+                        heads=heads,
+                        concat_heads=concat_heads,
+                        eps=eps,
                         is_regression=is_regression
-                    )
-                
-                # Train and evaluate model
-                results = train_sklearn_inductive(trial_model, dataloaders, config, is_regression)
-                
-                # Return metric for optimization
-                if is_regression:
-                    if config.regression_loss == 'mae':
-                        return -results['test_metrics']['mae']  # Negative because we minimize MAE
+                    ).to(device)
+                    
+                    # Train model with reduced epochs for speed
+                    optimizer = torch.optim.Adam(trial_model.parameters(), lr=lr, weight_decay=weight_decay)
+                    
+                    # Set up loss function
+                    if is_regression:
+                        if config.regression_loss == 'mae':
+                            criterion = torch.nn.L1Loss()
+                        else:
+                            criterion = torch.nn.MSELoss()
                     else:
-                        return results['test_metrics']['r2']  # Positive because we maximize R²
-                else:
-                    return results['test_metrics']['f1_macro']  # Positive because we maximize F1
-            
-            # Run optimization
-            study.optimize(objective, n_trials=config.n_trials, timeout=config.optimization_timeout)
-            
-            # Apply optimized parameters
-            if study.best_params:
-                best_params = study.best_params
-                print(f"🎯 Applying optimized parameters:")
-                for key, value in best_params.items():
-                    print(f"   {key}: {value}")
+                        criterion = torch.nn.CrossEntropyLoss()
+                    
+                    # Quick training loop
+                    max_epochs = min(50, config.epochs // 4)  # Reduced epochs for hyperopt
+                    best_val_metric = float('inf') if is_regression else 0.0
+                    patience_counter = 0
+                    
+                    for epoch in range(max_epochs):
+                        # Training
+                        trial_model.train()
+                        for batch in dataloaders['train']:
+                            batch = batch.to(device)
+                            optimizer.zero_grad()
+                            out = trial_model(batch.x, batch.edge_index)
+                            loss = criterion(out, batch.y)
+                            loss.backward()
+                            optimizer.step()
+                        
+                        # Validation
+                        trial_model.eval()
+                        val_predictions = []
+                        val_targets = []
+                        
+                        with torch.no_grad():
+                            for batch in dataloaders['val']:
+                                batch = batch.to(device)
+                                out = trial_model(batch.x, batch.edge_index)
+                                
+                                if is_regression:
+                                    val_predictions.append(out.detach().cpu())
+                                else:
+                                    val_predictions.append(out.argmax(dim=1).detach().cpu())
+                                
+                                val_targets.append(batch.y.detach().cpu())
+                        
+                        # Calculate validation metric
+                        val_pred = torch.cat(val_predictions, dim=0).numpy()
+                        val_true = torch.cat(val_targets, dim=0).numpy()
+                        val_metrics = compute_metrics(val_true, val_pred, is_regression)
+                        
+                        if is_regression:
+                            if config.regression_loss == 'mae':
+                                val_metric = val_metrics['mae']
+                                if val_metric < best_val_metric:  # Lower is better for MAE
+                                    best_val_metric = val_metric
+                                    patience_counter = 0
+                                else:
+                                    patience_counter += 1
+                            else:
+                                val_metric = val_metrics['r2']
+                                if val_metric > best_val_metric:  # Higher is better for R²
+                                    best_val_metric = val_metric
+                                    patience_counter = 0
+                                else:
+                                    patience_counter += 1
+                        else:
+                            val_metric = val_metrics['f1_macro']
+                            if val_metric > best_val_metric:  # Higher is better for F1
+                                best_val_metric = val_metric
+                                patience_counter = 0
+                            else:
+                                patience_counter += 1
+                        
+                        if patience_counter >= patience:
+                            break
+                    
+                    # Return metric for optimization
+                    if is_regression:
+                        if config.regression_loss == 'mae':
+                            return -best_val_metric  # Negative because we minimize MAE
+                        else:
+                            return best_val_metric  # Positive because we maximize R²
+                    else:
+                        return best_val_metric  # Positive because we maximize F1
                 
-                # Recreate model with optimized parameters
-                if model.model_type == "rf":
-                    model = SklearnModel(
+                # Run optimization
+                study.optimize(objective, n_trials=config.n_trials, timeout=config.optimization_timeout)
+                
+                # Apply optimized parameters
+                if study.best_params:
+                    best_params = study.best_params
+                    print(f"🎯 Applying optimized parameters:")
+                    for key, value in best_params.items():
+                        print(f"   {key}: {value}")
+                    
+                    # Recreate model with optimized parameters
+                    model = GNNModel(
                         input_dim=input_dim,
+                        hidden_dim=best_params.get('hidden_dim', 64),
                         output_dim=output_dim,
-                        model_type="rf",
-                        is_regression=is_regression,
-                        n_estimators=best_params.get('n_estimators', 100),
-                        max_depth=best_params.get('max_depth', None),
-                        min_samples_split=best_params.get('min_samples_split', 2),
-                        min_samples_leaf=best_params.get('min_samples_leaf', 1)
-                    )
-                elif model.model_type == "svm":
-                    model = SklearnModel(
+                        num_layers=best_params.get('num_layers', 2),
+                        dropout=best_params.get('dropout', 0.5),
+                        gnn_type=gnn_type,
+                        residual=best_params.get('residual', False),
+                        norm_type=best_params.get('norm_type', 'none'),
+                        agg_type=best_params.get('agg_type', 'mean'),
+                        heads=best_params.get('heads', 1),
+                        concat_heads=best_params.get('concat_heads', True),
+                        eps=best_params.get('eps', 0.3),
+                        is_regression=is_regression
+                    ).to(device)
+                    
+                    # Update config with optimized parameters
+                    config.learning_rate = best_params.get('lr', config.learning_rate)
+                    config.weight_decay = best_params.get('weight_decay', config.weight_decay)
+                    config.patience = best_params.get('patience', config.patience)
+                    config.optimized_patience = best_params.get('patience', config.patience)
+                
+        # Handle MLP models
+        elif isinstance(model, MLPModel):
+            print(f"🔄 Training MLP")
+            
+            # Update hyperparameter optimization for MLPs
+            if optimize_hyperparams:
+                print(f"🎯 Optimizing MLP hyperparameters...")
+                
+                # Get sample batch to determine dimensions
+                sample_batch = next(iter(dataloaders['train']))
+                input_dim = sample_batch.x.shape[1]
+                
+                if is_regression:
+                    output_dim = sample_batch.y.shape[1] if len(sample_batch.y.shape) > 1 else 1
+                else:
+                    output_dim = get_total_classes_from_dataloaders(dataloaders)
+                
+                # Create optimization study
+                import optuna
+                from optuna import create_study, Trial
+                
+                study_name = f"mlp_{'regression' if is_regression else 'classification'}"
+                study = create_study(direction='maximize')
+                
+                def objective(trial: Trial) -> float:
+                    # Common hyperparameters
+                    lr = trial.suggest_float('lr', 1e-4, 1e-2, log=True)
+                    weight_decay = trial.suggest_float('weight_decay', 1e-5, 1e-2, log=True)
+                    patience = trial.suggest_int('patience', 10, 50)
+                    
+                    # MLP-specific hyperparameters
+                    hidden_dim = trial.suggest_int('hidden_dim', 32, 256)
+                    num_layers = trial.suggest_int('num_layers', 1, 4)
+                    dropout = trial.suggest_float('dropout', 0.1, 0.7)
+                    
+                    # Create MLP model with all parameters
+                    trial_model = MLPModel(
                         input_dim=input_dim,
+                        hidden_dim=hidden_dim,
                         output_dim=output_dim,
-                        model_type="svm",
-                        is_regression=is_regression,
-                        C=best_params.get('C', 1.0),
-                        gamma=best_params.get('gamma', 'scale')
-                    )
-                elif model.model_type == "knn":
-                    model = SklearnModel(
+                        num_layers=num_layers,
+                        dropout=dropout,
+                        is_regression=is_regression
+                    ).to(device)
+                    
+                    # Train model with reduced epochs for speed
+                    optimizer = torch.optim.Adam(trial_model.parameters(), lr=lr, weight_decay=weight_decay)
+                    
+                    # Set up loss function
+                    if is_regression:
+                        if config.regression_loss == 'mae':
+                            criterion = torch.nn.L1Loss()
+                        else:
+                            criterion = torch.nn.MSELoss()
+                    else:
+                        criterion = torch.nn.CrossEntropyLoss()
+                    
+                    # Quick training loop
+                    max_epochs = min(50, config.epochs // 4)  # Reduced epochs for hyperopt
+                    best_val_metric = float('inf') if is_regression else 0.0
+                    patience_counter = 0
+                    
+                    for epoch in range(max_epochs):
+                        # Training
+                        trial_model.train()
+                        for batch in dataloaders['train']:
+                            batch = batch.to(device)
+                            optimizer.zero_grad()
+                            out = trial_model(batch.x)
+                            loss = criterion(out, batch.y)
+                            loss.backward()
+                            optimizer.step()
+                        
+                        # Validation
+                        trial_model.eval()
+                        val_predictions = []
+                        val_targets = []
+                        
+                        with torch.no_grad():
+                            for batch in dataloaders['val']:
+                                batch = batch.to(device)
+                                out = trial_model(batch.x)
+                                
+                                if is_regression:
+                                    val_predictions.append(out.detach().cpu())
+                                else:
+                                    val_predictions.append(out.argmax(dim=1).detach().cpu())
+                                
+                                val_targets.append(batch.y.detach().cpu())
+                        
+                        # Calculate validation metric
+                        val_pred = torch.cat(val_predictions, dim=0).numpy()
+                        val_true = torch.cat(val_targets, dim=0).numpy()
+                        val_metrics = compute_metrics(val_true, val_pred, is_regression)
+                        
+                        if is_regression:
+                            if config.regression_loss == 'mae':
+                                val_metric = val_metrics['mae']
+                                if val_metric < best_val_metric:  # Lower is better for MAE
+                                    best_val_metric = val_metric
+                                    patience_counter = 0
+                                else:
+                                    patience_counter += 1
+                            else:
+                                val_metric = val_metrics['r2']
+                                if val_metric > best_val_metric:  # Higher is better for R²
+                                    best_val_metric = val_metric
+                                    patience_counter = 0
+                                else:
+                                    patience_counter += 1
+                        else:
+                            val_metric = val_metrics['f1_macro']
+                            if val_metric > best_val_metric:  # Higher is better for F1
+                                best_val_metric = val_metric
+                                patience_counter = 0
+                            else:
+                                patience_counter += 1
+                        
+                        if patience_counter >= patience:
+                            break
+                    
+                    # Return metric for optimization
+                    if is_regression:
+                        if config.regression_loss == 'mae':
+                            return -best_val_metric  # Negative because we minimize MAE
+                        else:
+                            return best_val_metric  # Positive because we maximize R²
+                    else:
+                        return best_val_metric  # Positive because we maximize F1
+                
+                # Run optimization
+                study.optimize(objective, n_trials=config.n_trials, timeout=config.optimization_timeout)
+                
+                # Apply optimized parameters
+                if study.best_params:
+                    best_params = study.best_params
+                    print(f"🎯 Applying optimized parameters:")
+                    for key, value in best_params.items():
+                        print(f"   {key}: {value}")
+                    
+                    # Recreate model with optimized parameters
+                    model = MLPModel(
                         input_dim=input_dim,
+                        hidden_dim=best_params.get('hidden_dim', 64),
                         output_dim=output_dim,
-                        model_type="knn",
-                        is_regression=is_regression,
-                        n_neighbors=best_params.get('n_neighbors', 5),
-                        weights=best_params.get('weights', 'uniform')
-                    )
-    
+                        num_layers=best_params.get('num_layers', 2),
+                        dropout=best_params.get('dropout', 0.5),
+                        is_regression=is_regression
+                    ).to(device)
+                    
+                    # Update config with optimized parameters
+                    config.learning_rate = best_params.get('lr', config.learning_rate)
+                    config.weight_decay = best_params.get('weight_decay', config.weight_decay)
+                    config.patience = best_params.get('patience', config.patience)
+                    config.optimized_patience = best_params.get('patience', config.patience)
+        
+        # Handle sklearn models
+        elif isinstance(model, SklearnModel):
+            print(f"🔄 Training sklearn model: {model.model_type}")
+            
+            # Update hyperparameter optimization for sklearn models
+            if optimize_hyperparams:
+                print(f"🎯 Optimizing sklearn model hyperparameters...")
+                
+                # Get sample batch to determine dimensions
+                sample_batch = next(iter(dataloaders['train']))
+                input_dim = sample_batch.x.shape[1]
+                
+                if is_regression:
+                    output_dim = sample_batch.y.shape[1] if len(sample_batch.y.shape) > 1 else 1
+                else:
+                    output_dim = get_total_classes_from_dataloaders(dataloaders)
+                
+                # Create optimization study
+                import optuna
+                from optuna import create_study, Trial
+                
+                study_name = f"sklearn_{model.model_type}_{'regression' if is_regression else 'classification'}"
+                study = create_study(direction='maximize')
+                
+                def objective(trial: Trial) -> float:
+                    # Model-specific hyperparameters
+                    if model.model_type == "rf":  # Random Forest
+                        n_estimators = trial.suggest_int('n_estimators', 50, 500)
+                        max_depth = trial.suggest_int('max_depth', 3, 20)
+                        min_samples_split = trial.suggest_int('min_samples_split', 2, 10)
+                        min_samples_leaf = trial.suggest_int('min_samples_leaf', 1, 5)
+                        
+                        trial_model = SklearnModel(
+                            input_dim=input_dim,
+                            output_dim=output_dim,
+                            model_type="rf",
+                            is_regression=is_regression,
+                            n_estimators=n_estimators,
+                            max_depth=max_depth,
+                            min_samples_split=min_samples_split,
+                            min_samples_leaf=min_samples_leaf
+                        )
+                    
+                    elif model.model_type == "svm":  # Support Vector Machine
+                        C = trial.suggest_float('C', 0.1, 10.0, log=True)
+                        gamma = trial.suggest_float('gamma', 1e-4, 1.0, log=True)
+                        
+                        trial_model = SklearnModel(
+                            input_dim=input_dim,
+                            output_dim=output_dim,
+                            model_type="svm",
+                            is_regression=is_regression,
+                            C=C,
+                            gamma=gamma
+                        )
+                    
+                    elif model.model_type == "knn":  # K-Nearest Neighbors
+                        n_neighbors = trial.suggest_int('n_neighbors', 3, 20)
+                        weights = trial.suggest_categorical('weights', ['uniform', 'distance'])
+                        
+                        trial_model = SklearnModel(
+                            input_dim=input_dim,
+                            output_dim=output_dim,
+                            model_type="knn",
+                            is_regression=is_regression,
+                            n_neighbors=n_neighbors,
+                            weights=weights
+                        )
+                    
+                    else:  # Default to basic model
+                        trial_model = SklearnModel(
+                            input_dim=input_dim,
+                            output_dim=output_dim,
+                            model_type=model.model_type,
+                            is_regression=is_regression
+                        )
+                    
+                    # Train and evaluate model
+                    results = train_sklearn_inductive(trial_model, dataloaders, config, is_regression)
+                    
+                    # Return metric for optimization
+                    if is_regression:
+                        if config.regression_loss == 'mae':
+                            return -results['test_metrics']['mae']  # Negative because we minimize MAE
+                        else:
+                            return results['test_metrics']['r2']  # Positive because we maximize R²
+                    else:
+                        return results['test_metrics']['f1_macro']  # Positive because we maximize F1
+                
+                # Run optimization
+                study.optimize(objective, n_trials=config.n_trials, timeout=config.optimization_timeout)
+                
+                # Apply optimized parameters
+                if study.best_params:
+                    best_params = study.best_params
+                    print(f"🎯 Applying optimized parameters:")
+                    for key, value in best_params.items():
+                        print(f"   {key}: {value}")
+                    
+                    # Recreate model with optimized parameters
+                    if model.model_type == "rf":
+                        model = SklearnModel(
+                            input_dim=input_dim,
+                            output_dim=output_dim,
+                            model_type="rf",
+                            is_regression=is_regression,
+                            n_estimators=best_params.get('n_estimators', 100),
+                            max_depth=best_params.get('max_depth', None),
+                            min_samples_split=best_params.get('min_samples_split', 2),
+                            min_samples_leaf=best_params.get('min_samples_leaf', 1)
+                        )
+                    elif model.model_type == "svm":
+                        model = SklearnModel(
+                            input_dim=input_dim,
+                            output_dim=output_dim,
+                            model_type="svm",
+                            is_regression=is_regression,
+                            C=best_params.get('C', 1.0),
+                            gamma=best_params.get('gamma', 'scale')
+                        )
+                    elif model.model_type == "knn":
+                        model = SklearnModel(
+                            input_dim=input_dim,
+                            output_dim=output_dim,
+                            model_type="knn",
+                            is_regression=is_regression,
+                            n_neighbors=best_params.get('n_neighbors', 5),
+                            weights=best_params.get('weights', 'uniform')
+                        )
+        
     # Train the model (either original or optimized)
     results = train_inductive_model(
         model=model,
         dataloaders=dataloaders,
         config=config,
         task=task,
-        device=device
-    )
-    
-    # Evaluate on test set
-    test_results = evaluate_inductive_model(
-        model=model,
-        test_loader=dataloaders['test'],
-        is_regression=is_regression,
-        device=device
+        device=device,
+        finetuning=finetuning
     )
     
     # Combine results
-    results['test_metrics'] = test_results
-    results['optimal_hyperparams'] = best_params
+    if optimize_hyperparams:
+        results['optimal_hyperparams'] = best_params
+    else:
+        results['optimal_hyperparams'] = {}
     
     return results

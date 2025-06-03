@@ -113,9 +113,9 @@ class CleanMultiExperimentRunner:
                         
                         if result is not None:
                             self.all_results.append(result)
-                            print(f"✓ Run {run_id} completed successfully")
+                            print(f"Run {run_id} completed successfully")
                         else:
-                            print(f"✗ Run {run_id} failed")
+                            print(f"Run {run_id} failed")
                         
                     except Exception as e:
                         error_info = {
@@ -128,7 +128,7 @@ class CleanMultiExperimentRunner:
                         }
                         self.failed_runs.append(error_info)
                         
-                        print(f"✗ Run {run_id} failed with error: {str(e)}")
+                        print(f"Run {run_id} failed with error: {str(e)}")
                         
                         if not self.config.continue_on_failure:
                             print("Stopping due to failure (continue_on_failure=False)")

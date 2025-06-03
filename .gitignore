@@ -3,3 +3,6 @@ multi_results/
 clean_inductive_results/
 ssl_experiments/
 graph_families/
+transductive_results/
+multi_transductive_results/
+multi_ssl_experiments/

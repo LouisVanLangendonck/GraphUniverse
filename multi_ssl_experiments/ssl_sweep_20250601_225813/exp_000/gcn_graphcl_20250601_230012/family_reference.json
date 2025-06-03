@@ -1,7 +1,0 @@
-{
-  "family_id": "family_ssl_sweep_000",
-  "model_id": "gcn_graphcl_20250601_230012",
-  "finetuning_graphs_available": 30,
-  "pretraining_graphs_used": 40,
-  "creation_timestamp": "2025-06-01T23:00:12.835939"
-}

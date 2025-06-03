@@ -330,21 +330,8 @@ def main():
             return 0
         
         # Create configuration based on preset or custom
-        if args.preset == 'homophily_density':
-            print("Using homophily-density sweep configuration...")
-            config = create_homophily_density_sweep()
-            
-        elif args.preset == 'dccc_comparison':
-            print("Using DCCC method comparison configuration...")
-            config = create_dccc_method_comparison()
-            
-        elif args.preset == 'benchmark':
-            print("Using large-scale benchmark configuration...")
-            config = create_large_scale_benchmark()
-            
-        elif args.preset == 'custom':
-            print("Creating custom configuration from arguments...")
-            config = create_custom_experiment(args)
+        print("Creating custom configuration from arguments...")
+        config = create_custom_experiment(args)
         
         # Override repetitions if specified
         if args.n_repetitions != 2:
@@ -374,7 +361,7 @@ def main():
             print(f"  {param}: [{param_range.min_val}, {param_range.max_val}] ({param_range.distribution})")
         
         # Confirm before starting
-        if config.get_total_runs() > 20:
+        if config.get_total_runs() > 10:
             response = input(f"\nThis will run {config.get_total_runs()} experiments. Continue? [y/N]: ")
             if response.lower() != 'y':
                 print("Aborted.")
@@ -428,130 +415,9 @@ def main():
         return 1
 
 
-def demo_experiments():
-    """Run a quick demo of different experiment types."""
-    print("RUNNING DEMO EXPERIMENTS")
-    print("=" * 40)
-    
-    from experiments.inductive.config import InductiveExperimentConfig
-    
-    # 1. Quick DC-SBM vs DCCC-SBM comparison
-    print("\n1. Quick method comparison (DC-SBM vs DCCC-SBM)")
-    
-    base_config = InductiveExperimentConfig(
-        n_graphs=6,  # Small for demo
-        min_n_nodes=60,
-        max_n_nodes=80,
-        min_communities=3,
-        max_communities=4,
-        universe_K=4,
-        universe_feature_dim=16,
-        tasks=['community'],
-        gnn_types=['gcn'],
-        run_gnn=True,
-        run_mlp=True,
-        run_rf=False,
-        epochs=50,  # Fast for demo
-        patience=10,
-        collect_signal_metrics=True,
-        require_consistency_check=False
-    )
-    
-    # Sweep method type
-    sweep_parameters = {
-        'use_dccc_sbm': ParameterRange(
-            min_val=0,  # False
-            max_val=1,  # True
-            step=1,
-            is_sweep=True
-        )
-    }
-    
-    # Random parameters
-    random_parameters = {
-        'universe_homophily': ParameterRange(
-            min_val=0.4,
-            max_val=0.8,
-            distribution="uniform",
-            is_sweep=False
-        ),
-        'degree_heterogeneity': ParameterRange(
-            min_val=0.3,
-            max_val=0.7,
-            distribution="uniform",
-            is_sweep=False
-        )
-    }
-    
-    demo_config = CleanMultiExperimentConfig(
-        base_config=base_config,
-        sweep_parameters=sweep_parameters,
-        random_parameters=random_parameters,
-        n_repetitions=2,
-        experiment_name="demo_method_comparison",
-        output_dir="demo_results",
-        continue_on_failure=True
-    )
-    
-    print(f"Running {demo_config.get_total_runs()} experiments...")
-    results = run_clean_multi_experiments(demo_config)
-    
-    # Quick analysis
-    if results['all_results']:
-        print("\nDemo Results:")
-        dc_results = [r for r in results['all_results'] if r['method'] == 'dc_sbm']
-        dccc_results = [r for r in results['all_results'] if r['method'] == 'dccc_sbm']
-        
-        print(f"  DC-SBM runs: {len(dc_results)}")
-        print(f"  DCCC-SBM runs: {len(dccc_results)}")
-        
-        # Compare average performance
-        def get_avg_performance(results_list, metric='community_gcn_f1_macro'):
-            performances = []
-            for r in results_list:
-                model_results = r.get('model_results', {})
-                community_results = model_results.get('community', {})
-                gcn_results = community_results.get('gcn', {})
-                test_metrics = gcn_results.get('test_metrics', {})
-                if 'f1_macro' in test_metrics:
-                    performances.append(test_metrics['f1_macro'])
-            return sum(performances) / len(performances) if performances else 0.0
-        
-        dc_avg = get_avg_performance(dc_results)
-        dccc_avg = get_avg_performance(dccc_results)
-        
-        print(f"  DC-SBM avg F1: {dc_avg:.3f}")
-        print(f"  DCCC-SBM avg F1: {dccc_avg:.3f}")
-        print(f"  Difference: {dccc_avg - dc_avg:+.3f}")
-        
-        # Compare signals
-        def get_avg_signal(results_list, signal_type='degree_signals'):
-            signals = []
-            for r in results_list:
-                community_signals = r.get('community_signals', {})
-                signal_data = community_signals.get(signal_type, {})
-                if 'mean' in signal_data:
-                    signals.append(signal_data['mean'])
-            return sum(signals) / len(signals) if signals else 0.0
-        
-        dc_degree_signal = get_avg_signal(dc_results)
-        dccc_degree_signal = get_avg_signal(dccc_results)
-        
-        print(f"  DC-SBM avg degree signal: {dc_degree_signal:.3f}")
-        print(f"  DCCC-SBM avg degree signal: {dccc_degree_signal:.3f}")
-    
-    print(f"\nDemo completed! Results saved to: demo_results")
-    
-    return results
-
-
 if __name__ == "__main__":
     import sys
-    
-    if len(sys.argv) > 1 and sys.argv[1] == "demo":
-        # Run quick demo
-        demo_experiments()
-    else:
-        # Run main multi-experiment
-        exit_code = main()
-        sys.exit(exit_code)
+
+    # Run main multi-experiment
+    exit_code = main()
+    sys.exit(exit_code)

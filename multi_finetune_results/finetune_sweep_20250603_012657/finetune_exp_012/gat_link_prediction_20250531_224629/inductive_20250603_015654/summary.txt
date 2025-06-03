@@ -1,0 +1,50 @@
+INDUCTIVE LEARNING EXPERIMENT SUMMARY
+============================================================
+
+CONFIGURATION:
+  Method: DC-SBM
+  Graph family size: 50
+  Node range: [80, 120]
+  Community range: [3, 7]
+  Tasks: community, k_hop_community_counts
+
+FAMILY CONSISTENCY:
+  Overall score: 0.501
+  Pattern preservation: 0.553
+  Generation fidelity: 0.519
+  Degree consistency: 0.362
+
+COMMUNITY SIGNALS (averaged over graphs):
+  Degree signal: 0.395 ± 0.088
+  Structure signal: 0.176 ± 0.322
+  Feature signal: 0.774 ± 0.097
+
+TASK: COMMUNITY
+----------------------------------------
+  FINETUNED:
+    F1_MACRO: 0.1035
+    Training time: 9.96s
+  FROM_SCRATCH:
+    F1_MACRO: 0.1417
+    Training time: 19.28s
+  GAT:
+    F1_MACRO: 0.2583
+    Training time: 15.37s
+  BEST: GAT (F1_MACRO: 0.2583)
+
+TASK: K_HOP_COMMUNITY_COUNTS
+----------------------------------------
+  FINETUNED:
+    R2: -0.3945
+    Training time: 5.34s
+  FROM_SCRATCH:
+    R2: -0.8534
+    Training time: 5.26s
+  GAT:
+    R2: -0.5716
+    Training time: 5.79s
+
+OVERALL:
+  Models trained: 6
+  Successful: 6
+  Success rate: 100.0%

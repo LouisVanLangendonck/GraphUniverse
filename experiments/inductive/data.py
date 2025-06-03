@@ -400,7 +400,10 @@ def prepare_inductive_data(
     
     # Calculate split sizes
     n_graphs = len(family_graphs)
-    n_train = int(n_graphs * config.train_graph_ratio)
+    if config.use_pretrained and config.max_train_graphs_for_finetuning > 0:
+        n_train = min(config.max_train_graphs_for_finetuning, int(n_graphs * config.train_graph_ratio))
+    else:
+        n_train = int(n_graphs * config.train_graph_ratio)
     n_val = int(n_graphs * config.val_graph_ratio)
     n_test = n_graphs - n_train - n_val
     

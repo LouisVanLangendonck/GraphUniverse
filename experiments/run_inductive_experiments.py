@@ -45,10 +45,11 @@ def parse_args():
                         help='Automatically load graph family associated with pre-trained model')
     parser.add_argument('--freeze_encoder', action='store_true',
                         help='Freeze encoder weights during fine-tuning')
-    parser.add_argument('--compare_pretrained', action='store_true',
-                        help='Compare pre-trained vs random initialization')    
-    
-    
+    parser.add_argument('--max_train_graphs_for_finetuning', type=int, default=2,
+                        help='Maximum number of training graphs for fine-tuning')
+    parser.add_argument('--only_pretrained_experiments', action='store_true',
+                        help='Dont do any other experiments. Only fine-tune pre-trained models and from scratch version of it and hyperparameter optimization of that model type.')    
+        
     # === TASKS ===
     parser.add_argument('--tasks', type=str, nargs='+', default=['community', 'k_hop_community_counts'],
                         choices=['community', 'k_hop_community_counts'],
@@ -205,7 +206,7 @@ def create_config_from_args(args) -> InductiveExperimentConfig:
     
     # Determine which models to run
     run_gnn = getattr(args, 'run_gnn', True)
-    run_transformers = getattr(args, 'run_transformers', False)
+    run_transformers = getattr(args, 'run_transformers', True)
     
     config = InductiveExperimentConfig(
         # === EXPERIMENT SETUP ===
@@ -222,7 +223,8 @@ def create_config_from_args(args) -> InductiveExperimentConfig:
         graph_family_dir=getattr(args, 'graph_family_dir', 'graph_families'),
         auto_load_family=getattr(args, 'auto_load_family', True),
         freeze_encoder=args.freeze_encoder,
-        compare_pretrained=args.compare_pretrained,
+        only_pretrained_experiments=args.only_pretrained_experiments,
+        max_train_graphs_for_finetuning=getattr(args, 'max_train_graphs_for_finetuning', 2),
         fine_tune_lr_multiplier=getattr(args, 'fine_tune_lr_multiplier', 0.1),
 
         # === TASKS ===

@@ -1,157 +1,198 @@
 """
-Configuration for graph learning experiments.
-
-This module defines the configuration classes and default parameters for experiments.
+Clean configuration for transductive graph learning experiments.
+Based on the inductive experiment configuration but adapted for transductive learning.
 """
 
-from dataclasses import dataclass, field, asdict
-from typing import Dict, List, Optional, Union, Any
+from dataclasses import dataclass, field
+from typing import Dict, List, Optional, Tuple, Any
 import json
 import os
 
+
 @dataclass
-class ExperimentConfig:
-    """Configuration for graph learning experiments."""
+class TransductiveExperimentConfig:
+    """Clean configuration for transductive graph learning experiments."""
     
-    # Task configuration
-    tasks: List[str] = field(default_factory=lambda: ['community', 'k_hop_community_counts'])
-    khop_community_counts_k: int = 2  # Number of hops for community counts task
+    # === EXPERIMENT SETUP ===
+    output_dir: str = "transductive_results"
+    seed: int = 42
+    device_id: int = 0
+    force_cpu: bool = False
+
+    # === GRAPH GENERATION ===
+    num_nodes: int = 100
+    num_communities: int = 5
     
-    # Model configuration
-    gnn_types: List[str] = field(default_factory=lambda: ['gcn', 'gat', 'sage'])
+    # === UNIVERSE PARAMETERS ===
+    universe_K: int = 10
+    universe_feature_dim: int = 32
+    universe_edge_density: float = 0.1
+    universe_homophily: float = 0.8
+    universe_randomness_factor: float = 0.0
+    
+    # === FEATURE GENERATION ===
+    cluster_count_factor: float = 1.0
+    center_variance: float = 1.0
+    cluster_variance: float = 0.1
+    assignment_skewness: float = 0.0
+    community_exclusivity: float = 1.0
+    degree_center_method: str = "linear"  # "linear", "random", "shuffled"
+    
+    # === GRAPH VARIATION ===
+    homophily_range: Tuple[float, float] = (0.0, 0.2)
+    density_range: Tuple[float, float] = (0.0, 0.2)
+    degree_heterogeneity: float = 0.5
+    edge_noise: float = 0.1
+    
+    # === GENERATION METHOD SELECTION ===
+    use_dccc_sbm: bool = False  # If False, uses standard DC-SBM
+    
+    # === DCCC-SBM PARAMETERS ===
+    community_imbalance_range: Tuple[float, float] = (0.0, 0.3)
+    degree_separation_range: Tuple[float, float] = (0.0, 1.0)
+    degree_distribution: str = "power_law"  # "power_law", "exponential", "uniform", "standard"
+    
+    # Degree distribution specific parameters
+    power_law_exponent_range: Tuple[float, float] = (2.0, 3.5)
+    power_law_x_min: float = 1.0
+    exponential_rate_range: Tuple[float, float] = (0.3, 1.0)
+    uniform_min_factor_range: Tuple[float, float] = (0.3, 0.7)
+    uniform_max_factor_range: Tuple[float, float] = (1.3, 2.0)
+    
+    # === GENERATION CONSTRAINTS ===
+    max_parameter_search_attempts: int = 20
+    parameter_search_range: float = 0.5
+    max_retries: int = 10
+    min_edge_density: float = 0.005
+    disable_deviation_limiting: bool = False
+    max_mean_community_deviation: float = 0.10
+    max_max_community_deviation: float = 0.20
+    min_component_size: int = 10
+    
+    # === TRANSDUCTIVE DATA SPLITS ===
+    train_ratio: float = 0.6
+    val_ratio: float = 0.2
+    test_ratio: float = 0.2
+    max_training_nodes: Optional[int] = None  # Maximum number of nodes to use for training
+    
+    # === TASKS ===
+    tasks: List[str] = field(default_factory=lambda: ['community'])
+    is_regression: Dict[str, bool] = field(default_factory=lambda: {'community': False, 'k_hop_community_counts': True})
+    khop_community_counts_k: int = 2
+
+    # === METAPATH TASK SETTINGS ===
+    enable_metapath_tasks: bool = False
+    metapath_k_values: List[int] = field(default_factory=lambda: [4, 5])
+    metapath_require_loop: bool = True
+    metapath_degree_weight: float = 0.3
+    max_community_participation: float = 0.95
+    
+    # === MODELS ===
+    gnn_types: List[str] = field(default_factory=lambda: ['gcn', 'sage', 'gat', 'fagcn'])
     run_gnn: bool = True
     run_mlp: bool = True
     run_rf: bool = True
     
-    # Training configuration
+    # === TRAINING ===
     learning_rate: float = 0.01
     weight_decay: float = 5e-4
     epochs: int = 200
     patience: int = 50
-    batch_size: int = 32
-    
-    # Model architecture
+    batch_size: int = 32  # Not used in transductive but kept for compatibility
     hidden_dim: int = 64
     num_layers: int = 2
     dropout: float = 0.5
+    # Special parameter for FAGCN
+    eps: float = 0.2
+
+    # === GRAPH TRANSFORMER CONFIGURATION ===
+    transformer_types: List[str] = field(default_factory=lambda: ['graphormer'])
+    run_transformers: bool = False
     
-    # Hyperparameter optimization
+    # Transformer-specific parameters
+    transformer_num_heads: int = 8
+    transformer_max_nodes: int = 200
+    transformer_max_path_length: int = 10
+    transformer_precompute_encodings: bool = True
+    transformer_cache_encodings: bool = True
+    
+    # GraphGPS specific
+    local_gnn_type: str = "gcn"
+    global_model_type: str = "transformer"
+    transformer_prenorm: bool = True
+    
+    # === HYPERPARAMETER OPTIMIZATION ===
     optimize_hyperparams: bool = False
-    n_trials: int = 10
-    optimization_timeout: int = 300  # Timeout in seconds for hyperparameter optimization
+    n_trials: int = 20
+    optimization_timeout: int = 600
     
-    # Output configuration
-    output_dir: str = 'results'
-    
-    # Task-specific parameters
-    is_regression: Dict[str, bool] = field(default_factory=lambda: {
-        'community': False,
-        'k_hop_community_counts': True
-    })
+    # === ANALYSIS ===
+    collect_signal_metrics: bool = True
     
     # Regression-specific parameters
-    regression_loss: str = 'mse'  # 'mse' or 'mae'
-    regression_metrics: List[str] = field(default_factory=lambda: ['mse', 'rmse', 'mae', 'r2'])
-    
-    # Graph generation parameters
-    num_communities: int = 5
-    num_nodes: int = 100
-    feature_dim: int = 32
-    edge_density: float = 0.1  # Overall target edge density
-    homophily: float = 0.8  # Controls ratio between intra/inter probabilities (0=equal, 1=max)
-    randomness_factor: float = 0.1
-    overlap_density: float = 0.2
-    min_connection_strength: float = 0.05
-    min_component_size: int = 5
-    degree_heterogeneity: float = 0.5
-    indirect_influence: float = 0.1
-    block_structure: str = "assortative"
-    overlap_structure: str = "random"
-    edge_noise: float = 0.0
-    feature_type: str = "generated"
-    mixed_membership: bool = False  # Default to non-mixed membership
-    
-    # Feature regime parameters
-    regimes_per_community: int = 2
-    intra_community_regime_similarity: float = 0.2  # Default to low intra-community similarity
-    inter_community_regime_similarity: float = 0.9  # Default to high inter-community similarity
-    feature_regime_balance: float = 0.3  # Default to unbalanced regimes
-    
-    # Task parameters
-    regime_task_min_hop: int = 1
-    regime_task_max_hop: int = 3
-    regime_task_n_labels: int = 4
-    regime_task_min_support: float = 0.1
-    regime_task_max_rules_per_label: int = 3
-    role_task_max_motif_size: int = 3
-    role_task_n_roles: int = 5
-    
-    # Training parameters
-    train_ratio: float = 0.6
-    val_ratio: float = 0.2
-    test_ratio: float = 0.2
-    seed: int = 42
-    distribution_type: str = "standard"
-    power_law_exponent: Optional[float] = None
-    power_law_target_avg_degree: Optional[float] = None
-    exponential_rate: Optional[float] = None
-    exponential_target_avg_degree: Optional[float] = None
-    uniform_min_factor: Optional[float] = None
-    uniform_max_factor: Optional[float] = None
-    uniform_target_avg_degree: Optional[float] = None
-    max_mean_community_deviation: float = 0.1
-    max_max_community_deviation: float = 0.2
-    parameter_search_range: float = 0.2
-    max_parameter_search_attempts: int = 20
-    max_retries: int = 10
-    
-    # Output parameters
-    device_id: int = 0  # Default to first CUDA device
-    force_cpu: bool = False  # Option to force CPU usage
+    regression_loss: str = 'mae'  # 'mse' or 'mae'
+    regression_metrics: List[str] = field(default_factory=lambda: ['mae', 'mse', 'rmse', 'r2'])
     
     def __post_init__(self):
-        """Validate configuration after initialization."""
-        # Validate tasks
-        valid_tasks = ['community', 'k_hop_community_counts']
-        for task in self.tasks:
-            if task not in valid_tasks:
-                raise ValueError(f"Invalid task: {task}. Must be one of {valid_tasks}")
+        """Validate configuration."""
+        # Validate split ratios
+        total_ratio = self.train_ratio + self.val_ratio + self.test_ratio
+        if abs(total_ratio - 1.0) > 1e-6:
+            raise ValueError(f"Split ratios must sum to 1.0, got {total_ratio}")
         
-        # Validate GNN types
-        valid_gnn_types = ['gcn', 'gat', 'sage']
-        for gnn_type in self.gnn_types:
-            if gnn_type not in valid_gnn_types:
-                raise ValueError(f"Invalid GNN type: {gnn_type}. Must be one of {valid_gnn_types}")
+        # Validate DCCC-SBM parameters
+        if self.use_dccc_sbm:
+            valid_distributions = ["standard", "power_law", "exponential", "uniform"]
+            if self.degree_distribution not in valid_distributions:
+                raise ValueError(f"Invalid degree distribution: {self.degree_distribution}")
         
-        # Validate regression loss
-        valid_losses = ['mse', 'mae']
-        if self.regression_loss not in valid_losses:
-            raise ValueError(f"Invalid regression loss: {self.regression_loss}. Must be one of {valid_losses}")
-        
-        # Validate regression metrics
-        valid_metrics = ['mse', 'rmse', 'mae', 'r2']
-        for metric in self.regression_metrics:
-            if metric not in valid_metrics:
-                raise ValueError(f"Invalid regression metric: {metric}. Must be one of {valid_metrics}")
+        if self.num_communities > self.universe_K:
+            raise ValueError("num_communities cannot exceed universe_K")
+    
+    def get_splits(self) -> Tuple[int, int, int]:
+        """Calculate number of nodes for each split."""
+        n_train = int(self.num_nodes * self.train_ratio)
+        n_val = int(self.num_nodes * self.val_ratio)
+        n_test = self.num_nodes - n_train - n_val
+        return n_train, n_val, n_test
     
     def to_dict(self) -> Dict[str, Any]:
-        """Convert config to dictionary."""
-        return {k: v for k, v in asdict(self).items() if not k.startswith('_')}
+        """Convert config to dictionary for serialization."""
+        result = {}
+        for key, value in self.__dict__.items():
+            if isinstance(value, tuple):
+                result[key] = list(value)
+            else:
+                result[key] = value
+        return result
     
     @classmethod
-    def from_dict(cls, config_dict: Dict[str, Any]) -> 'ExperimentConfig':
+    def from_dict(cls, config_dict: Dict[str, Any]) -> 'TransductiveExperimentConfig':
         """Create config from dictionary."""
-        return cls(**config_dict)
+        # Convert lists back to tuples where needed
+        tuple_fields = [
+            'homophily_range', 'density_range', 'community_imbalance_range',
+            'degree_separation_range', 'power_law_exponent_range', 
+            'exponential_rate_range', 'uniform_min_factor_range',
+            'uniform_max_factor_range'
+        ]
+        
+        processed_dict = config_dict.copy()
+        for field in tuple_fields:
+            if field in processed_dict and isinstance(processed_dict[field], list):
+                processed_dict[field] = tuple(processed_dict[field])
+        
+        return cls(**processed_dict)
     
-    def save(self, path: str) -> None:
-        """Save config to file."""
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, 'w') as f:
+    def save(self, filepath: str) -> None:
+        """Save configuration to JSON file."""
+        os.makedirs(os.path.dirname(filepath), exist_ok=True)
+        with open(filepath, 'w') as f:
             json.dump(self.to_dict(), f, indent=2)
     
     @classmethod
-    def load(cls, path: str) -> 'ExperimentConfig':
-        """Load config from file."""
-        with open(path, 'r') as f:
+    def load(cls, filepath: str) -> 'TransductiveExperimentConfig':
+        """Load configuration from JSON file."""
+        with open(filepath, 'r') as f:
             config_dict = json.load(f)
-        return cls.from_dict(config_dict) 
+        return cls.from_dict(config_dict)

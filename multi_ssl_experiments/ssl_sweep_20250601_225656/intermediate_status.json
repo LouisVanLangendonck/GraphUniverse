@@ -1,9 +1,0 @@
-{
-  "successful_experiments": 0,
-  "failed_experiments": 6,
-  "total_attempted": 6,
-  "generated_families": {
-    "50_30_10_0.0_0.05_True_power_law": "family_ssl_sweep_000"
-  },
-  "timestamp": "20250601_225704"
-}

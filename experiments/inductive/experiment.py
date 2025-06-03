@@ -294,7 +294,7 @@ class InductiveExperiment:
         return dataloaders
     
     def run_experiments(self) -> Dict[str, Any]:
-        """Updated run_experiments with transformer support."""
+        """Updated run_experiments with transformer support and fine-tuning."""
         print("\n" + "="*60)
         print("RUNNING INDUCTIVE EXPERIMENTS")
         print("="*60)
@@ -323,16 +323,131 @@ class InductiveExperiment:
             print(f"  Output dim: {output_dim}")
             print(f"  Is regression: {is_regression}")
             
-            # Determine models to run
+            # First, handle fine-tuning if using pre-trained model
+            if self.config.use_pretrained and self.config.pretrained_model_id:
+                print("\n--- Fine-tuning from pre-trained model ---")
+                try:
+                    # Load pre-trained model
+                    pretrained_model, metadata = self.load_pretrained_model(
+                        self.config.pretrained_model_dir,
+                        self.config.pretrained_model_id,
+                    )
+                    pretrained_model_type = metadata['config'].get('model_type')
+
+                    if pretrained_model_type == 'gnn':
+                        pretrained_specific_model_type = metadata['config'].get('gnn_type')
+                    else:
+                        pretrained_specific_model_type = metadata['config'].get('transformer_type')
+
+                    print(f"Loaded Original pre-trained model: {pretrained_specific_model_type}")
+                    
+                    # Create fine-tuning model with fixed architecture
+                    finetune_model = self.create_model_from_pretrained(
+                        pretrained_model,
+                        metadata,
+                        output_dim,
+                        is_regression
+                    ).to(self.device)
+                    print(f"Created fine-tuning model by using the original pre-trained encoder: {finetune_model}")
+                    
+                    # Fine-tune model
+                    results = train_and_evaluate_inductive(
+                        model=finetune_model,
+                        dataloaders=task_dataloaders,
+                        config=self.config,
+                        task=task,
+                        device=self.device,
+                        optimize_hyperparams=False,  # No hyperopt for fine-tuning
+                        experiment_name=self.config.experiment_name if hasattr(self.config, 'experiment_name') else None,
+                        run_id=self.config.run_id if hasattr(self.config, 'run_id') else None,
+                        finetuning=True
+                    )
+                    
+                    # Store results
+                    task_results['finetuned'] = {
+                        'test_metrics': results.get('test_metrics', {}),
+                        'train_time': results.get('train_time', 0.0),
+                        'training_history': results.get('training_history', {}),
+                        'pretrained_model_id': self.config.pretrained_model_id
+                    }
+                    
+                    print(f"✓ Fine-tuning completed successfully")
+                    
+                    # Add from-scratch training of the same model architecture
+                    print("\n--- Training same model from scratch for comparison ---")
+                    try:
+                        # Create a new model with the same architecture but random weights
+                        from_scratch_model = self.create_model_from_pretrained(
+                            pretrained_model,  # We only use this for architecture info
+                            metadata,
+                            output_dim,
+                            is_regression
+                        ).to(self.device)
+                        
+                        # Randomize weights
+                        print(f"Randomizing weights of pre-trained model to obtain a from-scratch model")
+                        from_scratch_model.apply(lambda m: m.reset_parameters() if hasattr(m, 'reset_parameters') else None)
+                        print(f"Created from-scratch model with same architecture: {from_scratch_model}")
+                        
+                        # Train from scratch
+                        scratch_results = train_and_evaluate_inductive(
+                            model=from_scratch_model,
+                            dataloaders=task_dataloaders,
+                            config=self.config,
+                            task=task,
+                            device=self.device,
+                            optimize_hyperparams=False,  # No hyperopt for fair comparison
+                            experiment_name=self.config.experiment_name if hasattr(self.config, 'experiment_name') else None,
+                            run_id=self.config.run_id if hasattr(self.config, 'run_id') else None,
+                            finetuning=True
+                        )
+                        
+                        # Store results
+                        task_results['from_scratch'] = {
+                            'test_metrics': scratch_results.get('test_metrics', {}),
+                            'train_time': scratch_results.get('train_time', 0.0),
+                            'training_history': scratch_results.get('training_history', {}),
+                            'pretrained_model_id': self.config.pretrained_model_id,  # Keep reference to original model
+                            'is_from_scratch': True
+                        }
+                        
+                        print(f"✓ From-scratch training completed successfully")
+                        
+                    except Exception as e:
+                        error_msg = f"Error in from-scratch training: {str(e)}"
+                        print(f"✗ {error_msg}")
+                        logger.error(error_msg, exc_info=True)
+                        
+                        task_results['from_scratch'] = {
+                            'error': error_msg,
+                            'test_metrics': {},
+                            'is_from_scratch': True
+                        }
+                    
+                except Exception as e:
+                    error_msg = f"Error in fine-tuning: {str(e)}"
+                    print(f"✗ {error_msg}")
+                    logger.error(error_msg, exc_info=True)
+                    
+                    task_results['finetuned'] = {
+                        'error': error_msg,
+                        'test_metrics': {}
+                    } 
+            
+            # Determine models to run (excluding fine-tuned model)
             models_to_run = []
-            if self.config.run_gnn:
-                models_to_run.extend(self.config.gnn_types)
-            if self.config.run_transformers:  # NEW
-                models_to_run.extend(self.config.transformer_types)
-            if self.config.run_mlp:
-                models_to_run.append('mlp')
-            if self.config.run_rf:
-                models_to_run.append('rf')
+            if self.config.only_pretrained_experiments:
+                models_to_run = [pretrained_specific_model_type]
+            else:
+                pretrained_model_type = '' # empty string to avoid error
+                if self.config.run_gnn  :
+                    models_to_run.extend(self.config.gnn_types)
+                if self.config.run_transformers:
+                    models_to_run.extend(self.config.transformer_types)
+                if self.config.run_mlp:
+                    models_to_run.append('mlp')
+                if self.config.run_rf:
+                    models_to_run.append('rf')
             
             # Train each model
             for model_name in models_to_run:
@@ -340,9 +455,9 @@ class InductiveExperiment:
                 
                 try:
                     # Create model
-                    if model_name in self.config.gnn_types:
+                    if model_name in self.config.gnn_types or pretrained_model_type == 'gnn':
                         # Existing GNN model creation
-                        if model_name == 'fagcn':
+                        if model_name == 'fagcn' or pretrained_model_type == 'fagcn':
                             model = GNNModel(
                                 input_dim=input_dim,
                                 hidden_dim=self.config.hidden_dim,
@@ -364,7 +479,7 @@ class InductiveExperiment:
                                 is_regression=is_regression
                             )
                     
-                    elif model_name in self.config.transformer_types:  # NEW TRANSFORMER SUPPORT
+                    elif model_name in self.config.transformer_types or pretrained_model_type == 'transformer':
                         from experiments.core.models import GraphTransformerModel
                         model = GraphTransformerModel(
                             input_dim=input_dim,
@@ -399,7 +514,7 @@ class InductiveExperiment:
                             is_regression=is_regression
                         )
                     
-                    # Train model (unchanged for all model types)
+                    # Train model
                     results = train_and_evaluate_inductive(
                         model=model,
                         dataloaders=task_dataloaders,
@@ -421,7 +536,7 @@ class InductiveExperiment:
                     }
                     
                     print(f"✓ {model_name.upper()} completed successfully")
-                    
+                
                 except Exception as e:
                     error_msg = f"Error in {model_name} model: {str(e)}"
                     print(f"✗ {error_msg}")
@@ -431,7 +546,7 @@ class InductiveExperiment:
                         'error': error_msg,
                         'test_metrics': {}
                     }
-            
+                
             all_results[task] = task_results
         
         self.results = all_results
@@ -594,7 +709,7 @@ class InductiveExperiment:
             # Prepare data
             dataloaders = self.prepare_data()
             
-            # Run experiments (unchanged)
+            # Run experiments
             results = self.run_experiments()
             
             # Save results
@@ -778,6 +893,60 @@ class InductiveExperiment:
         lines.append(f"  Success rate: {successful_models/total_models:.1%}" if total_models > 0 else "  Success rate: 0%")
         
         return "\n".join(lines)
+
+    def load_pretrained_model(self, model_dir: str, model_id: str):
+        """Load a pre-trained model for fine-tuning."""
+        from experiments.inductive.data import PreTrainedModelSaver
+        
+        model_saver = PreTrainedModelSaver(model_dir)
+        model, metadata = model_saver.load_model(model_id, self.device)
+        
+        print(f"Loaded pre-trained model: {model_id}")
+        print(f"  Pre-training task: {metadata['config']['pretraining_task']}")
+        print(f"  Architecture: {metadata['architecture']}")
+        
+        return model, metadata
+
+    def create_model_from_pretrained(self, pretrained_model, metadata, output_dim: int, is_regression: bool):
+        """Create a fine-tuning model from pre-trained model."""
+        
+        # Extract encoder from pre-trained model
+        if hasattr(pretrained_model, 'encoder'):
+            encoder = pretrained_model.encoder
+        else:
+            raise ValueError("Pre-trained model does not have an encoder!")
+        
+        # Get encoder output dimension from metadata
+        encoder_output_dim = metadata['config']['hidden_dim']
+        
+        # Create new classification/regression head
+        if is_regression:
+            head = torch.nn.Linear(encoder_output_dim, output_dim)
+        else:
+            head = torch.nn.Sequential(
+                torch.nn.Linear(encoder_output_dim, output_dim),
+                torch.nn.LogSoftmax(dim=-1)
+            )
+        
+        # Combine into new model
+        class FineTuningModel(torch.nn.Module):
+            def __init__(self, encoder, head, freeze_encoder=False):
+                super().__init__()
+                self.encoder = encoder
+                self.head = head
+                
+                if freeze_encoder:
+                    for param in self.encoder.parameters():
+                        param.requires_grad = False
+            
+            def forward(self, x, edge_index=None):
+                if edge_index is not None:
+                    embeddings = self.encoder(x, edge_index)
+                else:
+                    embeddings = self.encoder(x)
+                return self.head(embeddings)
+        
+        return FineTuningModel(encoder, head)
 
 class PreTrainingRunner:
     """Main runner for self-supervised pre-training with hyperparameter optimization."""
@@ -1510,6 +1679,7 @@ class PreTrainingRunner:
         print(f"Total time: {total_time:.2f} seconds")
         
         return results
+    
 class PreTrainingExperiment:
     """High-level experiment runner for multiple pre-training configurations."""
     
@@ -1647,19 +1817,6 @@ def run_inductive_experiment(config) -> Dict[str, Any]:
     experiment = InductiveExperiment(config)
     return experiment.run()
 
-def load_pretrained_model(self, model_id: str, model_type: str = 'gnn'):
-    """Load a pre-trained model for fine-tuning."""
-    from experiments.inductive.data import PreTrainedModelSaver
-    
-    model_saver = PreTrainedModelSaver("pretrained_models")
-    model, metadata = model_saver.load_model(model_id, self.device)
-    
-    print(f"Loaded pre-trained model: {model_id}")
-    print(f"  Pre-training task: {metadata['config']['pretraining_task']}")
-    print(f"  Architecture: {metadata['architecture']}")
-    
-    return model, metadata
-
 def load_finetuning_graphs_from_model(
     config: InductiveExperimentConfig
 ) -> Optional[List]:
@@ -1681,13 +1838,13 @@ def load_finetuning_graphs_from_model(
             from experiments.inductive.self_supervised_task import PreTrainedModelSaver
             
             model_saver = PreTrainedModelSaver(config.pretrained_model_dir)
-            _, metadata = model_saver.load_model(config.pretrained_model_id)
+            _, metadata, family_ref = model_saver.load_model(config.pretrained_model_id)
             
-            family_id = metadata.get('family_id')
+            family_id = family_ref.get('family_id')
             if family_id:
-                print(f"📁 Auto-loaded graph family from model: {family_id}")
+                print(f"Got graph family id from pre-trained model: {family_id}")
             else:
-                print(f"⚠️  Pre-trained model has no associated graph family")
+                print(f"Pre-trained model has no associated graph family")
                 return None
                 
         except Exception as e:
@@ -1696,8 +1853,7 @@ def load_finetuning_graphs_from_model(
     
     # Method 3: No family specified - generate new graphs
     else:
-        print(f"📁 No graph family specified - will generate new graphs")
-        return None
+        raise ValueError("No graph family specified, make sure to specify a graph family or use a pre-trained model with auto-load_family set to True")
     
     # Load the graph family
     if family_id:
@@ -1715,52 +1871,14 @@ def load_finetuning_graphs_from_model(
             # Use fine-tuning graphs
             finetuning_graphs = graph_splits['finetuning']
             
-            print(f"✅ Loaded {len(finetuning_graphs)} fine-tuning graphs from family {family_id}")
-            print(f"   Total family size: {len(family_graphs)} graphs")
-            print(f"   Family metadata: {family_metadata.get('creation_timestamp', 'Unknown')}")
+            print(f"Loaded {len(finetuning_graphs)} fine-tuning graphs from family {family_id}")
+            print(f"Total family size: {len(family_graphs)} graphs")
+            print(f"Family metadata: {family_metadata.get('creation_timestamp', 'Unknown')}")
             
             return finetuning_graphs
             
         except Exception as e:
-            print(f"❌ Failed to load graph family {family_id}: {e}")
+            print(f"Failed to load graph family {family_id}: {e}")
             return None
     
     return None
-
-def create_model_from_pretrained(self, pretrained_model, metadata, output_dim: int, is_regression: bool):
-    """Create a fine-tuning model from pre-trained model."""
-    
-    # Extract encoder from pre-trained model
-    if hasattr(pretrained_model, 'encoder'):
-        encoder = pretrained_model.encoder
-    else:
-        encoder = pretrained_model
-    
-    # Create new classification/regression head
-    if is_regression:
-        head = torch.nn.Linear(encoder.output_dim, output_dim)
-    else:
-        head = torch.nn.Sequential(
-            torch.nn.Linear(encoder.output_dim, output_dim),
-            torch.nn.LogSoftmax(dim=-1)
-        )
-    
-    # Combine into new model
-    class FineTuningModel(torch.nn.Module):
-        def __init__(self, encoder, head, freeze_encoder=False):
-            super().__init__()
-            self.encoder = encoder
-            self.head = head
-            
-            if freeze_encoder:
-                for param in self.encoder.parameters():
-                    param.requires_grad = False
-        
-        def forward(self, x, edge_index=None):
-            if edge_index is not None:
-                embeddings = self.encoder(x, edge_index)
-            else:
-                embeddings = self.encoder(x)
-            return self.head(embeddings)
-    
-    return FineTuningModel(encoder, head)
