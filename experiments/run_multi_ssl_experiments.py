@@ -626,12 +626,6 @@ def parse_args():
     parser.add_argument('--corruption_type', type=str, default='feature_shuffle',
                     choices=['feature_shuffle', 'edge_dropout', 'subgraph'],
                     help='Corruption type for contrastive learning')
-    parser.add_argument('--num_corruptions', type=int, default=1,
-                    help='Number of corrupted versions to generate for DGI')
-    parser.add_argument('--use_infonce', action='store_true',
-                    help='Use InfoNCE loss instead of BCE for DGI')
-    parser.add_argument('--temperature', type=float, default=0.1,
-                    help='Temperature parameter for InfoNCE loss')
     
     # === GRAPHCL SPECIFIC PARAMETERS ===
     parser.add_argument('--augmentation_types', type=str, nargs='+',
@@ -968,12 +962,6 @@ def create_custom_experiment(args) -> SSLMultiExperimentConfig:
         })
     elif args.pretraining_task == 'dgi':
         sweep_parameters.update({
-            'temperature': ParameterRange(
-                min_val=args.temperature_min,
-                max_val=args.temperature_max,
-                step=args.temperature_step,
-                is_sweep=True
-            ),
             'corruption_type': ParameterRange(
                 min_val=0,
                 max_val=1,

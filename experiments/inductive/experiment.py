@@ -1280,7 +1280,6 @@ class PreTrainingRunner:
         
         return params
 
-
     def _optimize_hyperparameters(self, warmup_graphs: List, task) -> Dict[str, Any]:
         """FIXED: Optimize hyperparameters with proper evaluation."""
         
@@ -1314,12 +1313,8 @@ class PreTrainingRunner:
             
             temp_config = PreTrainingConfig.from_dict(temp_config_dict)
             
-            # Use the FIXED GraphCL implementation if needed
-            if temp_config.pretraining_task == "graphcl":
-                from experiments.inductive.self_supervised_task import GraphCLTask
-                temp_task = GraphCLTask(temp_config)
-            else:
-                temp_task = create_ssl_task(temp_config)
+            # Use the GraphCL implementation if needed
+            temp_task = create_ssl_task(temp_config)
             
             model = temp_task.create_model(input_dim).to(self.device)
             
@@ -1361,7 +1356,9 @@ class PreTrainingRunner:
                     # Get primary metric based on task
                     if self.config.pretraining_task == "link_prediction":
                         metric = val_metrics.get('auc', 0.0)
-                    elif self.config.pretraining_task in ["dgi", "graphcl"]:
+                    elif self.config.pretraining_task in ["dgi"]:
+                        metric = -val_metrics.get('loss', float('inf'))
+                    elif self.config.pretraining_task in ["graphcl"]:
                         # Use alignment for contrastive tasks if accuracy is unreliable
                         metric = val_metrics.get('alignment', val_metrics.get('accuracy', 0.0))
                     else:
@@ -1414,7 +1411,7 @@ class PreTrainingRunner:
 
 
     def _train_model(self, pretraining_graphs: List, optimized_params: Optional[Dict] = None) -> Tuple[torch.nn.Module, Dict]:
-        """FIXED: Train model with proper parameter application."""
+        """Train model with proper parameter application."""
         
         # Apply optimized parameters to config
         if optimized_params:
@@ -1439,11 +1436,7 @@ class PreTrainingRunner:
         input_dim = sample_batch.x.shape[1]
         
         # Create task with updated config
-        if self.config.pretraining_task == "graphcl":
-            from experiments.inductive.self_supervised_task import GraphCLTask
-            task = GraphCLTask(self.config)
-        else:
-            task = create_ssl_task(self.config)
+        task = create_ssl_task(self.config)
         
         model = task.create_model(input_dim).to(self.device)
         
@@ -1511,7 +1504,9 @@ class PreTrainingRunner:
                 # Get primary metric with fallbacks
                 if self.config.pretraining_task == "link_prediction":
                     primary_metric = eval_metrics.get('auc', 0.0)
-                elif self.config.pretraining_task in ["dgi", "graphcl"]:
+                elif self.config.pretraining_task in ["dgi"]:
+                    primary_metric = -eval_metrics.get('loss', float('inf'))
+                elif self.config.pretraining_task in ["graphcl"]:
                     # Use alignment for contrastive tasks, fallback to accuracy
                     primary_metric = eval_metrics.get('alignment', eval_metrics.get('accuracy', 0.0))
                 else:
@@ -1535,7 +1530,7 @@ class PreTrainingRunner:
             
             # Logging every 10 epochs
             if epoch % 10 == 0:
-                print(f"Epoch {epoch:4d}: Train Loss = {avg_train_loss:.4f}, Val Loss = {eval_loss:.4f}, Metric = {primary_metric:.4f}")
+                print(f"Epoch {epoch:4d}: Train Loss = {avg_train_loss:.4f}, Val Loss = {eval_loss:.4f}, Metric = {-primary_metric:.4f}")
         
         # Load best model
         if best_model_state is not None:
@@ -1556,13 +1551,12 @@ class PreTrainingRunner:
         }
 
 
-    # INTEGRATION FIX: Make sure PreTrainingRunner is called correctly
     def run_pretraining_only(
         self, 
         family_id: Optional[str] = None,
         use_existing_family: bool = False
     ) -> Dict[str, Any]:
-        """FIXED: Run pre-training with proper optimization integration."""
+        """Run pre-training with proper optimization integration."""
         
         print("="*80)
         print("ENHANCED SSL PRE-TRAINING WITH OPTUNA OPTIMIZATION")
@@ -1598,7 +1592,7 @@ class PreTrainingRunner:
         
         print(f"Graph splits: {results['graph_splits_sizes']}")
         
-        # Step 2: FIXED Hyperparameter optimization
+        # Step 2: Hyperparameter optimization
         hyperopt_results = None
         if self.config.optimize_hyperparams:
             print(f"\nStep 2: Hyperparameter Optimization")

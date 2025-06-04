@@ -17,9 +17,8 @@ from torch_geometric.loader import DataLoader
 from torch_geometric.data import Batch
 
 from experiments.core.models import GNNModel, MLPModel, SklearnModel, GraphTransformerModel
-from experiments.core.metrics import compute_metrics, compute_loss
+from experiments.core.metrics import compute_metrics
 from experiments.inductive.config import InductiveExperimentConfig
-from experiments.core.training import optimize_hyperparameters
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)

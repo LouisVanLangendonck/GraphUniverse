@@ -54,7 +54,7 @@ def parse_args():
                         help='Maximum number of communities per graph')
     
     # === UNIVERSE PARAMETERS ===
-    parser.add_argument('--universe_K', type=int, default=10,
+    parser.add_argument('--universe_K', type=int, default=30,
                         help='Number of communities in universe')
     parser.add_argument('--universe_feature_dim', type=int, default=32,
                         help='Feature dimension for universe')
@@ -71,8 +71,8 @@ def parse_args():
                         help='Degree distribution type for DCCC-SBM')
     
     # === PRE-TRAINING TASK ===
-    parser.add_argument('--pretraining_task', type=str, default='contrastive',
-                        choices=['link_prediction', 'contrastive'],
+    parser.add_argument('--pretraining_task', type=str, default='dgi',
+                        choices=['link_prediction', 'dgi'],
                         help='Self-supervised pre-training task')
     
     # === MODEL CONFIGURATION ===
