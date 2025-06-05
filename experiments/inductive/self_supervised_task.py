@@ -24,7 +24,6 @@ import torch
 import torch.nn.functional as F
 from torch_geometric.utils import to_dense_adj, dense_to_sparse, subgraph
 
-
 class LinkPredictionModel(nn.Module):
     """Link prediction model combining encoder and predictor."""
     
@@ -44,7 +43,6 @@ class LinkPredictionModel(nn.Module):
         ], dim=1)
         return self.link_predictor(edge_embeddings).squeeze()
 
-
 class ContrastiveModel(nn.Module):
     """Contrastive learning model."""
     
@@ -55,7 +53,6 @@ class ContrastiveModel(nn.Module):
     
     def forward(self, x, edge_index):
         return self.encoder(x, edge_index)
-
 
 class GraphCLModel(nn.Module):
     """GraphCL model with projection head."""
@@ -68,7 +65,6 @@ class GraphCLModel(nn.Module):
     def forward(self, x, edge_index):
         return self.encoder(x, edge_index)
 
-
 class ReadoutFunction(nn.Module):
     """Simple mean readout for graph-level representations."""
     
@@ -78,7 +74,6 @@ class ReadoutFunction(nn.Module):
     def forward(self, x: torch.Tensor, batch: Optional[torch.Tensor] = None) -> torch.Tensor:
         """Apply mean readout - most stable and widely used."""
         return torch.mean(x, dim=0, keepdim=True)
-
 
 class EnhancedContrastiveModel(nn.Module):
     """Enhanced contrastive model with learnable readout."""
@@ -307,24 +302,24 @@ class DeepGraphInfoMaxTask(SelfSupervisedTask):
     
     def _corrupt_graph(self, batch: Data) -> Data:
         """Apply multiple corruption strategies."""
-        corruption_type = getattr(self.config, 'corruption_type')
+        corruption_type = getattr(self.config, 'dgi_corruption_type')
         
         
         corrupted = batch.clone()
         # Apply corruption with appropriate parameters
         if corruption_type == 'feature_dropout':
-            drop_rate = getattr(self.config, 'corruption_rate', 0.2)
+            drop_rate = getattr(self.config, 'dgi_corruption_rate', 0.2)
             corrupted = GraphCorruption.feature_dropout(corrupted, drop_rate)
         elif corruption_type == 'feature_shuffle':
             corrupted = GraphCorruption.feature_shuffle(corrupted)
         elif corruption_type == 'feature_noise':
-            noise_std = getattr(self.config, 'noise_std', 0.1)
+            noise_std = getattr(self.config, 'dgi_noise_std', 0.1)
             corrupted = GraphCorruption.feature_noise(corrupted, noise_std)
         elif corruption_type == 'edge_dropout':
-            drop_rate = getattr(self.config, 'corruption_rate', 0.2)
+            drop_rate = getattr(self.config, 'dgi_corruption_rate', 0.2)
             corrupted = GraphCorruption.edge_dropout(corrupted, drop_rate)
         elif corruption_type == 'edge_perturbation':
-            perturb_rate = getattr(self.config, 'perturb_rate', 0.1)
+            perturb_rate = getattr(self.config, 'dgi_perturb_rate', 0.1)
             corrupted = GraphCorruption.edge_perturbation(corrupted, perturb_rate)
         else:
             raise ValueError(f"{corruption_type} not implemented")
@@ -871,6 +866,299 @@ class SafeGraphCorruption:
         corrupted.edge_index = data.edge_index[:, edge_mask]
         return corrupted
 
+class GraphMAEModel(nn.Module):
+    """GraphMAE model with encoder, decoder, and masking tokens."""
+    
+    def __init__(self, encoder: nn.Module, decoder: nn.Module, input_dim: int, hidden_dim: int):
+        super().__init__()
+        self.encoder = encoder
+        self.decoder = decoder
+        self.input_dim = input_dim
+        self.hidden_dim = hidden_dim
+        
+        # Learnable mask tokens
+        self.enc_mask_token = nn.Parameter(torch.zeros(1, input_dim))
+        self.dec_mask_token = nn.Parameter(torch.zeros(1, hidden_dim))
+        
+        # Initialize mask tokens
+        torch.nn.init.normal_(self.enc_mask_token, std=0.02)
+        torch.nn.init.normal_(self.dec_mask_token, std=0.02)
+    
+    def forward(self, x, edge_index):
+        return self.encoder(x, edge_index)
+
+class ScaledCosineError(nn.Module):
+    """Scaled Cosine Error loss function from GraphMAE paper."""
+    
+    def __init__(self, gamma: float = 1.0):
+        super().__init__()
+        self.gamma = gamma
+    
+    def forward(self, pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+        """
+        Compute scaled cosine error.
+        
+        Args:
+            pred: Predicted features [N, D]
+            target: Target features [N, D]
+            
+        Returns:
+            Scaled cosine error loss
+        """
+        # Normalize vectors
+        pred_norm = F.normalize(pred, p=2, dim=-1)
+        target_norm = F.normalize(target, p=2, dim=-1)
+        
+        # Cosine similarity
+        cosine_sim = (pred_norm * target_norm).sum(dim=-1)
+        
+        # Cosine error (1 - cosine_similarity)
+        cosine_error = 1 - cosine_sim
+        
+        # Scale the error
+        if self.gamma != 1.0:
+            scaled_error = torch.pow(cosine_error, self.gamma)
+        else:
+            scaled_error = cosine_error
+        
+        return scaled_error.mean()
+
+class GraphMAETask(SelfSupervisedTask):
+    """GraphMAE self-supervised learning task."""
+    
+    def __init__(self, config: PreTrainingConfig):
+        super().__init__(config)
+        
+        # GraphMAE specific parameters
+        self.mask_rate = getattr(config, 'graphmae_mask_rate', 0.5)
+        self.replace_rate = getattr(config, 'graphmae_replace_rate', 0.1)
+        self.gamma = getattr(config, 'graphmae_gamma', 2.0)
+        self.decoder_type = getattr(config, 'graphmae_decoder_type', 'gnn')  # 'gnn' or 'mlp'
+        
+        # Loss function
+        self.criterion = ScaledCosineError(gamma=self.gamma)
+        
+        print(f"GraphMAE initialized with mask_rate={self.mask_rate}, "
+              f"replace_rate={self.replace_rate}, gamma={self.gamma}")
+    
+    def create_model(self, input_dim: int) -> nn.Module:
+        """Create GraphMAE model with encoder and decoder."""
+        
+        # Create encoder
+        if self.config.model_type == "transformer" or self.config.run_transformers:
+            from experiments.core.models import GraphTransformerModel
+            encoder = GraphTransformerModel(
+                input_dim=input_dim,
+                hidden_dim=self.config.hidden_dim,
+                output_dim=self.config.hidden_dim,
+                transformer_type=self.config.transformer_type,
+                num_layers=self.config.num_layers,
+                dropout=self.config.dropout,
+                is_regression=False,
+                num_heads=self.config.transformer_num_heads,
+                max_nodes=self.config.transformer_max_nodes,
+                max_path_length=self.config.transformer_max_path_length,
+                precompute_encodings=self.config.transformer_precompute_encodings,
+                cache_encodings=self.config.transformer_cache_encodings,
+                local_gnn_type=self.config.local_gnn_type,
+                prenorm=self.config.transformer_prenorm
+            )
+        else:
+            from experiments.core.models import GNNModel
+            encoder = GNNModel(
+                input_dim=input_dim,
+                hidden_dim=self.config.hidden_dim,
+                output_dim=self.config.hidden_dim,
+                num_layers=self.config.num_layers,
+                dropout=self.config.dropout,
+                gnn_type=self.config.gnn_type,
+                is_regression=False,
+                residual=self.config.residual,
+                norm_type=self.config.norm_type,
+                agg_type=self.config.agg_type,
+                heads=self.config.heads,
+                concat_heads=self.config.concat_heads,
+            )
+        
+        # Create decoder
+        if self.decoder_type == 'gnn':
+            # Use GNN decoder as in the paper
+            decoder_gnn_type = getattr(self.config, 'graphmae_decoder_gnn_type', self.config.gnn_type)
+            from experiments.core.models import GNNModel
+            decoder = GNNModel(
+                input_dim=self.config.hidden_dim,
+                hidden_dim=self.config.hidden_dim,
+                output_dim=input_dim,  # Reconstruct original features
+                num_layers=1,  # Single layer decoder as in paper
+                dropout=self.config.dropout,
+                gnn_type=decoder_gnn_type,
+                is_regression=False,
+                residual=False,  # No residual in decoder
+                norm_type=self.config.norm_type,
+                agg_type=self.config.agg_type,
+                heads=self.config.heads,
+                concat_heads=self.config.concat_heads,
+            )
+        else:
+            # MLP decoder (baseline)
+            decoder = nn.Sequential(
+                nn.Linear(self.config.hidden_dim, self.config.hidden_dim),
+                nn.PReLU(),
+                nn.Dropout(self.config.dropout),
+                nn.Linear(self.config.hidden_dim, input_dim)
+            )
+        
+        return GraphMAEModel(encoder, decoder, input_dim, self.config.hidden_dim)
+    
+    def _mask_features(self, batch: Data) -> Tuple[Data, torch.Tensor, torch.Tensor]:
+        """
+        Mask node features according to GraphMAE strategy.
+        
+        Returns:
+            masked_batch: Batch with masked features
+            mask_indices: Indices of masked nodes
+            original_features: Original features of masked nodes
+        """
+        num_nodes = batch.x.size(0)
+        num_mask = int(self.mask_rate * num_nodes)
+        
+        # Random sampling without replacement
+        perm = torch.randperm(num_nodes, device=batch.x.device)
+        mask_indices = perm[:num_mask]
+        
+        # Store original features of masked nodes
+        original_features = batch.x[mask_indices].clone()
+        
+        # Create masked batch
+        masked_batch = batch.clone()
+        
+        if self.replace_rate > 0:
+            # Some nodes get mask token, some get random features
+            num_replace = int(self.replace_rate * num_mask)
+            num_mask_token = num_mask - num_replace
+            
+            # Split mask indices
+            mask_token_indices = mask_indices[:num_mask_token]
+            replace_indices = mask_indices[num_mask_token:]
+            
+            # Apply mask token
+            masked_batch.x[mask_token_indices] = 0.0  # Will be replaced with learnable token
+            
+            # Apply random replacement
+            if num_replace > 0:
+                random_indices = torch.randperm(num_nodes, device=batch.x.device)[:num_replace]
+                masked_batch.x[replace_indices] = batch.x[random_indices]
+        else:
+            # All masked nodes get mask token
+            masked_batch.x[mask_indices] = 0.0
+        
+        return masked_batch, mask_indices, original_features
+    
+    def _apply_mask_tokens(self, model: GraphMAEModel, batch: Data, mask_indices: torch.Tensor) -> Data:
+        """Apply learnable mask tokens to masked positions."""
+        batch_with_tokens = batch.clone()
+        
+        # Apply encoder mask token
+        batch_with_tokens.x[mask_indices] = model.enc_mask_token.expand(
+            mask_indices.size(0), -1
+        )
+        
+        return batch_with_tokens
+    
+    def _re_mask_for_decoder(self, model: GraphMAEModel, embeddings: torch.Tensor, 
+                           mask_indices: torch.Tensor) -> torch.Tensor:
+        """Re-mask embeddings before feeding to decoder (re-mask strategy)."""
+        re_masked_embeddings = embeddings.clone()
+        
+        # Apply decoder mask token to masked positions
+        re_masked_embeddings[mask_indices] = model.dec_mask_token.expand(
+            mask_indices.size(0), -1
+        )
+        
+        return re_masked_embeddings
+    
+    def compute_loss(self, model: GraphMAEModel, batch: Data) -> torch.Tensor:
+        """Compute GraphMAE loss."""
+        
+        # Step 1: Mask features
+        masked_batch, mask_indices, original_features = self._mask_features(batch)
+        
+        # Step 2: Apply learnable mask tokens
+        masked_batch_with_tokens = self._apply_mask_tokens(model, masked_batch, mask_indices)
+        
+        # Step 3: Encode with masked features
+        embeddings = model.encoder(masked_batch_with_tokens.x, masked_batch_with_tokens.edge_index)
+        
+        # Step 4: Re-mask embeddings for decoder
+        re_masked_embeddings = self._re_mask_for_decoder(model, embeddings, mask_indices)
+        
+        # Step 5: Decode to reconstruct features
+        if isinstance(model.decoder, nn.Sequential):
+            # MLP decoder
+            reconstructed = model.decoder(re_masked_embeddings)
+        else:
+            # GNN decoder
+            reconstructed = model.decoder(re_masked_embeddings, batch.edge_index)
+        
+        # Step 6: Compute loss only on masked nodes
+        pred_features = reconstructed[mask_indices]
+        target_features = original_features
+        
+        # Use scaled cosine error
+        loss = self.criterion(pred_features, target_features)
+        
+        return loss
+    
+    def evaluate(self, model: GraphMAEModel, dataloader) -> Dict[str, float]:
+        """Evaluate GraphMAE performance."""
+        model.eval()
+        total_loss = 0.0
+        total_cosine_sim = 0.0
+        total_mse = 0.0
+        n_batches = 0
+        
+        with torch.no_grad():
+            for batch in dataloader:
+                batch = batch.to(self.device)
+                
+                # Compute loss
+                loss = self.compute_loss(model, batch)
+                total_loss += loss.item()
+                
+                # Additional metrics for evaluation
+                masked_batch, mask_indices, original_features = self._mask_features(batch)
+                masked_batch_with_tokens = self._apply_mask_tokens(model, masked_batch, mask_indices)
+                
+                embeddings = model.encoder(masked_batch_with_tokens.x, masked_batch_with_tokens.edge_index)
+                re_masked_embeddings = self._re_mask_for_decoder(model, embeddings, mask_indices)
+                
+                if isinstance(model.decoder, nn.Sequential):
+                    reconstructed = model.decoder(re_masked_embeddings)
+                else:
+                    reconstructed = model.decoder(re_masked_embeddings, batch.edge_index)
+                
+                pred_features = reconstructed[mask_indices]
+                target_features = original_features
+                
+                # Cosine similarity
+                pred_norm = F.normalize(pred_features, p=2, dim=-1)
+                target_norm = F.normalize(target_features, p=2, dim=-1)
+                cosine_sim = (pred_norm * target_norm).sum(dim=-1).mean()
+                total_cosine_sim += cosine_sim.item()
+                
+                # MSE for comparison
+                mse = F.mse_loss(pred_features, target_features)
+                total_mse += mse.item()
+                
+                n_batches += 1
+        
+        return {
+            'loss': total_loss / n_batches if n_batches > 0 else 0.0,
+            'cosine_similarity': total_cosine_sim / n_batches if n_batches > 0 else 0.0,
+            'mse': total_mse / n_batches if n_batches > 0 else 0.0,
+            'reconstruction_accuracy': total_cosine_sim / n_batches if n_batches > 0 else 0.0
+        }
+
 def create_ssl_task(config: PreTrainingConfig) -> SelfSupervisedTask:
     """Create SSL task based on configuration - enhanced version."""
     if config.pretraining_task == "link_prediction":
@@ -881,6 +1169,8 @@ def create_ssl_task(config: PreTrainingConfig) -> SelfSupervisedTask:
         return DeepGraphInfoMaxTask(config)  # Enhanced version
     elif config.pretraining_task == "graphcl":
         return GraphCLTask(config)
+    elif config.pretraining_task == "graphmae":
+        return GraphMAETask(config)
     else:
         raise ValueError(f"Unknown pretraining task: {config.pretraining_task}")
 

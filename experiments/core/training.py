@@ -14,6 +14,7 @@ from typing import Dict, List, Optional, Tuple, Union, Any, Callable
 from experiments.core.models import GNNModel, MLPModel, SklearnModel, GraphTransformerModel
 from experiments.core.metrics import compute_metrics
 from experiments.core.config import TransductiveExperimentConfig
+from torch.cuda.amp import GradScaler, autocast
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)

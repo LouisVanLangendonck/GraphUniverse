@@ -102,7 +102,9 @@ class GraphFamilyManager:
             pickle.dump(family_graphs, f)
         
         # Save metadata
-        n_actual_pretraining, n_warmup, n_finetuning = self.config.get_graph_splits()
+        n_actual_pretraining, n_warmup, n_finetuning = self.config.get_graph_splits(len(family_graphs))
+        print("SAVING GRAPH FAMILY METADATA")
+        print(f"n_actual_pretraining: {n_actual_pretraining}, n_warmup: {n_warmup}, n_finetuning: {n_finetuning}")
         
         metadata = {
             'family_id': family_id,
@@ -303,12 +305,14 @@ class PreTrainedModelSaver:
         config = PreTrainingConfig(**config_dict)
         
         # Recreate model architecture
-        from experiments.inductive.self_supervised_task import LinkPredictionTask, ContrastiveTask
+        from experiments.inductive.self_supervised_task import LinkPredictionTask, DeepGraphInfoMaxTask, GraphMAETask
         
         if metadata['config']['pretraining_task'] == 'link_prediction':
             task = LinkPredictionTask(config)
-        elif metadata['config']['pretraining_task'] == 'contrastive':
-            task = ContrastiveTask(config)
+        elif metadata['config']['pretraining_task'] == 'dgi':
+            task = DeepGraphInfoMaxTask(config)
+        elif metadata['config']['pretraining_task'] == 'graphmae':
+            task = GraphMAETask(config)
         else:
             raise ValueError(f"Unknown task: {metadata['config']['pretraining_task']}")
         

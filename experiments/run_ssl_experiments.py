@@ -23,8 +23,8 @@ def parse_args():
     parser = argparse.ArgumentParser(description='Run self-supervised learning experiments')
     
     # === MODE SELECTION ===
-    parser.add_argument('--mode', type=str, required=True,
-                        choices=['pretrain', 'finetune', 'list_families', 'list_models'],
+    parser.add_argument('--mode', type=str, default='pretrain',
+                        choices=['pretrain', 'list_families', 'list_models'],
                         help='Experiment mode')
     
     # === EXPERIMENT SETUP ===
@@ -42,25 +42,25 @@ def parse_args():
     # === GRAPH FAMILY GENERATION ===
     parser.add_argument('--n_graphs', type=int, default=50,
                         help='Number of graphs for pre-training')
-    parser.add_argument('--n_extra_graphs', type=int, default=30,
+    parser.add_argument('--n_extra_graphs', type=int, default=10,
                         help='Extra graphs to generate for fine-tuning')
     parser.add_argument('--min_n_nodes', type=int, default=80,
                         help='Minimum number of nodes per graph')
-    parser.add_argument('--max_n_nodes', type=int, default=120,
+    parser.add_argument('--max_n_nodes', type=int, default=200,
                         help='Maximum number of nodes per graph')
-    parser.add_argument('--min_communities', type=int, default=3,
+    parser.add_argument('--min_communities', type=int, default=4,
                         help='Minimum number of communities per graph')
-    parser.add_argument('--max_communities', type=int, default=7,
+    parser.add_argument('--max_communities', type=int, default=6,
                         help='Maximum number of communities per graph')
     
     # === UNIVERSE PARAMETERS ===
-    parser.add_argument('--universe_K', type=int, default=30,
+    parser.add_argument('--universe_K', type=int, default=10,
                         help='Number of communities in universe')
     parser.add_argument('--universe_feature_dim', type=int, default=32,
                         help='Feature dimension for universe')
     parser.add_argument('--universe_edge_density', type=float, default=0.1,
                         help='Base edge density for universe')
-    parser.add_argument('--universe_homophily', type=float, default=0.8,
+    parser.add_argument('--universe_homophily', type=float, default=0.3,
                         help='Homophily parameter for universe')
     
     # === METHOD SELECTION ===
@@ -71,15 +71,15 @@ def parse_args():
                         help='Degree distribution type for DCCC-SBM')
     
     # === PRE-TRAINING TASK ===
-    parser.add_argument('--pretraining_task', type=str, default='dgi',
-                        choices=['link_prediction', 'dgi'],
+    parser.add_argument('--pretraining_task', type=str, default='graphmae',
+                        choices=['link_prediction', 'dgi', 'graphmae'],
                         help='Self-supervised pre-training task')
     
     # === MODEL CONFIGURATION ===
-    parser.add_argument('--gnn_type', type=str, default='gcn',
-                        choices=['gcn', 'sage', 'gat'],
+    parser.add_argument('--gnn_type', type=str, default='fagcn',
+                        choices=['gcn', 'sage', 'gat', 'fagcn'],
                         help='Type of GNN to use')
-    parser.add_argument('--hidden_dim', type=int, default=128,
+    parser.add_argument('--hidden_dim', type=int, default=64,
                         help='Hidden dimension for GNN')
     parser.add_argument('--num_layers', type=int, default=3,
                         help='Number of GNN layers')
@@ -114,7 +114,7 @@ def parse_args():
                         help='Use pre-normalization in transformers')
     
     # === TRAINING PARAMETERS ===
-    parser.add_argument('--epochs', type=int, default=300,
+    parser.add_argument('--epochs', type=int, default=200,
                         help='Maximum number of training epochs')
     parser.add_argument('--learning_rate', type=float, default=0.001,
                         help='Learning rate')
@@ -141,6 +141,31 @@ def parse_args():
                         choices=['bce', 'margin'],
                         help='Loss function for link prediction')
     
+    # DGI
+    parser.add_argument('--dgi_corruption_type', type=str, default='edge_dropout',
+                        choices=['feature_shuffle', 'edge_dropout', 'feature_dropout', 'feature_noise', 'edge_perturbation'],
+                        help='Type of corruption for DGI when using feature_noise')
+    parser.add_argument('--dgi_noise_std', type=float, default=0.1,
+                        help='Noise standard deviation for DGI')
+    parser.add_argument('--dgi_perturb_rate', type=float, default=0.1,
+                        help='Perturbation rate for DGI')
+    parser.add_argument('--dgi_corruption_rate', type=float, default=0.2,
+                        help='Corruption rate for DGI')
+    
+    # GraphMAE
+    parser.add_argument('--graphmae_mask_rate', type=float, default=0.5,
+                        help='Mask rate for GraphMAE')
+    parser.add_argument('--graphmae_replace_rate', type=float, default=0.1,
+                        help='Replace rate for GraphMAE')
+    parser.add_argument('--graphmae_gamma', type=float, default=2.0,
+                        help='Gamma for GraphMAE')
+    parser.add_argument('--graphmae_decoder_type', type=str, default='gnn',
+                        choices=['gnn', 'mlp'],
+                        help='Decoder type for GraphMAE')
+    parser.add_argument('--graphmae_decoder_gnn_type', type=str, default='gcn',
+                        choices=['gcn', 'sage'],
+                        help='GNN type for GraphMAE decoder')
+    
     # Contrastive learning
     parser.add_argument('--contrastive_temperature', type=float, default=0.07,
                         help='Temperature for contrastive learning')
@@ -157,17 +182,6 @@ def parse_args():
                         help='Use existing graph family instead of generating new one')
     parser.add_argument('--graph_family_dir', type=str, default='graph_families',
                         help='Directory for graph families')
-    
-    # === FINE-TUNING SPECIFIC ===
-    parser.add_argument('--model_id', type=str, default=None,
-                        help='ID of pre-trained model to fine-tune (for finetune mode)')
-    parser.add_argument('--tasks', type=str, nargs='+', default=['community'],
-                        choices=['community', 'k_hop_community_counts', 'metapath'],
-                        help='Downstream tasks for fine-tuning')
-    parser.add_argument('--freeze_encoder', action='store_true',
-                        help='Freeze encoder weights during fine-tuning')
-    parser.add_argument('--fine_tune_lr_multiplier', type=float, default=0.1,
-                        help='Learning rate multiplier for fine-tuning')
     
     return parser.parse_args()
 
@@ -235,11 +249,24 @@ def create_config_from_args(args) -> PreTrainingConfig:
         optimization_timeout=args.optimization_timeout,
         
         # === TASK-SPECIFIC PARAMETERS ===
+        # Link prediction
         negative_sampling_ratio=args.negative_sampling_ratio,
         link_pred_loss=args.link_pred_loss,
         contrastive_temperature=args.contrastive_temperature,
-        corruption_type=args.corruption_type,
-        corruption_rate=args.corruption_rate
+        
+        # DGI
+        dgi_corruption_type=args.dgi_corruption_type,
+        dgi_noise_std=args.dgi_noise_std,
+        dgi_perturb_rate=args.dgi_perturb_rate,
+        dgi_corruption_rate=args.dgi_corruption_rate,
+
+        # GraphMAE
+        graphmae_mask_rate=args.graphmae_mask_rate,
+        graphmae_replace_rate=args.graphmae_replace_rate,
+        graphmae_gamma=args.graphmae_gamma,
+        graphmae_decoder_type=args.graphmae_decoder_type,
+        graphmae_decoder_gnn_type=args.graphmae_decoder_gnn_type,
+
     )
     
     return config
@@ -281,120 +308,6 @@ def run_pretraining_mode(args):
     print(f"Graph Family ID: {results['family_id']}")
     
     return results
-
-
-def run_finetuning_mode(args):
-    """Run fine-tuning mode using pre-trained models."""
-    print("="*80)
-    print("FINE-TUNING MODE")
-    print("="*80)
-    
-    if not args.model_id:
-        print("Error: --model_id required for fine-tuning mode")
-        return None
-    
-    # Load pre-trained model and associated graph family
-    print(f"Loading pre-trained model: {args.model_id}")
-    
-    # Import necessary modules for fine-tuning
-    from experiments.inductive.config import InductiveExperimentConfig
-    from experiments.inductive.experiment import InductiveExperiment
-    from experiments.inductive.data import PreTrainedModelSaver
-    
-    # Load pre-trained model
-    model_saver = PreTrainedModelSaver(args.output_dir)
-    try:
-        model, metadata = model_saver.load_model(args.model_id)
-        print(f"✓ Successfully loaded pre-trained model")
-        print(f"  Architecture: {metadata['architecture']}")
-        print(f"  Pre-training task: {metadata['config']['pretraining_task']}")
-        print(f"  Final metrics: {metadata['final_metrics']}")
-        
-        # Get associated graph family info
-        family_id = metadata.get('family_id')
-        if not family_id:
-            print("Error: Pre-trained model has no associated graph family")
-            return None
-        
-        print(f"  Graph family: {family_id}")
-        
-    except Exception as e:
-        print(f"Error loading pre-trained model: {e}")
-        return None
-    
-    # Load fine-tuning graphs
-    print(f"Loading fine-tuning graphs from family: {family_id}")
-    
-    family_manager = GraphFamilyManager(PreTrainingConfig(graph_family_dir=args.graph_family_dir))
-    try:
-        family_graphs, family_metadata = family_manager.load_family(family_id)
-        graph_splits = family_manager.get_graph_splits(family_graphs, family_metadata)
-        finetuning_graphs = graph_splits['finetuning']
-        
-        print(f"✓ Loaded {len(finetuning_graphs)} graphs for fine-tuning")
-        
-    except Exception as e:
-        print(f"Error loading graph family: {e}")
-        return None
-    
-    # Create inductive experiment configuration for fine-tuning
-    inductive_config = InductiveExperimentConfig(
-        # Use same basic parameters as pre-training
-        output_dir=os.path.join(args.output_dir, f"finetune_{args.model_id}"),
-        seed=args.seed,
-        device_id=args.device_id,
-        force_cpu=args.force_cpu,
-        
-        # Use the fine-tuning graphs
-        n_graphs=len(finetuning_graphs),
-        min_n_nodes=min(g.n_nodes for g in finetuning_graphs),
-        max_n_nodes=max(g.n_nodes for g in finetuning_graphs),
-        
-        # Tasks
-        tasks=args.tasks,
-        
-        # Model configuration (match pre-trained model)
-        gnn_types=[metadata['config']['gnn_type']],
-        run_gnn=True,
-        run_mlp=False,  # Only use GNN for fine-tuning
-        run_rf=False,
-        
-        # Training configuration
-        learning_rate=metadata['config']['learning_rate'] * args.fine_tune_lr_multiplier,
-        weight_decay=metadata['config']['weight_decay'],
-        epochs=100,  # Fewer epochs for fine-tuning
-        patience=20,
-        batch_size=2,
-        hidden_dim=metadata['config']['hidden_dim'],
-        num_layers=metadata['config']['num_layers'],
-        dropout=metadata['config']['dropout'],
-        
-        # Analysis
-        collect_signal_metrics=True,
-        require_consistency_check=False
-    )
-    
-    print(f"\nFine-tuning Configuration:")
-    print(f"  Tasks: {inductive_config.tasks}")
-    print(f"  Fine-tuning graphs: {len(finetuning_graphs)}")
-    print(f"  Learning rate: {inductive_config.learning_rate}")
-    print(f"  Freeze encoder: {args.freeze_encoder}")
-    
-    # Run fine-tuning experiment
-    # Note: This would require extending the InductiveExperiment class to support pre-trained models
-    # For now, we'll create a placeholder
-    
-    print("\n⚠️  Fine-tuning implementation requires extending InductiveExperiment class")
-    print("    to support loading pre-trained models. This is a TODO item.")
-    
-    return {
-        'model_id': args.model_id,
-        'family_id': family_id,
-        'n_finetuning_graphs': len(finetuning_graphs),
-        'tasks': args.tasks,
-        'status': 'pending_implementation'
-    }
-
 
 def list_families_mode(args):
     """List available graph families."""
@@ -466,9 +379,6 @@ def main():
     try:
         if args.mode == 'pretrain':
             results = run_pretraining_mode(args)
-            
-        elif args.mode == 'finetune':
-            results = run_finetuning_mode(args)
             
         elif args.mode == 'list_families':
             list_families_mode(args)

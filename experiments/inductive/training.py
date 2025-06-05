@@ -19,6 +19,7 @@ from torch_geometric.data import Batch
 from experiments.core.models import GNNModel, MLPModel, SklearnModel, GraphTransformerModel
 from experiments.core.metrics import compute_metrics
 from experiments.inductive.config import InductiveExperimentConfig
+from torch.cuda.amp import GradScaler, autocast
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -121,6 +122,10 @@ def train_inductive_model(
     
     # PyTorch models
     model = model.to(device)
+
+    # Initialize AMP components
+    use_amp = device.type == 'cuda' and getattr(config, 'use_mixed_precision', True)
+    scaler = GradScaler() if use_amp else None
     
     # Setup optimizer and loss
     optimizer = optim.Adam(
@@ -172,17 +177,24 @@ def train_inductive_model(
         train_targets = []
         
         for batch_idx, batch in enumerate(train_loader):
-            batch = batch.to(device)
+            batch = batch.to(device, non_blocking=True)  # Async transfer
             optimizer.zero_grad()
             
-            # Forward pass - check if model requires edge_index
-            if hasattr(model, 'gnn_type') or hasattr(model, 'transformer_type') or finetuning:
-                out = model(batch.x, batch.edge_index)
-            else:  # MLPModel or other non-GNN model
-                out = model(batch.x)
-            
-            # Compute loss
-            loss = criterion(out, batch.y)
+            # Forward pass - check if model requires edge_index (with autocast)
+            with autocast(enabled=use_amp):
+                if hasattr(model, 'gnn_type') or hasattr(model, 'transformer_type') or finetuning:
+                    out = model(batch.x, batch.edge_index)
+                else:  # MLPModel or other non-GNN model
+                    out = model(batch.x)
+
+                # Ensure output and target are in same precision
+                if use_amp and out.dtype != batch.y.dtype:
+                    # Convert targets to float16 for loss computation if needed
+                    target = batch.y.float() if is_regression else batch.y
+                else:
+                    target = batch.y
+                
+                loss = criterion(out, target)
             
             # Backward pass
             loss.backward()

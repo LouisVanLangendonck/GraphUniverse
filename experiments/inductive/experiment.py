@@ -980,115 +980,115 @@ class PreTrainingRunner:
             torch.cuda.manual_seed(seed)
             torch.cuda.manual_seed_all(seed)
 
-    def run_pretraining_only(
-        self, 
-        family_id: Optional[str] = None,
-        use_existing_family: bool = False
-    ) -> Dict[str, Any]:
-        """Run pre-training with full parameter control."""
+    # def run_pretraining_only(
+    #     self, 
+    #     family_id: Optional[str] = None,
+    #     use_existing_family: bool = False
+    # ) -> Dict[str, Any]:
+    #     """Run pre-training with full parameter control."""
         
-        print("="*80)
-        print("ENHANCED SSL PRE-TRAINING WITH FULL PARAMETER CONTROL")
-        print("="*80)
+    #     print("="*80)
+    #     print("ENHANCED SSL PRE-TRAINING WITH FULL PARAMETER CONTROL")
+    #     print("="*80)
         
-        pipeline_start = time.time()
-        results = {'config': self.config.to_dict()}
+    #     pipeline_start = time.time()
+    #     results = {'config': self.config.to_dict()}
         
-        # Step 1: Generate or load graph family
-        if use_existing_family and family_id:
-            print(f"\nStep 1: Loading existing graph family")
-            print("-" * 50)
-            family_graphs, family_metadata = self.family_manager.load_family(family_id)
-            graph_splits = self.family_manager.get_graph_splits(family_graphs, family_metadata)
-            results['used_existing_family'] = True
-            results['family_metadata'] = family_metadata
-        else:
-            print(f"\nStep 1: Generating new graph family with full parameter control")
-            print("-" * 50)
-            family_graphs, family_id = self._generate_controlled_family(family_id)
+    #     # Step 1: Generate or load graph family
+    #     if use_existing_family and family_id:
+    #         print(f"\nStep 1: Loading existing graph family")
+    #         print("-" * 50)
+    #         family_graphs, family_metadata = self.family_manager.load_family(family_id)
+    #         graph_splits = self.family_manager.get_graph_splits(family_graphs, family_metadata)
+    #         results['used_existing_family'] = True
+    #         results['family_metadata'] = family_metadata
+    #     else:
+    #         print(f"\nStep 1: Generating new graph family with full parameter control")
+    #         print("-" * 50)
+    #         family_graphs, family_id = self._generate_controlled_family(family_id)
             
-            # Create splits
-            n_actual_pretraining, n_warmup, n_finetuning = self.config.get_graph_splits()
-            graph_splits = {
-                'pretraining': family_graphs[:n_actual_pretraining],
-                'warmup': family_graphs[n_actual_pretraining:n_actual_pretraining + n_warmup],
-                'finetuning': family_graphs[n_actual_pretraining + n_warmup:]
-            }
-            results['used_existing_family'] = False
+    #         # Create splits
+    #         n_actual_pretraining, n_warmup, n_finetuning = self.config.get_graph_splits()
+    #         graph_splits = {
+    #             'pretraining': family_graphs[:n_actual_pretraining],
+    #             'warmup': family_graphs[n_actual_pretraining:n_actual_pretraining + n_warmup],
+    #             'finetuning': family_graphs[n_actual_pretraining + n_warmup:]
+    #         }
+    #         results['used_existing_family'] = False
         
-        results['family_id'] = family_id
-        results['graph_splits_sizes'] = {k: len(v) for k, v in graph_splits.items()}
+    #     results['family_id'] = family_id
+    #     results['graph_splits_sizes'] = {k: len(v) for k, v in graph_splits.items()}
         
-        print(f"Graph splits: {results['graph_splits_sizes']}")
+    #     print(f"Graph splits: {results['graph_splits_sizes']}")
         
-        # Step 2: Hyperparameter optimization (if enabled)
-        hyperopt_results = None
-        if self.config.optimize_hyperparams:
-            print(f"\nStep 2: Hyperparameter Optimization")
-            print("-" * 50)
+    #     # Step 2: Hyperparameter optimization (if enabled)
+    #     hyperopt_results = None
+    #     if self.config.optimize_hyperparams:
+    #         print(f"\nStep 2: Hyperparameter Optimization")
+    #         print("-" * 50)
             
-            warmup_graphs = graph_splits['warmup']
-            print(f"Using {len(warmup_graphs)} warmup graphs for hyperopt")
+    #         warmup_graphs = graph_splits['warmup']
+    #         print(f"Using {len(warmup_graphs)} warmup graphs for hyperopt")
             
-            task = create_ssl_task(self.config)
-            hyperopt_results = self._optimize_hyperparameters(warmup_graphs, task)
-            results['hyperopt_results'] = hyperopt_results
-        else:
-            print("\nSkipping hyperparameter optimization")
+    #         task = create_ssl_task(self.config)
+    #         hyperopt_results = self._optimize_hyperparameters(warmup_graphs, task)
+    #         results['hyperopt_results'] = hyperopt_results
+    #     else:
+    #         print("\nSkipping hyperparameter optimization")
         
-        # Step 3: Pre-training on main graphs
-        print(f"\nStep 3: Pre-training")
-        print("-" * 50)
+    #     # Step 3: Pre-training on main graphs
+    #     print(f"\nStep 3: Pre-training")
+    #     print("-" * 50)
         
-        pretraining_graphs = graph_splits['pretraining']
-        print(f"Using {len(pretraining_graphs)} graphs for pre-training")
+    #     pretraining_graphs = graph_splits['pretraining']
+    #     print(f"Using {len(pretraining_graphs)} graphs for pre-training")
         
-        optimized_params = None
-        if hyperopt_results:
-            optimized_params = hyperopt_results['best_params']
+    #     optimized_params = None
+    #     if hyperopt_results:
+    #         optimized_params = hyperopt_results['best_params']
         
-        model, training_results = self._train_model(pretraining_graphs, optimized_params)
-        results.update(training_results)
+    #     model, training_results = self._train_model(pretraining_graphs, optimized_params)
+    #     results.update(training_results)
         
-        # Step 4: Save pre-trained model with family reference
-        print(f"\nStep 4: Saving pre-trained model")
-        print("-" * 50)
+    #     # Step 4: Save pre-trained model with family reference
+    #     print(f"\nStep 4: Saving pre-trained model")
+    #     print("-" * 50)
         
-        # Include family information in model metadata
-        enhanced_metadata = {
-            'family_id': family_id,
-            'family_total_graphs': len(family_graphs),
-            'finetuning_graphs_available': len(graph_splits['finetuning']),
-            'pretraining_graphs_used': len(pretraining_graphs),
-            'warmup_graphs_used': len(graph_splits['warmup']),
-            'graph_family_parameters': self._get_family_generation_summary(family_graphs)
-        }
+    #     # Include family information in model metadata
+    #     enhanced_metadata = {
+    #         'family_id': family_id,
+    #         'family_total_graphs': len(family_graphs),
+    #         'finetuning_graphs_available': len(graph_splits['finetuning']),
+    #         'pretraining_graphs_used': len(pretraining_graphs),
+    #         'warmup_graphs_used': len(graph_splits['warmup']),
+    #         'graph_family_parameters': self._get_family_generation_summary(family_graphs)
+    #     }
         
-        model_id = self.model_saver.save_model(
-            model=model,
-            config=self.config,
-            training_history=training_results['training_history'],
-            metrics=training_results['final_metrics'],
-            hyperopt_results=hyperopt_results,
-            enhanced_metadata=enhanced_metadata
-        )
+    #     model_id = self.model_saver.save_model(
+    #         model=model,
+    #         config=self.config,
+    #         training_history=training_results['training_history'],
+    #         metrics=training_results['final_metrics'],
+    #         hyperopt_results=hyperopt_results,
+    #         enhanced_metadata=enhanced_metadata
+    #     )
         
-        results['model_id'] = model_id
+    #     results['model_id'] = model_id
         
-        # Final summary
-        total_time = time.time() - pipeline_start
-        results['total_time'] = total_time
+    #     # Final summary
+    #     total_time = time.time() - pipeline_start
+    #     results['total_time'] = total_time
         
-        print(f"\n" + "="*80)
-        print("ENHANCED PRE-TRAINING COMPLETED SUCCESSFULLY")
-        print("="*80)
-        print(f"Model ID: {model_id}")
-        print(f"Graph family ID: {family_id}")
-        print(f"Graphs available for fine-tuning: {len(graph_splits['finetuning'])}")
-        print(f"Total time: {total_time:.2f} seconds")
-        print(f"✓ Ready for fine-tuning")
+    #     print(f"\n" + "="*80)
+    #     print("ENHANCED PRE-TRAINING COMPLETED SUCCESSFULLY")
+    #     print("="*80)
+    #     print(f"Model ID: {model_id}")
+    #     print(f"Graph family ID: {family_id}")
+    #     print(f"Graphs available for fine-tuning: {len(graph_splits['finetuning'])}")
+    #     print(f"Total time: {total_time:.2f} seconds")
+    #     print(f"✓ Ready for fine-tuning")
         
-        return results
+    #     return results
     
     def _generate_controlled_family(self, family_id: Optional[str] = None) -> Tuple[List, str]:
         """Generate graph family with full parameter control."""
@@ -1145,7 +1145,7 @@ class PreTrainingRunner:
             pickle.dump(family_graphs, f)
         
         # Save enhanced metadata
-        n_actual_pretraining, n_warmup, n_finetuning = self.config.get_graph_splits()
+        n_actual_pretraining, n_warmup, n_finetuning = self.config.get_graph_splits(len(family_graphs))
         
         metadata = {
             'family_id': family_id,
@@ -1206,32 +1206,34 @@ class PreTrainingRunner:
         
         return summary
 
-    def _sample_hyperparameters(self, trial: optuna.Trial, gnn_type: str) -> Dict[str, Any]:
+    def _sample_hyperparameters(self, trial: optuna.Trial) -> Dict[str, Any]:
         """Sample hyperparameters for optimization INCLUDING task parameters."""
         params = {}
         
         # Common hyperparameters
         params['learning_rate'] = trial.suggest_float('learning_rate', 1e-5, 1e-2, log=True)
         params['weight_decay'] = trial.suggest_float('weight_decay', 1e-6, 1e-3, log=True)
-        params['hidden_dim'] = trial.suggest_int('hidden_dim', 64, 256, step=32)
+        params['hidden_dim'] = trial.suggest_int('hidden_dim', 32, 96, step=32)
         params['num_layers'] = trial.suggest_int('num_layers', 2, 4)
         params['dropout'] = trial.suggest_float('dropout', 0.0, 0.5)
         
         # Model architecture parameters
         if self.config.model_type == "transformer":
             # Sample num_heads first, then ensure hidden_dim is divisible
-            num_heads = trial.suggest_categorical('transformer_num_heads', [4, 6, 8, 12, 16])
+            num_heads = trial.suggest_categorical('transformer_num_heads', [2, 4, 6, 8])
+            while num_heads * params['num_layers'] > 14:
+                num_heads = trial.suggest_categorical('transformer_num_heads', [2, 4, 6, 8])
             
             # Sample a base dimension and multiply by num_heads to ensure divisibility
-            base_dim = trial.suggest_int('base_dim_multiplier', 8, 32, step=4)
+            base_dim = trial.suggest_int('base_dim_multiplier', 8, 16, step=4)
             hidden_dim = base_dim * num_heads
 
             params['hidden_dim'] = hidden_dim
             params['transformer_num_heads'] = num_heads
-            params['transformer_max_nodes'] = trial.suggest_int('transformer_max_nodes', 100, 500)
+            params['transformer_max_nodes'] = trial.suggest_int('transformer_max_nodes', 20, 80)
             params['transformer_max_path_length'] = trial.suggest_int('transformer_max_path_length', 3, 8)
             params['transformer_prenorm'] = trial.suggest_categorical('transformer_prenorm', [True, False])
-            params['local_gnn_type'] = trial.suggest_categorical('local_gnn_type', ['gcn', 'gat', 'sage'])
+            params['local_gnn_type'] = trial.suggest_categorical('local_gnn_type', ['gcn', 'sage'])
             params['global_model_type'] = trial.suggest_categorical('global_model_type', ['transformer', 'performer'])
         else:
             # GNN-specific parameters
@@ -1239,10 +1241,15 @@ class PreTrainingRunner:
             params['norm_type'] = trial.suggest_categorical('norm_type', ['none', 'batch', 'layer'])
             params['agg_type'] = trial.suggest_categorical('agg_type', ['mean', 'max', 'sum'])
 
-            if gnn_type == "gat":
+            if self.config.gnn_type == "gat":
                 params['heads'] = trial.suggest_int('heads', 1, 8)
+                # Make sure heads * num_layers is smaller than 16
+                while params['heads'] * params['num_layers'] > 12:
+                    params['heads'] = trial.suggest_int('heads', 1, 8)
+
                 params['concat_heads'] = trial.suggest_categorical('concat_heads', [True, False])
-            elif gnn_type == "fagcn":
+
+            elif self.config.gnn_type == "fagcn":
                 params['eps'] = trial.suggest_float('eps', 0.0, 1.0)
         
         # # FIXED: NOW OPTIMIZE TASK-SPECIFIC PARAMETERS
@@ -1281,7 +1288,7 @@ class PreTrainingRunner:
         return params
 
     def _optimize_hyperparameters(self, warmup_graphs: List, task) -> Dict[str, Any]:
-        """FIXED: Optimize hyperparameters with proper evaluation."""
+        """Optimize hyperparameters with proper evaluation."""
         
         print(f"Optimizing hyperparameters using {len(warmup_graphs)} warmup graphs")
         
@@ -1305,7 +1312,7 @@ class PreTrainingRunner:
             """FIXED: Optuna objective function with proper SSL evaluation."""
             
             # Sample ALL hyperparameters including task-specific ones
-            suggested_params = self._sample_hyperparameters(trial, self.config.gnn_type)
+            suggested_params = self._sample_hyperparameters(trial)
             
             # Create temporary config with suggested hyperparameters
             temp_config_dict = self.config.to_dict()
@@ -1361,6 +1368,8 @@ class PreTrainingRunner:
                     elif self.config.pretraining_task in ["graphcl"]:
                         # Use alignment for contrastive tasks if accuracy is unreliable
                         metric = val_metrics.get('alignment', val_metrics.get('accuracy', 0.0))
+                    elif self.config.pretraining_task in ["graphmae"]:
+                        metric = val_metrics.get('cosine_similarity', 0.0)
                     else:
                         # Fallback to any available metric
                         metric = list(val_metrics.values())[0] if val_metrics else 0.0
@@ -1408,7 +1417,6 @@ class PreTrainingRunner:
             'n_trials': len(study.trials),
             'study': study  # Include study for further analysis
         }
-
 
     def _train_model(self, pretraining_graphs: List, optimized_params: Optional[Dict] = None) -> Tuple[torch.nn.Module, Dict]:
         """Train model with proper parameter application."""
@@ -1509,6 +1517,8 @@ class PreTrainingRunner:
                 elif self.config.pretraining_task in ["graphcl"]:
                     # Use alignment for contrastive tasks, fallback to accuracy
                     primary_metric = eval_metrics.get('alignment', eval_metrics.get('accuracy', 0.0))
+                elif self.config.pretraining_task in ["graphmae"]:
+                    primary_metric = eval_metrics.get('cosine_similarity', 0.0)
                 else:
                     primary_metric = list(eval_metrics.values())[0] if eval_metrics else 0.0
                 
@@ -1529,8 +1539,8 @@ class PreTrainingRunner:
                     break
             
             # Logging every 10 epochs
-            if epoch % 10 == 0:
-                print(f"Epoch {epoch:4d}: Train Loss = {avg_train_loss:.4f}, Val Loss = {eval_loss:.4f}, Metric = {-primary_metric:.4f}")
+            if epoch % 2 == 0:
+                print(f"Epoch {epoch:4d}: Train Loss = {avg_train_loss:.4f}, Val Loss = {eval_loss:.4f}, Metric = {primary_metric:.4f}")
         
         # Load best model
         if best_model_state is not None:
@@ -1579,7 +1589,7 @@ class PreTrainingRunner:
             family_graphs, family_id = self._generate_controlled_family(family_id)
             
             # Create splits
-            n_actual_pretraining, n_warmup, n_finetuning = self.config.get_graph_splits()
+            n_actual_pretraining, n_warmup, n_finetuning = self.config.get_graph_splits(len(family_graphs))
             graph_splits = {
                 'pretraining': family_graphs[:n_actual_pretraining],
                 'warmup': family_graphs[n_actual_pretraining:n_actual_pretraining + n_warmup],

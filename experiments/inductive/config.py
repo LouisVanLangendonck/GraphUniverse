@@ -18,6 +18,7 @@ class InductiveExperimentConfig:
     seed: int = 42
     device_id: int = 0
     force_cpu: bool = False
+    use_mixed_precision: bool = True
 
     # === SSL FINE-TUNING CONFIGURATION ===
     use_pretrained: bool = False
@@ -29,7 +30,6 @@ class InductiveExperimentConfig:
     freeze_encoder: bool = False
     only_pretrained_experiments: bool = False
     max_train_graphs_for_finetuning: int = 10
-    fine_tune_lr_multiplier: float = 0.1
     
     # === GRAPH FAMILY GENERATION ===
     n_graphs: int = 50
@@ -123,7 +123,7 @@ class InductiveExperimentConfig:
     eps: float = 0.2
 
     # === GRAPH TRANSFORMER CONFIGURATION ===
-    transformer_types: List[str] = field(default_factory=lambda: ['graphormer'])
+    transformer_types: List[str] = field(default_factory=lambda: ['graphormer', 'graphgps'])
     run_transformers: bool = False
     
     # Transformer-specific parameters
@@ -237,22 +237,33 @@ class PreTrainingConfig:
     seed: int = 42
     device_id: int = 0
     force_cpu: bool = False
+    use_mixed_precision: bool = True
     
     # === PRE-TRAINING TASK ===
     pretraining_task: str = "link_prediction"  # "link_prediction" or "dgi" or "graphcl"
     
     # === DGI SPECIFIC PARAMETERS ===
-    corruption_type: str = "feature_shuffle"  # "feature_shuffle", "edge_dropout", "subgraph"
+    dgi_corruption_type: str = "feature_shuffle"  # "feature_shuffle", "edge_dropout", "subgraph"
+    dgi_noise_std: float = 0.1
+    dgi_perturb_rate: float = 0.1
+    dgi_corruption_rate: float = 0.2
     num_corruptions: int = 1  # Number of corrupted versions to generate
     use_infonce: bool = False  # Whether to use InfoNCE loss instead of BCE
     temperature: float = 0.1  # Temperature parameter for InfoNCE loss
+
+    # === GRAPHMAE SPECIFIC PARAMETERS ===
+    graphmae_mask_rate: float = 0.5
+    graphmae_replace_rate: float = 0.1
+    graphmae_gamma: float = 2.0
+    graphmae_decoder_type: str = "gnn"
+    graphmae_decoder_gnn_type: str = "gcn"
     
     # === GRAPHCL SPECIFIC PARAMETERS ===
     augmentation_types: List[str] = field(default_factory=lambda: ["edge_dropout", "feature_dropout", "subgraph"])
     num_augmentations: int = 2  # Number of augmentations to apply per view
     
     # === GRAPH FAMILY PERSISTENCE ===
-    n_extra_graphs_for_finetuning: int = 30
+    n_extra_graphs_for_finetuning: int = 10
     save_graph_family: bool = True
     graph_family_dir: str = "graph_families"
     
@@ -323,6 +334,9 @@ class PreTrainingConfig:
     # GAT-specific parameters
     heads: int = 1  # Number of attention heads for GAT
     concat_heads: bool = True  # Whether to concatenate or average attention heads
+
+    # FAGCN-specific parameters
+    eps: float = 0.2
     
     # === TRAINING PARAMETERS ===
     epochs: int = 300
@@ -346,14 +360,14 @@ class PreTrainingConfig:
     
     def __post_init__(self):
         """Validate configuration."""
-        valid_tasks = ["link_prediction", "dgi", "graphcl"]
+        valid_tasks = ["link_prediction", "dgi", "graphmae"]
         if self.pretraining_task not in valid_tasks:
             raise ValueError(f"pretraining_task must be one of {valid_tasks}")
         
         # Validate DGI parameters
         if self.pretraining_task == "dgi":
-            valid_corruption_types = ["feature_shuffle", "edge_dropout", "subgraph"]
-            if self.corruption_type not in valid_corruption_types:
+            valid_corruption_types = ["feature_shuffle", "edge_dropout", "feature_noise", "edge_perturbation", "feature_dropout"]
+            if self.dgi_corruption_type not in valid_corruption_types:
                 raise ValueError(f"corruption_type must be one of {valid_corruption_types}")
             if self.num_corruptions < 1:
                 raise ValueError("num_corruptions must be >= 1")
@@ -368,6 +382,14 @@ class PreTrainingConfig:
                     raise ValueError(f"augmentation_type must be one of {valid_augmentation_types}")
             if self.num_augmentations < 1:
                 raise ValueError("num_augmentations must be >= 1")
+
+        if self.pretraining_task == "graphmae":
+            if self.graphmae_mask_rate <= 0 or self.graphmae_mask_rate >= 1:
+                raise ValueError("graphmae_mask_rate must be in (0, 1)")
+            if self.graphmae_replace_rate <= 0 or self.graphmae_replace_rate >= 1:
+                raise ValueError("graphmae_replace_rate must be in (0, 1)")
+            if self.graphmae_gamma <= 0:
+                raise ValueError("graphmae_gamma must be > 0")
         
         # Set model_type based on run_transformers
         if self.run_transformers:
@@ -377,12 +399,12 @@ class PreTrainingConfig:
         if self.model_type not in valid_model_types:
             raise ValueError(f"model_type must be one of {valid_model_types}")
         
-        valid_gnn_types = ["gcn", "sage", "gat"]
+        valid_gnn_types = ["gcn", "sage", "gat", "fagcn"]
         if self.gnn_type not in valid_gnn_types:
             raise ValueError(f"gnn_type must be one of {valid_gnn_types}")
         
-        if self.n_extra_graphs_for_finetuning < 0:
-            raise ValueError("n_extra_graphs_for_finetuning must be >= 0")
+        if self.n_extra_graphs_for_finetuning < 1:
+            raise ValueError("n_extra_graphs_for_finetuning must be >= 1")
         
         if not (0.0 < self.pretraining_graph_ratio <= 1.0):
             raise ValueError("pretraining_graph_ratio must be in (0, 1]")
@@ -400,12 +422,17 @@ class PreTrainingConfig:
         """Get total number of graphs that will be generated."""
         return self.n_graphs + self.n_extra_graphs_for_finetuning
     
-    def get_graph_splits(self) -> Tuple[int, int, int]:
+    def get_graph_splits(self, n_generated_graphs: int = None) -> Tuple[int, int, int]:
         """Get (pretraining, warmup, finetuning) graph counts."""
-        total_pretraining = self.n_graphs
+        if n_generated_graphs is None:
+            total_pretraining = self.n_graphs
+            print(f"n_generated_graphs: {n_generated_graphs}")
+        else:
+            print(f"n_generated_graphs: {n_generated_graphs}")
+            total_pretraining = n_generated_graphs
         n_warmup = int(total_pretraining * self.warmup_graph_ratio)
-        n_actual_pretraining = total_pretraining - n_warmup
         n_finetuning = self.n_extra_graphs_for_finetuning
+        n_actual_pretraining = total_pretraining - n_warmup - n_finetuning
         
         return n_actual_pretraining, n_warmup, n_finetuning
     
