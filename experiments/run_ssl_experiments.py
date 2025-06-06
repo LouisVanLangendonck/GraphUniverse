@@ -40,17 +40,17 @@ def parse_args():
                         help='Force CPU usage even if CUDA is available')
     
     # === GRAPH FAMILY GENERATION ===
-    parser.add_argument('--n_graphs', type=int, default=50,
+    parser.add_argument('--n_graphs', type=int, default=30,
                         help='Number of graphs for pre-training')
     parser.add_argument('--n_extra_graphs', type=int, default=10,
                         help='Extra graphs to generate for fine-tuning')
     parser.add_argument('--min_n_nodes', type=int, default=80,
                         help='Minimum number of nodes per graph')
-    parser.add_argument('--max_n_nodes', type=int, default=200,
+    parser.add_argument('--max_n_nodes', type=int, default=120,
                         help='Maximum number of nodes per graph')
     parser.add_argument('--min_communities', type=int, default=4,
                         help='Minimum number of communities per graph')
-    parser.add_argument('--max_communities', type=int, default=6,
+    parser.add_argument('--max_communities', type=int, default=7,
                         help='Maximum number of communities per graph')
     
     # === UNIVERSE PARAMETERS ===
@@ -58,7 +58,7 @@ def parse_args():
                         help='Number of communities in universe')
     parser.add_argument('--universe_feature_dim', type=int, default=32,
                         help='Feature dimension for universe')
-    parser.add_argument('--universe_edge_density', type=float, default=0.1,
+    parser.add_argument('--universe_edge_density', type=float, default=0.05,
                         help='Base edge density for universe')
     parser.add_argument('--universe_homophily', type=float, default=0.3,
                         help='Homophily parameter for universe')
@@ -77,7 +77,7 @@ def parse_args():
     
     # === MODEL CONFIGURATION ===
     parser.add_argument('--gnn_type', type=str, default='fagcn',
-                        choices=['gcn', 'sage', 'gat', 'fagcn'],
+                        choices=['gcn', 'sage', 'gat', 'fagcn', 'gin'],
                         help='Type of GNN to use')
     parser.add_argument('--hidden_dim', type=int, default=64,
                         help='Hidden dimension for GNN')

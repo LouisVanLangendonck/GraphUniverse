@@ -58,7 +58,7 @@ def parse_args():
                         help='k value for k-hop community counting task')
     
     # === GRAPH FAMILY GENERATION ===
-    parser.add_argument('--n_graphs', type=int, default=15,
+    parser.add_argument('--n_graphs', type=int, default=10,
                         help='Number of graphs to generate in family')
     parser.add_argument('--min_n_nodes', type=int, default=80,
                         help='Minimum number of nodes per graph')
@@ -74,9 +74,9 @@ def parse_args():
                         help='Number of communities in universe')
     parser.add_argument('--universe_feature_dim', type=int, default=32,
                         help='Feature dimension for universe')
-    parser.add_argument('--universe_edge_density', type=float, default=0.1,
+    parser.add_argument('--universe_edge_density', type=float, default=0.07,
                         help='Base edge density for universe')
-    parser.add_argument('--universe_homophily', type=float, default=0.2,
+    parser.add_argument('--universe_homophily', type=float, default=0.6,
                         help='Homophily parameter for universe')
     parser.add_argument('--universe_randomness_factor', type=float, default=1.0,
                         help='Randomness factor for universe')
@@ -117,7 +117,7 @@ def parse_args():
                         help='Maximum allowed participation rate per community')
     
     # === MODELS ===
-    parser.add_argument('--gnn_types', type=str, nargs='+', default=['gat', 'gcn', 'sage', 'fagcn'],
+    parser.add_argument('--gnn_types', type=str, nargs='+', default=['gat', 'gcn', 'sage', 'fagcn', 'gin'],
                         choices=['gcn', 'fagcn', 'sage', 'gat', 'gin'],
                         help='Types of GNN models to run')
     parser.add_argument('--transformer_types', type=str, nargs='+', 
@@ -142,7 +142,7 @@ def parse_args():
     # === TRAINING ===
     parser.add_argument('--epochs', type=int, default=150,
                         help='Maximum number of epochs')
-    parser.add_argument('--patience', type=int, default=30,
+    parser.add_argument('--patience', type=int, default=50,
                         help='Patience for early stopping')
     parser.add_argument('--learning_rate', type=float, default=0.01,
                         help='Learning rate for neural models')

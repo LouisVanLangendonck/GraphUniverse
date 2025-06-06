@@ -19,7 +19,6 @@ from torch_geometric.data import Batch
 from experiments.core.models import GNNModel, MLPModel, SklearnModel, GraphTransformerModel
 from experiments.core.metrics import compute_metrics
 from experiments.inductive.config import InductiveExperimentConfig
-from torch.cuda.amp import GradScaler, autocast
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -122,10 +121,6 @@ def train_inductive_model(
     
     # PyTorch models
     model = model.to(device)
-
-    # Initialize AMP components
-    use_amp = device.type == 'cuda' and getattr(config, 'use_mixed_precision', True)
-    scaler = GradScaler() if use_amp else None
     
     # Setup optimizer and loss
     optimizer = optim.Adam(
@@ -151,7 +146,7 @@ def train_inductive_model(
     # Get the effective patience value - take max of original and optimized if available
     effective_patience = config.patience
     if hasattr(config, 'optimized_patience') and config.optimized_patience is not None:
-        effective_patience = max(config.patience, config.optimized_patience)
+        effective_patience = min(30, max(config.patience, config.optimized_patience))
         print(f"Using effective patience of {effective_patience} (max of original {config.patience} and optimized {config.optimized_patience})")
     
     train_loader = dataloaders['train']
@@ -177,24 +172,17 @@ def train_inductive_model(
         train_targets = []
         
         for batch_idx, batch in enumerate(train_loader):
-            batch = batch.to(device, non_blocking=True)  # Async transfer
+            batch = batch.to(device)
             optimizer.zero_grad()
             
-            # Forward pass - check if model requires edge_index (with autocast)
-            with autocast(enabled=use_amp):
-                if hasattr(model, 'gnn_type') or hasattr(model, 'transformer_type') or finetuning:
-                    out = model(batch.x, batch.edge_index)
-                else:  # MLPModel or other non-GNN model
-                    out = model(batch.x)
-
-                # Ensure output and target are in same precision
-                if use_amp and out.dtype != batch.y.dtype:
-                    # Convert targets to float16 for loss computation if needed
-                    target = batch.y.float() if is_regression else batch.y
-                else:
-                    target = batch.y
-                
-                loss = criterion(out, target)
+            # Forward pass - check if model requires edge_index
+            if hasattr(model, 'gnn_type') or hasattr(model, 'transformer_type') or finetuning:
+                out = model(batch.x, batch.edge_index)
+            else:  # MLPModel or other non-GNN model
+                out = model(batch.x)
+            
+            # Compute loss
+            loss = criterion(out, batch.y)
             
             # Backward pass
             loss.backward()
@@ -572,15 +560,25 @@ def optimize_inductive_hyperparameters(
                 heads = trial.suggest_int('heads', 1, 8)
                 concat_heads = trial.suggest_categorical('concat_heads', [True, False])
                 residual = trial.suggest_categorical('residual', [True, False])
-                norm_type = trial.suggest_categorical('norm_type', ['none', 'batch', 'layer'])
+                norm_type = trial.suggest_categorical('norm_type', ['none', 'layer'])
                 agg_type = trial.suggest_categorical('agg_type', ['mean', 'max', 'sum'])
             elif gnn_type == "fagcn":
                 # FAGCN-specific parameters
                 eps = trial.suggest_float('eps', 0.0, 1.0)
+                # Suggest more layers for FAGCN since it can handle more layers
+                num_layers = trial.suggest_int('num_layers', 2, 6)
                 # Don't optimize irrelevant parameters for FAGCN
-            elif gnn_type in ["gcn", "sage"]:
+            elif gnn_type == "gin":
+                # GIN-specific parameters
+                eps = trial.suggest_float('eps', 0.0, 1.0)
                 residual = trial.suggest_categorical('residual', [True, False])
-                norm_type = trial.suggest_categorical('norm_type', ['none', 'batch', 'layer'])
+                norm_type = trial.suggest_categorical('norm_type', ['none', 'layer'])
+
+                
+
+            elif gnn_type in ["gcn", "sage", "gat", "gin"]:
+                residual = trial.suggest_categorical('residual', [True, False])
+                norm_type = trial.suggest_categorical('norm_type', ['none', 'layer'])
                 if gnn_type == "sage":
                     agg_type = trial.suggest_categorical('agg_type', ['mean', 'max', 'sum'])
             
@@ -738,7 +736,7 @@ def optimize_inductive_hyperparameters(
         else:
             return best_val_metric  # Positive because we maximize F1
         
-    # ADD THIS: Create study with early termination
+    # Create study with early termination
     def should_terminate(study, trial):
         """Check if we should terminate optimization early."""
         if is_regression:
@@ -753,7 +751,6 @@ def optimize_inductive_hyperparameters(
             return trial.value >= 0.999
     
     # Create study with storage if experiment info provided
-    # Create study
     study_name = f"{model_type}_{transformer_type if transformer_type else gnn_type}_{'regression' if is_regression else 'classification'}"
     study = create_study(direction='maximize')
     
@@ -1313,13 +1310,13 @@ def train_and_evaluate_inductive(
                         heads = trial.suggest_int('heads', 1, 8)
                         concat_heads = trial.suggest_categorical('concat_heads', [True, False])
                         residual = trial.suggest_categorical('residual', [True, False])
-                        norm_type = trial.suggest_categorical('norm_type', ['none', 'batch', 'layer'])
+                        norm_type = trial.suggest_categorical('norm_type', ['none', 'layer'])
                         agg_type = trial.suggest_categorical('agg_type', ['mean', 'max', 'sum'])
-                    elif gnn_type == "fagcn":
+                    elif gnn_type in ["fagcn", "gin"]:
                         eps = trial.suggest_float('eps', 0.0, 1.0)
-                    elif gnn_type in ["gcn", "sage"]:
+                    elif gnn_type in ["gcn", "sage", "gat", "gin"]:
                         residual = trial.suggest_categorical('residual', [True, False])
-                        norm_type = trial.suggest_categorical('norm_type', ['none', 'batch', 'layer'])
+                        norm_type = trial.suggest_categorical('norm_type', ['none', 'layer'])
                         if gnn_type == "sage":
                             agg_type = trial.suggest_categorical('agg_type', ['mean', 'max', 'sum'])
                     

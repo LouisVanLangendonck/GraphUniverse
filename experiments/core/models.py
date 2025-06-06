@@ -21,7 +21,7 @@ def create_model(model_type: str, **kwargs):
     """Extended model creation to include Graph Transformers."""
     if model_type in ['graphormer', 'graphgps']:
         return GraphTransformerModel(transformer_type=model_type, **kwargs)
-    elif model_type in ['gcn', 'sage', 'gat', 'fagcn']:
+    elif model_type in ['gcn', 'sage', 'gat', 'fagcn', 'gin']:
         return GNNModel(gnn_type=model_type, **kwargs)
     elif model_type == 'mlp':
         return MLPModel(**kwargs)
@@ -29,6 +29,7 @@ def create_model(model_type: str, **kwargs):
         return SklearnModel(**kwargs)
     else:
         raise ValueError(f"Unknown model type: {model_type}")
+
 
 class FALayer(MessagePassing):
     """Frequency Adaptive Layer for FAGCN."""
@@ -59,6 +60,86 @@ class FALayer(MessagePassing):
     def update(self, aggr_out):
         return aggr_out
 
+
+class GINConv(MessagePassing):
+    """
+    Graph Isomorphism Network (GIN) layer with optional layer norm and residual connections.
+    
+    Implements: h_v^(k+1) = MLP((1 + ε) · h_v^(k) + AGG({h_u^(k) : u ∈ N(v)}))
+    With optional residual: h_v^(k+1) = h_v^(k+1) + h_v^(k) (if dimensions match)
+    """
+    
+    def __init__(self, input_dim: int, hidden_dim: int, eps: float = 0.0, train_eps: bool = False,
+                 use_layer_norm: bool = False, use_residual: bool = False):
+        super().__init__(aggr='add')  # Sum aggregation for theoretical guarantees
+        
+        self.use_residual = use_residual and (input_dim == hidden_dim)
+        
+        # Epsilon parameter for self-loop weighting
+        if train_eps:
+            self.eps = nn.Parameter(torch.tensor(eps))
+        else:
+            self.register_buffer('eps', torch.tensor(eps))
+        
+        # MLP layers
+        self.linear1 = nn.Linear(input_dim, hidden_dim)
+        self.linear2 = nn.Linear(hidden_dim, hidden_dim)
+        
+        # Normalization choice
+        if use_layer_norm:
+            self.norm = nn.LayerNorm(hidden_dim)
+        else:
+            self.norm = nn.BatchNorm1d(hidden_dim)
+        
+        self.activation = nn.ReLU()
+        
+        self.reset_parameters()
+    
+    def reset_parameters(self):
+        """Reset parameters using Xavier initialization."""
+        nn.init.xavier_uniform_(self.linear1.weight)
+        nn.init.xavier_uniform_(self.linear2.weight)
+        if self.linear1.bias is not None:
+            nn.init.zeros_(self.linear1.bias)
+        if self.linear2.bias is not None:
+            nn.init.zeros_(self.linear2.bias)
+    
+    def forward(self, x: torch.Tensor, edge_index: torch.Tensor) -> torch.Tensor:
+        """
+        Forward pass.
+        
+        Args:
+            x: Node features [num_nodes, input_dim]
+            edge_index: Edge indices [2, num_edges]
+            
+        Returns:
+            Updated node features [num_nodes, hidden_dim]
+        """
+        # Store input for potential residual connection
+        identity = x
+        
+        # Aggregate neighbor features
+        out = self.propagate(edge_index, x=x)
+        
+        # Add self-connection with epsilon weighting
+        out = (1 + self.eps) * x + out
+        
+        # Apply MLP
+        out = self.linear1(out)
+        out = self.norm(out)
+        out = self.activation(out)
+        out = self.linear2(out)
+        
+        # Add residual connection if enabled and dimensions match
+        if self.use_residual:
+            out = out + identity
+        
+        return out
+    
+    def message(self, x_j: torch.Tensor) -> torch.Tensor:
+        """Message function - return neighbor features."""
+        return x_j
+    
 
 class GNNModel(torch.nn.Module):
     """Graph Neural Network model for node classification or regression."""
@@ -112,6 +193,8 @@ class GNNModel(torch.nn.Module):
         # FAGCN has a different architecture
         if gnn_type == "fagcn":
             self._init_fagcn(input_dim, hidden_dim, output_dim, dropout)
+        elif gnn_type == "gin":
+            self._init_gin(input_dim, hidden_dim, output_dim, dropout)
         else:
             self._init_standard_gnn(input_dim, hidden_dim, output_dim, dropout)
     
@@ -181,10 +264,46 @@ class GNNModel(torch.nn.Module):
         # Activation for regression (ReLU to ensure non-negative counts)
         self.regression_activation = torch.nn.ReLU() if self.is_regression else None
     
+    def _init_gin(self, input_dim: int, hidden_dim: int, output_dim: int, dropout: float):
+        """Initialize GIN architecture."""
+        self.convs = nn.ModuleList()
+        
+        # Use layer norm and residual if specified in the GNNModel constructor
+        use_layer_norm = getattr(self, 'norm_type', 'none') == 'layer'
+        use_residual = getattr(self, 'residual', False)
+        
+        # Input layer (no residual for first layer since dimensions may differ)
+        self.convs.append(GINConv(
+            input_dim, hidden_dim, 
+            eps=0.0, train_eps=True,
+            use_layer_norm=use_layer_norm,
+            use_residual=False
+        ))
+        
+        # Hidden layers (can use residual since dimensions match)
+        for _ in range(self.num_layers - 1):
+            self.convs.append(GINConv(
+                hidden_dim, hidden_dim, 
+                eps=0.0, train_eps=True,
+                use_layer_norm=use_layer_norm,
+                use_residual=use_residual
+            ))
+        
+        # Output projection
+        self.lin = nn.Linear(hidden_dim, output_dim)
+        
+        # Dropout
+        self.dropout = nn.Dropout(dropout)
+        
+        # Activation for regression
+        self.regression_activation = nn.ReLU() if self.is_regression else None
+
     def forward(self, x, edge_index):
         """Forward pass."""
         if self.gnn_type == "fagcn":
             return self._forward_fagcn(x, edge_index)
+        elif self.gnn_type == "gin":
+            return self._forward_gin(x, edge_index)
         else:
             return self._forward_standard_gnn(x, edge_index)
     
@@ -209,6 +328,23 @@ class GNNModel(torch.nn.Module):
         else:
             return F.log_softmax(x, dim=1)
     
+    def _forward_gin(self, x, edge_index):
+        """Forward pass for GIN."""
+        # Apply GIN layers
+        for conv in self.convs:
+            x = conv(x, edge_index)
+            x = F.relu(x)
+            x = self.dropout(x)
+        
+        # Output projection
+        x = self.lin(x)
+        
+        # For regression, ensure non-negative outputs
+        if self.is_regression:
+            x = self.regression_activation(x)
+        
+        return x
+
     def _forward_standard_gnn(self, x, edge_index):
         """Forward pass for standard GNN architectures."""
         # GNN layers
@@ -1010,6 +1146,7 @@ def create_transformer_config_recommendations(
         recommendations['optimization_suggestions'].append("Enable approximation algorithms")
     
     return recommendations
+
 
 class MLPModel(torch.nn.Module):
     """Multi-layer perceptron for node classification or regression."""

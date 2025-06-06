@@ -352,7 +352,7 @@ class DeepGraphInfoMaxTask(SelfSupervisedTask):
             corrupted_graph_embedding.repeat(node_embeddings.size(0), 1)
         ], dim=1)
         neg_scores = model.discriminator(neg_pairs).squeeze()
-        neg_term = torch.log(1 - neg_scores + 1e-8).mean()  # E over M negative pairs
+        neg_term = torch.log(1 - neg_scores + 1e-8).mean()  # E over N negative pairs
         
         # InfoMax loss function: maximize both terms
         loss = -(pos_term + neg_term)  # Negative because we minimize
@@ -1058,10 +1058,12 @@ class GraphMAETask(SelfSupervisedTask):
         """Apply learnable mask tokens to masked positions."""
         batch_with_tokens = batch.clone()
         
+        # Get mask token and ensure it matches the dtype of input features
+        mask_token = model.enc_mask_token.expand(mask_indices.size(0), -1)
+        mask_token = mask_token.to(dtype=batch.x.dtype, device=batch.x.device)
+        
         # Apply encoder mask token
-        batch_with_tokens.x[mask_indices] = model.enc_mask_token.expand(
-            mask_indices.size(0), -1
-        )
+        batch_with_tokens.x[mask_indices] = mask_token
         
         return batch_with_tokens
     
@@ -1070,10 +1072,12 @@ class GraphMAETask(SelfSupervisedTask):
         """Re-mask embeddings before feeding to decoder (re-mask strategy)."""
         re_masked_embeddings = embeddings.clone()
         
+        # Get mask token and ensure it matches the dtype of embeddings
+        mask_token = model.dec_mask_token.expand(mask_indices.size(0), -1)
+        mask_token = mask_token.to(dtype=embeddings.dtype, device=embeddings.device)
+        
         # Apply decoder mask token to masked positions
-        re_masked_embeddings[mask_indices] = model.dec_mask_token.expand(
-            mask_indices.size(0), -1
-        )
+        re_masked_embeddings[mask_indices] = mask_token
         
         return re_masked_embeddings
     
@@ -1177,7 +1181,8 @@ def create_ssl_task(config: PreTrainingConfig) -> SelfSupervisedTask:
 def create_pretraining_dataloader(
     graphs: List,
     batch_size: int = 32,
-    shuffle: bool = True
+    shuffle: bool = True,
+    pin_memory: bool = False
 ) -> DataLoader:
     """Create dataloader for pre-training graphs."""
     from mmsb.feature_regimes import graphsample_to_pyg
@@ -1195,7 +1200,8 @@ def create_pretraining_dataloader(
         pyg_graphs,
         batch_size=batch_size,
         shuffle=shuffle,
-        num_workers=0  # Avoid multiprocessing issues
+        num_workers=0,  # Avoid multiprocessing issues
+        pin_memory=pin_memory
     )
     
     return dataloader

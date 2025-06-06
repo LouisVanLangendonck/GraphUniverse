@@ -162,7 +162,7 @@ def create_custom_experiment(args) -> CleanMultiExperimentConfig:
         },
         
         # Tasks and models
-        gnn_types=['fagcn', 'gat', 'gcn', 'sage'],
+        gnn_types=['fagcn', 'gat', 'gcn', 'sage', 'gin'],
         run_gnn=args.run_gnn,
         run_mlp=args.run_mlp,
         run_rf=args.run_rf,

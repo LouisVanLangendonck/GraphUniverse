@@ -18,7 +18,9 @@ class InductiveExperimentConfig:
     seed: int = 42
     device_id: int = 0
     force_cpu: bool = False
-    use_mixed_precision: bool = True
+    
+    # Performance optimization settings
+    use_mixed_precision: bool = False
 
     # === SSL FINE-TUNING CONFIGURATION ===
     use_pretrained: bool = False
@@ -104,7 +106,7 @@ class InductiveExperimentConfig:
     n_candidates_per_k: int = 30
     
     # === MODELS ===
-    gnn_types: List[str] = field(default_factory=lambda: ['gcn', 'sage', 'gat', 'fagcn'])
+    gnn_types: List[str] = field(default_factory=lambda: ['gcn', 'sage', 'gat', 'fagcn', 'gin'])
     run_gnn: bool = True
     run_mlp: bool = True
     run_rf: bool = True
@@ -237,7 +239,9 @@ class PreTrainingConfig:
     seed: int = 42
     device_id: int = 0
     force_cpu: bool = False
-    use_mixed_precision: bool = True
+
+    # === AMP CONFIGURATION ===
+    use_mixed_precision: bool = False
     
     # === PRE-TRAINING TASK ===
     pretraining_task: str = "link_prediction"  # "link_prediction" or "dgi" or "graphcl"
@@ -399,7 +403,7 @@ class PreTrainingConfig:
         if self.model_type not in valid_model_types:
             raise ValueError(f"model_type must be one of {valid_model_types}")
         
-        valid_gnn_types = ["gcn", "sage", "gat", "fagcn"]
+        valid_gnn_types = ["gcn", "sage", "gat", "fagcn", "gin"]
         if self.gnn_type not in valid_gnn_types:
             raise ValueError(f"gnn_type must be one of {valid_gnn_types}")
         

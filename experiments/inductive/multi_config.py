@@ -147,7 +147,7 @@ class CleanMultiExperimentConfig:
         self.base_seed = base_seed
         
         # Model configuration
-        self.gnn_models = gnn_models or ['gcn', 'sage']
+        self.gnn_models = gnn_models or ['gcn', 'sage', 'gat', 'fagcn', 'gin']
         self.transformer_models = transformer_models or ['graphormer']
         self.run_transformers = run_transformers
         self.transformer_params = transformer_params or {
