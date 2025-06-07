@@ -45,7 +45,7 @@ def parse_args():
                         help='Automatically load graph family associated with pre-trained model')
     parser.add_argument('--freeze_encoder', action='store_true',
                         help='Freeze encoder weights during fine-tuning')
-    parser.add_argument('--max_train_graphs_for_finetuning', type=int, default=3,
+    parser.add_argument('--max_train_graphs_for_finetuning', type=int, default=5,
                         help='Maximum number of training graphs for fine-tuning')
     parser.add_argument('--only_pretrained_experiments', action='store_true',
                         help='Dont do any other experiments. Only fine-tune pre-trained models and from scratch version of it and hyperparameter optimization of that model type.')    
@@ -148,7 +148,7 @@ def parse_args():
                         help='Learning rate for neural models')
     parser.add_argument('--hidden_dim', type=int, default=64,
                         help='Hidden dimension for neural models')
-    parser.add_argument('--batch_size', type=int, default=2,
+    parser.add_argument('--batch_size', type=int, default=1,
                         help='Batch size for training')
     
     # === ANALYSIS ===

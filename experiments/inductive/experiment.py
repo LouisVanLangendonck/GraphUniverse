@@ -14,6 +14,9 @@ import torch
 import optuna
 from dataclasses import asdict
 from torch.cuda.amp import autocast, GradScaler
+from torch.nn import init
+from torch.nn.init import xavier_uniform_, kaiming_uniform_, normal_
+import torch.nn as nn
 
 from mmsb.model import GraphUniverse
 from mmsb.graph_family import GraphFamilyGenerator, FamilyConsistencyAnalyzer
@@ -387,10 +390,36 @@ class InductiveExperiment:
                             is_regression
                         ).to(self.device)
                         
-                        # Randomize weights
-                        print(f"Randomizing weights of pre-trained model to obtain a from-scratch model")
-                        from_scratch_model.apply(lambda m: m.reset_parameters() if hasattr(m, 'reset_parameters') else None)
-                        print(f"Created from-scratch model with same architecture: {from_scratch_model}")
+                        # Randomize weights                    
+                        if pretrained_model_type == 'transformer' or 'transformer' in str(type(from_scratch_model)).lower():
+                            # Transformers typically use Xavier/Glorot initialization
+                            init_scheme = 'xavier_uniform'
+                        elif pretrained_model_type == 'gnn':
+                            gnn_type = metadata['config'].get('gnn_type', 'gcn')
+                            if gnn_type in ['gcn', 'sage']:
+                                # GCN/SAGE work well with Xavier
+                                init_scheme = 'xavier_uniform'
+                            elif gnn_type in ['gat', 'gin']:
+                                # GAT/GIN often use Kaiming (He) initialization
+                                init_scheme = 'kaiming_uniform'
+                            else:
+                                init_scheme = 'xavier_uniform'
+                        else:
+                            # Default to Xavier for other model types
+                            init_scheme = 'xavier_uniform'
+                        
+                        print(f"Randomizing weights with {init_scheme} initialization")
+                        
+                        # Randomize all weights
+                        num_randomized, num_failed = randomize_model_weights(
+                            from_scratch_model, 
+                            initialization_scheme=init_scheme,
+                            verbose=False
+                        )
+                        if num_failed > 0:
+                            raise ValueError(f"Failed to randomize {num_failed} layers")
+                        else:
+                            print(f"Successfully randomized {num_randomized} layers")
                         
                         # Train from scratch
                         scratch_results = train_and_evaluate_inductive(
@@ -399,7 +428,7 @@ class InductiveExperiment:
                             config=self.config,
                             task=task,
                             device=self.device,
-                            optimize_hyperparams=False,  # No hyperopt for fair comparison
+                            optimize_hyperparams=False,  # No hyperopt
                             experiment_name=self.config.experiment_name if hasattr(self.config, 'experiment_name') else None,
                             run_id=self.config.run_id if hasattr(self.config, 'run_id') else None,
                             finetuning=True
@@ -1585,114 +1614,113 @@ class PreTrainingExperiment:
         self.base_output_dir = base_output_dir
         os.makedirs(base_output_dir, exist_ok=True)
     
-    # def run_pretraining_sweep(
-    #     self,
-    #     graph_family: List,
-    #     gnn_types: List[str] = ["gcn", "sage", "gat", "fagcn", "gin"],
-    #     pretraining_tasks: List[str] = ["link_prediction", "contrastive"],
-    #     base_config: Optional[PreTrainingConfig] = None
-    # ) -> Dict[str, Any]:
-    #     """Run pre-training experiments across multiple configurations."""
-        
-    #     if base_config is None:
-    #         base_config = PreTrainingConfig()
-        
-    #     all_results = {}
-    #     experiment_start = time.time()
-        
-    #     print("="*100)
-    #     print("MULTI-CONFIGURATION PRE-TRAINING SWEEP")
-    #     print("="*100)
-    #     print(f"GNN Types: {gnn_types}")
-    #     print(f"Pre-training Tasks: {pretraining_tasks}")
-    #     print(f"Total configurations: {len(gnn_types) * len(pretraining_tasks)}")
-        
-    #     for gnn_type in gnn_types:
-    #         for task in pretraining_tasks:
-    #             config_name = f"{gnn_type}_{task}"
-    #             print(f"\n{'='*50}")
-    #             print(f"CONFIGURATION: {config_name}")
-    #             print(f"{'='*50}")
-                
-    #             # Create configuration for this run
-    #             config = PreTrainingConfig(
-    #                 **{**asdict(base_config), 
-    #                    'gnn_type': gnn_type,
-    #                    'pretraining_task': task,
-    #                    'output_dir': os.path.join(self.base_output_dir, config_name),
-    #                    'experiment_name': f"sweep_{config_name}"
-    #                 }
-    #             )
-                
-    #             try:
-    #                 # Run pre-training
-    #                 runner = PreTrainingRunner(config)
-    #                 results = runner.run_full_pipeline(graph_family, save_model=True)
-                    
-    #                 all_results[config_name] = {
-    #                     'status': 'success',
-    #                     'results': results,
-    #                     'config': asdict(config)
-    #                 }
-                    
-    #                 print(f"✓ {config_name} completed successfully")
-                    
-    #             except Exception as e:
-    #                 print(f"✗ {config_name} failed: {str(e)}")
-    #                 logger.error(f"Error in {config_name}: {str(e)}", exc_info=True)
-                    
-    #                 all_results[config_name] = {
-    #                     'status': 'failed',
-    #                     'error': str(e),
-    #                     'config': asdict(config)
-    #                 }
-        
-    #     # Save sweep results
-    #     total_sweep_time = time.time() - experiment_start
-    #     sweep_summary = {
-    #         'sweep_results': all_results,
-    #         'total_time': total_sweep_time,
-    #         'successful_configs': [k for k, v in all_results.items() if v['status'] == 'success'],
-    #         'failed_configs': [k for k, v in all_results.items() if v['status'] == 'failed'],
-    #         'timestamp': time.time()
-    #     }
-        
-    #     # Save summary
-    #     summary_path = os.path.join(self.base_output_dir, "sweep_summary.json")
-    #     with open(summary_path, 'w') as f:
-    #         json.dump(sweep_summary, f, indent=2, default=str)
-        
-    #     print(f"\n{'='*100}")
-    #     print("SWEEP COMPLETED")
-    #     print(f"{'='*100}")
-    #     print(f"Total time: {total_sweep_time:.2f} seconds")
-    #     print(f"Successful: {len(sweep_summary['successful_configs'])}")
-    #     print(f"Failed: {len(sweep_summary['failed_configs'])}")
-    #     print(f"Results saved to: {summary_path}")
-        
-    #     return sweep_summary
 
-# def run_pretraining_with_saved_graphs(
-#     gnn_type: str = "gcn",
-#     pretraining_task: str = "link_prediction",
-#     n_graphs: int = 50,
-#     n_extra_graphs_for_finetuning: int = 30,
-#     output_dir: str = "pretrained_models",
-#     **kwargs
-# ) -> Dict[str, Any]:
-#     """Convenience function for pre-training with saved graphs."""
+def randomize_model_weights(model, initialization_scheme='xavier_uniform', verbose=True):
+    """
+    Properly randomize all model weights for fair from-scratch comparison.
     
-#     config = EnhancedPreTrainingConfig(
-#         gnn_type=gnn_type,
-#         pretraining_task=pretraining_task,
-#         n_graphs=n_graphs,
-#         n_extra_graphs_for_finetuning=n_extra_graphs_for_finetuning,
-#         output_dir=output_dir,
-#         **kwargs
-#     )
+    Args:
+        model: PyTorch model to randomize
+        initialization_scheme: 'xavier_uniform', 'xavier_normal', 'kaiming_uniform', 'kaiming_normal'
+        verbose: Whether to print which layers are being reset
+    """
+    randomized_layers = []
+    failed_layers = []
     
-#     runner = PreTrainingRunner(config)
-#     return runner.run_pretraining_only()
+    for name, module in model.named_modules():
+        # Skip the root module
+        if name == "":
+            continue
+            
+        try:
+            # Handle different layer types explicitly
+            if isinstance(module, (nn.Linear, nn.Conv1d, nn.Conv2d, nn.Conv3d)):
+                # Linear and convolutional layers
+                if initialization_scheme == 'xavier_uniform':
+                    nn.init.xavier_uniform_(module.weight)
+                elif initialization_scheme == 'xavier_normal':
+                    nn.init.xavier_normal_(module.weight)
+                elif initialization_scheme == 'kaiming_uniform':
+                    nn.init.kaiming_uniform_(module.weight, nonlinearity='relu')
+                elif initialization_scheme == 'kaiming_normal':
+                    nn.init.kaiming_normal_(module.weight, nonlinearity='relu')
+                
+                # Reset bias if it exists
+                if module.bias is not None:
+                    nn.init.zeros_(module.bias)
+                
+                randomized_layers.append(f"{name} ({type(module).__name__})")
+                
+            elif isinstance(module, (nn.BatchNorm1d, nn.BatchNorm2d, nn.LayerNorm)):
+                # Normalization layers
+                if hasattr(module, 'weight') and module.weight is not None:
+                    nn.init.ones_(module.weight)
+                if hasattr(module, 'bias') and module.bias is not None:
+                    nn.init.zeros_(module.bias)
+                # Reset running statistics for BatchNorm
+                if hasattr(module, 'running_mean'):
+                    module.running_mean.zero_()
+                if hasattr(module, 'running_var'):
+                    module.running_var.fill_(1)
+                
+                randomized_layers.append(f"{name} ({type(module).__name__})")
+                
+            elif isinstance(module, nn.Embedding):
+                # Embedding layers
+                nn.init.normal_(module.weight, mean=0.0, std=1.0)
+                randomized_layers.append(f"{name} ({type(module).__name__})")
+                
+            elif hasattr(module, 'reset_parameters'):
+                # Fallback to reset_parameters if available
+                module.reset_parameters()
+                randomized_layers.append(f"{name} ({type(module).__name__}) - via reset_parameters")
+                
+            elif hasattr(module, 'weight'):
+                # Generic weight tensor - use specified initialization
+                if initialization_scheme == 'xavier_uniform':
+                    nn.init.xavier_uniform_(module.weight)
+                elif initialization_scheme == 'xavier_normal':
+                    nn.init.xavier_normal_(module.weight)
+                else:
+                    # Fallback to normal initialization
+                    nn.init.normal_(module.weight, mean=0.0, std=0.02)
+                
+                if hasattr(module, 'bias') and module.bias is not None:
+                    nn.init.zeros_(module.bias)
+                
+                randomized_layers.append(f"{name} ({type(module).__name__}) - generic weight")
+                
+        except Exception as e:
+            failed_layers.append(f"{name} ({type(module).__name__}): {str(e)}")
+    
+    if verbose:
+        print(f"Randomized {len(randomized_layers)} layers:")
+        for layer in randomized_layers:
+            print(f"  ✓ {layer}")
+        
+        if failed_layers:
+            print(f"Failed to randomize {len(failed_layers)} layers:")
+            for layer in failed_layers:
+                print(f"  ✗ {layer}")
+    
+    return len(randomized_layers), len(failed_layers)
+
+def create_from_scratch_model_improved(pretrained_model, metadata, output_dim, is_regression, device):
+    """
+    Create a properly randomized from-scratch model for fair comparison.
+    """
+    # Create new model with same architecture
+    from_scratch_model = create_model_from_pretrained(
+        pretrained_model,
+        metadata,
+        output_dim,
+        is_regression
+    ).to(device)
+    
+    
+    print(f"Successfully randomized {num_randomized} layers, {num_failed} layers failed")
+    
+    return from_scratch_model
 
 def list_graph_families(graph_family_dir: str = "graph_families") -> List[Dict]:
     """List available graph families."""

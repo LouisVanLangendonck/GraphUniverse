@@ -40,27 +40,27 @@ def parse_args():
                         help='Force CPU usage even if CUDA is available')
     
     # === GRAPH FAMILY GENERATION ===
-    parser.add_argument('--n_graphs', type=int, default=30,
+    parser.add_argument('--n_graphs', type=int, default=200,
                         help='Number of graphs for pre-training')
     parser.add_argument('--n_extra_graphs', type=int, default=10,
                         help='Extra graphs to generate for fine-tuning')
     parser.add_argument('--min_n_nodes', type=int, default=80,
                         help='Minimum number of nodes per graph')
-    parser.add_argument('--max_n_nodes', type=int, default=120,
+    parser.add_argument('--max_n_nodes', type=int, default=150,
                         help='Maximum number of nodes per graph')
     parser.add_argument('--min_communities', type=int, default=4,
                         help='Minimum number of communities per graph')
-    parser.add_argument('--max_communities', type=int, default=7,
+    parser.add_argument('--max_communities', type=int, default=10,
                         help='Maximum number of communities per graph')
     
     # === UNIVERSE PARAMETERS ===
-    parser.add_argument('--universe_K', type=int, default=10,
+    parser.add_argument('--universe_K', type=int, default=20,
                         help='Number of communities in universe')
     parser.add_argument('--universe_feature_dim', type=int, default=32,
                         help='Feature dimension for universe')
     parser.add_argument('--universe_edge_density', type=float, default=0.05,
                         help='Base edge density for universe')
-    parser.add_argument('--universe_homophily', type=float, default=0.3,
+    parser.add_argument('--universe_homophily', type=float, default=0.4,
                         help='Homophily parameter for universe')
     
     # === METHOD SELECTION ===
@@ -76,7 +76,7 @@ def parse_args():
                         help='Self-supervised pre-training task')
     
     # === MODEL CONFIGURATION ===
-    parser.add_argument('--gnn_type', type=str, default='fagcn',
+    parser.add_argument('--gnn_type', type=str, default='gin',
                         choices=['gcn', 'sage', 'gat', 'fagcn', 'gin'],
                         help='Type of GNN to use')
     parser.add_argument('--hidden_dim', type=int, default=64,
@@ -114,7 +114,7 @@ def parse_args():
                         help='Use pre-normalization in transformers')
     
     # === TRAINING PARAMETERS ===
-    parser.add_argument('--epochs', type=int, default=200,
+    parser.add_argument('--epochs', type=int, default=400,
                         help='Maximum number of training epochs')
     parser.add_argument('--learning_rate', type=float, default=0.001,
                         help='Learning rate')
@@ -122,7 +122,7 @@ def parse_args():
                         help='Weight decay')
     parser.add_argument('--batch_size', type=int, default=32,
                         help='Batch size for training')
-    parser.add_argument('--patience', type=int, default=50,
+    parser.add_argument('--patience', type=int, default=100,
                         help='Patience for early stopping')
     
     # === HYPERPARAMETER OPTIMIZATION ===
