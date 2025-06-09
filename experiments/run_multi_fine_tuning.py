@@ -61,7 +61,9 @@ def create_fine_tuning_config(
     sweep_dir: str,
     output_dir: str,
     only_pretrained_experiments: bool,
-    max_train_graphs_for_finetuning: int
+    max_train_graphs_for_finetuning: int,
+    calculate_silhouette_score: bool,
+    hyperparameter_optimization_trials: int
 ) -> InductiveExperimentConfig:
     """Create fine-tuning configuration for a specific model."""
     # Create base config
@@ -82,15 +84,16 @@ def create_fine_tuning_config(
         freeze_encoder=False,
         only_pretrained_experiments=only_pretrained_experiments,
         max_train_graphs_for_finetuning=max_train_graphs_for_finetuning,
+        calculate_silhouette_score=calculate_silhouette_score,
         
         # === TASKS ===
-        tasks=['community', 'k_hop_community_counts'],
-        khop_community_counts_k=2,
+        tasks=['community'],
         
         # === ANALYSIS ===
         collect_signal_metrics=True,
         require_consistency_check=False,
-        optimize_hyperparams=True
+        optimize_hyperparams=True,
+        n_trials=hyperparameter_optimization_trials
     )
     
     return config
@@ -105,10 +108,14 @@ def parse_args():
                         help='Directory containing the SSL sweep experiments')
     parser.add_argument('--output_dir', type=str, default='multi_finetune_results',
                         help='Directory to save fine-tuning results')
-    parser.add_argument('--only_pretrained_experiments', action='store_true',
+    parser.add_argument('--only_pretrained_experiments', action='store_true', default=True,
                         help='Only run fine-tuning experiments, no from-scratch baselines')
-    parser.add_argument('--max_train_graphs_for_finetuning', type=int, default=2,
+    parser.add_argument('--max_train_graphs_for_finetuning', type=int, default=3,
                         help='Maximum number of training graphs for fine-tuning')
+    parser.add_argument('--calculate_silhouette_score', action='store_true', default=True,
+                        help='Calculate silhouette score of communities of pre-trained models')
+    parser.add_argument('--hyperparameter_optimization_trials', type=int, default=10,
+                        help='Number of trials for hyperparameter optimization of from-scratch, different architecture models')
     
     return parser.parse_args()
 
@@ -148,19 +155,13 @@ def main():
                 args.ssl_sweep_dir,
                 output_dir,
                 args.only_pretrained_experiments,
-                args.max_train_graphs_for_finetuning
+                args.max_train_graphs_for_finetuning,
+                args.calculate_silhouette_score,
+                args.hyperparameter_optimization_trials
             )
             
             # Run fine-tuning experiment
             results = run_inductive_experiment(config)
-            
-            # Store results
-            model_key = f"{model_ids[i-1]}"
-            all_results[model_key] = {
-                'model_config': model_config[i-1],
-                'model_metadata': model_metadata[i-1],
-                'finetune_results': results
-            }
             
             successful_runs += 1
             print(f"✓ Fine-tuning completed successfully")
@@ -174,7 +175,6 @@ def main():
         'total_models': len(model_dirs),
         'successful_runs': successful_runs,
         'success_rate': successful_runs / len(model_dirs) if model_dirs else 0,
-        'results': all_results
     }
     
     with open(os.path.join(output_dir, "summary.json"), 'w') as f:

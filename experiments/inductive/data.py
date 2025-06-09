@@ -835,6 +835,7 @@ def analyze_graph_family_properties(
         'avg_degrees': [],
         'clustering_coefficients': [],
         'community_counts': [],
+        'homophily_levels': [],  # New property for homophily
         'generation_methods': []
     }
     
@@ -862,12 +863,24 @@ def analyze_graph_family_properties(
         
         properties['community_counts'].append(len(np.unique(graph.community_labels)))
         
+        # Calculate homophily level
+        if graph.n_nodes > 0 and graph.graph.number_of_edges() > 0:
+            # Count edges between nodes of same community
+            same_community_edges = 0
+            for u, v in graph.graph.edges():
+                if graph.community_labels[u] == graph.community_labels[v]:
+                    same_community_edges += 1
+            homophily = same_community_edges / graph.graph.number_of_edges()
+            properties['homophily_levels'].append(homophily)
+        else:
+            properties['homophily_levels'].append(0.0)
+        
         # Track generation method
         if hasattr(graph, 'generation_method'):
             properties['generation_methods'].append(graph.generation_method)
     
     # Calculate statistics and convert to native Python types
-    for key in ['node_counts', 'edge_counts', 'densities', 'avg_degrees', 'clustering_coefficients', 'community_counts']:
+    for key in ['node_counts', 'edge_counts', 'densities', 'avg_degrees', 'clustering_coefficients', 'community_counts', 'homophily_levels']:
         values = properties[key]
         if values:
             properties[f'{key}_mean'] = float(np.mean(values))

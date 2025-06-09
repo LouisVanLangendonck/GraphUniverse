@@ -386,7 +386,8 @@ class InductiveExperiment:
                         'training_history': results.get('training_history', {}),
                         'pretrained_model_id': self.config.pretrained_model_id,
                         'training_silhouette_scores': results.get('training_silhouette_scores', []),
-                        't_sne_training_results': results.get('t_sne_training_results', {})
+                        't_sne_training_results': results.get('t_sne_training_results', {}),
+                        'optimal_hyperparams': results.get('optimal_hyperparams', {})
                     }
                 
                     print(f"✓ Fine-tuning completed successfully")
@@ -463,7 +464,8 @@ class InductiveExperiment:
                             'pretrained_model_id': self.config.pretrained_model_id,  # Keep reference to original model
                             'is_from_scratch': True,
                             'training_silhouette_scores': scratch_results.get('training_silhouette_scores', []),
-                            't_sne_training_results': scratch_results.get('t_sne_training_results', {})
+                            't_sne_training_results': scratch_results.get('t_sne_training_results', {}),
+                            'optimal_hyperparams': scratch_results.get('optimal_hyperparams', {})
                         }
                         
                         print(f"✓ From-scratch training completed successfully")
@@ -512,7 +514,7 @@ class InductiveExperiment:
                     # Create model
                     if model_name in self.config.gnn_types or pretrained_model_type == 'gnn':
                         # Existing GNN model creation
-                        if model_name in ['fagcn', 'gin'] or pretrained_model_type in ['fagcn', 'gin']:
+                        if model_name in ['fagcn', 'gin']:
                             model = GNNModel(
                                 input_dim=input_dim,
                                 hidden_dim=self.config.hidden_dim,
@@ -587,7 +589,9 @@ class InductiveExperiment:
                         'optimal_hyperparams': results.get('optimal_hyperparams', {}),
                         'train_time': results.get('train_time', 0.0),
                         'training_history': results.get('training_history', {}),
-                        'hyperopt_results': results.get('hyperopt_results', None)
+                        'hyperopt_results': results.get('hyperopt_results', None),
+                        't_sne_training_results': results.get('t_sne_training_results', {}),
+                        'training_silhouette_scores': results.get('training_silhouette_scores', [])
                     }
                     
                     print(f"✓ {model_name.upper()} completed successfully")
@@ -678,6 +682,9 @@ class InductiveExperiment:
                     'train_time': model_results.get('train_time', 0.0),
                     'best_epoch': model_results.get('best_epoch', 0),
                     'error': model_results.get('error'),
+                    'optimal_hyperparams': model_results.get('optimal_hyperparams', {}),
+                    't_sne_training_results': model_results.get('t_sne_training_results', {}),
+                    'training_silhouette_scores': model_results.get('training_silhouette_scores', []),
                     'training_history': {
                         'train_loss': [float(x) for x in model_results.get('training_history', {}).get('train_loss', [])],
                         'val_loss': [float(x) for x in model_results.get('training_history', {}).get('val_loss', [])],
@@ -750,7 +757,7 @@ class InductiveExperiment:
             experiment_start = time.time()
             
             # Generate graph family
-            family_graphs = self.generate_graph_family()
+            self.generate_graph_family()
             
             # Analyze family consistency
             family_consistency = self.analyze_family_consistency()
@@ -762,7 +769,7 @@ class InductiveExperiment:
             self.precompute_transformer_encodings()
             
             # Prepare data
-            dataloaders = self.prepare_data()
+            self.prepare_data()
             
             # Run experiments
             results = self.run_experiments()
@@ -782,11 +789,9 @@ class InductiveExperiment:
             print(f"\nExperiment completed in {total_time:.2f} seconds")
             
             return {
-                'family_graphs': family_graphs,
                 'family_consistency': family_consistency,
                 'graph_signals': graph_signals,
                 'results': results,
-                'dataloaders': dataloaders,
                 'config': self.config,
                 'summary_report': summary_report,
                 'total_time': total_time

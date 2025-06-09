@@ -341,136 +341,285 @@ class CleanMultiExperimentConfig:
             transformer_params=config_dict['transformer_params']
         )
 
-@dataclass 
+@dataclass
 class SSLMultiExperimentConfig:
-    """Configuration for running multiple SSL pre-training experiments with parameter variations."""
+    """Configuration for multi-experiment SSL runs."""
     
-    # Base configuration for all runs
-    base_config: 'PreTrainingConfig' = field(default_factory=lambda: PreTrainingConfig())
-    
-    # Parameters that are swept systematically
-    sweep_parameters: Dict[str, ParameterRange] = field(default_factory=dict)
-    
-    # Parameters that are randomly sampled for each run
-    random_parameters: Dict[str, ParameterRange] = field(default_factory=dict)
-    
-    # Number of repetitions for each parameter combination
-    n_repetitions: int = 1
-    
-    # Output configuration
-    output_dir: str = "multi_ssl_results"
-    experiment_name: str = "ssl_sweep"
-    save_individual_configs: bool = False
-    save_individual_results: bool = False
-    
-    # Experiment control
-    max_concurrent_runs: int = 1
-    continue_on_failure: bool = True
-    
-    # Result aggregation
-    aggregate_results: bool = True
-    create_summary_plots: bool = False
-    
-    def __post_init__(self):
-        """Validate multi-experiment configuration."""
-        # Ensure all sweep parameters have is_sweep=True
-        for param_name, param_range in self.sweep_parameters.items():
-            param_range.is_sweep = True
+    def __init__(
+        self,
+        output_dir: str = "multi_ssl_experiments",
+        experiment_name: str = "ssl_sweep",
         
-        # Ensure all random parameters have is_sweep=False
-        for param_name, param_range in self.random_parameters.items():
-            param_range.is_sweep = False
-    
-    def get_parameter_combinations(self) -> List[Dict[str, float]]:
-        """Get all parameter combinations for systematic sweeps."""
-        if not self.sweep_parameters:
-            return [{}]
+        # Base configuration
+        base_config: PreTrainingConfig = None,
         
-        # Get all sweep values
+        # Parameter sweeps
+        sweep_parameters: Dict[str, ParameterRange] = None,
+        
+        # Random parameters
+        random_parameters: Dict[str, ParameterRange] = None,
+        
+        # Execution parameters
+        n_repetitions: int = 1,
+        continue_on_failure: bool = True,
+        save_individual_results: bool = True,
+        
+        # Resource management
+        max_concurrent_families: int = 1,  # Number of graph families to generate concurrently
+        reuse_families: bool = True,  # Reuse graph families across experiments
+        
+        # Random seed management
+        base_seed: int = 42,
+        
+        # Model management
+        gnn_models: List[str] = None,
+        
+        # Transformer configuration
+        transformer_models: List[str] = None,  # List of transformer models to run
+        run_transformers: bool = False,  # Whether to run transformer models
+        transformer_params: Dict[str, Any] = None,  # Additional transformer parameters
+        skip_gnn: bool = False,  # Whether to skip running GNN models
+        patience: int = 50  # Added patience parameter
+    ):
+        self.output_dir = output_dir
+        self.experiment_name = experiment_name
+        self.base_config = base_config
+        self.sweep_parameters = sweep_parameters or {}
+        self.random_parameters = random_parameters or {}
+        self.n_repetitions = n_repetitions
+        self.continue_on_failure = continue_on_failure
+        self.save_individual_results = save_individual_results
+        self.max_concurrent_families = max_concurrent_families
+        self.reuse_families = reuse_families
+        self.base_seed = base_seed
+        self.gnn_models = gnn_models or ['sage', 'gcn']
+        self.transformer_models = transformer_models or []
+        self.run_transformers = run_transformers
+        self.transformer_params = transformer_params or {
+            'transformer_num_heads': 8,
+            'transformer_max_nodes': 200,
+            'transformer_max_path_length': 10,
+            'transformer_precompute_encodings': True,
+            'transformer_cache_encodings': True,
+            'local_gnn_type': 'gcn',
+            'global_model_type': 'transformer',
+            'transformer_prenorm': True
+        }
+        self.skip_gnn = skip_gnn
+        self.patience = patience
+    
+    def get_family_configurations(self) -> List[Dict[str, Any]]:
+        """Get all unique graph family configurations."""
+        # Get all combinations of sweep parameters
         sweep_values = {}
-        for param_name, param_range in self.sweep_parameters.items():
-            sweep_values[param_name] = param_range.get_sweep_values()
+        for param, param_range in self.sweep_parameters.items():
+            if param_range.is_sweep:
+                sweep_values[param] = param_range.get_sweep_values()
+            else:
+                sweep_values[param] = [param_range.min_val]
         
         # Generate all combinations
         param_names = list(sweep_values.keys())
-        param_value_lists = list(sweep_values.values())
+        param_values = list(sweep_values.values())
+        combinations = list(itertools.product(*param_values))
         
-        combinations = []
-        for combo in itertools.product(*param_value_lists):
-            combinations.append(dict(zip(param_names, combo)))
+        family_configs = []
+        for i, combo in enumerate(combinations):
+            # Start with base configuration values
+            family_config = {
+                'family_id': f"family_{self.experiment_name}_{i:03d}",
+                'n_graphs': self.base_config.n_graphs,
+                'n_extra_graphs': self.base_config.n_extra_graphs_for_finetuning,
+                'universe_K': self.base_config.universe_K,
+                'universe_feature_dim': self.base_config.universe_feature_dim,
+                'use_dccc_sbm': self.base_config.use_dccc_sbm,
+                'degree_distribution': self.base_config.degree_distribution,
+                'min_n_nodes': self.base_config.min_n_nodes,
+                'max_n_nodes': self.base_config.max_n_nodes,
+                'min_communities': self.base_config.min_communities,
+                'max_communities': self.base_config.max_communities
+            }
+            
+            # Add sweep parameter values
+            family_config.update(dict(zip(param_names, combo)))
+            
+            family_configs.append(family_config)
         
-        return combinations
+        return family_configs
     
-    def sample_random_parameters(self) -> Dict[str, float]:
-        """Sample random values for all random parameters."""
-        random_values = {}
-        for param_name, param_range in self.random_parameters.items():
-            values = param_range.sample_random(1)
-            random_values[param_name] = values[0]
+    def get_model_configurations(self) -> List[Dict[str, Any]]:
+        """Get all model configurations."""
+        # For SSL, we'll use the base config's model parameters
+        if not self.base_config:
+            return []
+            
+        model_configs = []
         
-        return random_values
+        # Add GNN models only if not skipping GNNs and gnn_models is not empty
+        if not self.skip_gnn and self.gnn_models:
+            for gnn_type in self.gnn_models:
+                model_config = {
+                    'gnn_type': gnn_type,
+                    'pretraining_task': self.base_config.pretraining_task,
+                    'hidden_dim': self.base_config.hidden_dim,
+                    'num_layers': self.base_config.num_layers,
+                    'run_transformers': False,
+                    'model_type': 'gnn'
+                }
+                model_configs.append(model_config)
+        
+        # Add transformer models
+        if self.run_transformers:
+            for transformer_type in self.transformer_models:
+                model_config = {
+                    'transformer_type': transformer_type,
+                    'pretraining_task': self.base_config.pretraining_task,
+                    'hidden_dim': self.base_config.hidden_dim,
+                    'num_layers': self.base_config.num_layers,
+                    'run_transformers': True,
+                    'model_type': 'transformer',
+                    **self.transformer_params
+                }
+                model_configs.append(model_config)
+        
+        return model_configs
     
-    def create_run_config(
-        self,
-        sweep_params: Dict[str, float],
-        random_params: Dict[str, float],
-        run_id: int
-    ) -> 'PreTrainingConfig':
-        """Create a configuration for a single run."""
-        # Start with base config
-        config_dict = self.base_config.to_dict()
-        
-        # Override with sweep parameters
-        config_dict.update(sweep_params)
-        
-        # Override with random parameters
-        config_dict.update(random_params)
-        
-        # Process tuple parameters (ranges)
-        config_dict = self._process_tuple_parameters(config_dict)
-        
-        # Set unique output directory
-        config_dict['output_dir'] = os.path.join(
-            self.output_dir,
-            f"{self.experiment_name}_run_{run_id:04d}"
-        )
-        
-        # Create config object
-        from enhanced_pretraining_config import PreTrainingConfig
-        return PreTrainingConfig.from_dict(config_dict)
+    def get_total_experiments(self) -> int:
+        """Get total number of experiments."""
+        n_families = len(self.get_family_configurations())
+        n_models = len(self.get_model_configurations())
+        return n_families * n_models * self.n_repetitions
+
+# @dataclass 
+# class SSLMultiExperimentConfig:
+#     """Configuration for running multiple SSL pre-training experiments with parameter variations."""
     
-    def _process_tuple_parameters(self, config_dict: Dict[str, Any]) -> Dict[str, Any]:
-        """Process parameters that need to be converted to tuples (like ranges)."""
-        processed = config_dict.copy()
-        
-        # Convert range parameters from single values to tuples
-        range_params = {
-            'homophily_range': 'homophily_range_width',
-            'density_range': 'density_range_width',
-            'community_imbalance_range': 'community_imbalance_range_width',
-            'degree_separation_range': 'degree_separation_range_width',
-            'power_law_exponent_range': 'power_law_exponent_range_width',
-            'exponential_rate_range': 'exponential_rate_range_width',
-            'uniform_min_factor_range': 'uniform_min_factor_range_width',
-            'uniform_max_factor_range': 'uniform_max_factor_range_width'
-        }
-        
-        for range_param, width_param in range_params.items():
-            if width_param in processed:
-                width = processed.pop(width_param)
-                if range_param in processed:
-                    center = processed[range_param]
-                    if isinstance(center, (list, tuple)):
-                        # Already a range, don't modify
-                        continue
-                    else:
-                        # Convert single value to range
-                        processed[range_param] = (max(0, center - width/2), center + width/2)
-        
-        return processed
+#     # Base configuration for all runs
+#     base_config: 'PreTrainingConfig' = field(default_factory=lambda: PreTrainingConfig())
     
-    def get_total_runs(self) -> int:
-        """Calculate total number of experiment runs."""
-        n_combinations = len(self.get_parameter_combinations())
-        return n_combinations * self.n_repetitions
+#     # Parameters that are swept systematically
+#     sweep_parameters: Dict[str, ParameterRange] = field(default_factory=dict)
+    
+#     # Parameters that are randomly sampled for each run
+#     random_parameters: Dict[str, ParameterRange] = field(default_factory=dict)
+    
+#     # Number of repetitions for each parameter combination
+#     n_repetitions: int = 1
+    
+#     # Output configuration
+#     output_dir: str = "multi_ssl_results"
+#     experiment_name: str = "ssl_sweep"
+#     save_individual_configs: bool = False
+#     save_individual_results: bool = False
+    
+#     # Experiment control
+#     max_concurrent_runs: int = 1
+#     continue_on_failure: bool = True
+    
+#     # Result aggregation
+#     aggregate_results: bool = True
+#     create_summary_plots: bool = False
+    
+#     def __post_init__(self):
+#         """Validate multi-experiment configuration."""
+#         # Ensure all sweep parameters have is_sweep=True
+#         for param_name, param_range in self.sweep_parameters.items():
+#             param_range.is_sweep = True
+        
+#         # Ensure all random parameters have is_sweep=False
+#         for param_name, param_range in self.random_parameters.items():
+#             param_range.is_sweep = False
+    
+#     def get_parameter_combinations(self) -> List[Dict[str, float]]:
+#         """Get all parameter combinations for systematic sweeps."""
+#         if not self.sweep_parameters:
+#             return [{}]
+        
+#         # Get all sweep values
+#         sweep_values = {}
+#         for param_name, param_range in self.sweep_parameters.items():
+#             sweep_values[param_name] = param_range.get_sweep_values()
+        
+#         # Generate all combinations
+#         param_names = list(sweep_values.keys())
+#         param_value_lists = list(sweep_values.values())
+        
+#         combinations = []
+#         for combo in itertools.product(*param_value_lists):
+#             combinations.append(dict(zip(param_names, combo)))
+        
+#         return combinations
+    
+#     def sample_random_parameters(self) -> Dict[str, float]:
+#         """Sample random values for all random parameters."""
+#         random_values = {}
+#         for param_name, param_range in self.random_parameters.items():
+#             values = param_range.sample_random(1)
+#             random_values[param_name] = values[0]
+        
+#         return random_values
+    
+#     def create_run_config(
+#         self,
+#         sweep_params: Dict[str, float],
+#         random_params: Dict[str, float],
+#         run_id: int
+#     ) -> 'PreTrainingConfig':
+#         """Create a configuration for a single run."""
+#         # Start with base config
+#         config_dict = self.base_config.to_dict()
+        
+#         # Override with sweep parameters
+#         config_dict.update(sweep_params)
+        
+#         # Override with random parameters
+#         config_dict.update(random_params)
+        
+#         # Process tuple parameters (ranges)
+#         config_dict = self._process_tuple_parameters(config_dict)
+        
+#         # Set unique output directory
+#         config_dict['output_dir'] = os.path.join(
+#             self.output_dir,
+#             f"{self.experiment_name}_run_{run_id:04d}"
+#         )
+        
+#         # Create config object
+#         from enhanced_pretraining_config import PreTrainingConfig
+#         return PreTrainingConfig.from_dict(config_dict)
+    
+#     def _process_tuple_parameters(self, config_dict: Dict[str, Any]) -> Dict[str, Any]:
+#         """Process parameters that need to be converted to tuples (like ranges)."""
+#         processed = config_dict.copy()
+        
+#         # Convert range parameters from single values to tuples
+#         range_params = {
+#             'homophily_range': 'homophily_range_width',
+#             'density_range': 'density_range_width',
+#             'community_imbalance_range': 'community_imbalance_range_width',
+#             'degree_separation_range': 'degree_separation_range_width',
+#             'power_law_exponent_range': 'power_law_exponent_range_width',
+#             'exponential_rate_range': 'exponential_rate_range_width',
+#             'uniform_min_factor_range': 'uniform_min_factor_range_width',
+#             'uniform_max_factor_range': 'uniform_max_factor_range_width'
+#         }
+        
+#         for range_param, width_param in range_params.items():
+#             if width_param in processed:
+#                 width = processed.pop(width_param)
+#                 if range_param in processed:
+#                     center = processed[range_param]
+#                     if isinstance(center, (list, tuple)):
+#                         # Already a range, don't modify
+#                         continue
+#                     else:
+#                         # Convert single value to range
+#                         processed[range_param] = (max(0, center - width/2), center + width/2)
+        
+#         return processed
+    
+#     def get_total_runs(self) -> int:
+#         """Calculate total number of experiment runs."""
+#         n_combinations = len(self.get_parameter_combinations())
+#         return n_combinations * self.n_repetitions
 
