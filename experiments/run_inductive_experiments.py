@@ -45,7 +45,9 @@ def parse_args():
                         help='Automatically load graph family associated with pre-trained model')
     parser.add_argument('--freeze_encoder', action='store_true',
                         help='Freeze encoder weights during fine-tuning')
-    parser.add_argument('--max_train_graphs_for_finetuning', type=int, default=5,
+    parser.add_argument('--calculate_silhouette_score', action='store_true', default=True,
+                        help='Calculate silhouette score of communities of pre-trained models')
+    parser.add_argument('--max_train_graphs_for_finetuning', type=int, default=10,
                         help='Maximum number of training graphs for fine-tuning')
     parser.add_argument('--only_pretrained_experiments', action='store_true',
                         help='Dont do any other experiments. Only fine-tune pre-trained models and from scratch version of it and hyperparameter optimization of that model type.')    
@@ -218,6 +220,7 @@ def create_config_from_args(args) -> InductiveExperimentConfig:
         graph_family_dir=getattr(args, 'graph_family_dir', 'graph_families'),
         auto_load_family=getattr(args, 'auto_load_family', True),
         freeze_encoder=args.freeze_encoder,
+        calculate_silhouette_score=args.calculate_silhouette_score,
         only_pretrained_experiments=args.only_pretrained_experiments,
         max_train_graphs_for_finetuning=getattr(args, 'max_train_graphs_for_finetuning', 2),
 

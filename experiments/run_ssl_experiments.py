@@ -42,7 +42,7 @@ def parse_args():
     # === GRAPH FAMILY GENERATION ===
     parser.add_argument('--n_graphs', type=int, default=200,
                         help='Number of graphs for pre-training')
-    parser.add_argument('--n_extra_graphs', type=int, default=10,
+    parser.add_argument('--n_extra_graphs', type=int, default=30,
                         help='Extra graphs to generate for fine-tuning')
     parser.add_argument('--min_n_nodes', type=int, default=80,
                         help='Minimum number of nodes per graph')
@@ -79,7 +79,7 @@ def parse_args():
     parser.add_argument('--gnn_type', type=str, default='gin',
                         choices=['gcn', 'sage', 'gat', 'fagcn', 'gin'],
                         help='Type of GNN to use')
-    parser.add_argument('--hidden_dim', type=int, default=64,
+    parser.add_argument('--hidden_dim', type=int, default=128,
                         help='Hidden dimension for GNN')
     parser.add_argument('--num_layers', type=int, default=3,
                         help='Number of GNN layers')
@@ -92,11 +92,11 @@ def parse_args():
                         help='Type of Graph Transformer to use')
     parser.add_argument('--run_transformers', action='store_true',
                         help='Run Graph Transformer models')
-    parser.add_argument('--transformer_num_heads', type=int, default=8,
+    parser.add_argument('--transformer_num_heads', type=int, default=4,
                         help='Number of attention heads for transformers')
-    parser.add_argument('--transformer_max_nodes', type=int, default=200,
+    parser.add_argument('--transformer_max_nodes', type=int, default=50,
                         help='Maximum nodes for encoding precomputation')
-    parser.add_argument('--transformer_max_path_length', type=int, default=10,
+    parser.add_argument('--transformer_max_path_length', type=int, default=5,
                         help='Maximum path length for shortest path encoding')
     parser.add_argument('--transformer_precompute_encodings', action='store_true', default=True,
                         help='Precompute structural encodings for transformers')
@@ -114,7 +114,7 @@ def parse_args():
                         help='Use pre-normalization in transformers')
     
     # === TRAINING PARAMETERS ===
-    parser.add_argument('--epochs', type=int, default=400,
+    parser.add_argument('--epochs', type=int, default=300,
                         help='Maximum number of training epochs')
     parser.add_argument('--learning_rate', type=float, default=0.001,
                         help='Learning rate')
@@ -126,7 +126,7 @@ def parse_args():
                         help='Patience for early stopping')
     
     # === HYPERPARAMETER OPTIMIZATION ===
-    parser.add_argument('--optimize_hyperparams', action='store_true', default=True,
+    parser.add_argument('--optimize_hyperparams', action='store_true', default=False,
                         help='Enable hyperparameter optimization')
     parser.add_argument('--n_trials', type=int, default=20,
                         help='Number of hyperparameter optimization trials')

@@ -38,6 +38,8 @@ from experiments.inductive.data import GraphFamilyManager
 from experiments.inductive.config import PreTrainingConfig, InductiveExperimentConfig
 from optuna.pruners import HyperbandPruner, MedianPruner
 from optuna.samplers import TPESampler
+from sklearn.manifold import TSNE
+from sklearn.metrics import silhouette_score
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -355,6 +357,11 @@ class InductiveExperiment:
                         is_regression
                     ).to(self.device)
                     print(f"Created fine-tuning model by using the original pre-trained encoder: {finetune_model}")
+
+                    if self.config.calculate_silhouette_score and task == 'community':
+                        print(f"Calculating silhouette score of communities of pre-trained model")
+                        training_silhouette_scores = calculate_silhouette_scores(finetune_model, task_dataloaders)
+                        t_sne_training_results = calculate_tsne_coordinates(finetune_model, task_dataloaders, n_to_calculate=1)
                     
                     # Fine-tune model
                     results = train_and_evaluate_inductive(
@@ -366,17 +373,22 @@ class InductiveExperiment:
                         optimize_hyperparams=False,  # No hyperopt for fine-tuning
                         experiment_name=self.config.experiment_name if hasattr(self.config, 'experiment_name') else None,
                         run_id=self.config.run_id if hasattr(self.config, 'run_id') else None,
-                        finetuning=True
+                        finetuning=True,
                     )
+                    if self.config.calculate_silhouette_score and task == 'community':
+                        results['training_silhouette_scores'] = training_silhouette_scores
+                        results['t_sne_training_results'] = t_sne_training_results
                     
                     # Store results
                     task_results['finetuned'] = {
                         'test_metrics': results.get('test_metrics', {}),
                         'train_time': results.get('train_time', 0.0),
                         'training_history': results.get('training_history', {}),
-                        'pretrained_model_id': self.config.pretrained_model_id
+                        'pretrained_model_id': self.config.pretrained_model_id,
+                        'training_silhouette_scores': results.get('training_silhouette_scores', []),
+                        't_sne_training_results': results.get('t_sne_training_results', {})
                     }
-                    
+                
                     print(f"✓ Fine-tuning completed successfully")
                     
                     # Add from-scratch training of the same model architecture
@@ -421,6 +433,11 @@ class InductiveExperiment:
                         else:
                             print(f"Successfully randomized {num_randomized} layers")
                         
+                        if self.config.calculate_silhouette_score and task == 'community':
+                            print(f"Calculating silhouette score of communities of from-scratch model")
+                            training_silhouette_scores = calculate_silhouette_scores(from_scratch_model, task_dataloaders)
+                            t_sne_training_results = calculate_tsne_coordinates(from_scratch_model, task_dataloaders, n_to_calculate=1)
+
                         # Train from scratch
                         scratch_results = train_and_evaluate_inductive(
                             model=from_scratch_model,
@@ -433,6 +450,10 @@ class InductiveExperiment:
                             run_id=self.config.run_id if hasattr(self.config, 'run_id') else None,
                             finetuning=True
                         )
+
+                        if self.config.calculate_silhouette_score and task == 'community':
+                            scratch_results['training_silhouette_scores'] = training_silhouette_scores
+                            scratch_results['t_sne_training_results'] = t_sne_training_results
                         
                         # Store results
                         task_results['from_scratch'] = {
@@ -440,7 +461,9 @@ class InductiveExperiment:
                             'train_time': scratch_results.get('train_time', 0.0),
                             'training_history': scratch_results.get('training_history', {}),
                             'pretrained_model_id': self.config.pretrained_model_id,  # Keep reference to original model
-                            'is_from_scratch': True
+                            'is_from_scratch': True,
+                            'training_silhouette_scores': scratch_results.get('training_silhouette_scores', []),
+                            't_sne_training_results': scratch_results.get('t_sne_training_results', {})
                         }
                         
                         print(f"✓ From-scratch training completed successfully")
@@ -1607,12 +1630,12 @@ class PreTrainingRunner:
         
         return results
     
-class PreTrainingExperiment:
-    """High-level experiment runner for multiple pre-training configurations."""
+# class PreTrainingExperiment:
+#     """High-level experiment runner for multiple pre-training configurations."""
     
-    def __init__(self, base_output_dir: str = "ssl_experiments"):
-        self.base_output_dir = base_output_dir
-        os.makedirs(base_output_dir, exist_ok=True)
+#     def __init__(self, base_output_dir: str = "ssl_experiments"):
+#         self.base_output_dir = base_output_dir
+#         os.makedirs(base_output_dir, exist_ok=True)
     
 
 def randomize_model_weights(model, initialization_scheme='xavier_uniform', verbose=True):
@@ -1705,22 +1728,137 @@ def randomize_model_weights(model, initialization_scheme='xavier_uniform', verbo
     
     return len(randomized_layers), len(failed_layers)
 
-def create_from_scratch_model_improved(pretrained_model, metadata, output_dim, is_regression, device):
+# def create_from_scratch_model_improved(pretrained_model, metadata, output_dim, is_regression, device):
+#     """
+#     Create a properly randomized from-scratch model for fair comparison.
+#     """
+#     # Create new model with same architecture
+#     from_scratch_model = create_model_from_pretrained(
+#         pretrained_model,
+#         metadata,
+#         output_dim,
+#         is_regression
+#     ).to(device)
+    
+    
+#     print(f"Successfully randomized {num_randomized} layers, {num_failed} layers failed")
+    
+#     return from_scratch_model
+
+def calculate_silhouette_scores(model, task_dataloaders):
     """
-    Create a properly randomized from-scratch model for fair comparison.
+    Calculate silhouette scores of communities of a model.
+    
+    Args:
+        model: The pre-trained GNN model
+        task_dataloaders: Dictionary of dataloaders for the task
+        
+    Returns:
+        List of silhouette scores, one per graph in the training set
     """
-    # Create new model with same architecture
-    from_scratch_model = create_model_from_pretrained(
-        pretrained_model,
-        metadata,
-        output_dim,
-        is_regression
-    ).to(device)
+    model.eval()
+    silhouette_scores = []
     
+    # Get training loader
+    train_loader = task_dataloaders['train']
     
-    print(f"Successfully randomized {num_randomized} layers, {num_failed} layers failed")
+    with torch.no_grad():
+        for batch in train_loader:
+            # Move batch to same device as model
+            device = next(model.parameters()).device
+            batch = batch.to(device)
+            
+            # Get node embeddings
+            if hasattr(model, 'encoder'):
+                # For fine-tuning models
+                embeddings = model.encoder(batch.x, batch.edge_index)
+            else:
+                # For regular models
+                embeddings = model(batch.x, batch.edge_index)
+            
+            # Convert to numpy for sklearn
+            embeddings_np = embeddings.cpu().numpy()
+            
+            # Get community labels
+            community_labels = batch.y.cpu().numpy()
+            
+            # Calculate silhouette score
+            try:
+                score = silhouette_score(embeddings_np, community_labels)
+                silhouette_scores.append(score)
+            except Exception as e:
+                print(f"Warning: Could not calculate silhouette score for a graph: {e}")
+                silhouette_scores.append(0.0)
     
-    return from_scratch_model
+    return silhouette_scores
+
+def calculate_tsne_coordinates(model, task_dataloaders, n_to_calculate=1):
+    """
+    Calculate TSNE coordinates of communities of a model.
+    
+    Args:
+        model: The pre-trained GNN model
+        task_dataloaders: Dictionary of dataloaders for the task
+        n_to_calculate: Number of graphs to calculate TSNE for
+        
+    Returns:
+        Dictionary containing:
+        - 'coordinates': Dictionary mapping community IDs to their TSNE coordinates
+        - 'silhouette_score': The silhouette score of the plotted graph
+    """
+    model.eval()
+    results = {}
+    
+    # Get training loader
+    train_loader = task_dataloaders['train']
+    
+    # Calculate silhouette scores first
+    silhouette_scores = calculate_silhouette_scores(model, task_dataloaders)
+    
+    # Select graphs to plot (take first n_to_calculate)
+    graphs_to_plot = min(n_to_calculate, len(silhouette_scores))
+    
+    with torch.no_grad():
+        for i, batch in enumerate(train_loader):
+            if i >= graphs_to_plot:
+                break
+                
+            # Move batch to same device as model
+            device = next(model.parameters()).device
+            batch = batch.to(device)
+                
+            # Get node embeddings
+            if hasattr(model, 'encoder'):
+                # For fine-tuning models
+                embeddings = model.encoder(batch.x, batch.edge_index)
+            else:
+                # For regular models
+                embeddings = model(batch.x, batch.edge_index)
+            
+            # Convert to numpy for sklearn
+            embeddings_np = embeddings.cpu().numpy()
+            
+            # Get community labels
+            community_labels = batch.y.cpu().numpy()
+            
+            # Calculate TSNE
+            tsne = TSNE(n_components=2, random_state=42)
+            tsne_coords = tsne.fit_transform(embeddings_np)
+            
+            # Organize coordinates by community
+            community_coords = {}
+            for comm_id in np.unique(community_labels):
+                mask = community_labels == comm_id
+                community_coords[int(comm_id)] = tsne_coords[mask].tolist()
+            
+            # Store results
+            results[f'graph_{i}'] = {
+                'coordinates': community_coords,
+                'silhouette_score': silhouette_scores[i]
+            }
+    
+    return results
+    
 
 def list_graph_families(graph_family_dir: str = "graph_families") -> List[Dict]:
     """List available graph families."""

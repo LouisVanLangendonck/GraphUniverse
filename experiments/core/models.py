@@ -490,34 +490,68 @@ class GraphTransformerModel(torch.nn.Module):
         edge_hash = hash(edge_index.cpu().numpy().tobytes())
         return f"{num_nodes}_{edge_hash}"
     
-    def _compute_structural_encodings(self, edge_index: torch.Tensor, num_nodes: int, batch_size: int = 1):
-        """Compute structural encodings for the graph."""
-        graph_hash = self._get_graph_hash(edge_index, num_nodes)
+    def _compute_structural_encodings(self, edge_index: torch.Tensor, num_nodes: int, batch: Optional[torch.Tensor] = None):
+        """Compute structural encodings for the graph(s).
         
-        # Check cache first
-        if graph_hash and graph_hash in self._encoding_cache:
-            # Move cached encodings to the same device as edge_index
-            cached_encodings = self._encoding_cache[graph_hash]
-            device = edge_index.device
-            return {k: v.to(device) for k, v in cached_encodings.items()}
-        
-        encodings = {}
-        
-        if self.transformer_type == "graphormer":
-            # Shortest path distances
-            encodings['spatial'] = self._compute_shortest_paths_bfs(edge_index, num_nodes)
-            # Node degrees
-            encodings['degree'] = self._compute_degrees(edge_index, num_nodes)
+        Args:
+            edge_index: Edge indices [2, num_edges]
+            num_nodes: Total number of nodes
+            batch: Optional batch assignment tensor [num_nodes]
+        """
+        if batch is None:
+            # Single graph case - use existing implementation
+            graph_hash = self._get_graph_hash(edge_index, num_nodes)
             
-        elif self.transformer_type == "graphgps":
-            # Laplacian eigenvectors
-            encodings['pe'] = self._compute_laplacian_pe(edge_index, num_nodes)
-        
-        # Cache the encodings
-        if graph_hash:
-            self._encoding_cache[graph_hash] = encodings
+            # Check cache first
+            if graph_hash and graph_hash in self._encoding_cache:
+                cached_encodings = self._encoding_cache[graph_hash]
+                device = edge_index.device
+                return {k: v.to(device) for k, v in cached_encodings.items()}
             
-        return encodings
+            encodings = {}
+            
+            if self.transformer_type == "graphormer":
+                encodings['spatial'] = self._compute_shortest_paths_bfs(edge_index, num_nodes)
+                encodings['degree'] = self._compute_degrees(edge_index, num_nodes)
+            elif self.transformer_type == "graphgps":
+                encodings['pe'] = self._compute_laplacian_pe(edge_index, num_nodes)
+            
+            if graph_hash:
+                self._encoding_cache[graph_hash] = encodings
+            
+            return encodings
+        else:
+            # Batched graphs case
+            batch_size = batch.max().item() + 1
+            encodings = {}
+            
+            # Process each graph in the batch
+            for b in range(batch_size):
+                # Get nodes and edges for this graph
+                mask = (batch == b)
+                graph_nodes = torch.where(mask)[0]
+                graph_edges = torch.stack([
+                    edge_index[0][mask[edge_index[0]]],
+                    edge_index[1][mask[edge_index[1]]]
+                ])
+                
+                # Compute encodings for this graph
+                graph_encodings = self._compute_structural_encodings(
+                    graph_edges, 
+                    len(graph_nodes)
+                )
+                
+                # Store encodings with batch index
+                for key, value in graph_encodings.items():
+                    if key not in encodings:
+                        encodings[key] = []
+                    encodings[key].append(value)
+            
+            # Stack encodings from all graphs
+            for key in encodings:
+                encodings[key] = torch.stack(encodings[key])
+            
+            return encodings
     
     def _compute_shortest_paths_bfs(self, edge_index: torch.Tensor, num_nodes: int) -> torch.Tensor:
         """Compute shortest path distances using BFS (no NetworkX dependency)."""
@@ -648,8 +682,14 @@ class GraphTransformerModel(torch.nn.Module):
         
         return pe
     
-    def forward(self, x: torch.Tensor, edge_index: torch.Tensor, batch=None):
-        """Forward pass."""
+    def forward(self, x: torch.Tensor, edge_index: torch.Tensor, batch: Optional[torch.Tensor] = None):
+        """Forward pass.
+        
+        Args:
+            x: Node features [num_nodes, input_dim]
+            edge_index: Edge indices [2, num_edges]
+            batch: Optional batch assignment tensor [num_nodes]
+        """
         num_nodes = x.size(0)
         
         # Project input features
@@ -657,14 +697,45 @@ class GraphTransformerModel(torch.nn.Module):
         
         # Compute structural encodings if enabled
         if self.precompute_encodings:
-            encodings = self._compute_structural_encodings(edge_index, num_nodes)
+            encodings = self._compute_structural_encodings(edge_index, num_nodes, batch)
         else:
             encodings = None
         
-        if self.transformer_type == "graphormer":
-            h = self._forward_graphormer(h, edge_index, encodings)
-        elif self.transformer_type == "graphgps":
-            h = self._forward_graphgps(h, edge_index, encodings)
+        if batch is None:
+            # Single graph case
+            if self.transformer_type == "graphormer":
+                h = self._forward_graphormer(h, edge_index, encodings)
+            elif self.transformer_type == "graphgps":
+                h = self._forward_graphgps(h, edge_index, encodings)
+        else:
+            # Batched graphs case
+            batch_size = batch.max().item() + 1
+            outputs = []
+            
+            # Process each graph in the batch
+            for b in range(batch_size):
+                # Get nodes and edges for this graph
+                mask = (batch == b)
+                graph_nodes = torch.where(mask)[0]
+                graph_edges = torch.stack([
+                    edge_index[0][mask[edge_index[0]]],
+                    edge_index[1][mask[edge_index[1]]]
+                ])
+                
+                # Get features and encodings for this graph
+                graph_h = h[mask]
+                graph_encodings = {k: v[b] for k, v in encodings.items()} if encodings else None
+                
+                # Process this graph
+                if self.transformer_type == "graphormer":
+                    graph_output = self._forward_graphormer(graph_h, graph_edges, graph_encodings)
+                elif self.transformer_type == "graphgps":
+                    graph_output = self._forward_graphgps(graph_h, graph_edges, graph_encodings)
+                
+                outputs.append(graph_output)
+            
+            # Combine outputs from all graphs
+            h = torch.cat(outputs, dim=0)
         
         # Output projection
         h = self.output_layer(h)
@@ -770,21 +841,59 @@ class GraphormerLayer(nn.Module):
             nn.Dropout(dropout)
         )
     
-    def forward(self, h: torch.Tensor, edge_index: torch.Tensor, encodings: Dict = None):
-        """Forward pass through Graphormer layer."""
-        # Add batch dimension for attention
-        h_input = h.unsqueeze(0)  # [1, num_nodes, hidden_dim]
+    def forward(self, h: torch.Tensor, edge_index: torch.Tensor, encodings: Dict = None, batch: Optional[torch.Tensor] = None):
+        """Forward pass through Graphormer layer.
         
-        # Self-attention
-        h_attn, _ = self.self_attn(h_input, h_input, h_input)
-        h_attn = h_attn.squeeze(0)
-        
-        # Residual connection and norm
-        h = self.norm1(h + h_attn)
-        
-        # FFN
-        h_ffn = self.ffn(h)
-        h = self.norm2(h + h_ffn)
+        Args:
+            h: Node features [num_nodes, hidden_dim]
+            edge_index: Edge indices [2, num_edges]
+            encodings: Optional structural encodings
+            batch: Optional batch assignment tensor [num_nodes]
+        """
+        if batch is None:
+            # Single graph case
+            # Add batch dimension for attention
+            h_input = h.unsqueeze(0)  # [1, num_nodes, hidden_dim]
+            
+            # Self-attention
+            h_attn, _ = self.self_attn(h_input, h_input, h_input)
+            h_attn = h_attn.squeeze(0)
+            
+            # Residual connection and norm
+            h = self.norm1(h + h_attn)
+            
+            # FFN
+            h_ffn = self.ffn(h)
+            h = self.norm2(h + h_ffn)
+        else:
+            # Batched graphs case
+            batch_size = batch.max().item() + 1
+            outputs = []
+            
+            # Process each graph in the batch
+            for b in range(batch_size):
+                # Get nodes for this graph
+                mask = (batch == b)
+                graph_h = h[mask]
+                
+                # Add batch dimension for attention
+                graph_h_input = graph_h.unsqueeze(0)  # [1, num_nodes, hidden_dim]
+                
+                # Self-attention
+                graph_h_attn, _ = self.self_attn(graph_h_input, graph_h_input, graph_h_input)
+                graph_h_attn = graph_h_attn.squeeze(0)
+                
+                # Residual connection and norm
+                graph_h = self.norm1(graph_h + graph_h_attn)
+                
+                # FFN
+                graph_h_ffn = self.ffn(graph_h)
+                graph_h = self.norm2(graph_h + graph_h_ffn)
+                
+                outputs.append(graph_h)
+            
+            # Combine outputs from all graphs
+            h = torch.cat(outputs, dim=0)
         
         return h
 
@@ -830,45 +939,112 @@ class GraphGPSLayer(nn.Module):
         
         self.dropout = nn.Dropout(dropout)
     
-    def forward(self, h: torch.Tensor, edge_index: torch.Tensor):
-        """Forward pass through GraphGPS layer."""
-        residual = h
+    def forward(self, h: torch.Tensor, edge_index: torch.Tensor, batch: Optional[torch.Tensor] = None):
+        """Forward pass through GraphGPS layer.
         
-        # Pre-norm if specified
-        if self.prenorm:
-            h = self.norm1(h)
-        
-        # Local message passing
-        h_local = self.local_gnn(h, edge_index)
-        h = residual + self.dropout(h_local)
-        
-        # Post-norm if not pre-norm
-        if not self.prenorm:
-            h = self.norm1(h)
-        
-        # Global attention
-        residual = h
-        if self.prenorm:
-            h = self.norm2(h)
-        
-        h_input = h.unsqueeze(0)  # Add batch dimension
-        h_global, _ = self.global_attn(h_input, h_input, h_input)
-        h_global = h_global.squeeze(0)
-        h = residual + self.dropout(h_global)
-        
-        if not self.prenorm:
-            h = self.norm2(h)
-        
-        # FFN
-        residual = h
-        if self.prenorm:
-            h = self.norm3(h)
-        
-        h_ffn = self.ffn(h)
-        h = residual + self.dropout(h_ffn)
-        
-        if not self.prenorm:
-            h = self.norm3(h)
+        Args:
+            h: Node features [num_nodes, hidden_dim]
+            edge_index: Edge indices [2, num_edges]
+            batch: Optional batch assignment tensor [num_nodes]
+        """
+        if batch is None:
+            # Single graph case
+            residual = h
+            
+            # Pre-norm if specified
+            if self.prenorm:
+                h = self.norm1(h)
+            
+            # Local message passing
+            h_local = self.local_gnn(h, edge_index)
+            h = residual + self.dropout(h_local)
+            
+            # Post-norm if not pre-norm
+            if not self.prenorm:
+                h = self.norm1(h)
+            
+            # Global attention
+            residual = h
+            if self.prenorm:
+                h = self.norm2(h)
+            
+            h_input = h.unsqueeze(0)  # Add batch dimension
+            h_global, _ = self.global_attn(h_input, h_input, h_input)
+            h_global = h_global.squeeze(0)
+            h = residual + self.dropout(h_global)
+            
+            if not self.prenorm:
+                h = self.norm2(h)
+            
+            # FFN
+            residual = h
+            if self.prenorm:
+                h = self.norm3(h)
+            
+            h_ffn = self.ffn(h)
+            h = residual + self.dropout(h_ffn)
+            
+            if not self.prenorm:
+                h = self.norm3(h)
+        else:
+            # Batched graphs case
+            batch_size = batch.max().item() + 1
+            outputs = []
+            
+            # Process each graph in the batch
+            for b in range(batch_size):
+                # Get nodes and edges for this graph
+                mask = (batch == b)
+                graph_nodes = torch.where(mask)[0]
+                graph_edges = torch.stack([
+                    edge_index[0][mask[edge_index[0]]],
+                    edge_index[1][mask[edge_index[1]]]
+                ])
+                
+                # Get features for this graph
+                graph_h = h[mask]
+                residual = graph_h
+                
+                # Pre-norm if specified
+                if self.prenorm:
+                    graph_h = self.norm1(graph_h)
+                
+                # Local message passing
+                graph_h_local = self.local_gnn(graph_h, graph_edges)
+                graph_h = residual + self.dropout(graph_h_local)
+                
+                # Post-norm if not pre-norm
+                if not self.prenorm:
+                    graph_h = self.norm1(graph_h)
+                
+                # Global attention
+                residual = graph_h
+                if self.prenorm:
+                    graph_h = self.norm2(graph_h)
+                
+                graph_h_input = graph_h.unsqueeze(0)  # Add batch dimension
+                graph_h_global, _ = self.global_attn(graph_h_input, graph_h_input, graph_h_input)
+                graph_h_global = graph_h_global.squeeze(0)
+                graph_h = residual + self.dropout(graph_h_global)
+                
+                if not self.prenorm:
+                    graph_h = self.norm2(graph_h)
+                
+                # FFN
+                residual = graph_h
+                if self.prenorm:
+                    graph_h = self.norm3(graph_h)
+                
+                graph_h_ffn = self.ffn(graph_h)
+                graph_h = residual + self.dropout(graph_h_ffn)
+                
+                if not self.prenorm:
+                    graph_h = self.norm3(graph_h)
+                
+                outputs.append(graph_h)
+            
+            # Combine outputs from all graphs
+            h = torch.cat(outputs, dim=0)
         
         return h
 

@@ -32,6 +32,7 @@ class InductiveExperimentConfig:
     freeze_encoder: bool = False
     only_pretrained_experiments: bool = False
     max_train_graphs_for_finetuning: int = 10
+    calculate_silhouette_score: bool = True
     
     # === GRAPH FAMILY GENERATION ===
     n_graphs: int = 50

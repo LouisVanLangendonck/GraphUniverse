@@ -75,8 +75,8 @@ class SSLMultiExperimentConfig:
         self.max_concurrent_families = max_concurrent_families
         self.reuse_families = reuse_families
         self.base_seed = base_seed
-        self.gnn_models = gnn_models or []
-        self.transformer_models = transformer_models or ['graphormer']
+        self.gnn_models = gnn_models or ['sage', 'gcn']
+        self.transformer_models = transformer_models or []
         self.run_transformers = run_transformers
         self.transformer_params = transformer_params or {
             'transformer_num_heads': 8,
@@ -620,25 +620,55 @@ def parse_args():
     
     # === PRETRAINING TASK ===
     parser.add_argument('--pretraining_task', type=str, default='dgi',
-                        choices=['link_prediction', 'dgi', 'graphcl'],
+                        choices=['link_prediction', 'dgi', 'graphmae'],
                         help='Self-supervised pre-training task')
-    # === DGI SPECIFIC PARAMETERS ===
-    parser.add_argument('--corruption_type', type=str, default='feature_shuffle',
-                    choices=['feature_shuffle', 'edge_dropout', 'subgraph'],
-                    help='Corruption type for contrastive learning')
+    # === TASK-SPECIFIC PARAMETERS ===
+    # Link prediction
+    parser.add_argument('--negative_sampling_ratio', type=float, default=1.0,
+                        help='Negative sampling ratio for link prediction')
+    parser.add_argument('--link_pred_loss', type=str, default='bce',
+                        choices=['bce', 'margin'],
+                        help='Loss function for link prediction')
     
-    # === GRAPHCL SPECIFIC PARAMETERS ===
-    parser.add_argument('--augmentation_types', type=str, nargs='+',
-                    default=['edge_dropout', 'feature_dropout', 'subgraph'],
-                    choices=['edge_dropout', 'feature_dropout', 'subgraph'],
-                    help='Types of augmentations to use for GraphCL')
-    parser.add_argument('--num_augmentations', type=int, default=3,
-                    help='Number of augmentations to apply per view in GraphCL')
+    # DGI
+    parser.add_argument('--dgi_corruption_type', type=str, default='edge_dropout',
+                        choices=['feature_shuffle', 'edge_dropout', 'feature_dropout', 'feature_noise', 'edge_perturbation'],
+                        help='Type of corruption for DGI when using feature_noise')
+    parser.add_argument('--dgi_noise_std', type=float, default=0.1,
+                        help='Noise standard deviation for DGI')
+    parser.add_argument('--dgi_perturb_rate', type=float, default=0.1,
+                        help='Perturbation rate for DGI')
+    parser.add_argument('--dgi_corruption_rate', type=float, default=0.2,
+                        help='Corruption rate for DGI')
+    
+    # GraphMAE
+    parser.add_argument('--graphmae_mask_rate', type=float, default=0.5,
+                        help='Mask rate for GraphMAE')
+    parser.add_argument('--graphmae_replace_rate', type=float, default=0.1,
+                        help='Replace rate for GraphMAE')
+    parser.add_argument('--graphmae_gamma', type=float, default=2.0,
+                        help='Gamma for GraphMAE')
+    parser.add_argument('--graphmae_decoder_type', type=str, default='gnn',
+                        choices=['gnn', 'mlp'],
+                        help='Decoder type for GraphMAE')
+    parser.add_argument('--graphmae_decoder_gnn_type', type=str, default='gcn',
+                        choices=['gcn', 'sage'],
+                        help='GNN type for GraphMAE decoder')
+    
+    # Contrastive learning
+    parser.add_argument('--contrastive_temperature', type=float, default=0.07,
+                        help='Temperature for contrastive learning')
+    parser.add_argument('--corruption_type', type=str, default='edge_dropout',
+                        choices=['feature_shuffle', 'edge_dropout'],
+                        help='Type of corruption for contrastive learning')
+    parser.add_argument('--corruption_rate', type=float, default=0.5,
+                        help='Corruption rate for contrastive learning')
+    
     
     # === MODEL SELECTION ===
     parser.add_argument('--gnn_models', type=str, nargs='+', 
                         default=['gcn', 'sage', 'gat'],
-                        choices=['gcn', 'sage', 'gat'],
+                        choices=['gcn', 'sage'],
                         help='GNN models to run')
     parser.add_argument('--skip_gnn', action='store_true',
                         help='Skip running GNN models (only run transformers if specified)')
