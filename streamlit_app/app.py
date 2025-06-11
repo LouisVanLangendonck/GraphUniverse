@@ -73,11 +73,12 @@ from motif_and_role_analysis_integration import add_motif_role_analysis_page
 
 def create_graph_dashboard(graph):
     # Create tabs for different visualizations
-    tab1, tab2, tab3, tab4 = st.tabs([
+    tab1, tab2, tab3, tab4, tab5 = st.tabs([
         "Graph with Communities",
         "Community Distribution",
         "Parameter Analysis",
-        "Feature Analysis"
+        "Feature Analysis",
+        "Triangle Analysis"
     ])
 
     with tab1:
@@ -117,6 +118,69 @@ def create_graph_dashboard(graph):
                     st.subheader("Community-Cluster Assignments")
                     fig = visualize_community_cluster_assignments(graph.universe.feature_generator)
                     st.pyplot(fig)
+
+    with tab5:
+        st.subheader("Triangle Analysis")
+        # Get triangle statistics
+        triangle_stats = graph.analyze_triangles()
+        
+        # Display total triangles
+        st.metric("Total Triangles", triangle_stats['total_triangles'])
+        
+        # Display additional triangles if any were added
+        if triangle_stats['total_additional_triangles'] > 0:
+            st.metric("Additional Triangles", triangle_stats['total_additional_triangles'])
+        
+        # Create a DataFrame for triangles per community
+        triangles_df = pd.DataFrame({
+            'Community': list(triangle_stats['triangles_per_community'].keys()),
+            'Total Triangles': list(triangle_stats['triangles_per_community'].values()),
+            'Additional Triangles': list(triangle_stats['additional_triangles_per_community'].values())
+        })
+        
+        # Display triangles per community
+        st.markdown("##### Triangles per Community")
+        fig, ax = plt.subplots(figsize=(10, 6))
+        
+        # Create stacked bar plot
+        x = np.arange(len(triangles_df))
+        width = 0.35
+        
+        # Plot natural triangles (total - additional)
+        natural_triangles = triangles_df['Total Triangles'] - triangles_df['Additional Triangles']
+        ax.bar(x, natural_triangles, width, label='Natural Triangles', color='lightgreen')
+        
+        # Plot additional triangles on top
+        ax.bar(x, triangles_df['Additional Triangles'], width, 
+               bottom=natural_triangles, label='Additional Triangles', color='lightcoral')
+        
+        ax.set_title("Number of Triangles per Community")
+        ax.set_xlabel("Community ID")
+        ax.set_ylabel("Number of Triangles")
+        ax.set_xticks(x)
+        ax.set_xticklabels(triangles_df['Community'])
+        ax.legend()
+        st.pyplot(fig)
+        
+        # Display correlation with propensities
+        st.markdown("##### Correlation with Triangle Propensities")
+        st.metric("Correlation Coefficient", f"{triangle_stats['triangle_propensity_correlation']:.3f}")
+        
+        # Display triangle propensity comparison plot
+        st.markdown("##### Triangle Propensities vs Actual Counts")
+        st.pyplot(triangle_stats['triangle_propensity_plot'])
+        
+        # Add explanation
+        st.markdown("""
+        This analysis shows:
+        1. The total number of triangles in the graph
+        2. The distribution of triangles across communities
+        3. The correlation between the number of triangles per community and their triangle propensities
+        4. A direct comparison of triangle propensities vs actual triangle counts per community
+        
+        A high correlation indicates that communities with higher triangle propensities tend to form more triangles.
+        The comparison plot helps visualize how well the actual triangle counts match the expected propensities.
+        """)
 
 # def run_metapath_analysis(graph, theta, max_length, allow_loops, allow_backtracking, top_k, min_length):
 #     """Callback function to run metapath analysis"""
@@ -883,6 +947,30 @@ if page == "Universe Creation":
             help="How homogeneous the co-occurrence of communities is"
         )
     
+    # Add triangle parameters
+    st.markdown('<div class="subsection-header">Triangle Parameters</div>', unsafe_allow_html=True)
+    col3, col4 = st.columns(2)
+    
+    with col3:
+        triangle_density = st.slider(
+            "Triangle density",
+            min_value=0.0,
+            max_value=1.0,
+            value=0.0,
+            step=0.1,
+            help="Target density of triangles in the graph"
+        )
+    
+    with col4:
+        triangle_community_relation_homogeneity = st.slider(
+            "Triangle community relation homogeneity",
+            min_value=0.0,
+            max_value=1.0,
+            value=1.0,
+            step=0.1,
+            help="How homogeneous the triangle formation is across communities"
+        )
+    
     # Add degree center method selection
     st.markdown('<div class="subsection-header">Degree Center Configuration</div>', unsafe_allow_html=True)
     degree_center_method = st.selectbox(
@@ -964,6 +1052,8 @@ if page == "Universe Creation":
                 degree_center_method=degree_center_method,  # Add degree center method
                 community_density_variation=community_density_variation,
                 community_cooccurrence_homogeneity=community_cooccurrence_homogeneity,
+                triangle_density=triangle_density,
+                triangle_community_relation_homogeneity=triangle_community_relation_homogeneity,
                 seed=seed
             )
             
@@ -991,6 +1081,41 @@ if page == "Universe Creation":
             ax.set_xlabel('Community')
             ax.set_ylabel('Community')
             st.pyplot(fig)
+            
+            # Plot triangle propensities
+            st.markdown('<div class="subsection-header">Triangle Propensities</div>', unsafe_allow_html=True)
+            fig, ax = plt.subplots(figsize=(10, 6))
+            propensities = universe.community_triangle_propensities
+            communities = range(len(propensities))
+            
+            # Sort by propensity for better visualization
+            sorted_indices = np.argsort(propensities)
+            sorted_propensities = propensities[sorted_indices]
+            sorted_communities = np.array(communities)[sorted_indices]
+            
+            ax.bar(range(len(sorted_communities)), sorted_propensities, color='skyblue')
+            ax.set_xlabel('Community ID')
+            ax.set_ylabel('Triangle Propensity')
+            ax.set_title('Community Triangle Propensities')
+            ax.set_xticks(range(len(sorted_communities)))
+            ax.set_xticklabels(sorted_communities)
+            
+            # Add mean propensity line
+            mean_propensity = np.mean(propensities)
+            ax.axhline(y=mean_propensity, color='red', linestyle='--', 
+                      label=f'Mean: {mean_propensity:.3f}')
+            ax.legend()
+            
+            plt.tight_layout()
+            st.pyplot(fig)
+            
+            # Add explanation
+            st.markdown("""
+            The triangle propensities show how likely each community is to form triangles:
+            - Higher values indicate communities that are more likely to form triangles
+            - The red dashed line shows the mean propensity across all communities
+            - Communities are sorted by propensity for better visualization
+            """)
             
             # Plot degree centers
             st.markdown('<div class="subsection-header">Degree Centers</div>', unsafe_allow_html=True)
@@ -1348,7 +1473,6 @@ elif page == "Graph Sampling":
                     degree_distribution=degree_distribution,
                     power_law_exponent=power_law_exponent,
                     target_avg_degree=st.session_state.graph_params['method_params'].get('target_avg_degree', None),  # Add placeholder for target_avg_degree
-                    triangle_enhancement=st.session_state.graph_params['method_params'].get('triangle_enhancement', 0.0),
                     max_mean_community_deviation=st.session_state.graph_params['max_mean_community_deviation'],
                     max_max_community_deviation=st.session_state.graph_params['max_max_community_deviation'],
                     max_parameter_search_attempts=st.session_state.graph_params['max_parameter_search_attempts'],
@@ -1388,6 +1512,70 @@ elif page == "Graph Sampling":
                 # Add DCCC-SBM specific visualizations if applicable
                 if st.session_state.graph_params['method'] == "DCCC-SBM":
                     add_dccc_visualization_to_app(graph)
+                
+                # Add triangle analysis
+                st.markdown('<div class="subsection-header">Triangle Analysis</div>', unsafe_allow_html=True)
+                
+                # Get triangle statistics
+                triangle_stats = graph.analyze_triangles()
+                
+                # Display total triangles
+                st.metric("Total Triangles", triangle_stats['total_triangles'])
+                
+                # Display additional triangles if any were added
+                if triangle_stats['total_additional_triangles'] > 0:
+                    st.metric("Additional Triangles", triangle_stats['total_additional_triangles'])
+                
+                # Create a DataFrame for triangles per community
+                triangles_df = pd.DataFrame({
+                    'Community': list(triangle_stats['triangles_per_community'].keys()),
+                    'Total Triangles': list(triangle_stats['triangles_per_community'].values()),
+                    'Additional Triangles': list(triangle_stats['additional_triangles_per_community'].values())
+                })
+                
+                # Display triangles per community
+                st.markdown("##### Triangles per Community")
+                fig, ax = plt.subplots(figsize=(10, 6))
+                
+                # Create stacked bar plot
+                x = np.arange(len(triangles_df))
+                width = 0.35
+                
+                # Plot natural triangles (total - additional)
+                natural_triangles = triangles_df['Total Triangles'] - triangles_df['Additional Triangles']
+                ax.bar(x, natural_triangles, width, label='Natural Triangles', color='lightgreen')
+                
+                # Plot additional triangles on top
+                ax.bar(x, triangles_df['Additional Triangles'], width, 
+                       bottom=natural_triangles, label='Additional Triangles', color='lightcoral')
+                
+                ax.set_title("Number of Triangles per Community")
+                ax.set_xlabel("Community ID")
+                ax.set_ylabel("Number of Triangles")
+                ax.set_xticks(x)
+                ax.set_xticklabels(triangles_df['Community'])
+                ax.legend()
+                st.pyplot(fig)
+                
+                # Display correlation with propensities
+                st.markdown("##### Correlation with Triangle Propensities")
+                st.metric("Correlation Coefficient", f"{triangle_stats['triangle_propensity_correlation']:.3f}")
+                
+                # Display triangle propensity comparison plot
+                st.markdown("##### Triangle Propensities vs Actual Counts")
+                st.pyplot(triangle_stats['triangle_propensity_plot'])
+                
+                # Add explanation
+                st.markdown("""
+                This analysis shows:
+                1. The total number of triangles in the graph
+                2. The distribution of triangles across communities
+                3. The correlation between the number of triangles per community and their triangle propensities
+                4. A direct comparison of triangle propensities vs actual triangle counts per community
+                
+                A high correlation indicates that communities with higher triangle propensities tend to form more triangles.
+                The comparison plot helps visualize how well the actual triangle counts match the expected propensities.
+                """)
                 
                 # Add community connection analysis
                 st.markdown('<div class="subsection-header">Community Connection Analysis</div>', unsafe_allow_html=True)
@@ -1432,7 +1620,7 @@ elif page == "Graph Sampling":
                 )
                 
                 # Display signals in columns
-                col1, col2, col3 = st.columns(3)
+                col1, col2, col3, col4 = st.columns(4)
                 
                 with col1:
                     st.metric("Structure Signal", f"{signals['mean_structure_signal']:.3f}")
@@ -1450,6 +1638,10 @@ elif page == "Graph Sampling":
                 with col3:
                     st.metric("Degree Signal", f"{signals['degree_signal']:.3f}")
                     st.caption("Using Naive Bayes classification")
+                
+                with col4:
+                    st.metric("Triangle Signal", f"{signals['triangle_signal']:.3f}")
+                    st.caption("Using triangle community signal")
                 
                 # Display summary statistics
                 st.markdown("#### Signal Summary")
@@ -2228,6 +2420,8 @@ elif page == "Graph Family Analysis":
             <li><b>Cross-Graph Similarity</b>: How similar community patterns are across graphs in the family</li>
             <li><b>Generation Fidelity</b>: How well graphs match their intended generation targets</li>
             <li><b>Degree Consistency</b>: How well node degrees correlate with universe degree centers</li>
+            <li><b>Triangle Consistency</b>: How well triangle patterns are preserved across the family</li>
+            <li><b>Co-occurrence Consistency</b>: How well community co-occurrence patterns are preserved</li>
         </ul>
         </div>
         """, unsafe_allow_html=True)
@@ -2342,8 +2536,10 @@ elif page == "Graph Family Analysis":
                 st.markdown("#### Quick Metrics Overview")
                 
                 metrics_data = []
-                metric_names = ['Pattern Preservation', 'Generation Fidelity', 'Degree Consistency']
-                metric_keys = ['pattern_preservation', 'generation_fidelity', 'degree_consistency']
+                metric_names = ['Pattern Preservation', 'Generation Fidelity', 'Degree Consistency', 
+                                'Triangle Consistency', 'Co-occurrence Consistency']
+                metric_keys = ['pattern_preservation', 'generation_fidelity', 'degree_consistency',
+                               'triangle_consistency', 'cooccurrence_consistency']
                 
                 for name, key in zip(metric_names, metric_keys):
                     if key in results and 'score' in results[key]:

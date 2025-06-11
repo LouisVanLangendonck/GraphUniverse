@@ -174,6 +174,10 @@ class GraphUniverse:
         community_density_variation: float = 0.0,      # 0-1: amount of density variation
         # Community co-occurrence homogeneity
         community_cooccurrence_homogeneity: float = 1.0,  # 0-1: how homogeneous the co-occurrence of communities is
+
+        # Triangle density parameters
+        triangle_density: float = 0.0,
+        triangle_community_relation_homogeneity: float = 1.0,
     ):
         """
         Initialize a graph universe with K communities and optional feature generation.
@@ -266,6 +270,13 @@ class GraphUniverse:
         # Generate community co-occurrence matrix
         self.community_cooccurrence_homogeneity = community_cooccurrence_homogeneity
         self.community_cooccurrence_matrix = self._generate_cooccurrence_matrix(K, community_cooccurrence_homogeneity, seed)
+
+        # Triangle density parameters
+        self.triangle_density = triangle_density
+        self.triangle_community_relation_homogeneity = triangle_community_relation_homogeneity
+
+        # Generate community triangle propensities
+        self.community_triangle_propensities = self._generate_community_triangle_propensities()
 
     def _generate_probability_matrix(
         self, 
@@ -395,116 +406,6 @@ class GraphUniverse:
             
         return similarity
     
-    # def sample_community_subset(
-    #     self, 
-    #     size: int, 
-    #     method: str = "random",
-    #     similarity_bias: float = 0.0,
-    #     existing_communities: Optional[List[int]] = None
-    # ) -> List[int]:
-    #     """
-    #     Sample a subset of communities from the universe.
-        
-    #     Args:
-    #         size: Number of communities to sample
-    #         method: Sampling method ("random", "similar", "diverse", "correlated")
-    #         similarity_bias: Controls bias towards similar communities (positive) or diverse (negative)
-    #         existing_communities: For transfer learning, optionally condition on existing communities
-            
-    #     Returns:
-    #         List of sampled community indices
-    #     """
-    #     size = min(size, self.K)  # Ensure we don't sample more than available
-        
-    #     if method == "random":
-    #         # Simple random sampling
-    #         return np.random.choice(self.K, size=size, replace=False).tolist()
-            
-    #     elif method == "similar" or method == "diverse":
-    #         # Sample based on similarity in the probability matrix
-    #         if existing_communities is None:
-    #             # Start with a random community
-    #             communities = [np.random.choice(self.K)]
-    #             remaining = set(range(self.K)) - set(communities)
-    #         else:
-    #             # Start with specified communities
-    #             communities = list(existing_communities)
-    #             remaining = set(range(self.K)) - set(communities)
-            
-    #         # Compute similarities based on probability patterns
-    #         while len(communities) < size and remaining:
-    #             # Compute average similarity to existing communities
-    #             similarities = np.zeros(self.K)
-    #             for k in remaining:
-    #                 for c in communities:
-    #                     row_sim = np.corrcoef(self.P[k, :], self.P[c, :])[0, 1]
-    #                     col_sim = np.corrcoef(self.P[:, k], self.P[:, c])[0, 1]
-    #                     similarities[k] += (row_sim + col_sim) / 2
-                    
-    #                 similarities[k] /= len(communities)
-                
-    #             # Zero out communities already selected
-    #             similarities[communities] = -np.inf
-                
-    #             # For diverse sampling, invert similarities
-    #             if method == "diverse":
-    #                 similarities = -similarities
-                
-    #             # Apply similarity bias
-    #             if similarity_bias != 0:
-    #                 probs = np.exp(similarity_bias * similarities)
-    #                 probs[communities] = 0
-    #                 probs = probs / probs.sum()
-    #                 next_community = np.random.choice(self.K, p=probs)
-    #             else:
-    #                 # Just pick the most similar/diverse
-    #                 next_community = np.argmax(similarities)
-                
-    #             # Only remove if the community is in the remaining set
-    #             if next_community in remaining:
-    #                 communities.append(next_community)
-    #                 remaining.remove(next_community)
-    #             else:
-    #                 # If not in remaining, try to find another community
-    #                 remaining_list = list(remaining)
-    #                 if remaining_list:
-    #                     next_community = np.random.choice(remaining_list)
-    #                     communities.append(next_community)
-    #                     remaining.remove(next_community)
-        
-    #     elif method == "correlated":
-    #         # Use the co-membership matrix to generate correlated samples
-    #         if existing_communities is None:
-    #             first = np.random.choice(self.K)
-    #             communities = [first]
-    #         else:
-    #             communities = list(existing_communities)
-                
-    #         while len(communities) < size:
-    #             # Compute sampling probabilities based on co-membership
-    #             co_probs = np.zeros(self.K)
-    #             for c in communities:
-    #                 co_probs += self.community_co_membership[c, :]
-                
-    #             # Zero out already selected communities
-    #             co_probs[communities] = 0
-                
-    #             # Normalize to get probabilities
-    #             if co_probs.sum() > 0:
-    #                 co_probs = co_probs / co_probs.sum()
-    #                 next_community = np.random.choice(self.K, p=co_probs)
-    #             else:
-    #                 # If all co-probabilities are zero, sample randomly from remaining
-    #                 remaining = list(set(range(self.K)) - set(communities))
-    #                 next_community = np.random.choice(remaining)
-                
-    #             communities.append(next_community)
-                
-    #         return communities
-        
-    #     else:
-    #         raise ValueError(f"Unknown sampling method: {method}")
-            
     def sample_connected_community_subset(
         self,
         size: int,
@@ -668,6 +569,18 @@ class GraphUniverse:
         
         return matrix
 
+    def _generate_community_triangle_propensities(self) -> np.ndarray:
+        """Generate triangle propensity for each community."""
+        if self.triangle_community_relation_homogeneity == 1.0:
+            # Homogeneous: all communities equally likely
+            return np.ones(self.K)
+        else:
+            # Heterogeneous: some communities much more triangle-prone
+            # Use Dirichlet to create skewed distribution
+            alpha = self.triangle_community_relation_homogeneity * 10 + 0.1
+            propensities = np.random.dirichlet(np.ones(self.K) * alpha) * self.K
+            return propensities
+    
 class GraphSample:
     """
     Represents a single graph instance sampled from the GraphUniverse.
@@ -691,7 +604,6 @@ class GraphSample:
         degree_distribution: str,
         power_law_exponent: Optional[float],
         target_avg_degree: Optional[float],
-        triangle_enhancement: float,
         max_mean_community_deviation: float,
         max_max_community_deviation: float,
         max_parameter_search_attempts: int,
@@ -753,7 +665,6 @@ class GraphSample:
         self.degree_distribution = degree_distribution
         self.power_law_exponent = power_law_exponent
         self.target_avg_degree = target_avg_degree
-        self.triangle_enhancement = triangle_enhancement
 
         # Store community deviation parameters as instance attributes
         self.max_mean_community_deviation = max_mean_community_deviation
@@ -917,6 +828,12 @@ class GraphSample:
                 edge_noise
             )
         self.timing_info['edge_generation'] = time.time() - start
+
+        # Time: Generate triangles
+        if self.universe.triangle_density > 0:
+            start = time.time()
+            self._enhance_triangles()
+            self.timing_info['triangle_enhancement'] = time.time() - start
 
         # Create initial NetworkX graph
         temp_graph = nx.from_scipy_sparse_array(self.adjacency)
@@ -1800,26 +1717,7 @@ class GraphSample:
             else:
                 sampling_probs = sampling_probs / total_prob
             
-            # Apply triangle enhancement if specified
-            if self.triangle_enhancement > 0 and edges:
-                triangle_boost = np.zeros(len(target_degrees))
-                for edge in edges:
-                    if edge[0] == node_i:
-                        for other_edge in edges:
-                            if other_edge[0] == edge[1]:
-                                triangle_boost[other_edge[1]] += self.triangle_enhancement
-                            elif other_edge[1] == edge[1]:
-                                triangle_boost[other_edge[0]] += self.triangle_enhancement
-                    elif edge[1] == node_i:
-                        for other_edge in edges:
-                            if other_edge[0] == edge[0]:
-                                triangle_boost[other_edge[1]] += self.triangle_enhancement
-                            elif other_edge[1] == edge[0]:
-                                triangle_boost[other_edge[0]] += self.triangle_enhancement
-                
-                sampling_probs *= (1 + triangle_boost)
-                sampling_probs = sampling_probs / np.sum(sampling_probs)
-            
+           
             # Sample partner node
             node_j = np.random.choice(len(target_degrees), p=sampling_probs)
             
@@ -1857,6 +1755,83 @@ class GraphSample:
             return adj
         
         return None
+
+    def _enhance_triangles(self) -> None:
+        """Enhance triangle formation through probabilistic edge addition."""
+        if self.universe.triangle_density == 0:
+            return
+        
+        # Store initial adjacency matrix before triangle enhancement
+        self.initial_adjacency = self.adjacency.copy()
+        
+        # Get community triangle propensities for our communities
+        community_propensities = np.array([
+            self.universe.community_triangle_propensities[comm_id] 
+            for comm_id in self.communities
+        ])
+        
+        # Simple probabilistic triangle enhancement
+        self._add_triangles_probabilistically(community_propensities)
+
+    def _add_triangles_probabilistically(self, community_propensities: np.ndarray) -> None:
+        """Add triangles through simple probabilistic process."""
+        
+        # Convert to dense for easier manipulation
+        adj_dense = self.adjacency.toarray()
+        n_nodes = len(self.community_labels)
+        
+        # For each potential triangle (i, j, k)
+        for i in range(n_nodes):
+            for j in range(i + 1, n_nodes):
+                for k in range(j + 1, n_nodes):
+                    
+                    # Skip if triangle already exists
+                    edges_exist = (adj_dense[i, j] + adj_dense[j, k] + adj_dense[i, k])
+                    if edges_exist == 3:
+                        continue  # Triangle already complete
+                    
+                    if edges_exist >= 2:  # 2-path exists, can close triangle
+                        
+                        # Calculate triangle probability based on communities involved
+                        comm_i = self.community_labels[i]
+                        comm_j = self.community_labels[j]
+                        comm_k = self.community_labels[k]
+                        
+                        # Average triangle propensity of involved communities
+                        avg_propensity = np.mean([
+                            community_propensities[comm_i],
+                            community_propensities[comm_j], 
+                            community_propensities[comm_k]
+                        ])
+                        
+                        # Triangle formation probability
+                        triangle_prob = self.universe.triangle_density * avg_propensity / len(self.communities)
+                        
+                        # Add missing edge(s) with this probability
+                        if np.random.random() < triangle_prob:
+                            
+                            # Add the missing edge(s) to complete triangle
+                            if adj_dense[i, j] == 0:
+                                if self._should_connect_communities(comm_i, comm_j):
+                                    adj_dense[i, j] = adj_dense[j, i] = 1
+                            
+                            if adj_dense[j, k] == 0:
+                                if self._should_connect_communities(comm_j, comm_k):
+                                    adj_dense[j, k] = adj_dense[k, j] = 1
+                            
+                            if adj_dense[i, k] == 0:
+                                if self._should_connect_communities(comm_i, comm_k):
+                                    adj_dense[i, k] = adj_dense[k, i] = 1
+        
+        # Convert back to sparse
+        self.adjacency = sp.csr_matrix(adj_dense)
+
+    def _should_connect_communities(self, comm_a: int, comm_b: int) -> bool:
+        """Simple check if communities should be connected."""
+        # Use P_sub probability as a guide
+
+        # Set as threshold for connection probability, the average connection probability in the 
+        return self.P_sub[comm_a, comm_b] > 0.01
 
     def analyze_community_connections(self) -> Dict[str, Any]:
         """
@@ -2396,6 +2371,26 @@ class GraphSample:
         else:
             raise ValueError(f"Unknown degree classification method: {method}")
 
+    def calculate_triangle_community_signal(self) -> float:
+        """Measure correlation between community and triangle participation."""
+        triangle_counts = []
+        community_labels = []
+        
+        for node in self.graph.nodes():
+            # Count triangles involving this node
+            triangles = 0
+            neighbors = list(self.graph.neighbors(node))
+            for i, neighbor1 in enumerate(neighbors):
+                for neighbor2 in neighbors[i+1:]:
+                    if self.graph.has_edge(neighbor1, neighbor2):
+                        triangles += 1
+            
+            triangle_counts.append(triangles)
+            community_labels.append(self.community_labels[node])
+        
+        # Correlation between community and triangle participation
+        return np.corrcoef(community_labels, triangle_counts)[0, 1]
+
     def calculate_community_signals(self,
                                 structure_metric: str = 'kl',
                                 degree_method: str = "naive_bayes",
@@ -2455,6 +2450,14 @@ class GraphSample:
             warnings.warn(f"Failed to calculate degree signal: {e}")
             signals['degree_signal'] = 0.0
         
+        # Triangle signal
+        try:
+            triangle_signal = self.calculate_triangle_community_signal()
+            signals['triangle_signal'] = triangle_signal
+        except Exception as e:
+            warnings.warn(f"Failed to calculate triangle signal: {e}")
+            signals['triangle_signal'] = 0.0
+
         # Calculate summary statistics (excluding None values)
         valid_signals = [v for v in [signals.get('feature_signal'), signals.get('degree_signal')] if v is not None]
         if valid_signals:
@@ -2468,6 +2471,7 @@ class GraphSample:
             'structure_metric': structure_metric,
             'degree_method': degree_method,
             'degree_metric': degree_metric,
+            'triangle_signal': triangle_signal,
             'cv_folds': cv_folds
         }
         
@@ -2561,3 +2565,100 @@ class GraphSample:
         # Update node attributes in the graph
         for i in range(self.n_nodes):
             self.graph.nodes[i]['features'] = self.features[i].tolist()
+
+    def analyze_triangles(self) -> Dict[str, Any]:
+        """Analyze triangles in the graph.
+        
+        Returns:
+            Dict containing:
+            - total_triangles: Total number of triangles in the graph
+            - triangles_per_community: Dict mapping community ID to number of triangles
+            - additional_triangles_per_community: Dict mapping community ID to number of additionally created triangles
+            - triangle_propensity_correlation: Correlation between community triangle counts and propensities
+            - triangle_propensity_plot: Figure showing triangle propensities vs actual counts
+        """
+        # Convert to dense for easier manipulation
+        adj_dense = self.adjacency.toarray()
+        n_nodes = len(self.community_labels)
+        
+        # Count triangles per community (using universe community IDs)
+        triangles_per_community = {comm: 0 for comm in self.communities}
+        additional_triangles_per_community = {comm: 0 for comm in self.communities}
+        total_triangles = 0
+        total_additional_triangles = 0
+        
+        # For each potential triangle (i, j, k)
+        for i in range(n_nodes):
+            for j in range(i + 1, n_nodes):
+                for k in range(j + 1, n_nodes):
+                    # Check if triangle exists in final graph
+                    if adj_dense[i, j] and adj_dense[j, k] and adj_dense[i, k]:
+                        total_triangles += 1
+                        
+                        # Get communities involved (using universe community IDs)
+                        comm_i = self.community_labels_universe_level[i]
+                        comm_j = self.community_labels_universe_level[j]
+                        comm_k = self.community_labels_universe_level[k]
+                        
+                        # Count triangle for each community involved
+                        triangles_per_community[comm_i] += 1
+                        triangles_per_community[comm_j] += 1
+                        triangles_per_community[comm_k] += 1
+                        
+                        # Check if this was an additional triangle
+                        if hasattr(self, 'initial_adjacency'):
+                            initial_adj_dense = self.initial_adjacency.toarray()
+                            if not (initial_adj_dense[i, j] and initial_adj_dense[j, k] and initial_adj_dense[i, k]):
+                                total_additional_triangles += 1
+                                additional_triangles_per_community[comm_i] += 1
+                                additional_triangles_per_community[comm_j] += 1
+                                additional_triangles_per_community[comm_k] += 1
+        
+        # Get community propensities for our communities
+        community_propensities = np.array([
+            self.universe.community_triangle_propensities[comm_id] 
+            for comm_id in self.communities
+        ])
+        
+        # Calculate correlation between triangle counts and propensities
+        triangle_counts = np.array([triangles_per_community[comm] for comm in self.communities])
+        correlation = np.corrcoef(triangle_counts, community_propensities)[0, 1]
+        
+        # Create plot comparing propensities with actual counts
+        fig, ax = plt.subplots(figsize=(10, 6))
+        
+        # Sort communities by propensity for better visualization
+        sorted_indices = np.argsort(community_propensities)
+        sorted_propensities = community_propensities[sorted_indices]
+        sorted_counts = triangle_counts[sorted_indices]
+        sorted_communities = np.array(self.communities)[sorted_indices]
+        
+        # Plot propensities and counts
+        x = np.arange(len(sorted_communities))
+        width = 0.35
+        
+        ax.bar(x - width/2, sorted_propensities, width, label='Triangle Propensity', color='skyblue')
+        ax.bar(x + width/2, sorted_counts, width, label='Actual Triangle Count', color='lightcoral')
+        
+        ax.set_xlabel('Community ID')
+        ax.set_ylabel('Value')
+        ax.set_title('Triangle Propensities vs Actual Triangle Counts')
+        ax.set_xticks(x)
+        ax.set_xticklabels(sorted_communities)
+        ax.legend()
+        
+        # Add correlation coefficient as text
+        ax.text(0.02, 0.98, f'Correlation: {correlation:.3f}',
+                transform=ax.transAxes, verticalalignment='top',
+                bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+        
+        plt.tight_layout()
+        
+        return {
+            "total_triangles": total_triangles,
+            "total_additional_triangles": total_additional_triangles,
+            "triangles_per_community": triangles_per_community,
+            "additional_triangles_per_community": additional_triangles_per_community,
+            "triangle_propensity_correlation": correlation,
+            "triangle_propensity_plot": fig
+        }

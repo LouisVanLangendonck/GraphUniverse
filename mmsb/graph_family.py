@@ -55,11 +55,13 @@ class GraphFamilyGenerator:
         exponential_rate_range: Tuple[float, float] = (0.3, 1.0),
         uniform_min_factor_range: Tuple[float, float] = (0.3, 0.7),
         uniform_max_factor_range: Tuple[float, float] = (1.3, 2.0),
+        # Triangle density parameters
+        triangle_density: float = 0.0,
+        triangle_community_relation_homogeneity: float = 1.0,
         # Fixed parameters for all graphs in family
         degree_heterogeneity: float = 0.5,
         edge_noise: float = 0.1,
         target_avg_degree: Optional[float] = None,
-        triangle_enhancement: float = 0.0,
         max_parameter_search_attempts: int = 20,
         parameter_search_range: float = 0.5,
         max_retries: int = 5,
@@ -95,7 +97,6 @@ class GraphFamilyGenerator:
             degree_heterogeneity: Fixed degree heterogeneity for all graphs
             edge_noise: Fixed edge noise level for all graphs
             target_avg_degree: Target average degree
-            triangle_enhancement: Triangle formation enhancement
             max_parameter_search_attempts: Max attempts for parameter search
             parameter_search_range: Range for parameter search
             max_retries: Maximum retries for graph generation
@@ -119,6 +120,11 @@ class GraphFamilyGenerator:
         self.community_density_variation = community_density_variation
         # Community co-occurrence homogeneity
         self.community_cooccurrence_homogeneity = community_cooccurrence_homogeneity
+        # Triangle density
+        self.triangle_density = triangle_density
+        # Triangle community relation homogeneity
+        self.triangle_community_relation_homogeneity = triangle_community_relation_homogeneity
+
         # Deviation limiting
         self.disable_deviation_limiting = disable_deviation_limiting
         self.max_mean_community_deviation = max_mean_community_deviation
@@ -136,7 +142,6 @@ class GraphFamilyGenerator:
         self.degree_heterogeneity = degree_heterogeneity
         self.edge_noise = edge_noise
         self.target_avg_degree = target_avg_degree
-        self.triangle_enhancement = triangle_enhancement
         self.max_parameter_search_attempts = max_parameter_search_attempts
         self.parameter_search_range = parameter_search_range
         self.max_retries = max_retries
@@ -339,6 +344,8 @@ class GraphFamilyGenerator:
                 try:
                     # Sample parameters for this graph
                     params = self._sample_graph_parameters()
+
+                    print("Disable Deviation limiting: ", self.disable_deviation_limiting)
                     
                     # Create graph sample
                     graph_sample = GraphSample(
@@ -355,7 +362,6 @@ class GraphFamilyGenerator:
                         degree_distribution=self.degree_distribution,
                         power_law_exponent=params.get('power_law_exponent', None),
                         target_avg_degree=self.target_avg_degree,
-                        triangle_enhancement=self.triangle_enhancement,
                         max_mean_community_deviation=self.max_mean_community_deviation,
                         max_max_community_deviation=self.max_max_community_deviation,
                         max_parameter_search_attempts=self.max_parameter_search_attempts,
@@ -367,7 +373,7 @@ class GraphFamilyGenerator:
                         degree_separation=params.get('degree_separation', 0.5),
                         dccc_global_degree_params=params.get('dccc_global_degree_params', {}),
                         degree_method=self.degree_method,
-                        disable_deviation_limiting=self.disable_deviation_limiting
+                        disable_deviation_limiting=self.disable_deviation_limiting,
                     )
                     
                     # Store graph and metadata
@@ -665,7 +671,35 @@ class FamilyConsistencyAnalyzer:
         except Exception as e:
             results['degree_consistency'] = {'error': str(e)}
         
-        # 4. Overall consistency (weighted average of successful metrics)
+        # 4. Triangle consistency
+        try:
+            triangle_analysis = self.calculate_triangle_signal_strength()
+            if 'triangle_signal_strength' in triangle_analysis:
+                results['triangle_consistency'] = {
+                    'score': triangle_analysis['triangle_signal_strength'],
+                    'mean_correlation': triangle_analysis['mean_correlation'],
+                    'mean_triangle_density': triangle_analysis['mean_triangle_density'],
+                    'std': triangle_analysis['std_correlation'],
+                    'interpretation': self._interpret_score(triangle_analysis['triangle_signal_strength'], 'triangle'),
+                    'description': 'How well triangle patterns are preserved across the family'
+                }
+        except Exception as e:
+            results['triangle_consistency'] = {'error': str(e)}
+        
+        # 5. Co-occurrence consistency
+        try:
+            cooccurrence_analysis = self.analyze_cooccurrence()
+            if 'correlation' in cooccurrence_analysis:
+                results['cooccurrence_consistency'] = {
+                    'score': cooccurrence_analysis['correlation'],
+                    'difference_matrix': cooccurrence_analysis['difference_matrix'],
+                    'interpretation': self._interpret_score(cooccurrence_analysis['correlation'], 'cooccurrence'),
+                    'description': 'How well community co-occurrence patterns are preserved'
+                }
+        except Exception as e:
+            results['cooccurrence_consistency'] = {'error': str(e)}
+        
+        # 6. Overall consistency (weighted average of successful metrics)
         try:
             overall_score = self._calculate_overall_consistency(results)
             results['overall'] = {
@@ -676,7 +710,7 @@ class FamilyConsistencyAnalyzer:
         except Exception as e:
             results['overall'] = {'error': str(e)}
         
-        # 5. Community coverage analysis
+        # 7. Community coverage analysis
         try:
             results['community_coverage'] = self._analyze_community_coverage()
         except Exception as e:
@@ -796,6 +830,58 @@ class FamilyConsistencyAnalyzer:
         
         return np.mean(consistency_scores), consistency_scores
     
+    def calculate_triangle_signal_strength(self) -> Dict[str, Any]:
+        """
+        Calculate triangle signal strength for the graph family.
+        
+        Returns:
+            Dictionary with triangle signal strength score and basic metrics
+        """
+        if not self.family_graphs:
+            return {"error": "No graphs in family"}
+        
+        correlations = []
+        triangle_densities = []
+        
+        for graph in self.family_graphs:
+            try:
+                # Get triangle analysis
+                triangle_analysis = graph.analyze_triangles()
+                
+                # Store correlation if valid
+                correlation = triangle_analysis.get("triangle_propensity_correlation", 0.0)
+                if not np.isnan(correlation):
+                    correlations.append(correlation)
+                
+                # Calculate triangle density
+                total_triangles = triangle_analysis.get("total_triangles", 0)
+                n_nodes = graph.n_nodes
+                max_possible = n_nodes * (n_nodes - 1) * (n_nodes - 2) // 6 if n_nodes >= 3 else 1
+                triangle_density = total_triangles / max_possible
+                triangle_densities.append(triangle_density)
+                
+            except Exception:
+                continue
+        
+        if not correlations or not triangle_densities:
+            return {"error": "No valid triangle data"}
+        
+        # Calculate main score: average correlation weighted by triangle presence
+        mean_correlation = np.mean(correlations)
+        mean_density = np.mean(triangle_densities)
+        
+        # Triangle signal strength = correlation quality * density presence
+        density_factor = min(1.0, mean_density * 1000)  # Scale up small densities
+        triangle_signal_strength = max(0.0, mean_correlation) * density_factor
+        
+        return {
+            "triangle_signal_strength": float(triangle_signal_strength),
+            "mean_correlation": float(mean_correlation),
+            "mean_triangle_density": float(mean_density),
+            "std_correlation": float(np.std(correlations)),
+            "n_graphs": len(correlations)
+        }
+
     def _calculate_overall_consistency(self, results: Dict) -> float:
         """Calculate weighted average of all successful consistency metrics."""
         scores = []
@@ -803,9 +889,11 @@ class FamilyConsistencyAnalyzer:
         
         # Define weights for different metrics
         metric_weights = {
-            'pattern_preservation': 0.4,
-            'generation_fidelity': 0.4,
-            'degree_consistency': 0.2
+            'pattern_preservation': 0.3,
+            'generation_fidelity': 0.3,
+            'degree_consistency': 0.15,
+            'triangle_consistency': 0.15,
+            'cooccurrence_consistency': 0.1
         }
         
         for metric, weight in metric_weights.items():
@@ -885,6 +973,20 @@ class FamilyConsistencyAnalyzer:
                 0.4: "Weak degree-community relationship - limited correlation with centers",
                 0.2: "Very weak degree-community relationship - little correlation with centers",
                 0.0: "No degree-community relationship - no correlation with centers"
+            },
+            'triangle': {
+                0.8: "Strong triangle pattern preservation - triangle structures well maintained",
+                0.6: "Good triangle pattern preservation - triangle structures mostly maintained",
+                0.4: "Moderate triangle pattern preservation - some triangle patterns preserved",
+                0.2: "Weak triangle pattern preservation - limited triangle pattern preservation",
+                0.0: "Very weak triangle pattern preservation - little triangle structure preserved"
+            },
+            'cooccurrence': {
+                0.8: "Strong co-occurrence pattern preservation - community relationships well maintained",
+                0.6: "Good co-occurrence pattern preservation - community relationships mostly maintained",
+                0.4: "Moderate co-occurrence pattern preservation - some community relationships preserved",
+                0.2: "Weak co-occurrence pattern preservation - limited community relationship preservation",
+                0.0: "Very weak co-occurrence pattern preservation - little community relationship preserved"
             },
             'overall': {
                 0.8: "High overall consistency - family preserves universe structure well",
@@ -984,7 +1086,7 @@ class FamilyConsistencyAnalyzer:
         fig = plt.figure(figsize=figsize)
         
         # Create grid layout
-        gs = fig.add_gridspec(3, 2, hspace=0.3, wspace=0.3)
+        gs = fig.add_gridspec(4, 2, hspace=0.3, wspace=0.3)
         
         # 1. Overall consistency scores (top left)
         ax1 = fig.add_subplot(gs[0, 0])
@@ -1009,6 +1111,14 @@ class FamilyConsistencyAnalyzer:
         # 6. Degree consistency details (bottom right)
         ax6 = fig.add_subplot(gs[2, 1])
         self._plot_individual_scores(ax6, 'degree_consistency', 'Degree Consistency')
+        
+        # 7. Triangle consistency details (bottom left)
+        ax7 = fig.add_subplot(gs[3, 0])
+        self._plot_individual_scores(ax7, 'triangle_consistency', 'Triangle Consistency')
+        
+        # 8. Co-occurrence consistency details (bottom right)
+        ax8 = fig.add_subplot(gs[3, 1])
+        self._plot_individual_scores(ax8, 'cooccurrence_consistency', 'Co-occurrence Consistency')
         
         plt.suptitle('Graph Family Consistency Analysis Dashboard', fontsize=16, fontweight='bold')
         
