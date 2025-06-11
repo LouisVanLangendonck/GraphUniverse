@@ -223,6 +223,7 @@ def create_config_from_args(args) -> InductiveExperimentConfig:
         calculate_silhouette_score=args.calculate_silhouette_score,
         only_pretrained_experiments=args.only_pretrained_experiments,
         max_train_graphs_for_finetuning=getattr(args, 'max_train_graphs_for_finetuning', 2),
+        minimum_train_graphs_to_cover_k=True,
 
         # === TASKS ===
         tasks=args.tasks,

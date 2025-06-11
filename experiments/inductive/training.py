@@ -1037,7 +1037,7 @@ def train_and_evaluate_inductive(
     optimize_hyperparams: bool = False,
     experiment_name: Optional[str] = None,
     run_id: Optional[int] = None, 
-    finetuning: Optional[bool] = False
+    finetuning: Optional[bool] = False,
 ) -> Dict[str, Any]:
     """Complete training and evaluation pipeline for inductive learning."""
     
@@ -1317,7 +1317,7 @@ def train_and_evaluate_inductive(
                     elif gnn_type in ["gcn", "sage", "gat", "gin"]:
                         residual = trial.suggest_categorical('residual', [True, False])
                         norm_type = trial.suggest_categorical('norm_type', ['none', 'layer'])
-                        if gnn_type == "sage":
+                        if gnn_type in ["sage", "gcn"]:
                             agg_type = trial.suggest_categorical('agg_type', ['mean', 'max', 'sum'])
                     
                     # Create GNN model with all parameters
@@ -1748,7 +1748,7 @@ def train_and_evaluate_inductive(
         config=config,
         task=task,
         device=device,
-        finetuning=finetuning
+        finetuning=finetuning,
     )
     
     # Combine results

@@ -596,7 +596,7 @@ class GraphSample:
     Represents a single graph instance sampled from the GraphUniverse.
     
     This modified version implements both standard DC-SBM and the new
-    Distribution-Community-Coupled Corrected SBM (DCCC-SBM).
+    Degree-Community-Coupled Corrected SBM (DCCC-SBM).
     """
     
     def __init__(

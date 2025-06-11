@@ -377,6 +377,65 @@ class PreTrainedModelSaver:
         all_models = self.list_models()
         return [model for model in all_models if model.get('family_id') == family_id]
 
+def select_graphs_for_maximum_coverage(
+    family_graphs: List[GraphSample],
+    universe_K: int,
+    max_graphs: int,
+    seed: Optional[int] = None
+) -> List[int]:
+    """
+    Select graphs that maximize coverage of universe communities.
+    
+    Args:
+        family_graphs: List of graph samples
+        universe_K: Number of communities in universe
+        max_graphs: Maximum number of graphs to select
+        seed: Random seed for reproducibility
+        
+    Returns:
+        List of selected graph indices
+    """
+    if seed is not None:
+        np.random.seed(seed)
+    
+    n_graphs = len(family_graphs)
+    selected_indices = []
+    covered_communities = set()
+    
+    # Create a list of available indices
+    available_indices = list(range(n_graphs))
+    
+    while len(selected_indices) < max_graphs and available_indices:
+        best_idx = None
+        best_new_communities = 0
+        
+        # Find graph with most new communities
+        for idx in available_indices:
+            graph = family_graphs[idx]
+            graph_communities = set(graph.communities)
+            new_communities = len(graph_communities - covered_communities)
+            
+            if new_communities > best_new_communities:
+                best_new_communities = new_communities
+                best_idx = idx
+        
+        if best_idx is None:
+            break
+            
+        # Add the best graph to selection
+        selected_indices.append(best_idx)
+        available_indices.remove(best_idx)
+        
+        # Update covered communities
+        graph = family_graphs[best_idx]
+        covered_communities.update(graph.communities)
+        
+        # If we've covered all communities, we can stop
+        if len(covered_communities) == universe_K:
+            break
+    
+    return selected_indices
+
 def prepare_inductive_data(
     family_graphs: List[GraphSample],
     config
@@ -405,21 +464,45 @@ def prepare_inductive_data(
     # Calculate split sizes
     n_graphs = len(family_graphs)
     if config.use_pretrained and config.max_train_graphs_for_finetuning > 0:
-        n_train = min(config.max_train_graphs_for_finetuning, int(n_graphs * config.train_graph_ratio))
+        if hasattr(config, 'minimum_train_graphs_to_cover_k') and config.minimum_train_graphs_to_cover_k:
+            # Use community coverage-based selection
+            train_indices = select_graphs_for_maximum_coverage(
+                family_graphs=family_graphs,
+                universe_K=universe_K,
+                max_graphs=config.max_train_graphs_for_finetuning,
+                seed=config.seed
+            )
+            n_train = len(train_indices)
+        else:
+            # Use original random selection
+            n_train = min(config.max_train_graphs_for_finetuning, int(n_graphs * config.train_graph_ratio))
+            np.random.seed(config.seed)
+            indices = np.random.permutation(n_graphs)
+            train_indices = indices[:n_train].tolist()
     else:
         n_train = int(n_graphs * config.train_graph_ratio)
+        np.random.seed(config.seed)
+        indices = np.random.permutation(n_graphs)
+        train_indices = indices[:n_train].tolist()
+    
     n_val = int(n_graphs * config.val_graph_ratio)
     n_test = n_graphs - n_train - n_val
     
     print(f"\nSplitting {n_graphs} graphs: {n_train} train, {n_val} val, {n_test} test")
     
-    # Split graphs
-    np.random.seed(config.seed)
-    indices = np.random.permutation(n_graphs)
-    
-    train_indices = indices[:n_train].tolist()
-    val_indices = indices[n_train:n_train + n_val].tolist()
-    test_indices = indices[n_train + n_val:].tolist()
+    # Get remaining indices for val and test
+    if not hasattr(config, 'minimum_train_graphs_to_cover_k') or not config.minimum_train_graphs_to_cover_k:
+        # If we didn't use coverage-based selection, we need to get remaining indices
+        remaining_indices = list(set(range(n_graphs)) - set(train_indices))
+        np.random.shuffle(remaining_indices)
+        val_indices = remaining_indices[:n_val]
+        test_indices = remaining_indices[n_val:n_val + n_test]
+    else:
+        # If we used coverage-based selection, we need to get remaining indices
+        remaining_indices = list(set(range(n_graphs)) - set(train_indices))
+        np.random.shuffle(remaining_indices)
+        val_indices = remaining_indices[:n_val]
+        test_indices = remaining_indices[n_val:n_val + n_test]
     
     graph_split_dict = {
         'train': [family_graphs[i] for i in train_indices],

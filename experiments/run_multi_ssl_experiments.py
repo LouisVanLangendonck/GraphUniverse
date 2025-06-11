@@ -39,7 +39,7 @@ def parse_args():
                         help='Number of repetitions per configuration')
     
     # === PRETRAINING TASK ===
-    parser.add_argument('--pretraining_task', type=str, default='graphmae',
+    parser.add_argument('--pretraining_task', type=str, default='link_prediction',
                         choices=['link_prediction', 'dgi', 'graphmae'],
                         help='Self-supervised pre-training task')
     
@@ -151,7 +151,7 @@ def parse_args():
     # Density sweep
     parser.add_argument('--density_min', type=float, default=0.05,
                         help='Minimum edge density value for sweep')
-    parser.add_argument('--density_max', type=float, default=0.25,
+    parser.add_argument('--density_max', type=float, default=0.15,
                         help='Maximum edge density value for sweep')
     parser.add_argument('--density_step', type=float, default=0.10,
                         help='Step size for density sweep')
@@ -167,9 +167,9 @@ def parse_args():
     # Universe K sweep
     parser.add_argument('--universe_K_min', type=int, default=10,
                         help='Minimum number of communities')
-    parser.add_argument('--universe_K_max', type=int, default=30,
+    parser.add_argument('--universe_K_max', type=int, default=10,
                         help='Maximum number of communities')
-    parser.add_argument('--universe_K_step', type=int, default=20,
+    parser.add_argument('--universe_K_step', type=int, default=1,
                         help='Step size for number of communities sweep')
 
     # === MODEL PARAMETERS ===

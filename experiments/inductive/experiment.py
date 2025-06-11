@@ -100,7 +100,7 @@ class InductiveExperiment:
         if self.config.use_pretrained:
             finetuning_graphs = load_finetuning_graphs_from_model(self.config)
             if finetuning_graphs:
-                print(f"🎯 Using {len(finetuning_graphs)} graphs for fine-tuning")
+                print(f"Using {len(finetuning_graphs)} graphs for fine-tuning")
                 self.family_graphs = finetuning_graphs
                 return finetuning_graphs
         
@@ -449,7 +449,7 @@ class InductiveExperiment:
                             optimize_hyperparams=False,  # No hyperopt
                             experiment_name=self.config.experiment_name if hasattr(self.config, 'experiment_name') else None,
                             run_id=self.config.run_id if hasattr(self.config, 'run_id') else None,
-                            finetuning=True
+                            finetuning=True,
                         )
 
                         if self.config.calculate_silhouette_score and task == 'community':
@@ -580,7 +580,7 @@ class InductiveExperiment:
                         device=self.device,
                         optimize_hyperparams=self.config.optimize_hyperparams,
                         experiment_name=self.config.experiment_name if hasattr(self.config, 'experiment_name') else None,
-                        run_id=self.config.run_id if hasattr(self.config, 'run_id') else None
+                        run_id=self.config.run_id if hasattr(self.config, 'run_id') else None,
                     )
                     
                     # Store results including hyperopt results if available
@@ -1635,14 +1635,6 @@ class PreTrainingRunner:
         
         return results
     
-# class PreTrainingExperiment:
-#     """High-level experiment runner for multiple pre-training configurations."""
-    
-#     def __init__(self, base_output_dir: str = "ssl_experiments"):
-#         self.base_output_dir = base_output_dir
-#         os.makedirs(base_output_dir, exist_ok=True)
-    
-
 def randomize_model_weights(model, initialization_scheme='xavier_uniform', verbose=True):
     """
     Properly randomize all model weights for fair from-scratch comparison.
@@ -1732,23 +1724,6 @@ def randomize_model_weights(model, initialization_scheme='xavier_uniform', verbo
                 print(f"  ✗ {layer}")
     
     return len(randomized_layers), len(failed_layers)
-
-# def create_from_scratch_model_improved(pretrained_model, metadata, output_dim, is_regression, device):
-#     """
-#     Create a properly randomized from-scratch model for fair comparison.
-#     """
-#     # Create new model with same architecture
-#     from_scratch_model = create_model_from_pretrained(
-#         pretrained_model,
-#         metadata,
-#         output_dim,
-#         is_regression
-#     ).to(device)
-    
-    
-#     print(f"Successfully randomized {num_randomized} layers, {num_failed} layers failed")
-    
-#     return from_scratch_model
 
 def calculate_silhouette_scores(model, task_dataloaders):
     """
@@ -1864,7 +1839,6 @@ def calculate_tsne_coordinates(model, task_dataloaders, n_to_calculate=1):
     
     return results
     
-
 def list_graph_families(graph_family_dir: str = "graph_families") -> List[Dict]:
     """List available graph families."""
     config = PreTrainingConfig(graph_family_dir=graph_family_dir)
@@ -1951,3 +1925,4 @@ def load_finetuning_graphs_from_model(
             return None
     
     return None
+

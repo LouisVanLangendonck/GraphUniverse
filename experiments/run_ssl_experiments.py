@@ -40,7 +40,7 @@ def parse_args():
                         help='Force CPU usage even if CUDA is available')
     
     # === GRAPH FAMILY GENERATION ===
-    parser.add_argument('--n_graphs', type=int, default=200,
+    parser.add_argument('--n_graphs', type=int, default=50,
                         help='Number of graphs for pre-training')
     parser.add_argument('--n_extra_graphs', type=int, default=30,
                         help='Extra graphs to generate for fine-tuning')
@@ -71,12 +71,12 @@ def parse_args():
                         help='Degree distribution type for DCCC-SBM')
     
     # === PRE-TRAINING TASK ===
-    parser.add_argument('--pretraining_task', type=str, default='graphmae',
+    parser.add_argument('--pretraining_task', type=str, default='dgi',
                         choices=['link_prediction', 'dgi', 'graphmae'],
                         help='Self-supervised pre-training task')
     
     # === MODEL CONFIGURATION ===
-    parser.add_argument('--gnn_type', type=str, default='gin',
+    parser.add_argument('--gnn_type', type=str, default='sage',
                         choices=['gcn', 'sage', 'gat', 'fagcn', 'gin'],
                         help='Type of GNN to use')
     parser.add_argument('--hidden_dim', type=int, default=128,
@@ -142,7 +142,7 @@ def parse_args():
                         help='Loss function for link prediction')
     
     # DGI
-    parser.add_argument('--dgi_corruption_type', type=str, default='edge_dropout',
+    parser.add_argument('--dgi_corruption_type', type=str, default='feature_shuffle',
                         choices=['feature_shuffle', 'edge_dropout', 'feature_dropout', 'feature_noise', 'edge_perturbation'],
                         help='Type of corruption for DGI when using feature_noise')
     parser.add_argument('--dgi_noise_std', type=float, default=0.1,

@@ -85,7 +85,8 @@ def create_fine_tuning_config(
         only_pretrained_experiments=only_pretrained_experiments,
         max_train_graphs_for_finetuning=max_train_graphs_for_finetuning,
         calculate_silhouette_score=calculate_silhouette_score,
-        
+        minimum_train_graphs_to_cover_k=True,
+
         # === TASKS ===
         tasks=['community'],
         
@@ -110,7 +111,7 @@ def parse_args():
                         help='Directory to save fine-tuning results')
     parser.add_argument('--only_pretrained_experiments', action='store_true', default=True,
                         help='Only run fine-tuning experiments, no from-scratch baselines')
-    parser.add_argument('--max_train_graphs_for_finetuning', type=int, default=3,
+    parser.add_argument('--max_train_graphs_for_finetuning', type=int, default=10,
                         help='Maximum number of training graphs for fine-tuning')
     parser.add_argument('--calculate_silhouette_score', action='store_true', default=True,
                         help='Calculate silhouette score of communities of pre-trained models')
@@ -162,6 +163,14 @@ def main():
             
             # Run fine-tuning experiment
             results = run_inductive_experiment(config)
+
+            # Also dump the pre-trainedmodel config
+            with open(os.path.join(output_dir, f"finetune_{model_ids[i-1]}_pretrained_config.json"), 'w') as f:
+                json.dump(model_config[i-1], f, indent=2)
+
+            # Also dump the pre-trained model metadata
+            with open(os.path.join(output_dir, f"finetune_{model_ids[i-1]}_pretrained_metadata.json"), 'w') as f:
+                json.dump(model_metadata[i-1], f, indent=2)
             
             successful_runs += 1
             print(f"✓ Fine-tuning completed successfully")

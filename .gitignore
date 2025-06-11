@@ -6,3 +6,4 @@ graph_families/
 transductive_results/
 multi_transductive_results/
 multi_ssl_experiments/
+multi_finetune_results/
