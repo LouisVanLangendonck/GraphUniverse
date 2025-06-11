@@ -830,9 +830,19 @@ class SSLMultiExperimentRunner:
                 n_trials=self.config.base_config.n_trials,
                 optimization_timeout=self.config.base_config.optimization_timeout,
 
-                # SSL specific parameters
+                # Task-specific parameters
+                negative_sampling_ratio=model_config.get('negative_sampling_ratio', self.config.base_config.negative_sampling_ratio),
+                link_pred_loss=model_config.get('link_pred_loss', self.config.base_config.link_pred_loss),
+                dgi_corruption_type=model_config.get('dgi_corruption_type', self.config.base_config.dgi_corruption_type),
+                dgi_noise_std=model_config.get('dgi_noise_std', self.config.base_config.dgi_noise_std),
+                dgi_perturb_rate=model_config.get('dgi_perturb_rate', self.config.base_config.dgi_perturb_rate),
+                dgi_corruption_rate=model_config.get('dgi_corruption_rate', self.config.base_config.dgi_corruption_rate),
+                graphmae_mask_rate=model_config.get('graphmae_mask_rate', self.config.base_config.graphmae_mask_rate),
+                graphmae_replace_rate=model_config.get('graphmae_replace_rate', self.config.base_config.graphmae_replace_rate),
+                graphmae_gamma=model_config.get('graphmae_gamma', self.config.base_config.graphmae_gamma),
+                graphmae_decoder_type=model_config.get('graphmae_decoder_type', self.config.base_config.graphmae_decoder_type),
+                graphmae_decoder_gnn_type=model_config.get('graphmae_decoder_gnn_type', self.config.base_config.graphmae_decoder_gnn_type),
 
-                
                 # Graph family management
                 graph_family_dir=os.path.join(self.output_dir, "graph_families"),
                 save_graph_family=True,
@@ -1058,8 +1068,6 @@ class SSLMultiExperimentRunner:
             
             for method, count in sorted(method_counts.items()):
                 print(f"  {method}: {count}")
-
-
 
 
 def run_clean_multi_experiments(config: CleanMultiExperimentConfig) -> Dict[str, Any]:

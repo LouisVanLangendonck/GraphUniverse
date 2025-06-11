@@ -163,13 +163,14 @@ def main():
             
             # Run fine-tuning experiment
             results = run_inductive_experiment(config)
+            local_experiment_output_dir = results['output_dir']
 
             # Also dump the pre-trainedmodel config
-            with open(os.path.join(output_dir, f"finetune_{model_ids[i-1]}_pretrained_config.json"), 'w') as f:
+            with open(os.path.join(local_experiment_output_dir, f"finetune_{model_ids[i-1]}_pretrained_config.json"), 'w') as f:
                 json.dump(model_config[i-1], f, indent=2)
 
             # Also dump the pre-trained model metadata
-            with open(os.path.join(output_dir, f"finetune_{model_ids[i-1]}_pretrained_metadata.json"), 'w') as f:
+            with open(os.path.join(local_experiment_output_dir, f"finetune_{model_ids[i-1]}_pretrained_metadata.json"), 'w') as f:
                 json.dump(model_metadata[i-1], f, indent=2)
             
             successful_runs += 1

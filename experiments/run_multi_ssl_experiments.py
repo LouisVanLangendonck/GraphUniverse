@@ -39,7 +39,7 @@ def parse_args():
                         help='Number of repetitions per configuration')
     
     # === PRETRAINING TASK ===
-    parser.add_argument('--pretraining_task', type=str, default='link_prediction',
+    parser.add_argument('--pretraining_task', type=str, default='dgi',
                         choices=['link_prediction', 'dgi', 'graphmae'],
                         help='Self-supervised pre-training task')
     
@@ -52,7 +52,7 @@ def parse_args():
                         help='Loss function for link prediction')
     
     # DGI
-    parser.add_argument('--dgi_corruption_types', type=str, nargs='+', default=['feature_shuffle', 'edge_dropout', 'feature_dropout', 'feature_noise', 'edge_perturbation'],
+    parser.add_argument('--dgi_corruption_types', type=str, nargs='+', default=['edge_dropout', 'feature_dropout'],
                         choices=['feature_shuffle', 'edge_dropout', 'feature_dropout', 'feature_noise', 'edge_perturbation'],
                         help='Type of corruption for DGI when using feature_noise')
     parser.add_argument('--dgi_noise_std', type=float, default=0.1,
@@ -300,10 +300,12 @@ def create_custom_experiment(args) -> SSLMultiExperimentConfig:
             is_sweep=True
         )
     }
+
+    model_sweep_parameters = {}
     
     # Add pre-training task specific hyperparameters only for the selected task
     if args.pretraining_task == 'dgi':
-        sweep_parameters.update({
+        model_sweep_parameters.update({
             'dgi_corruption_type': ParameterRange(
                 min_val=0,
                 max_val=1,
@@ -438,6 +440,7 @@ def create_custom_experiment(args) -> SSLMultiExperimentConfig:
         experiment_name=args.experiment_name,
         base_config=base_config,
         sweep_parameters=sweep_parameters,
+        model_sweep_parameters=model_sweep_parameters,
         random_parameters=random_parameters,
         n_repetitions=args.n_repetitions,
         gnn_models=[] if args.skip_gnn else args.gnn_models,

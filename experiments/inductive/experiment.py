@@ -789,6 +789,7 @@ class InductiveExperiment:
             print(f"\nExperiment completed in {total_time:.2f} seconds")
             
             return {
+                'output_dir': self.output_dir,
                 'family_consistency': family_consistency,
                 'graph_signals': graph_signals,
                 'results': results,
@@ -1397,9 +1398,13 @@ class PreTrainingRunner:
         # Print task-specific parameters
         if self.config.pretraining_task == "link_prediction":
             print(f"  Negative sampling ratio: {getattr(self.config, 'negative_sampling_ratio', 1.0)}")
-        elif self.config.pretraining_task in ["dgi", "graphcl", "contrastive"]:
-            print(f"  Temperature: {getattr(self.config, 'temperature', 0.1)}")
-            print(f"  Corruption type: {getattr(self.config, 'corruption_type', 'feature_shuffle')}")
+        elif self.config.pretraining_task == "dgi":
+            print(f"  DGI corruption type: {getattr(self.config, 'dgi_corruption_type', 'feature_shuffle')}")
+            print(f"  DGI noise std: {getattr(self.config, 'dgi_noise_std', 0.1)}")
+            print(f"  DGI perturbation rate: {getattr(self.config, 'dgi_perturb_rate', 0.1)}")
+            print(f"  DGI corruption rate: {getattr(self.config, 'dgi_corruption_rate', 0.1)}")
+        elif self.config.pretraining_task == "graphmae":
+            print(f"  GraphMAE mask rate: {getattr(self.config, 'graphmae_mask_rate', 0.1)}")
         
         # Setup optimizer
         optimizer = torch.optim.Adam(
@@ -1873,7 +1878,7 @@ def load_finetuning_graphs_from_model(
     # Method 1: Explicit family ID provided
     if config.graph_family_id:
         family_id = config.graph_family_id
-        print(f"📁 Using explicitly specified graph family: {family_id}")
+        print(f"Using explicitly specified graph family: {family_id}")
     
     # Method 2: Auto-load family from pre-trained model
     elif config.auto_load_family and config.pretrained_model_id:
@@ -1891,7 +1896,7 @@ def load_finetuning_graphs_from_model(
                 return None
                 
         except Exception as e:
-            print(f"⚠️  Failed to auto-load graph family: {e}")
+            print(f"Failed to auto-load graph family: {e}")
             return None
     
     # Method 3: No family specified - generate new graphs
