@@ -34,117 +34,117 @@ from sklearn.model_selection import cross_val_score, StratifiedKFold
 import community as community_louvain
 import warnings
 
-def sample_connected_community_subset(
-    P: np.ndarray,
-    size: int,
-    method: str = "random",
-    similarity_bias: float = 0.0,
-    max_attempts: int = 10,
-    existing_communities: Optional[List[int]] = None,
-    seed: Optional[int] = None
-) -> List[int]:
-    """
-    Sample a subset of communities that are well-connected to each other.
+# def sample_connected_community_subset(
+#     P: np.ndarray,
+#     size: int,
+#     method: str = "random",
+#     similarity_bias: float = 0.0,
+#     max_attempts: int = 10,
+#     existing_communities: Optional[List[int]] = None,
+#     seed: Optional[int] = None
+# ) -> List[int]:
+#     """
+#     Sample a subset of communities that are well-connected to each other.
     
-    Args:
-        P: Probability matrix (K × K)
-        size: Number of communities to sample
-        method: Sampling method ("random", "similar", "diverse", "correlated")
-        similarity_bias: Controls bias towards similar communities (positive) or diverse (negative)
-        max_attempts: Maximum number of attempts to find a connected subset
-        existing_communities: Optional list of communities to condition on
-        seed: Random seed for reproducibility
+#     Args:
+#         P: Probability matrix (K × K)
+#         size: Number of communities to sample
+#         method: Sampling method ("random", "similar", "diverse", "correlated")
+#         similarity_bias: Controls bias towards similar communities (positive) or diverse (negative)
+#         max_attempts: Maximum number of attempts to find a connected subset
+#         existing_communities: Optional list of communities to condition on
+#         seed: Random seed for reproducibility
         
-    Returns:
-        List of sampled community indices
-    """
-    if seed is not None:
-        np.random.seed(seed)
+#     Returns:
+#         List of sampled community indices
+#     """
+#     if seed is not None:
+#         np.random.seed(seed)
     
-    K = P.shape[0]
-    size = min(size, K)  # Ensure we don't sample more than available
+#     K = P.shape[0]
+#     size = min(size, K)  # Ensure we don't sample more than available
     
-    # Calculate average inter-community probability from the scaled probability matrix
-    off_diag_mask = ~np.eye(K, dtype=bool)
-    avg_inter_comm_prob = np.mean(P[off_diag_mask])
+#     # Calculate average inter-community probability from the scaled probability matrix
+#     off_diag_mask = ~np.eye(K, dtype=bool)
+#     avg_inter_comm_prob = np.mean(P[off_diag_mask])
     
-    # Track failures for debugging
-    failures = {
-        "no_strong_connections": [],
-        "insufficient_connections": 0,
-        "random_additions_needed": 0
-    }
+#     # Track failures for debugging
+#     failures = {
+#         "no_strong_connections": [],
+#         "insufficient_connections": 0,
+#         "random_additions_needed": 0
+#     }
     
-    # If we have existing communities, use them as seeds
-    if existing_communities:
-        seeds = existing_communities
-        remaining_size = size - len(seeds)
-    else:
-        # Sample initial seed communities
-        n_seeds = size // 2
-        seeds = np.random.choice(K, size=n_seeds, replace=False).tolist()
-        remaining_size = size - n_seeds
+#     # If we have existing communities, use them as seeds
+#     if existing_communities:
+#         seeds = existing_communities
+#         remaining_size = size - len(seeds)
+#     else:
+#         # Sample initial seed communities
+#         n_seeds = size // 2
+#         seeds = np.random.choice(K, size=n_seeds, replace=False).tolist()
+#         remaining_size = size - n_seeds
     
-    # Initialize result with seeds
-    result = set(seeds)
+#     # Initialize result with seeds
+#     result = set(seeds)
     
-    # First round: find strongly connected partners for each seed
-    for seed in seeds:
-        # Find all communities with strong connections to this seed
-        strong_connections = [
-            j for j in range(K)
-            if j not in result and P[seed, j] >= avg_inter_comm_prob
-        ]
+#     # First round: find strongly connected partners for each seed
+#     for seed in seeds:
+#         # Find all communities with strong connections to this seed
+#         strong_connections = [
+#             j for j in range(K)
+#             if j not in result and P[seed, j] >= avg_inter_comm_prob
+#         ]
         
-        if strong_connections:
-            # Randomly select one strongly connected community
-            partner = np.random.choice(strong_connections)
-            result.add(partner)
-            remaining_size -= 1
-        else:
-            failures["no_strong_connections"].append(seed)
+#         if strong_connections:
+#             # Randomly select one strongly connected community
+#             partner = np.random.choice(strong_connections)
+#             result.add(partner)
+#             remaining_size -= 1
+#         else:
+#             failures["no_strong_connections"].append(seed)
     
-    # Second round: if we still need more communities
-    if remaining_size > 0:
-        # Find communities with strong connections to any existing community
-        potential_additions = []
-        for j in range(K):
-            if j not in result:
-                # Check connection strength to all existing communities
-                max_connection = max(P[j, i] for i in result)
-                if max_connection >= avg_inter_comm_prob:
-                    potential_additions.append(j)
+#     # Second round: if we still need more communities
+#     if remaining_size > 0:
+#         # Find communities with strong connections to any existing community
+#         potential_additions = []
+#         for j in range(K):
+#             if j not in result:
+#                 # Check connection strength to all existing communities
+#                 max_connection = max(P[j, i] for i in result)
+#                 if max_connection >= avg_inter_comm_prob:
+#                     potential_additions.append(j)
         
-        # If we found potential additions, randomly select from them
-        if potential_additions:
-            n_to_add = min(remaining_size, len(potential_additions))
-            additions = np.random.choice(potential_additions, size=n_to_add, replace=False)
-            result.update(additions)
-            remaining_size -= n_to_add
-        else:
-            failures["insufficient_connections"] = remaining_size
+#         # If we found potential additions, randomly select from them
+#         if potential_additions:
+#             n_to_add = min(remaining_size, len(potential_additions))
+#             additions = np.random.choice(potential_additions, size=n_to_add, replace=False)
+#             result.update(additions)
+#             remaining_size -= n_to_add
+#         else:
+#             failures["insufficient_connections"] = remaining_size
     
-    # Final round: if we still need more communities, add random ones
-    if remaining_size > 0:
-        remaining = set(range(K)) - result
-        if remaining:
-            final_additions = np.random.choice(list(remaining), size=min(remaining_size, len(remaining)), replace=False)
-            result.update(final_additions)
-            failures["random_additions_needed"] = len(final_additions)
+#     # Final round: if we still need more communities, add random ones
+#     if remaining_size > 0:
+#         remaining = set(range(K)) - result
+#         if remaining:
+#             final_additions = np.random.choice(list(remaining), size=min(remaining_size, len(remaining)), replace=False)
+#             result.update(final_additions)
+#             failures["random_additions_needed"] = len(final_additions)
     
-    # Only print debug information if there were issues
-    if failures["no_strong_connections"] or failures["insufficient_connections"] or failures["random_additions_needed"]:
-        print("\nCommunity sampling issues:")
-        if failures["no_strong_connections"]:
-            print(f"  Seeds with no strong connections: {failures['no_strong_connections']}")
-        if failures["insufficient_connections"]:
-            print(f"  Missing connections for {failures['insufficient_connections']} communities")
-        if failures["random_additions_needed"]:
-            print(f"  Had to add {failures['random_additions_needed']} random communities")
-        print(f"  Connection strength threshold (avg inter-comm prob): {avg_inter_comm_prob:.4f}")
-        print(f"  Final community set size: {len(result)}")
+#     # Only print debug information if there were issues
+#     if failures["no_strong_connections"] or failures["insufficient_connections"] or failures["random_additions_needed"]:
+#         print("\nCommunity sampling issues:")
+#         if failures["no_strong_connections"]:
+#             print(f"  Seeds with no strong connections: {failures['no_strong_connections']}")
+#         if failures["insufficient_connections"]:
+#             print(f"  Missing connections for {failures['insufficient_connections']} communities")
+#         if failures["random_additions_needed"]:
+#             print(f"  Had to add {failures['random_additions_needed']} random communities")
+#         print(f"  Connection strength threshold (avg inter-comm prob): {avg_inter_comm_prob:.4f}")
+#         print(f"  Final community set size: {len(result)}")
     
-    return list(result)
+#     return list(result)
 
 class GraphUniverse:
     """
@@ -169,7 +169,11 @@ class GraphUniverse:
         community_exclusivity: float = 1.0, # How exclusively clusters map to communities
         # Degree center parameters
         degree_center_method: str = "linear",  # How to generate degree centers ("linear", "random", "shuffled")
-        seed: Optional[int] = None
+        seed: Optional[int] = None,
+        # Community density parameters
+        community_density_variation: float = 0.0,      # 0-1: amount of density variation
+        # Community co-occurrence homogeneity
+        community_cooccurrence_homogeneity: float = 1.0,  # 0-1: how homogeneous the co-occurrence of communities is
     ):
         """
         Initialize a graph universe with K communities and optional feature generation.
@@ -188,6 +192,10 @@ class GraphUniverse:
             assignment_skewness: If some clusters are used more frequently (0.0 to 1.0)
             community_exclusivity: How exclusively clusters map to communities (0.0 to 1.0)
             degree_center_method: How to generate degree centers ("linear", "random", "shuffled")
+            community_density_variation: Amount of density variation (automatically coupled to degree centers. So higher density variation means higher densities for nodes with higher degree variation)
+            community_cooccurrence_homogeneity: Controls community co-occurrence patterns (0-1)
+                1.0 = homogeneous (all communities equally likely to co-occur)
+                0.0 = heterogeneous (some communities prefer to co-occur with specific others)
             seed: Random seed for reproducibility
         """
         self.K = K
@@ -231,6 +239,9 @@ class GraphUniverse:
         self.intra_community_regime_similarity = 0.8
         self.inter_community_regime_similarity = 0.2
 
+        # Store community density parameters
+        self.community_density_variation = community_density_variation
+
         # Generate degree centers based on method
         if degree_center_method == "linear":
             # Linear spacing from -1 to 1
@@ -245,6 +256,17 @@ class GraphUniverse:
         else:
             raise ValueError(f"Unknown degree center method: {degree_center_method}")
     
+        # Apply community density variations if requested
+        if community_density_variation > 0:
+            self.P = self._apply_community_density_variation(
+                self.P, 
+                community_density_variation,
+            )
+        
+        # Generate community co-occurrence matrix
+        self.community_cooccurrence_homogeneity = community_cooccurrence_homogeneity
+        self.community_cooccurrence_matrix = self._generate_cooccurrence_matrix(K, community_cooccurrence_homogeneity, seed)
+
     def _generate_probability_matrix(
         self, 
         K: int, 
@@ -373,132 +395,130 @@ class GraphUniverse:
             
         return similarity
     
-    def sample_community_subset(
-        self, 
-        size: int, 
-        method: str = "random",
-        similarity_bias: float = 0.0,
-        existing_communities: Optional[List[int]] = None
-    ) -> List[int]:
-        """
-        Sample a subset of communities from the universe.
+    # def sample_community_subset(
+    #     self, 
+    #     size: int, 
+    #     method: str = "random",
+    #     similarity_bias: float = 0.0,
+    #     existing_communities: Optional[List[int]] = None
+    # ) -> List[int]:
+    #     """
+    #     Sample a subset of communities from the universe.
         
-        Args:
-            size: Number of communities to sample
-            method: Sampling method ("random", "similar", "diverse", "correlated")
-            similarity_bias: Controls bias towards similar communities (positive) or diverse (negative)
-            existing_communities: For transfer learning, optionally condition on existing communities
+    #     Args:
+    #         size: Number of communities to sample
+    #         method: Sampling method ("random", "similar", "diverse", "correlated")
+    #         similarity_bias: Controls bias towards similar communities (positive) or diverse (negative)
+    #         existing_communities: For transfer learning, optionally condition on existing communities
             
-        Returns:
-            List of sampled community indices
-        """
-        size = min(size, self.K)  # Ensure we don't sample more than available
+    #     Returns:
+    #         List of sampled community indices
+    #     """
+    #     size = min(size, self.K)  # Ensure we don't sample more than available
         
-        if method == "random":
-            # Simple random sampling
-            return np.random.choice(self.K, size=size, replace=False).tolist()
+    #     if method == "random":
+    #         # Simple random sampling
+    #         return np.random.choice(self.K, size=size, replace=False).tolist()
             
-        elif method == "similar" or method == "diverse":
-            # Sample based on similarity in the probability matrix
-            if existing_communities is None:
-                # Start with a random community
-                communities = [np.random.choice(self.K)]
-                remaining = set(range(self.K)) - set(communities)
-            else:
-                # Start with specified communities
-                communities = list(existing_communities)
-                remaining = set(range(self.K)) - set(communities)
+    #     elif method == "similar" or method == "diverse":
+    #         # Sample based on similarity in the probability matrix
+    #         if existing_communities is None:
+    #             # Start with a random community
+    #             communities = [np.random.choice(self.K)]
+    #             remaining = set(range(self.K)) - set(communities)
+    #         else:
+    #             # Start with specified communities
+    #             communities = list(existing_communities)
+    #             remaining = set(range(self.K)) - set(communities)
             
-            # Compute similarities based on probability patterns
-            while len(communities) < size and remaining:
-                # Compute average similarity to existing communities
-                similarities = np.zeros(self.K)
-                for k in remaining:
-                    for c in communities:
-                        row_sim = np.corrcoef(self.P[k, :], self.P[c, :])[0, 1]
-                        col_sim = np.corrcoef(self.P[:, k], self.P[:, c])[0, 1]
-                        similarities[k] += (row_sim + col_sim) / 2
+    #         # Compute similarities based on probability patterns
+    #         while len(communities) < size and remaining:
+    #             # Compute average similarity to existing communities
+    #             similarities = np.zeros(self.K)
+    #             for k in remaining:
+    #                 for c in communities:
+    #                     row_sim = np.corrcoef(self.P[k, :], self.P[c, :])[0, 1]
+    #                     col_sim = np.corrcoef(self.P[:, k], self.P[:, c])[0, 1]
+    #                     similarities[k] += (row_sim + col_sim) / 2
                     
-                    similarities[k] /= len(communities)
+    #                 similarities[k] /= len(communities)
                 
-                # Zero out communities already selected
-                similarities[communities] = -np.inf
+    #             # Zero out communities already selected
+    #             similarities[communities] = -np.inf
                 
-                # For diverse sampling, invert similarities
-                if method == "diverse":
-                    similarities = -similarities
+    #             # For diverse sampling, invert similarities
+    #             if method == "diverse":
+    #                 similarities = -similarities
                 
-                # Apply similarity bias
-                if similarity_bias != 0:
-                    probs = np.exp(similarity_bias * similarities)
-                    probs[communities] = 0
-                    probs = probs / probs.sum()
-                    next_community = np.random.choice(self.K, p=probs)
-                else:
-                    # Just pick the most similar/diverse
-                    next_community = np.argmax(similarities)
+    #             # Apply similarity bias
+    #             if similarity_bias != 0:
+    #                 probs = np.exp(similarity_bias * similarities)
+    #                 probs[communities] = 0
+    #                 probs = probs / probs.sum()
+    #                 next_community = np.random.choice(self.K, p=probs)
+    #             else:
+    #                 # Just pick the most similar/diverse
+    #                 next_community = np.argmax(similarities)
                 
-                # Only remove if the community is in the remaining set
-                if next_community in remaining:
-                    communities.append(next_community)
-                    remaining.remove(next_community)
-                else:
-                    # If not in remaining, try to find another community
-                    remaining_list = list(remaining)
-                    if remaining_list:
-                        next_community = np.random.choice(remaining_list)
-                        communities.append(next_community)
-                        remaining.remove(next_community)
+    #             # Only remove if the community is in the remaining set
+    #             if next_community in remaining:
+    #                 communities.append(next_community)
+    #                 remaining.remove(next_community)
+    #             else:
+    #                 # If not in remaining, try to find another community
+    #                 remaining_list = list(remaining)
+    #                 if remaining_list:
+    #                     next_community = np.random.choice(remaining_list)
+    #                     communities.append(next_community)
+    #                     remaining.remove(next_community)
         
-        elif method == "correlated":
-            # Use the co-membership matrix to generate correlated samples
-            if existing_communities is None:
-                first = np.random.choice(self.K)
-                communities = [first]
-            else:
-                communities = list(existing_communities)
+    #     elif method == "correlated":
+    #         # Use the co-membership matrix to generate correlated samples
+    #         if existing_communities is None:
+    #             first = np.random.choice(self.K)
+    #             communities = [first]
+    #         else:
+    #             communities = list(existing_communities)
                 
-            while len(communities) < size:
-                # Compute sampling probabilities based on co-membership
-                co_probs = np.zeros(self.K)
-                for c in communities:
-                    co_probs += self.community_co_membership[c, :]
+    #         while len(communities) < size:
+    #             # Compute sampling probabilities based on co-membership
+    #             co_probs = np.zeros(self.K)
+    #             for c in communities:
+    #                 co_probs += self.community_co_membership[c, :]
                 
-                # Zero out already selected communities
-                co_probs[communities] = 0
+    #             # Zero out already selected communities
+    #             co_probs[communities] = 0
                 
-                # Normalize to get probabilities
-                if co_probs.sum() > 0:
-                    co_probs = co_probs / co_probs.sum()
-                    next_community = np.random.choice(self.K, p=co_probs)
-                else:
-                    # If all co-probabilities are zero, sample randomly from remaining
-                    remaining = list(set(range(self.K)) - set(communities))
-                    next_community = np.random.choice(remaining)
+    #             # Normalize to get probabilities
+    #             if co_probs.sum() > 0:
+    #                 co_probs = co_probs / co_probs.sum()
+    #                 next_community = np.random.choice(self.K, p=co_probs)
+    #             else:
+    #                 # If all co-probabilities are zero, sample randomly from remaining
+    #                 remaining = list(set(range(self.K)) - set(communities))
+    #                 next_community = np.random.choice(remaining)
                 
-                communities.append(next_community)
+    #             communities.append(next_community)
                 
-            return communities
+    #         return communities
         
-        else:
-            raise ValueError(f"Unknown sampling method: {method}")
+    #     else:
+    #         raise ValueError(f"Unknown sampling method: {method}")
             
     def sample_connected_community_subset(
         self,
         size: int,
-        existing_communities: Optional[List[int]] = None,
-        seed: Optional[int] = None
+        seed: Optional[int] = None,
+        use_cooccurrence: bool = True
     ) -> List[int]:
         """
-        Sample a subset of communities that are well-connected to each other.
+        Sample a subset of communities using co-occurrence patterns.
         
         Args:
             size: Number of communities to sample
-            method: Sampling method ("random", "similar", "diverse", "correlated")
-            similarity_bias: Controls bias towards similar communities (positive) or diverse (negative)
-            max_attempts: Maximum number of attempts to find a connected subset
             existing_communities: Optional list of communities to condition on
             seed: Random seed for reproducibility
+            use_cooccurrence: Whether to use co-occurrence matrix for sampling
             
         Returns:
             List of sampled community indices
@@ -507,90 +527,147 @@ class GraphUniverse:
             np.random.seed(seed)
         
         K = self.K
-        size = min(size, K)  # Ensure we don't sample more than available
+        size = min(size, K)
         
-        # Calculate average inter-community probability from probability matrix
-        off_diag_mask = ~np.eye(K, dtype=bool)
-        avg_inter_comm_prob = np.mean(self.P[off_diag_mask])
+        if not use_cooccurrence or self.community_cooccurrence_homogeneity == 1.0:
+            # Random sampling
+            return np.random.choice(self.K, size=size, replace=False).tolist()
         
-        # Track failures for debugging
-        failures = {
-            "no_strong_connections": [],
-            "insufficient_connections": 0,
-            "random_additions_needed": 0
-        }
+        # Start with a random seed community
+        first_community = np.random.choice(K)
+        result = {first_community}
+        remaining_size = size - 1
         
-        # If we have existing communities, use them as seeds
-        if existing_communities:
-            seeds = existing_communities
-            remaining_size = size - len(seeds)
-        else:
-            # Sample initial seed communities
-            n_seeds = size // 2
-            seeds = np.random.choice(K, size=n_seeds, replace=False).tolist()
-            remaining_size = size - n_seeds
-        
-        # Initialize result with seeds
-        result = set(seeds)
-        
-        # First round: find strongly connected partners for each seed
-        for seed in seeds:
-            # Find all communities with strong connections to this seed
-            strong_connections = [
-                j for j in range(K)
-                if j not in result and self.P[seed, j] >= avg_inter_comm_prob
-            ]
+        # Iteratively add communities based on co-occurrence probabilities
+        while remaining_size > 0 and len(result) < K:
+            # Calculate sampling probabilities based on co-occurrence with existing communities
+            remaining_communities = list(set(range(K)) - result)
+            if not remaining_communities:
+                break
             
-            if strong_connections:
-                # Randomly select one strongly connected community
-                partner = np.random.choice(strong_connections)
-                result.add(partner)
-                remaining_size -= 1
-            else:
-                failures["no_strong_connections"].append(seed)
-        
-        # Second round: if we still need more communities
-        if remaining_size > 0:
-            # Find communities with strong connections to any existing community
-            potential_additions = []
-            for j in range(K):
-                if j not in result:
-                    # Check connection strength to all existing communities
-                    max_connection = max(self.P[j, i] for i in result)
-                    if max_connection >= avg_inter_comm_prob:
-                        potential_additions.append(j)
+            # For each remaining community, calculate its average co-occurrence with selected ones
+            cooccurrence_scores = np.zeros(len(remaining_communities))
+            for i, candidate in enumerate(remaining_communities):
+                # Average co-occurrence probability with all selected communities
+                avg_cooccurrence = np.mean([
+                    self.community_cooccurrence_matrix[candidate, selected] 
+                    for selected in result
+                ])
+                cooccurrence_scores[i] = avg_cooccurrence
             
-            # If we found potential additions, randomly select from them
-            if potential_additions:
-                n_to_add = min(remaining_size, len(potential_additions))
-                additions = np.random.choice(potential_additions, size=n_to_add, replace=False)
-                result.update(additions)
-                remaining_size -= n_to_add
+            # Convert scores to probabilities
+            if np.sum(cooccurrence_scores) > 0:
+                probabilities = cooccurrence_scores / np.sum(cooccurrence_scores)
             else:
-                failures["insufficient_connections"] = remaining_size
-        
-        # Final round: if we still need more communities, add random ones
-        if remaining_size > 0:
-            remaining = set(range(K)) - result
-            if remaining:
-                final_additions = np.random.choice(list(remaining), size=min(remaining_size, len(remaining)), replace=False)
-                result.update(final_additions)
-                failures["random_additions_needed"] = len(final_additions)
-        
-        # Only print debug information if there were issues
-        if failures["no_strong_connections"] or failures["insufficient_connections"] or failures["random_additions_needed"]:
-            print("\nCommunity sampling issues:")
-            if failures["no_strong_connections"]:
-                print(f"  Seeds with no strong connections: {failures['no_strong_connections']}")
-            if failures["insufficient_connections"]:
-                print(f"  Missing connections for {failures['insufficient_connections']} communities")
-            if failures["random_additions_needed"]:
-                print(f"  Had to add {failures['random_additions_needed']} random communities")
-            print(f"  Connection strength threshold (avg inter-comm prob): {avg_inter_comm_prob:.4f}")
-            print(f"  Final community set size: {len(result)}")
+                # Fallback to uniform if all scores are zero
+                probabilities = np.ones(len(remaining_communities)) / len(remaining_communities)
+            
+            # Sample next community
+            next_idx = np.random.choice(len(remaining_communities), p=probabilities)
+            next_community = remaining_communities[next_idx]
+            result.add(next_community)
+            remaining_size -= 1
         
         return list(result)
     
+    def _apply_community_density_variation(
+        self,
+        P: np.ndarray,
+        community_density_variation: float = 0.0
+    ) -> np.ndarray:
+        """
+        Apply degree-coupled community density variations to the universe P matrix.
+        Communities with higher degree centers get higher overall connection probabilities.
+        
+        Args:
+            P: Universe probability matrix (K x K)
+            community_density_variation: Amount of variation (0-1)
+            
+        Returns:
+            Modified probability matrix with community density variations
+        """
+        if community_density_variation == 0.0:
+            return P
+        
+        K = P.shape[0]
+        
+        # Generate density multipliers based on degree center hierarchy
+        if np.std(self.degree_centers) > 0:
+            # Normalize degree centers to [-1, 1] range
+            normalized_centers = (self.degree_centers - np.mean(self.degree_centers)) / np.std(self.degree_centers)
+            normalized_centers = np.clip(normalized_centers, -1, 1)
+            
+            # Create multipliers: high degree centers → high density
+            density_multipliers = 1.0 + community_density_variation * normalized_centers
+        else:
+            # If all degree centers are the same, no variation
+            density_multipliers = np.ones(K)
+        
+        # Ensure multipliers are positive and reasonable
+        density_multipliers = np.clip(density_multipliers, 0.3, 2.0)
+        
+        # Apply multipliers to each community's row (outgoing connections)
+        P_modified = P.copy()
+        for i in range(K):
+            P_modified[i, :] *= density_multipliers[i]
+        
+        # Store the multipliers for analysis
+        self.community_density_multipliers = density_multipliers
+        
+        # DON'T clip to [0,1] here - let GraphSample handle that during scaling
+        # This preserves the relative differences in the signal
+        
+        return P_modified
+
+    def _generate_cooccurrence_matrix(self, K: int, homogeneity: float, seed: Optional[int] = None) -> np.ndarray:
+        """
+        Generate symmetric community co-occurrence matrix.
+        
+        Args:
+            K: Number of communities
+            homogeneity: 1.0 = uniform co-occurrence, 0.0 = heterogeneous patterns
+            seed: Random seed
+            
+        Returns:
+            Symmetric K x K co-occurrence probability matrix
+        """
+        if seed is not None:
+            np.random.seed(seed)
+        
+        if homogeneity == 1.0:
+            # Perfectly homogeneous - all pairs equally likely
+            matrix = np.ones((K, K)) / K
+            np.fill_diagonal(matrix, 1.0)  # Self-occurrence is always 1
+            return matrix
+        
+        # Generate heterogeneous matrix
+        # Start with base uniform probability
+        base_prob = 1.0 / K
+        
+        # Generate random variations
+        # Use narrow normal distribution for heterogeneous patterns
+        variance = (1.0 - homogeneity) * 0.5  # Scale variance with heterogeneity
+        
+        # Generate upper triangle of matrix (excluding diagonal)
+        upper_triangle = np.random.normal(base_prob, variance, size=(K, K))
+        
+        # Make it symmetric
+        matrix = np.triu(upper_triangle, k=1) + np.triu(upper_triangle, k=1).T
+        
+        # Set diagonal to 1.0 (self-occurrence)
+        np.fill_diagonal(matrix, 1.0)
+        
+        # Ensure all values are positive and reasonable
+        matrix = np.clip(matrix, 0.01, 1.0)
+        
+        # Normalize rows to maintain proper probabilities
+        # Each row should sum to something reasonable relative to K
+        row_sums = np.sum(matrix, axis=1, keepdims=True)
+        matrix = matrix / row_sums * K * base_prob * 2  # Scale to reasonable range
+        matrix = np.clip(matrix, 0.01, 1.0)
+        
+        return matrix
+
 class GraphSample:
     """
     Represents a single graph instance sampled from the GraphUniverse.
@@ -602,7 +679,7 @@ class GraphSample:
     def __init__(
         self,
         universe: GraphUniverse,
-        communities: List[int],
+        num_communities: int,
         n_nodes: int,
         min_component_size: int,
         degree_heterogeneity: float,
@@ -653,7 +730,14 @@ class GraphSample:
         total_start = time.time()
 
         self.universe = universe
-        self.communities = sorted(communities)
+
+        # Sample communities from universe
+        self.communities = universe.sample_connected_community_subset(
+            num_communities,
+            seed=seed,
+            use_cooccurrence=True
+        )
+        
         self.original_n_nodes = n_nodes
         self.min_component_size = min_component_size
         
@@ -678,7 +762,7 @@ class GraphSample:
         self.max_retries = max_retries
 
         # Create mapping between local community indices and universe community IDs
-        self.community_id_mapping = {i: comm_id for i, comm_id in enumerate(sorted(communities))}
+        self.community_id_mapping = {i: comm_id for i, comm_id in enumerate(sorted(self.communities))}
         self.reverse_community_id_mapping = {comm_id: i for i, comm_id in self.community_id_mapping.items()}
 
         # Initialize generation method and parameters
@@ -733,10 +817,10 @@ class GraphSample:
         # Time: Extract and scale probability matrix
         start = time.time()
         # Extract the submatrix of the probability matrix for these communities
-        K_sub = len(communities)
+        K_sub = len(self.communities)
         self.P_sub = np.zeros((K_sub, K_sub))
-        for i, ci in enumerate(sorted(communities)):
-            for j, cj in enumerate(sorted(communities)):
+        for i, ci in enumerate(sorted(self.communities)):
+            for j, cj in enumerate(sorted(self.communities)):
                 self.P_sub[i, j] = universe.P[ci, cj]
 
         # Scale the probability matrix

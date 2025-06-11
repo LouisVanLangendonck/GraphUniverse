@@ -118,580 +118,580 @@ def create_graph_dashboard(graph):
                     fig = visualize_community_cluster_assignments(graph.universe.feature_generator)
                     st.pyplot(fig)
 
-def run_metapath_analysis(graph, theta, max_length, allow_loops, allow_backtracking, top_k, min_length):
-    """Callback function to run metapath analysis"""
-    try:
-        # Update session state with new values
-        st.session_state.metapath_analysis_state['params'].update({
-            'theta': theta,
-            'max_length': max_length,
-            'allow_loops': allow_loops,
-            'allow_backtracking': allow_backtracking,
-            'top_k': top_k,
-            'min_length': min_length
-        })
+# def run_metapath_analysis(graph, theta, max_length, allow_loops, allow_backtracking, top_k, min_length):
+#     """Callback function to run metapath analysis"""
+#     try:
+#         # Update session state with new values
+#         st.session_state.metapath_analysis_state['params'].update({
+#             'theta': theta,
+#             'max_length': max_length,
+#             'allow_loops': allow_loops,
+#             'allow_backtracking': allow_backtracking,
+#             'top_k': top_k,
+#             'min_length': min_length
+#         })
         
-        # Run the metapath analysis
-        metapath_results = analyze_metapaths(
-            graph,
-            theta=theta,
-            max_length=max_length,
-            top_k=top_k,
-            allow_loops=allow_loops,
-            allow_backtracking=allow_backtracking,
-            min_length=min_length
-        )
+#         # Run the metapath analysis
+#         metapath_results = analyze_metapaths(
+#             graph,
+#             theta=theta,
+#             max_length=max_length,
+#             top_k=top_k,
+#             allow_loops=allow_loops,
+#             allow_backtracking=allow_backtracking,
+#             min_length=min_length
+#         )
         
-        # Store results in session state
-        st.session_state.metapath_analysis_state['results'] = metapath_results
-        st.session_state.metapath_analysis_state['analysis_run'] = True
+#         # Store results in session state
+#         st.session_state.metapath_analysis_state['results'] = metapath_results
+#         st.session_state.metapath_analysis_state['analysis_run'] = True
         
-        return True
-    except Exception as e:
-        return False
+#         return True
+#     except Exception as e:
+#         return False
 
-def render_metapath_analysis(graph):
-    """Render the metapath analysis section in an isolated container."""
-    container = st.container()
+# def render_metapath_analysis(graph):
+#     """Render the metapath analysis section in an isolated container."""
+#     container = st.container()
     
-    with container:
-        st.markdown("#### Metapath Analysis")
+#     with container:
+#         st.markdown("#### Metapath Analysis")
         
-        # Parameters outside form
-        col1, col2 = st.columns(2)
+#         # Parameters outside form
+#         col1, col2 = st.columns(2)
         
-        with col1:
-            theta = st.slider(
-                "Probability threshold (θ)",
-                min_value=0.01,
-                max_value=0.5,
-                value=st.session_state.metapath_analysis_state['params']['theta'],
-                help="Threshold for considering an edge likely in the community graph"
-            )
-            max_length = st.slider(
-                "Maximum metapath length",
-                min_value=2,
-                max_value=5,
-                value=st.session_state.metapath_analysis_state['params']['max_length'],
-                help="Maximum number of communities in a metapath"
-            )
+#         with col1:
+#             theta = st.slider(
+#                 "Probability threshold (θ)",
+#                 min_value=0.01,
+#                 max_value=0.5,
+#                 value=st.session_state.metapath_analysis_state['params']['theta'],
+#                 help="Threshold for considering an edge likely in the community graph"
+#             )
+#             max_length = st.slider(
+#                 "Maximum metapath length",
+#                 min_value=2,
+#                 max_value=5,
+#                 value=st.session_state.metapath_analysis_state['params']['max_length'],
+#                 help="Maximum number of communities in a metapath"
+#             )
         
-        with col2:
-            allow_loops = st.checkbox(
-                "Allow loops",
-                value=st.session_state.metapath_analysis_state['params']['allow_loops'],
-                help="Allow metapaths to visit the same community multiple times"
-            )
-            allow_backtracking = st.checkbox(
-                "Allow backtracking",
-                value=st.session_state.metapath_analysis_state['params']['allow_backtracking'],
-                help="Allow metapaths to return to the previous community"
-            )
-            top_k = st.slider(
-                "Number of top metapaths",
-                min_value=1,
-                max_value=10,
-                value=st.session_state.metapath_analysis_state['params']['top_k'],
-                help="Number of top metapaths to analyze in detail"
-            )
+#         with col2:
+#             allow_loops = st.checkbox(
+#                 "Allow loops",
+#                 value=st.session_state.metapath_analysis_state['params']['allow_loops'],
+#                 help="Allow metapaths to visit the same community multiple times"
+#             )
+#             allow_backtracking = st.checkbox(
+#                 "Allow backtracking",
+#                 value=st.session_state.metapath_analysis_state['params']['allow_backtracking'],
+#                 help="Allow metapaths to return to the previous community"
+#             )
+#             top_k = st.slider(
+#                 "Number of top metapaths",
+#                 min_value=1,
+#                 max_value=10,
+#                 value=st.session_state.metapath_analysis_state['params']['top_k'],
+#                 help="Number of top metapaths to analyze in detail"
+#             )
         
-        # Run analysis button
-        if st.button("Run Metapath Analysis", key="run_metapath"):
-            with st.spinner("Analyzing metapaths..."):
-                success = run_metapath_analysis(graph, theta, max_length, allow_loops, allow_backtracking, top_k, st.session_state.metapath_analysis_state['params']['min_length'])
-                if success:
-                    st.success("Metapath analysis completed successfully!")
-                else:
-                    st.error("Error during metapath analysis. Check console for details.")
+#         # Run analysis button
+#         if st.button("Run Metapath Analysis", key="run_metapath"):
+#             with st.spinner("Analyzing metapaths..."):
+#                 success = run_metapath_analysis(graph, theta, max_length, allow_loops, allow_backtracking, top_k, st.session_state.metapath_analysis_state['params']['min_length'])
+#                 if success:
+#                     st.success("Metapath analysis completed successfully!")
+#                 else:
+#                     st.error("Error during metapath analysis. Check console for details.")
         
-        # Display results if analysis has been run
-        if st.session_state.metapath_analysis_state['analysis_run'] and st.session_state.metapath_analysis_state['results'] is not None:
-            results = st.session_state.metapath_analysis_state['results']
+#         # Display results if analysis has been run
+#         if st.session_state.metapath_analysis_state['analysis_run'] and st.session_state.metapath_analysis_state['results'] is not None:
+#             results = st.session_state.metapath_analysis_state['results']
             
-            # Create tabs for different visualizations
-            tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
-                "Community Structure",
-                "Metapath Statistics",
-                "Node Classification",
-                "Multi-Metapath Node Classification",
-                "K-hop Metapath Detection",  # New tab
-                "Help"
-            ])
+#             # Create tabs for different visualizations
+#             tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+#                 "Community Structure",
+#                 "Metapath Statistics",
+#                 "Node Classification",
+#                 "Multi-Metapath Node Classification",
+#                 "K-hop Metapath Detection",  # New tab
+#                 "Help"
+#             ])
 
-            with tab1:
-                # Show P_sub matrix visualization
-                st.markdown("##### Community Edge Probability Matrix (P_sub)")
-                st.markdown("""
-                This heatmap shows the probability of edges between communities. 
-                - Brighter colors indicate higher probabilities
-                - The matrix shows how likely nodes from one community are to connect to nodes in another community
-                - This helps understand the underlying community structure that gives rise to metapaths
-                """)
-                st.pyplot(results['P_sub_figure'])
+#             with tab1:
+#                 # Show P_sub matrix visualization
+#                 st.markdown("##### Community Edge Probability Matrix (P_sub)")
+#                 st.markdown("""
+#                 This heatmap shows the probability of edges between communities. 
+#                 - Brighter colors indicate higher probabilities
+#                 - The matrix shows how likely nodes from one community are to connect to nodes in another community
+#                 - This helps understand the underlying community structure that gives rise to metapaths
+#                 """)
+#                 st.pyplot(results['P_sub_figure'])
                 
-                # Show community-level graph
-                st.markdown("##### Community-Level Metapath Graph")
-                st.markdown("""
-                This graph shows the community-level structure with edges representing likely metapaths.
-                - Nodes represent communities
-                - Edge weights show the probability of connections between communities
-                - This helps visualize the paths that are most likely to occur
-                """)
-                fig = visualize_community_metapath_graph(
-                    results['P_matrix'],
-                    theta=st.session_state.metapath_analysis_state['params']['theta'],
-                    community_mapping=results['community_mapping']
-                )
-                st.pyplot(fig)
+#                 # Show community-level graph
+#                 st.markdown("##### Community-Level Metapath Graph")
+#                 st.markdown("""
+#                 This graph shows the community-level structure with edges representing likely metapaths.
+#                 - Nodes represent communities
+#                 - Edge weights show the probability of connections between communities
+#                 - This helps visualize the paths that are most likely to occur
+#                 """)
+#                 fig = visualize_community_metapath_graph(
+#                     results['P_matrix'],
+#                     theta=st.session_state.metapath_analysis_state['params']['theta'],
+#                     community_mapping=results['community_mapping']
+#                 )
+#                 st.pyplot(fig)
             
-            with tab2:
-                st.markdown("##### Metapath Statistics")
-                stats = results['statistics']
+#             with tab2:
+#                 st.markdown("##### Metapath Statistics")
+#                 stats = results['statistics']
                 
-                # Convert to DataFrame for display
-                stats_df = pd.DataFrame({
-                    'Metapath': stats['metapaths'],
-                    'Instances': stats['instances_count'],
-                    'Avg Path Length': [f"{x:.2f}" for x in stats['avg_path_length']],
-                    'Node Participation (%)': [f"{x*100:.1f}%" for x in stats['participation']]
-                })
+#                 # Convert to DataFrame for display
+#                 stats_df = pd.DataFrame({
+#                     'Metapath': stats['metapaths'],
+#                     'Instances': stats['instances_count'],
+#                     'Avg Path Length': [f"{x:.2f}" for x in stats['avg_path_length']],
+#                     'Node Participation (%)': [f"{x*100:.1f}%" for x in stats['participation']]
+#                 })
                 
-                st.markdown("""
-                **How metapaths are ranked:**
-                Metapaths are ranked based on their probability in the community graph, not just the number of instances.
-                The probability is calculated as the product of edge probabilities along the path.
+#                 st.markdown("""
+#                 **How metapaths are ranked:**
+#                 Metapaths are ranked based on their probability in the community graph, not just the number of instances.
+#                 The probability is calculated as the product of edge probabilities along the path.
                 
-                For example, a path "0 → 1 → 2" has probability = P(0,1) × P(1,2)
-                where P(i,j) is the probability of an edge between communities i and j.
+#                 For example, a path "0 → 1 → 2" has probability = P(0,1) × P(1,2)
+#                 where P(i,j) is the probability of an edge between communities i and j.
                 
-                This means that even if a metapath has fewer instances, it might be ranked higher if:
-                - The edges between its communities have high probabilities
-                - The path is more likely to occur in the underlying community structure
-                """)
+#                 This means that even if a metapath has fewer instances, it might be ranked higher if:
+#                 - The edges between its communities have high probabilities
+#                 - The path is more likely to occur in the underlying community structure
+#                 """)
                 
-                st.dataframe(stats_df)
+#                 st.dataframe(stats_df)
                 
-                # Select a metapath to visualize
-                selected_metapath_idx = st.selectbox(
-                    "Select a metapath to visualize",
-                    range(min(st.session_state.metapath_analysis_state['params']['top_k'], len(results['metapaths']))),
-                    format_func=lambda i: stats['metapaths'][i],
-                    key="metapath_selection"
-                )
+#                 # Select a metapath to visualize
+#                 selected_metapath_idx = st.selectbox(
+#                     "Select a metapath to visualize",
+#                     range(min(st.session_state.metapath_analysis_state['params']['top_k'], len(results['metapaths']))),
+#                     format_func=lambda i: stats['metapaths'][i],
+#                     key="metapath_selection"
+#                 )
                 
-                # Show selected metapath
-                selected_metapath = results['metapaths'][selected_metapath_idx]
-                selected_instances = results['instances'][selected_metapath_idx]
+#                 # Show selected metapath
+#                 selected_metapath = results['metapaths'][selected_metapath_idx]
+#                 selected_instances = results['instances'][selected_metapath_idx]
                 
-                if selected_instances:
-                    st.markdown("##### Full Graph with Metapath Instances")
-                    st.markdown("""
-                    This visualization shows the full graph with metapath instances highlighted.
-                    - Nodes are colored by their community
-                    - Regular edges are shown in light gray
-                    - Metapath instances are highlighted with bold, colored edges
-                    """)
-                    fig = visualize_metapaths(
-                        st.session_state.current_graph.graph,
-                        st.session_state.current_graph.community_labels,
-                        selected_metapath,
-                        selected_instances,
-                        title=f"Metapath: {stats['metapaths'][selected_metapath_idx]}"
-                    )
-                    st.pyplot(fig)
-                else:
-                    st.info("No instances found for this metapath in the graph.")
+#                 if selected_instances:
+#                     st.markdown("##### Full Graph with Metapath Instances")
+#                     st.markdown("""
+#                     This visualization shows the full graph with metapath instances highlighted.
+#                     - Nodes are colored by their community
+#                     - Regular edges are shown in light gray
+#                     - Metapath instances are highlighted with bold, colored edges
+#                     """)
+#                     fig = visualize_metapaths(
+#                         st.session_state.current_graph.graph,
+#                         st.session_state.current_graph.community_labels,
+#                         selected_metapath,
+#                         selected_instances,
+#                         title=f"Metapath: {stats['metapaths'][selected_metapath_idx]}"
+#                     )
+#                     st.pyplot(fig)
+#                 else:
+#                     st.info("No instances found for this metapath in the graph.")
             
-            with tab3:
-                st.markdown("##### Node Classification")
-                st.markdown("""
-                This tab performs binary classification to predict whether a node participates in the selected metapath.
-                We use multiple models to compare their performance:
-                - Random Forest (RF): Traditional ML model using node features
-                - Multi-Layer Perceptron (MLP): Neural network using node features
-                - Graph Convolutional Network (GCN): Graph neural network using node features and graph structure
-                - GraphSAGE: Graph neural network using node features and graph structure with sampling
-                """)
-                if selected_metapath:
-                    st.markdown("#### Hyperparameter Optimization (Optuna)")
-                    st.markdown("**Baseline Feature Selection (RF/MLP):**")
-                    col_feat1, col_feat2, col_feat3 = st.columns(3)
-                    with col_feat1:
-                        use_degree = st.checkbox("Use Degree", value=True, key="optuna_baseline_use_degree")
-                    with col_feat2:
-                        use_clustering = st.checkbox("Use Clustering Coefficient", value=True, key="optuna_baseline_use_clustering")
-                    with col_feat3:
-                        use_node_features = st.checkbox("Use Node Features", value=True, key="optuna_baseline_use_node_features")
-                    optuna_baseline_feature_opts = {
-                        'use_degree': use_degree,
-                        'use_clustering': use_clustering,
-                        'use_node_features': use_node_features
-                    }
-                    model_type = st.selectbox("Model type for optimization", ["rf", "mlp", "gcn", "sage"])
-                    n_trials = st.slider("Number of Optuna trials", min_value=5, max_value=100, value=20)
-                    timeout = st.slider("Timeout (seconds)", min_value=30, max_value=1800, value=300)
-                    if st.button("Run Hyperparameter Optimization"):
-                        with st.spinner("Optimizing hyperparameters with Optuna..."):
-                            try:
-                                X = prepare_node_features(
-                                    st.session_state.current_graph.graph,
-                                    st.session_state.current_graph.community_labels,
-                                    use_degree=optuna_baseline_feature_opts['use_degree'],
-                                    use_clustering=optuna_baseline_feature_opts['use_clustering'],
-                                    use_node_features=optuna_baseline_feature_opts['use_node_features']
-                                )
-                            except ValueError as e:
-                                st.error(str(e))
-                                st.stop()
+#             with tab3:
+#                 st.markdown("##### Node Classification")
+#                 st.markdown("""
+#                 This tab performs binary classification to predict whether a node participates in the selected metapath.
+#                 We use multiple models to compare their performance:
+#                 - Random Forest (RF): Traditional ML model using node features
+#                 - Multi-Layer Perceptron (MLP): Neural network using node features
+#                 - Graph Convolutional Network (GCN): Graph neural network using node features and graph structure
+#                 - GraphSAGE: Graph neural network using node features and graph structure with sampling
+#                 """)
+#                 if selected_metapath:
+#                     st.markdown("#### Hyperparameter Optimization (Optuna)")
+#                     st.markdown("**Baseline Feature Selection (RF/MLP):**")
+#                     col_feat1, col_feat2, col_feat3 = st.columns(3)
+#                     with col_feat1:
+#                         use_degree = st.checkbox("Use Degree", value=True, key="optuna_baseline_use_degree")
+#                     with col_feat2:
+#                         use_clustering = st.checkbox("Use Clustering Coefficient", value=True, key="optuna_baseline_use_clustering")
+#                     with col_feat3:
+#                         use_node_features = st.checkbox("Use Node Features", value=True, key="optuna_baseline_use_node_features")
+#                     optuna_baseline_feature_opts = {
+#                         'use_degree': use_degree,
+#                         'use_clustering': use_clustering,
+#                         'use_node_features': use_node_features
+#                     }
+#                     model_type = st.selectbox("Model type for optimization", ["rf", "mlp", "gcn", "sage"])
+#                     n_trials = st.slider("Number of Optuna trials", min_value=5, max_value=100, value=20)
+#                     timeout = st.slider("Timeout (seconds)", min_value=30, max_value=1800, value=300)
+#                     if st.button("Run Hyperparameter Optimization"):
+#                         with st.spinner("Optimizing hyperparameters with Optuna..."):
+#                             try:
+#                                 X = prepare_node_features(
+#                                     st.session_state.current_graph.graph,
+#                                     st.session_state.current_graph.community_labels,
+#                                     use_degree=optuna_baseline_feature_opts['use_degree'],
+#                                     use_clustering=optuna_baseline_feature_opts['use_clustering'],
+#                                     use_node_features=optuna_baseline_feature_opts['use_node_features']
+#                                 )
+#                             except ValueError as e:
+#                                 st.error(str(e))
+#                                 st.stop()
             
-            with tab4:
-                st.markdown("#### Multi-Metapath Node Classification")
-                st.markdown("""
-                This tab performs multi-label classification to predict whether a node participates in multiple metapaths.
-                For each node, a binary vector label is created: 1 if the node participates in the metapath, 0 otherwise.
-                The classifier predicts this vector for each node (multi-label classification).
-                """)
-                metapath_options = results['metapaths'][:st.session_state.metapath_analysis_state['params']['top_k']]
-                metapath_labels = [f"{i}: {stats['metapaths'][i]}" for i in range(len(metapath_options))]
-                selected_indices = st.multiselect(
-                    "Select metapaths for multi-label classification",
-                    options=list(range(len(metapath_options))),
-                    format_func=lambda i: metapath_labels[i],
-                    default=list(range(min(2, len(metapath_options))))
-                )
+#             with tab4:
+#                 st.markdown("#### Multi-Metapath Node Classification")
+#                 st.markdown("""
+#                 This tab performs multi-label classification to predict whether a node participates in multiple metapaths.
+#                 For each node, a binary vector label is created: 1 if the node participates in the metapath, 0 otherwise.
+#                 The classifier predicts this vector for each node (multi-label classification).
+#                 """)
+#                 metapath_options = results['metapaths'][:st.session_state.metapath_analysis_state['params']['top_k']]
+#                 metapath_labels = [f"{i}: {stats['metapaths'][i]}" for i in range(len(metapath_options))]
+#                 selected_indices = st.multiselect(
+#                     "Select metapaths for multi-label classification",
+#                     options=list(range(len(metapath_options))),
+#                     format_func=lambda i: metapath_labels[i],
+#                     default=list(range(min(2, len(metapath_options))))
+#                 )
                 
-                if not selected_indices:
-                    st.warning("Please select at least one metapath")
-                else:
-                    selected_metapaths = [metapath_options[i] for i in selected_indices]
+#                 if not selected_indices:
+#                     st.warning("Please select at least one metapath")
+#                 else:
+#                     selected_metapaths = [metapath_options[i] for i in selected_indices]
                     
-                    # Add a button to create splits first
-                    st.markdown("### Create Train/Val/Test Splits")
-                    st.markdown("""
-                    First, create consistent train/validation/test splits that will be used for all models.
-                    This ensures fair comparison between different model types.
-                    """)
+#                     # Add a button to create splits first
+#                     st.markdown("### Create Train/Val/Test Splits")
+#                     st.markdown("""
+#                     First, create consistent train/validation/test splits that will be used for all models.
+#                     This ensures fair comparison between different model types.
+#                     """)
                     
-                    col1, col2, col3 = st.columns(3)
-                    with col1:
-                        train_size = st.slider("Train size", 0.5, 0.9, 0.7, 0.05, key="ml_train_size")
-                    with col2:
-                        val_size = st.slider("Validation size", 0.05, 0.25, 0.15, 0.05, key="ml_val_size")
-                    with col3:
-                        test_size = st.slider("Test size", 0.05, 0.25, 0.15, 0.05, key="ml_test_size")
+#                     col1, col2, col3 = st.columns(3)
+#                     with col1:
+#                         train_size = st.slider("Train size", 0.5, 0.9, 0.7, 0.05, key="ml_train_size")
+#                     with col2:
+#                         val_size = st.slider("Validation size", 0.05, 0.25, 0.15, 0.05, key="ml_val_size")
+#                     with col3:
+#                         test_size = st.slider("Test size", 0.05, 0.25, 0.15, 0.05, key="ml_test_size")
                     
-                    total = train_size + val_size + test_size
-                    if abs(total - 1.0) > 1e-6:
-                        st.warning(f"Split sizes sum to {total:.2f}, should be 1.0. Please adjust.")
+#                     total = train_size + val_size + test_size
+#                     if abs(total - 1.0) > 1e-6:
+#                         st.warning(f"Split sizes sum to {total:.2f}, should be 1.0. Please adjust.")
                     
-                    if st.button("Create Splits", key="create_splits"):
-                        with st.spinner("Creating train/val/test splits..."):
-                            try:
-                                # Prepare features
-                                feature_opts = {
-                                    'use_degree': True,
-                                    'use_clustering': True,
-                                    'use_node_features': True
-                                }
+#                     if st.button("Create Splits", key="create_splits"):
+#                         with st.spinner("Creating train/val/test splits..."):
+#                             try:
+#                                 # Prepare features
+#                                 feature_opts = {
+#                                     'use_degree': True,
+#                                     'use_clustering': True,
+#                                     'use_node_features': True
+#                                 }
                                 
-                                X = prepare_node_features(
-                                    st.session_state.current_graph,
-                                    st.session_state.current_graph.community_labels,
-                                    use_degree=feature_opts['use_degree'],
-                                    use_clustering=feature_opts['use_clustering'],
-                                    use_node_features=feature_opts['use_node_features']
-                                )
+#                                 X = prepare_node_features(
+#                                     st.session_state.current_graph,
+#                                     st.session_state.current_graph.community_labels,
+#                                     use_degree=feature_opts['use_degree'],
+#                                     use_clustering=feature_opts['use_clustering'],
+#                                     use_node_features=feature_opts['use_node_features']
+#                                 )
                                 
-                                # Prepare multi-label targets
-                                n_nodes = X.shape[0]
-                                Y = np.zeros((n_nodes, len(selected_metapaths)), dtype=int)
-                                graph_nx = st.session_state.current_graph.graph
+#                                 # Prepare multi-label targets
+#                                 n_nodes = X.shape[0]
+#                                 Y = np.zeros((n_nodes, len(selected_metapaths)), dtype=int)
+#                                 graph_nx = st.session_state.current_graph.graph
                                 
-                                for j, metapath in enumerate(selected_metapaths):
-                                    instances = find_metapath_instances(graph_nx, st.session_state.current_graph.community_labels, metapath)
-                                    participating_nodes = set()
-                                    for instance in instances:
-                                        participating_nodes.update(instance)
-                                    for i in range(n_nodes):
-                                        if i in participating_nodes:
-                                            Y[i, j] = 1
+#                                 for j, metapath in enumerate(selected_metapaths):
+#                                     instances = find_metapath_instances(graph_nx, st.session_state.current_graph.community_labels, metapath)
+#                                     participating_nodes = set()
+#                                     for instance in instances:
+#                                         participating_nodes.update(instance)
+#                                     for i in range(n_nodes):
+#                                         if i in participating_nodes:
+#                                             Y[i, j] = 1
                                 
-                                # Create splits
-                                splits = create_consistent_train_val_test_split(
-                                    X, Y, 
-                                    train_size=train_size, 
-                                    val_size=val_size, 
-                                    test_size=test_size,
-                                    stratify=False,  # Can't easily stratify multi-label
-                                    seed=42
-                                )
+#                                 # Create splits
+#                                 splits = create_consistent_train_val_test_split(
+#                                     X, Y, 
+#                                     train_size=train_size, 
+#                                     val_size=val_size, 
+#                                     test_size=test_size,
+#                                     stratify=False,  # Can't easily stratify multi-label
+#                                     seed=42
+#                                 )
                                 
-                                # Store in session state
-                                if 'metapath_multi_label_state' not in st.session_state.metapath_analysis_state:
-                                    st.session_state.metapath_analysis_state['metapath_multi_label_state'] = {}
+#                                 # Store in session state
+#                                 if 'metapath_multi_label_state' not in st.session_state.metapath_analysis_state:
+#                                     st.session_state.metapath_analysis_state['metapath_multi_label_state'] = {}
                                     
-                                st.session_state.metapath_analysis_state['metapath_multi_label_state'] = {
-                                    'splits_created': True,
-                                    'splits': splits,
-                                    'X': X,
-                                    'Y': Y,
-                                    'feature_opts': feature_opts,
-                                    'selected_metapaths': selected_metapaths
-                                }
+#                                 st.session_state.metapath_analysis_state['metapath_multi_label_state'] = {
+#                                     'splits_created': True,
+#                                     'splits': splits,
+#                                     'X': X,
+#                                     'Y': Y,
+#                                     'feature_opts': feature_opts,
+#                                     'selected_metapaths': selected_metapaths
+#                                 }
                                 
-                                st.success("Splits created successfully!")
+#                                 st.success("Splits created successfully!")
                                 
-                                # Display split statistics
-                                st.markdown("#### Split Statistics")
-                                train_size = len(splits['train_indices']) / n_nodes
-                                val_size = len(splits['val_indices']) / n_nodes
-                                test_size = len(splits['test_indices']) / n_nodes
+#                                 # Display split statistics
+#                                 st.markdown("#### Split Statistics")
+#                                 train_size = len(splits['train_indices']) / n_nodes
+#                                 val_size = len(splits['val_indices']) / n_nodes
+#                                 test_size = len(splits['test_indices']) / n_nodes
                                 
-                                col1, col2, col3 = st.columns(3)
-                                col1.metric("Train Split", f"{train_size:.1%}")
-                                col2.metric("Validation Split", f"{val_size:.1%}")
-                                col3.metric("Test Split", f"{test_size:.1%}")
+#                                 col1, col2, col3 = st.columns(3)
+#                                 col1.metric("Train Split", f"{train_size:.1%}")
+#                                 col2.metric("Validation Split", f"{val_size:.1%}")
+#                                 col3.metric("Test Split", f"{test_size:.1%}")
                                 
-                                # Display label distribution in splits
-                                st.markdown("#### Label Distribution in Splits")
-                                train_label_dist = Y[splits['train_indices']].mean(axis=0)
-                                val_label_dist = Y[splits['val_indices']].mean(axis=0)
-                                test_label_dist = Y[splits['test_indices']].mean(axis=0)
+#                                 # Display label distribution in splits
+#                                 st.markdown("#### Label Distribution in Splits")
+#                                 train_label_dist = Y[splits['train_indices']].mean(axis=0)
+#                                 val_label_dist = Y[splits['val_indices']].mean(axis=0)
+#                                 test_label_dist = Y[splits['test_indices']].mean(axis=0)
                                 
-                                dist_df = pd.DataFrame({
-                                    'Metapath': [metapath_labels[i] for i in selected_indices],
-                                    'Train': [f"{x:.1%}" for x in train_label_dist],
-                                    'Validation': [f"{x:.1%}" for x in val_label_dist],
-                                    'Test': [f"{x:.1%}" for x in test_label_dist]
-                                })
+#                                 dist_df = pd.DataFrame({
+#                                     'Metapath': [metapath_labels[i] for i in selected_indices],
+#                                     'Train': [f"{x:.1%}" for x in train_label_dist],
+#                                     'Validation': [f"{x:.1%}" for x in val_label_dist],
+#                                     'Test': [f"{x:.1%}" for x in test_label_dist]
+#                                 })
                                 
-                                st.dataframe(dist_df)
+#                                 st.dataframe(dist_df)
                                 
-                            except Exception as e:
-                                st.error(f"Error creating splits: {str(e)}")
-                                import traceback
-                                st.code(traceback.format_exc())
+#                             except Exception as e:
+#                                 st.error(f"Error creating splits: {str(e)}")
+#                                 import traceback
+#                                 st.code(traceback.format_exc())
                     
-                    # Rest of multi-metapath classification code remains the same
-                    # (Code omitted for brevity)
+#                     # Rest of multi-metapath classification code remains the same
+#                     # (Code omitted for brevity)
             
-            # NEW TAB: K-hop Metapath Detection
-            with tab5:
-                st.markdown("#### K-hop Metapath Detection")
-                st.markdown("""
-                This analysis detects k-hop relationships along a selected metapath and
-                labels starting nodes based on the feature regime of their k-hop neighbors.
+#             # NEW TAB: K-hop Metapath Detection
+#             with tab5:
+#                 st.markdown("#### K-hop Metapath Detection")
+#                 st.markdown("""
+#                 This analysis detects k-hop relationships along a selected metapath and
+#                 labels starting nodes based on the feature regime of their k-hop neighbors.
                 
-                **How it works:**
-                1. Select a metapath and k (hop distance)
-                2. The analysis identifies instances of the metapath in the graph
-                3. For each instance, it finds nodes that are k-hops away from starting nodes
-                4. Starting nodes are labeled based on the feature regime of their k-hop neighbors
-                """)
+#                 **How it works:**
+#                 1. Select a metapath and k (hop distance)
+#                 2. The analysis identifies instances of the metapath in the graph
+#                 3. For each instance, it finds nodes that are k-hops away from starting nodes
+#                 4. Starting nodes are labeled based on the feature regime of their k-hop neighbors
+#                 """)
                 
-                # Select a metapath to analyze
-                metapath_options = results['metapaths'][:st.session_state.metapath_analysis_state['params']['top_k']]
-                stats = results['statistics']
-                metapath_labels = [f"{i}: {stats['metapaths'][i]}" for i in range(len(metapath_options))]
+#                 # Select a metapath to analyze
+#                 metapath_options = results['metapaths'][:st.session_state.metapath_analysis_state['params']['top_k']]
+#                 stats = results['statistics']
+#                 metapath_labels = [f"{i}: {stats['metapaths'][i]}" for i in range(len(metapath_options))]
                 
-                selected_metapath_idx = st.selectbox(
-                    "Select a metapath for k-hop analysis",
-                    range(min(st.session_state.metapath_analysis_state['params']['top_k'], len(results['metapaths']))),
-                    format_func=lambda i: metapath_labels[i],
-                    key="khop_metapath_selection"
-                )
+#                 selected_metapath_idx = st.selectbox(
+#                     "Select a metapath for k-hop analysis",
+#                     range(min(st.session_state.metapath_analysis_state['params']['top_k'], len(results['metapaths']))),
+#                     format_func=lambda i: metapath_labels[i],
+#                     key="khop_metapath_selection"
+#                 )
                 
-                selected_metapath = results['metapaths'][selected_metapath_idx]
+#                 selected_metapath = results['metapaths'][selected_metapath_idx]
                 
-                # Select k (hop distance)
-                max_k = len(selected_metapath) - 1
-                k = st.slider("Select k (hop distance)", 1, max(1, max_k), 1, key="khop_k_selection")
+#                 # Select k (hop distance)
+#                 max_k = len(selected_metapath) - 1
+#                 k = st.slider("Select k (hop distance)", 1, max(1, max_k), 1, key="khop_k_selection")
                 
-                # Run analysis button
-                if st.button("Run K-hop Metapath Detection", key="run_khop_analysis"):
-                    with st.spinner("Analyzing k-hop metapath relationships..."):
-                        # Check if graph has node_regimes
-                        if not hasattr(st.session_state.current_graph, 'node_regimes') or st.session_state.current_graph.node_regimes is None:
-                            st.error("Graph does not have feature regime information. Please generate a graph with features.")
-                        else:
-                            try:
-                                # Run k-hop metapath detection
-                                khop_result = khop_metapath_detection(
-                                    st.session_state.current_graph.graph,
-                                    st.session_state.current_graph.community_labels,
-                                    st.session_state.current_graph.node_regimes,
-                                    selected_metapath,
-                                    k
-                                )
-                                # Store results in session state
-                                st.session_state.metapath_analysis_state['khop_detection_result'] = {
-                                    'result': khop_result,
-                                    'metapath': selected_metapath,
-                                    'k': k,
-                                    'analysis_run': True
-                                }
-                                st.success("K-hop metapath detection completed successfully!")
-                            except Exception as e:
-                                st.error(f"Error during k-hop metapath detection: {str(e)}")
-                # Display results if analysis has been run
-                if ('khop_detection_result' in st.session_state.metapath_analysis_state and 
-                    st.session_state.metapath_analysis_state['khop_detection_result'].get('analysis_run', False)):
-                    khop_data = st.session_state.metapath_analysis_state['khop_detection_result']
-                    khop_result = khop_data['result']
-                    # Create columns for better layout
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        # Display basic statistics
-                        st.markdown("##### K-hop Detection Results")
-                        st.markdown(f"Path: {' → '.join([str(c) for c in khop_result['path_community_sequence']])}")
-                        st.markdown(f"Starting Community: {khop_result['starting_community']}")
-                        st.markdown(f"Target Community (k-hop): {khop_result['target_community']}")
-                        st.markdown(f"Total Relationships: {khop_result['total_relationships']}")
-                        # Add interactive filters
-                        st.markdown("##### Filter Results")
-                        min_relationships = st.slider(
-                            "Minimum relationships per regime",
-                            min_value=1,
-                            max_value=max(khop_result['regime_counts'].values()) if khop_result['regime_counts'] else 1,
-                            value=1,
-                            key="min_relationships"
-                        )
-                        # Filter regimes based on minimum relationships
-                        filtered_regimes = {
-                            regime: count for regime, count in khop_result['regime_counts'].items()
-                            if count >= min_relationships
-                        }
-                    with col2:
-                        # Display regime distribution
-                        st.markdown("##### Feature Regime Distribution")
-                        if filtered_regimes:
-                            # Create bar chart of regime distribution
-                            regimes = list(filtered_regimes.keys())
-                            counts = [filtered_regimes[r] for r in regimes]
-                            fig, ax = plt.subplots(figsize=(8, 4))
-                            bars = ax.bar(regimes, counts)
-                            # Label each bar with its value
-                            for bar in bars:
-                                height = bar.get_height()
-                                ax.text(bar.get_x() + bar.get_width()/2., height + 0.1,
-                                        f'{int(height)}', ha='center', va='bottom')
-                            ax.set_xlabel('Feature Regime')
-                            ax.set_ylabel('Count')
-                            ax.set_title('Distribution of Feature Regimes in K-hop Neighbors')
-                            ax.set_xticks(regimes)
-                            st.pyplot(fig)
-                            # Add download button for regime distribution data
-                            regime_df = pd.DataFrame({
-                                'Regime': regimes,
-                                'Count': counts
-                            })
-                            st.download_button(
-                                "Download Regime Distribution",
-                                regime_df.to_csv(index=False),
-                                "regime_distribution.csv",
-                                "text/csv",
-                                key="download_regime_dist"
-                            )
-                        else:
-                            st.info("No regimes meet the minimum relationship threshold.")
-                    # Visualize relationships in the graph
-                    st.markdown("##### K-hop Relationships Visualization")
-                    if khop_result['total_relationships'] > 0:
-                        # Add visualization options
-                        viz_col1, viz_col2 = st.columns(2)
-                        with viz_col1:
-                            show_all_nodes = st.checkbox("Show all nodes", value=True)
-                            highlight_starting = st.checkbox("Highlight starting nodes", value=True)
-                        with viz_col2:
-                            node_size = st.slider("Node size", 30, 200, 80)
-                            edge_width = st.slider("Edge width", 1, 5, 2)
-                        fig = visualize_khop_metapath_detection(
-                            st.session_state.current_graph.graph,
-                            st.session_state.current_graph.community_labels,
-                            st.session_state.current_graph.node_regimes,
-                            khop_data['metapath'],
-                            khop_data['k'],
-                            khop_result,
-                            title=f"K-hop Metapath Detection (k={khop_data['k']})",
-                            show_all_nodes=show_all_nodes,
-                            highlight_starting=highlight_starting,
-                            node_size=node_size,
-                            edge_width=edge_width
-                        )
-                        st.pyplot(fig)
-                        # Add download button for visualization
-                        buf = io.BytesIO()
-                        fig.savefig(buf, format="png", bbox_inches='tight', dpi=300)
-                        st.download_button(
-                            "Download Visualization",
-                            buf.getvalue(),
-                            "khop_visualization.png",
-                            "image/png",
-                            key="download_viz"
-                        )
+#                 # Run analysis button
+#                 if st.button("Run K-hop Metapath Detection", key="run_khop_analysis"):
+#                     with st.spinner("Analyzing k-hop metapath relationships..."):
+#                         # Check if graph has node_regimes
+#                         if not hasattr(st.session_state.current_graph, 'node_regimes') or st.session_state.current_graph.node_regimes is None:
+#                             st.error("Graph does not have feature regime information. Please generate a graph with features.")
+#                         else:
+#                             try:
+#                                 # Run k-hop metapath detection
+#                                 khop_result = khop_metapath_detection(
+#                                     st.session_state.current_graph.graph,
+#                                     st.session_state.current_graph.community_labels,
+#                                     st.session_state.current_graph.node_regimes,
+#                                     selected_metapath,
+#                                     k
+#                                 )
+#                                 # Store results in session state
+#                                 st.session_state.metapath_analysis_state['khop_detection_result'] = {
+#                                     'result': khop_result,
+#                                     'metapath': selected_metapath,
+#                                     'k': k,
+#                                     'analysis_run': True
+#                                 }
+#                                 st.success("K-hop metapath detection completed successfully!")
+#                             except Exception as e:
+#                                 st.error(f"Error during k-hop metapath detection: {str(e)}")
+#                 # Display results if analysis has been run
+#                 if ('khop_detection_result' in st.session_state.metapath_analysis_state and 
+#                     st.session_state.metapath_analysis_state['khop_detection_result'].get('analysis_run', False)):
+#                     khop_data = st.session_state.metapath_analysis_state['khop_detection_result']
+#                     khop_result = khop_data['result']
+#                     # Create columns for better layout
+#                     col1, col2 = st.columns(2)
+#                     with col1:
+#                         # Display basic statistics
+#                         st.markdown("##### K-hop Detection Results")
+#                         st.markdown(f"Path: {' → '.join([str(c) for c in khop_result['path_community_sequence']])}")
+#                         st.markdown(f"Starting Community: {khop_result['starting_community']}")
+#                         st.markdown(f"Target Community (k-hop): {khop_result['target_community']}")
+#                         st.markdown(f"Total Relationships: {khop_result['total_relationships']}")
+#                         # Add interactive filters
+#                         st.markdown("##### Filter Results")
+#                         min_relationships = st.slider(
+#                             "Minimum relationships per regime",
+#                             min_value=1,
+#                             max_value=max(khop_result['regime_counts'].values()) if khop_result['regime_counts'] else 1,
+#                             value=1,
+#                             key="min_relationships"
+#                         )
+#                         # Filter regimes based on minimum relationships
+#                         filtered_regimes = {
+#                             regime: count for regime, count in khop_result['regime_counts'].items()
+#                             if count >= min_relationships
+#                         }
+#                     with col2:
+#                         # Display regime distribution
+#                         st.markdown("##### Feature Regime Distribution")
+#                         if filtered_regimes:
+#                             # Create bar chart of regime distribution
+#                             regimes = list(filtered_regimes.keys())
+#                             counts = [filtered_regimes[r] for r in regimes]
+#                             fig, ax = plt.subplots(figsize=(8, 4))
+#                             bars = ax.bar(regimes, counts)
+#                             # Label each bar with its value
+#                             for bar in bars:
+#                                 height = bar.get_height()
+#                                 ax.text(bar.get_x() + bar.get_width()/2., height + 0.1,
+#                                         f'{int(height)}', ha='center', va='bottom')
+#                             ax.set_xlabel('Feature Regime')
+#                             ax.set_ylabel('Count')
+#                             ax.set_title('Distribution of Feature Regimes in K-hop Neighbors')
+#                             ax.set_xticks(regimes)
+#                             st.pyplot(fig)
+#                             # Add download button for regime distribution data
+#                             regime_df = pd.DataFrame({
+#                                 'Regime': regimes,
+#                                 'Count': counts
+#                             })
+#                             st.download_button(
+#                                 "Download Regime Distribution",
+#                                 regime_df.to_csv(index=False),
+#                                 "regime_distribution.csv",
+#                                 "text/csv",
+#                                 key="download_regime_dist"
+#                             )
+#                         else:
+#                             st.info("No regimes meet the minimum relationship threshold.")
+#                     # Visualize relationships in the graph
+#                     st.markdown("##### K-hop Relationships Visualization")
+#                     if khop_result['total_relationships'] > 0:
+#                         # Add visualization options
+#                         viz_col1, viz_col2 = st.columns(2)
+#                         with viz_col1:
+#                             show_all_nodes = st.checkbox("Show all nodes", value=True)
+#                             highlight_starting = st.checkbox("Highlight starting nodes", value=True)
+#                         with viz_col2:
+#                             node_size = st.slider("Node size", 30, 200, 80)
+#                             edge_width = st.slider("Edge width", 1, 5, 2)
+#                         fig = visualize_khop_metapath_detection(
+#                             st.session_state.current_graph.graph,
+#                             st.session_state.current_graph.community_labels,
+#                             st.session_state.current_graph.node_regimes,
+#                             khop_data['metapath'],
+#                             khop_data['k'],
+#                             khop_result,
+#                             title=f"K-hop Metapath Detection (k={khop_data['k']})",
+#                             show_all_nodes=show_all_nodes,
+#                             highlight_starting=highlight_starting,
+#                             node_size=node_size,
+#                             edge_width=edge_width
+#                         )
+#                         st.pyplot(fig)
+#                         # Add download button for visualization
+#                         buf = io.BytesIO()
+#                         fig.savefig(buf, format="png", bbox_inches='tight', dpi=300)
+#                         st.download_button(
+#                             "Download Visualization",
+#                             buf.getvalue(),
+#                             "khop_visualization.png",
+#                             "image/png",
+#                             key="download_viz"
+#                         )
             
-            with tab6:
-                st.markdown("""
-                ### Understanding Metapath Analysis and K-hop Detection
+#             with tab6:
+#                 st.markdown("""
+#                 ### Understanding Metapath Analysis and K-hop Detection
                 
-                **What are Metapaths?**
-                Metapaths are sequences of communities that frequently appear in the graph. For example, a metapath "0 → 1 → 2" means that nodes from community 0 often connect to nodes in community 1, which then connect to nodes in community 2.
+#                 **What are Metapaths?**
+#                 Metapaths are sequences of communities that frequently appear in the graph. For example, a metapath "0 → 1 → 2" means that nodes from community 0 often connect to nodes in community 1, which then connect to nodes in community 2.
                 
-                **The Analysis Process:**
-                1. **Community Structure** tab shows:
-                   - P_sub matrix: Probability of edges between communities
-                   - Community graph: Visual representation of likely connections
+#                 **The Analysis Process:**
+#                 1. **Community Structure** tab shows:
+#                    - P_sub matrix: Probability of edges between communities
+#                    - Community graph: Visual representation of likely connections
                 
-                2. **Metapath Statistics** tab shows:
-                   - List of most common metapaths
-                   - Number of instances of each metapath
-                   - Average path length and node participation
+#                 2. **Metapath Statistics** tab shows:
+#                    - List of most common metapaths
+#                    - Number of instances of each metapath
+#                    - Average path length and node participation
                 
-                3. **Node Classification** tab:
-                   - Predicts which nodes participate in a selected metapath
-                   - Uses node features to make predictions
-                   - Shows how well the prediction works
+#                 3. **Node Classification** tab:
+#                    - Predicts which nodes participate in a selected metapath
+#                    - Uses node features to make predictions
+#                    - Shows how well the prediction works
                    
-                4. **Multi-Metapath Node Classification** tab:
-                   - Predicts which nodes participate in multiple metapaths
-                   - Creates multi-label classifiers
-                   - Compares performance of different models
+#                 4. **Multi-Metapath Node Classification** tab:
+#                    - Predicts which nodes participate in multiple metapaths
+#                    - Creates multi-label classifiers
+#                    - Compares performance of different models
                 
-                5. **K-hop Metapath Detection** tab:
-                   - **Core Feature**: Labels nodes in a starting community based on their k-hop neighbors' feature regimes
-                   - **How it works**:
-                     1. Select a metapath (e.g., "0 → 1 → 2")
-                     2. Choose k (hop distance) to analyze
-                     3. For each node in the starting community:
-                        - Find all k-hop neighbors along the metapath
-                        - Analyze the feature regimes of these neighbors
-                        - Label the starting node based on the distribution of regimes
-                   - **Visualization**:
-                     - Shows the full graph with highlighted k-hop relationships
-                     - Nodes are colored by their community
-                     - K-hop relationships are highlighted with bold edges
-                     - Feature regime distribution is shown in a bar chart
-                   - **Use Cases**:
-                     - Understanding feature propagation along metapaths
-                     - Identifying nodes with similar k-hop neighborhood patterns
-                     - Analyzing how features spread through the network
+#                 5. **K-hop Metapath Detection** tab:
+#                    - **Core Feature**: Labels nodes in a starting community based on their k-hop neighbors' feature regimes
+#                    - **How it works**:
+#                      1. Select a metapath (e.g., "0 → 1 → 2")
+#                      2. Choose k (hop distance) to analyze
+#                      3. For each node in the starting community:
+#                         - Find all k-hop neighbors along the metapath
+#                         - Analyze the feature regimes of these neighbors
+#                         - Label the starting node based on the distribution of regimes
+#                    - **Visualization**:
+#                      - Shows the full graph with highlighted k-hop relationships
+#                      - Nodes are colored by their community
+#                      - K-hop relationships are highlighted with bold edges
+#                      - Feature regime distribution is shown in a bar chart
+#                    - **Use Cases**:
+#                      - Understanding feature propagation along metapaths
+#                      - Identifying nodes with similar k-hop neighborhood patterns
+#                      - Analyzing how features spread through the network
                 
-                **How to Use K-hop Detection:**
-                1. First, examine the metapath statistics to find interesting patterns
-                2. Select a metapath that you want to analyze
-                3. Choose an appropriate k value (hop distance)
-                4. Run the analysis to see:
-                   - Distribution of feature regimes in k-hop neighbors
-                   - Visual representation of k-hop relationships
-                   - Statistics about the relationships found
-                5. Use the results to understand how features propagate along the metapath
+#                 **How to Use K-hop Detection:**
+#                 1. First, examine the metapath statistics to find interesting patterns
+#                 2. Select a metapath that you want to analyze
+#                 3. Choose an appropriate k value (hop distance)
+#                 4. Run the analysis to see:
+#                    - Distribution of feature regimes in k-hop neighbors
+#                    - Visual representation of k-hop relationships
+#                    - Statistics about the relationships found
+#                 5. Use the results to understand how features propagate along the metapath
                 
-                **Tips for Effective Analysis:**
-                - Start with smaller k values (1-2) to understand direct relationships
-                - Look for patterns in the feature regime distribution
-                - Compare results across different metapaths
-                - Use the visualization to identify clusters of similar nodes
-                """)
+#                 **Tips for Effective Analysis:**
+#                 - Start with smaller k values (1-2) to understand direct relationships
+#                 - Look for patterns in the feature regime distribution
+#                 - Compare results across different metapaths
+#                 - Use the visualization to identify clusters of similar nodes
+#                 """)
 
 # Initialization for session state
 if 'metapath_analysis_state' not in st.session_state:
@@ -863,6 +863,25 @@ if page == "Universe Creation":
             step=0.05,
             help="Controls the amount of Gaussian noise added to the universe's strength matrix"
         )
+        
+        # Add new parameters
+        community_density_variation = st.slider(
+            "Community density variation",
+            min_value=0.0,
+            max_value=1.0,
+            value=0.0,
+            step=0.1,
+            help="Amount of density variation between communities"
+        )
+        
+        community_cooccurrence_homogeneity = st.slider(
+            "Community co-occurrence homogeneity",
+            min_value=0.0,
+            max_value=1.0,
+            value=1.0,
+            step=0.1,
+            help="How homogeneous the co-occurrence of communities is"
+        )
     
     # Add degree center method selection
     st.markdown('<div class="subsection-header">Degree Center Configuration</div>', unsafe_allow_html=True)
@@ -943,6 +962,8 @@ if page == "Universe Creation":
                 assignment_skewness=assignment_skewness if feature_dim > 0 else 0.0,
                 community_exclusivity=community_exclusivity if feature_dim > 0 else 1.0,
                 degree_center_method=degree_center_method,  # Add degree center method
+                community_density_variation=community_density_variation,
+                community_cooccurrence_homogeneity=community_cooccurrence_homogeneity,
                 seed=seed
             )
             
@@ -956,6 +977,19 @@ if page == "Universe Creation":
             
             # Plot community matrix
             fig = plot_community_matrix(universe.P, communities=range(K))
+            st.pyplot(fig)
+            
+            # Plot community co-occurrence matrix
+            st.markdown('<div class="subsection-header">Community Co-occurrence Matrix</div>', unsafe_allow_html=True)
+            fig, ax = plt.subplots(figsize=(10, 8))
+            sns.heatmap(universe.community_cooccurrence_matrix, 
+                       cmap='viridis', 
+                       annot=True, 
+                       fmt='.2f',
+                       ax=ax)
+            ax.set_title('Community Co-occurrence Matrix')
+            ax.set_xlabel('Community')
+            ax.set_ylabel('Community')
             st.pyplot(fig)
             
             # Plot degree centers
@@ -1231,15 +1265,15 @@ elif page == "Graph Sampling":
         # Generate button
         if st.button("Generate Graph", key="generate_graph"):
             with st.spinner("Sampling graph..."):
-                # Sample communities
-                if st.session_state.graph_params['sampling_method'] == "connected":
-                    communities = st.session_state.universe.sample_connected_community_subset(
-                        size=st.session_state.graph_params['num_communities']
-                    )
-                else:
-                    communities = st.session_state.universe.sample_community_subset(
-                        size=st.session_state.graph_params['num_communities']
-                    )
+                # # Sample communities
+                # if st.session_state.graph_params['sampling_method'] == "connected":
+                #     communities = st.session_state.universe.sample_connected_community_subset(
+                #         size=st.session_state.graph_params['num_communities']
+                #     )
+                # else:
+                #     communities = st.session_state.universe.sample_community_subset(
+                #         size=st.session_state.graph_params['num_communities']
+                #     )
 
                 # Initialize config_model_params
                 config_model_params = {}
@@ -1302,7 +1336,7 @@ elif page == "Graph Sampling":
                 # Set up universal parameters for GraphSample
                 universal_params = dict(
                     universe=st.session_state.universe,
-                    communities=communities,
+                    num_communities=st.session_state.graph_params['num_communities'],
                     n_nodes=st.session_state.graph_params['n_nodes'],
                     min_component_size=st.session_state.graph_params['min_component_size'],
                     degree_heterogeneity=st.session_state.graph_params['method_params'].get('degree_heterogeneity', 0.0),
@@ -1926,11 +1960,12 @@ elif page == "Graph Family Generation":
             st.markdown('<div class="section-header">Family Analysis</div>', unsafe_allow_html=True)
             
             # Create tabs for different analyses
-            tab1, tab2, tab3, tab4 = st.tabs([
+            tab1, tab2, tab3, tab4, tab5 = st.tabs([
                 "Family Overview",
                 "Parameter Distributions", 
                 "Graph Statistics",
-                "Individual Graphs"
+                "Individual Graphs",
+                "Co-occurrence Analysis"
             ])
             
             with tab1:
@@ -2119,6 +2154,35 @@ elif page == "Graph Family Generation":
                 st.markdown("##### Community Analysis")
                 connection_analysis = selected_graph.analyze_community_connections()
                 st.pyplot(connection_analysis['figure'])
+            
+            with tab5:
+                st.markdown("### Co-occurrence Analysis")
+                
+                # Create consistency analyzer if not exists
+                if 'consistency_analyzer' not in st.session_state:
+                    st.session_state.consistency_analyzer = FamilyConsistencyAnalyzer(
+                        st.session_state.current_family_graphs,
+                        st.session_state.universe
+                    )
+                
+                # Run co-occurrence analysis
+                cooccurrence_results = st.session_state.consistency_analyzer.analyze_cooccurrence()
+                
+                # Display correlation
+                st.markdown("#### Correlation with Expected Co-occurrence")
+                st.metric("Correlation", f"{cooccurrence_results['correlation']:.3f}")
+                
+                # Display difference matrix
+                st.markdown("#### Difference Matrix (Actual - Expected)")
+                fig, ax = plt.subplots(figsize=(10, 8))
+                sns.heatmap(cooccurrence_results['difference_matrix'], 
+                           cmap='RdBu_r', 
+                           center=0,
+                           annot=True,
+                           fmt='.2f',
+                           ax=ax)
+                ax.set_title('Co-occurrence Difference Matrix')
+                st.pyplot(fig)
             
             # Download family data
             st.markdown('<div class="subsection-header">Export Family Data</div>', unsafe_allow_html=True)

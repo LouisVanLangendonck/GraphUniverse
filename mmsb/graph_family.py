@@ -40,6 +40,11 @@ class GraphFamilyGenerator:
         community_imbalance_range: Tuple[float, float] = (0.0, 0.0),  # Range for community imbalance
         degree_separation_range: Tuple[float, float] = (0.5, 0.5),    # Range for degree separation
         degree_method: str = "standard",
+        # Community density variation
+        community_density_variation: float = 0.0,
+        # Community co-occurrence homogeneity
+        community_cooccurrence_homogeneity: float = 1.0,
+        # Deviation limiting
         disable_deviation_limiting: bool = False,
         max_mean_community_deviation: float = 0.15,
         max_max_community_deviation: float = 0.3,
@@ -110,6 +115,11 @@ class GraphFamilyGenerator:
         self.community_imbalance_range = community_imbalance_range
         self.degree_separation_range = degree_separation_range
         self.degree_method = degree_method
+        # Community density variation
+        self.community_density_variation = community_density_variation
+        # Community co-occurrence homogeneity
+        self.community_cooccurrence_homogeneity = community_cooccurrence_homogeneity
+        # Deviation limiting
         self.disable_deviation_limiting = disable_deviation_limiting
         self.max_mean_community_deviation = max_mean_community_deviation
         self.max_max_community_deviation = max_max_community_deviation
@@ -271,16 +281,15 @@ class GraphFamilyGenerator:
                 "power_law_exponent": distribution_params.get("exponent", None)
             }
         
-        # Sample community subset
-        communities = self.universe.sample_connected_community_subset(
-            size=n_communities,
-            existing_communities=None
-        )
+        # # Sample community subset
+        # communities = self.universe.sample_connected_community_subset(
+        #     size=n_communities,
+        #     existing_communities=None
+        # )
         
         # Combine all parameters
         params = {
             'n_nodes': n_nodes,
-            'communities': communities,
             'target_homophily': target_homophily,
             'target_density': target_density,
             'n_communities': n_communities,
@@ -334,7 +343,7 @@ class GraphFamilyGenerator:
                     # Create graph sample
                     graph_sample = GraphSample(
                         universe=self.universe,
-                        communities=params['communities'],
+                        num_communities=params['n_communities'],
                         n_nodes=params['n_nodes'],
                         min_component_size=self.min_component_size,
                         degree_heterogeneity=self.degree_heterogeneity,
@@ -892,6 +901,72 @@ class FamilyConsistencyAnalyzer:
                 return interpretations[metric_type][threshold]
         
         return "Score out of expected range"
+    
+    def analyze_cooccurrence(self) -> Dict[str, Any]:
+        """
+        Simple analysis of community co-occurrence patterns in a graph family.
+        
+        Returns:
+            Dictionary with correlation and difference matrix
+        """
+        from collections import defaultdict
+        
+        # Count how often each community pair appears together
+        pair_counts = defaultdict(int)
+        individual_counts = defaultdict(int)
+        total_graphs = len(self.family_graphs)
+        
+        # Count occurrences
+        for graph in self.family_graphs:
+            communities = set(graph.communities)
+            
+            # Count individual community appearances
+            for comm in communities:
+                individual_counts[comm] += 1
+            
+            # Count pair co-occurrences
+            comm_list = sorted(list(communities))
+            for i in range(len(comm_list)):
+                for j in range(i + 1, len(comm_list)):
+                    pair = tuple(sorted([comm_list[i], comm_list[j]]))
+                    pair_counts[pair] += 1
+        
+        # Calculate expected vs actual co-occurrence rates
+        K = self.universe.K
+        expected_matrix = self.universe.community_cooccurrence_matrix
+        actual_matrix = np.zeros((K, K))
+        
+        # Fill actual co-occurrence matrix
+        for (i, j), count in pair_counts.items():
+            # Convert to probability (how often they co-occur when both are present)
+            joint_appearances = count
+            i_appearances = individual_counts[i]
+            j_appearances = individual_counts[j]
+            
+            if i_appearances > 0 and j_appearances > 0:
+                # Probability they appear together given at least one appears
+                actual_prob = joint_appearances / min(i_appearances, j_appearances)
+                actual_matrix[i, j] = actual_prob
+                actual_matrix[j, i] = actual_prob
+        
+        # Set diagonal to 1 (communities always co-occur with themselves)
+        np.fill_diagonal(actual_matrix, 1.0)
+        
+        # Calculate correlation between expected and actual
+        # Only use upper triangle (excluding diagonal)
+        mask = np.triu(np.ones_like(expected_matrix, dtype=bool), k=1)
+        expected_flat = expected_matrix[mask]
+        actual_flat = actual_matrix[mask]
+        
+        correlation = np.corrcoef(expected_flat, actual_flat)[0, 1] if len(expected_flat) > 1 else 0.0
+        
+        # Calculate difference matrix
+        diff_matrix = actual_matrix - expected_matrix
+        
+        return {
+            'correlation': correlation,
+            'difference_matrix': diff_matrix
+        }
     
     def create_consistency_dashboard(self, figsize: Tuple[int, int] = (15, 10)) -> plt.Figure:
         """
