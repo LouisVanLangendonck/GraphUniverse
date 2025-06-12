@@ -48,19 +48,19 @@ def parse_args():
                         help='Minimum number of nodes per graph')
     parser.add_argument('--max_n_nodes', type=int, default=150,
                         help='Maximum number of nodes per graph')
-    parser.add_argument('--min_communities', type=int, default=4,
+    parser.add_argument('--min_communities', type=int, default=3,
                         help='Minimum number of communities per graph')
-    parser.add_argument('--max_communities', type=int, default=10,
+    parser.add_argument('--max_communities', type=int, default=7,
                         help='Maximum number of communities per graph')
     
     # === UNIVERSE PARAMETERS ===
-    parser.add_argument('--universe_K', type=int, default=20,
+    parser.add_argument('--universe_K', type=int, default=15,
                         help='Number of communities in universe')
     parser.add_argument('--universe_feature_dim', type=int, default=32,
                         help='Feature dimension for universe')
-    parser.add_argument('--universe_edge_density', type=float, default=0.05,
+    parser.add_argument('--universe_edge_density', type=float, default=0.06,
                         help='Base edge density for universe')
-    parser.add_argument('--universe_homophily', type=float, default=0.4,
+    parser.add_argument('--universe_homophily', type=float, default=0.3,
                         help='Homophily parameter for universe')
     
     # === METHOD SELECTION ===
@@ -76,7 +76,7 @@ def parse_args():
                         help='Self-supervised pre-training task')
     
     # === MODEL CONFIGURATION ===
-    parser.add_argument('--gnn_type', type=str, default='sage',
+    parser.add_argument('--gnn_type', type=str, default='gin',
                         choices=['gcn', 'sage', 'gat', 'fagcn', 'gin'],
                         help='Type of GNN to use')
     parser.add_argument('--hidden_dim', type=int, default=128,
@@ -142,7 +142,7 @@ def parse_args():
                         help='Loss function for link prediction')
     
     # DGI
-    parser.add_argument('--dgi_corruption_type', type=str, default='feature_shuffle',
+    parser.add_argument('--dgi_corruption_type', type=str, default='edge_dropout',
                         choices=['feature_shuffle', 'edge_dropout', 'feature_dropout', 'feature_noise', 'edge_perturbation'],
                         help='Type of corruption for DGI when using feature_noise')
     parser.add_argument('--dgi_noise_std', type=float, default=0.1,

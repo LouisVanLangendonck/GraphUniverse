@@ -249,17 +249,15 @@ class DeepGraphInfoMaxTask(SelfSupervisedTask):
         
     def create_model(self, input_dim: int) -> nn.Module:
         """Create enhanced DGI model."""
-        # Encoder (same as before but with proper setup)
+        # Encoder
         if self.config.model_type == "transformer" or self.config.run_transformers:
-            from experiments.core.models import GraphTransformerModel
-            encoder = GraphTransformerModel(
+            from experiments.core.models import GraphTransformerEncoder
+            encoder = GraphTransformerEncoder(
                 input_dim=input_dim,
                 hidden_dim=self.config.hidden_dim,
-                output_dim=self.config.hidden_dim,
                 transformer_type=self.config.transformer_type,
                 num_layers=self.config.num_layers,
                 dropout=self.config.dropout,
-                is_regression=False,
                 num_heads=self.config.transformer_num_heads,
                 max_nodes=self.config.transformer_max_nodes,
                 max_path_length=self.config.transformer_max_path_length,
@@ -269,22 +267,20 @@ class DeepGraphInfoMaxTask(SelfSupervisedTask):
                 prenorm=self.config.transformer_prenorm
             )
         else:
-            from experiments.core.models import GNNModel
-            encoder = GNNModel(
+            # Base GNN encoder
+            from experiments.core.models import GNNEncoder
+            encoder = GNNEncoder(
                 input_dim=input_dim,
                 hidden_dim=self.config.hidden_dim,
-                output_dim=self.config.hidden_dim,
+                gnn_type=self.config.gnn_type,
                 num_layers=self.config.num_layers,
                 dropout=self.config.dropout,
-                gnn_type=self.config.gnn_type,
-                is_regression=False,
                 residual=self.config.residual,
                 norm_type=self.config.norm_type,
                 agg_type=self.config.agg_type,
                 heads=self.config.heads,
                 concat_heads=self.config.concat_heads,
             )
-        
         # Create readout function as Mean + Sigmoid 
         def info_max_readout(x: torch.Tensor) -> torch.Tensor:
             feature_mean = torch.mean(x, dim=0, keepdim=True)
@@ -384,15 +380,13 @@ class LinkPredictionTask(SelfSupervisedTask):
         """Create GNN model with link prediction head."""
         # Check if we should use transformer
         if self.config.model_type == "transformer" or self.config.run_transformers:
-            from experiments.core.models import GraphTransformerModel
-            encoder = GraphTransformerModel(
+            from experiments.core.models import GraphTransformerEncoder
+            encoder = GraphTransformerEncoder(
                 input_dim=input_dim,
                 hidden_dim=self.config.hidden_dim,
-                output_dim=self.config.hidden_dim,
                 transformer_type=self.config.transformer_type,
                 num_layers=self.config.num_layers,
                 dropout=self.config.dropout,
-                is_regression=False,
                 num_heads=self.config.transformer_num_heads,
                 max_nodes=self.config.transformer_max_nodes,
                 max_path_length=self.config.transformer_max_path_length,
@@ -403,19 +397,18 @@ class LinkPredictionTask(SelfSupervisedTask):
             )
         else:
             # Base GNN encoder
-            encoder = GNNModel(
+            from experiments.core.models import GNNEncoder
+            encoder = GNNEncoder(
                 input_dim=input_dim,
                 hidden_dim=self.config.hidden_dim,
-                output_dim=self.config.hidden_dim,  # Output embeddings
+                gnn_type=self.config.gnn_type,
                 num_layers=self.config.num_layers,
                 dropout=self.config.dropout,
-                gnn_type=self.config.gnn_type,
                 residual=self.config.residual,
                 norm_type=self.config.norm_type,
                 agg_type=self.config.agg_type,
                 heads=self.config.heads,
                 concat_heads=self.config.concat_heads,
-                is_regression=False  # Output continuous embeddings
             )
         
         # Link prediction head
@@ -523,15 +516,13 @@ class ContrastiveTask(SelfSupervisedTask):
         """Create GNN model with contrastive learning head."""
         # Check if we should use transformer
         if self.config.model_type == "transformer" or self.config.run_transformers:
-            from experiments.core.models import GraphTransformerModel
-            encoder = GraphTransformerModel(
+            from experiments.core.models import GraphTransformerEncoder
+            encoder = GraphTransformerEncoder(
                 input_dim=input_dim,
                 hidden_dim=self.config.hidden_dim,
-                output_dim=self.config.hidden_dim,
                 transformer_type=self.config.transformer_type,
                 num_layers=self.config.num_layers,
                 dropout=self.config.dropout,
-                is_regression=False,
                 num_heads=self.config.transformer_num_heads,
                 max_nodes=self.config.transformer_max_nodes,
                 max_path_length=self.config.transformer_max_path_length,
@@ -542,20 +533,19 @@ class ContrastiveTask(SelfSupervisedTask):
             )
         else:
             # Base GNN encoder
-            encoder = GNNModel(
-            input_dim=input_dim,
-            hidden_dim=self.config.hidden_dim,
-            output_dim=self.config.hidden_dim,
-            num_layers=self.config.num_layers,
-            dropout=self.config.dropout,
-            gnn_type=self.config.gnn_type,
-            is_regression=True,
-            residual=self.config.residual,
-            norm_type=self.config.norm_type,
-            agg_type=self.config.agg_type,
-            heads=self.config.heads,
-            concat_heads=self.config.concat_heads,
-        )
+            from experiments.core.models import GNNEncoder
+            encoder = GNNEncoder(
+                input_dim=input_dim,
+                hidden_dim=self.config.hidden_dim,
+                gnn_type=self.config.gnn_type,
+                num_layers=self.config.num_layers,
+                dropout=self.config.dropout,
+                residual=self.config.residual,
+                norm_type=self.config.norm_type,
+                agg_type=self.config.agg_type,
+                heads=self.config.heads,
+                concat_heads=self.config.concat_heads,
+            )
         
         # Global discriminator for graph-level representations
         discriminator = nn.Sequential(
@@ -670,17 +660,15 @@ class GraphCLTask(SelfSupervisedTask):
     
     def create_model(self, input_dim: int) -> nn.Module:
         """Create GraphCL model with projection head."""
-        # Encoder setup (same as before)
+        # Encoder setup
         if self.config.model_type == "transformer" or self.config.run_transformers:
-            from experiments.core.models import GraphTransformerModel
-            encoder = GraphTransformerModel(
+            from experiments.core.models import GraphTransformerEncoder
+            encoder = GraphTransformerEncoder(
                 input_dim=input_dim,
                 hidden_dim=self.config.hidden_dim,
-                output_dim=self.config.hidden_dim,
                 transformer_type=self.config.transformer_type,
                 num_layers=self.config.num_layers,
                 dropout=self.config.dropout,
-                is_regression=False,
                 num_heads=self.config.transformer_num_heads,
                 max_nodes=self.config.transformer_max_nodes,
                 max_path_length=self.config.transformer_max_path_length,
@@ -690,15 +678,13 @@ class GraphCLTask(SelfSupervisedTask):
                 prenorm=self.config.transformer_prenorm
             )
         else:
-            from experiments.core.models import GNNModel
-            encoder = GNNModel(
+            from experiments.core.models import GNNEncoder
+            encoder = GNNEncoder(
                 input_dim=input_dim,
                 hidden_dim=self.config.hidden_dim,
-                output_dim=self.config.hidden_dim,
+                gnn_type=self.config.gnn_type,
                 num_layers=self.config.num_layers,
                 dropout=self.config.dropout,
-                gnn_type=self.config.gnn_type,
-                is_regression=False,
                 residual=self.config.residual,
                 norm_type=self.config.norm_type,
                 agg_type=self.config.agg_type,
@@ -946,15 +932,13 @@ class GraphMAETask(SelfSupervisedTask):
         
         # Create encoder
         if self.config.model_type == "transformer" or self.config.run_transformers:
-            from experiments.core.models import GraphTransformerModel
-            encoder = GraphTransformerModel(
+            from experiments.core.models import GraphTransformerEncoder
+            encoder = GraphTransformerEncoder(
                 input_dim=input_dim,
                 hidden_dim=self.config.hidden_dim,
-                output_dim=self.config.hidden_dim,
                 transformer_type=self.config.transformer_type,
                 num_layers=self.config.num_layers,
                 dropout=self.config.dropout,
-                is_regression=False,
                 num_heads=self.config.transformer_num_heads,
                 max_nodes=self.config.transformer_max_nodes,
                 max_path_length=self.config.transformer_max_path_length,
@@ -964,15 +948,13 @@ class GraphMAETask(SelfSupervisedTask):
                 prenorm=self.config.transformer_prenorm
             )
         else:
-            from experiments.core.models import GNNModel
-            encoder = GNNModel(
+            from experiments.core.models import GNNEncoder
+            encoder = GNNEncoder(
                 input_dim=input_dim,
                 hidden_dim=self.config.hidden_dim,
-                output_dim=self.config.hidden_dim,
+                gnn_type=self.config.gnn_type,
                 num_layers=self.config.num_layers,
                 dropout=self.config.dropout,
-                gnn_type=self.config.gnn_type,
-                is_regression=False,
                 residual=self.config.residual,
                 norm_type=self.config.norm_type,
                 agg_type=self.config.agg_type,
@@ -984,15 +966,13 @@ class GraphMAETask(SelfSupervisedTask):
         if self.decoder_type == 'gnn':
             # Use GNN decoder as in the paper
             decoder_gnn_type = getattr(self.config, 'graphmae_decoder_gnn_type', self.config.gnn_type)
-            from experiments.core.models import GNNModel
-            decoder = GNNModel(
+            from experiments.core.models import GNNEncoder
+            decoder = GNNEncoder(
                 input_dim=self.config.hidden_dim,
-                hidden_dim=self.config.hidden_dim,
-                output_dim=input_dim,  # Reconstruct original features
+                hidden_dim=input_dim,
+                gnn_type=decoder_gnn_type,
                 num_layers=1,  # Single layer decoder as in paper
                 dropout=self.config.dropout,
-                gnn_type=decoder_gnn_type,
-                is_regression=False,
                 residual=False,  # No residual in decoder
                 norm_type=self.config.norm_type,
                 agg_type=self.config.agg_type,
@@ -1214,15 +1194,15 @@ class PreTrainedModelSaver:
         os.makedirs(output_dir, exist_ok=True)
     
     def save_model(
-    self,
-    model: torch.nn.Module,
-    config: PreTrainingConfig,
-    training_history: Dict[str, List[float]],
-    metrics: Dict[str, float],
-    hyperopt_results: Optional[Dict] = None,
-    enhanced_metadata: Optional[Dict] = None,
-    model_id: Optional[str] = None
-) -> str:
+        self,
+        model: torch.nn.Module,
+        config: PreTrainingConfig,
+        training_history: Dict[str, List[float]],
+        metrics: Dict[str, float],
+        hyperopt_results: Optional[Dict] = None,
+        enhanced_metadata: Optional[Dict] = None,
+        model_id: Optional[str] = None
+    ) -> str:
         """Save pre-trained model with enhanced metadata including family references."""
         
         if model_id is None:
@@ -1248,7 +1228,7 @@ class PreTrainedModelSaver:
         else:
             encoder = model
         
-        # FIXED: Get input_dim from the encoder's actual parameters
+        # Get input_dim from the encoder's actual parameters
         input_dim = None
         if hasattr(encoder, 'input_dim'):
             input_dim = encoder.input_dim

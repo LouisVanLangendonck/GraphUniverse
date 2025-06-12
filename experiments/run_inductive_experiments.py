@@ -47,14 +47,14 @@ def parse_args():
                         help='Freeze encoder weights during fine-tuning')
     parser.add_argument('--calculate_silhouette_score', action='store_true', default=True,
                         help='Calculate silhouette score of communities of pre-trained models')
-    parser.add_argument('--max_train_graphs_for_finetuning', type=int, default=10,
+    parser.add_argument('--max_train_graphs_for_finetuning', type=int, default=3,
                         help='Maximum number of training graphs for fine-tuning')
     parser.add_argument('--only_pretrained_experiments', action='store_true',
                         help='Dont do any other experiments. Only fine-tune pre-trained models and from scratch version of it and hyperparameter optimization of that model type.')    
         
     # === TASKS ===
-    parser.add_argument('--tasks', type=str, nargs='+', default=['community', 'k_hop_community_counts'],
-                        choices=['community', 'k_hop_community_counts'],
+    parser.add_argument('--tasks', type=str, nargs='+', default=['triangle_count'],
+                        choices=['community', 'k_hop_community_counts', 'triangle_count'],
                         help='Learning tasks to run')
     parser.add_argument('--khop_k', type=int, default=2,
                         help='k value for k-hop community counting task')
@@ -142,11 +142,11 @@ def parse_args():
                         help='Skip Random Forest model')
     
     # === TRAINING ===
-    parser.add_argument('--epochs', type=int, default=150,
+    parser.add_argument('--epochs', type=int, default=200,
                         help='Maximum number of epochs')
     parser.add_argument('--patience', type=int, default=50,
                         help='Patience for early stopping')
-    parser.add_argument('--learning_rate', type=float, default=0.01,
+    parser.add_argument('--learning_rate', type=float, default=0.001,
                         help='Learning rate for neural models')
     parser.add_argument('--hidden_dim', type=int, default=64,
                         help='Hidden dimension for neural models')
@@ -222,8 +222,8 @@ def create_config_from_args(args) -> InductiveExperimentConfig:
         freeze_encoder=args.freeze_encoder,
         calculate_silhouette_score=args.calculate_silhouette_score,
         only_pretrained_experiments=args.only_pretrained_experiments,
-        max_train_graphs_for_finetuning=getattr(args, 'max_train_graphs_for_finetuning', 2),
-        minimum_train_graphs_to_cover_k=True,
+        max_train_graphs_for_finetuning=getattr(args, 'max_train_graphs_for_finetuning', 5),
+        minimum_train_graphs_to_cover_k=False,
 
         # === TASKS ===
         tasks=args.tasks,

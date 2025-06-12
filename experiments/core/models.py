@@ -141,8 +141,171 @@ class GINConv(MessagePassing):
         return x_j
     
 
+class GNNEncoder(torch.nn.Module):
+    """Base GNN encoder without prediction head."""
+    
+    def __init__(
+        self,
+        input_dim: int,
+        hidden_dim: int,
+        gnn_type: str = "gcn",
+        num_layers: int = 2,
+        dropout: float = 0.5,
+        residual: bool = False,
+        norm_type: str = "none",
+        agg_type: str = "mean",
+        heads: int = 1,
+        concat_heads: bool = True,
+        eps: float = 0.3  # For FAGCN residual connection
+    ):
+        super().__init__()
+        self.input_dim = input_dim
+        self.hidden_dim = hidden_dim
+        self.gnn_type = gnn_type
+        self.num_layers = num_layers
+        self.dropout = dropout
+        self.residual = residual
+        self.norm_type = norm_type
+        self.agg_type = agg_type
+        self.heads = heads
+        self.concat_heads = concat_heads
+        self.eps = eps
+        
+        # Initialize appropriate GNN type
+        if gnn_type == "fagcn":
+            self._init_fagcn(input_dim, hidden_dim, dropout)
+        elif gnn_type == "gin":
+            self._init_gin(input_dim, hidden_dim, dropout)
+        else:
+            self._init_standard_gnn(input_dim, hidden_dim, dropout)
+    
+    def _init_fagcn(self, input_dim: int, hidden_dim: int, dropout: float):
+        """Initialize FAGCN layers."""
+        self.convs = torch.nn.ModuleList()
+        self.norms = torch.nn.ModuleList()
+        
+        # Input layer
+        self.convs.append(FALayer(input_dim, dropout))
+        if self.norm_type != "none":
+            self.norms.append(self._get_norm_layer(input_dim))
+        
+        # Hidden layers
+        for _ in range(self.num_layers - 1):
+            self.convs.append(FALayer(hidden_dim, dropout))
+            if self.norm_type != "none":
+                self.norms.append(self._get_norm_layer(hidden_dim))
+    
+    def _init_standard_gnn(self, input_dim: int, hidden_dim: int, dropout: float):
+        """Initialize standard GNN layers (GCN, GAT, etc.)."""
+        self.convs = torch.nn.ModuleList()
+        self.norms = torch.nn.ModuleList()
+        
+        # Input layer
+        if self.gnn_type == "gcn":
+            self.convs.append(GCNConv(input_dim, hidden_dim))
+        elif self.gnn_type == "gat":
+            self.convs.append(GATv2Conv(input_dim, hidden_dim // self.heads, heads=self.heads, concat=self.concat_heads))
+        elif self.gnn_type == "sage":
+            self.convs.append(SAGEConv(input_dim, hidden_dim))
+        else:
+            raise ValueError(f"Unknown GNN type: {self.gnn_type}")
+            
+        if self.norm_type != "none":
+            self.norms.append(self._get_norm_layer(hidden_dim))
+        
+        # Hidden layers
+        for _ in range(self.num_layers - 1):
+            if self.gnn_type == "gcn":
+                self.convs.append(GCNConv(hidden_dim, hidden_dim))
+            elif self.gnn_type == "gat":
+                self.convs.append(GATv2Conv(hidden_dim, hidden_dim // self.heads, heads=self.heads, concat=self.concat_heads))
+            elif self.gnn_type == "sage":
+                self.convs.append(SAGEConv(hidden_dim, hidden_dim))
+                
+            if self.norm_type != "none":
+                self.norms.append(self._get_norm_layer(hidden_dim))
+    
+    def _init_gin(self, input_dim: int, hidden_dim: int, dropout: float):
+        """Initialize GIN layers."""
+        self.convs = torch.nn.ModuleList()
+        self.norms = torch.nn.ModuleList()
+        
+        # Input layer
+        self.convs.append(GINConv(
+            input_dim, hidden_dim, 
+            eps=0.0, train_eps=True,
+            use_layer_norm=(self.norm_type == "layer"),
+            use_residual=False
+        ))
+        
+        if self.norm_type == "batch":
+            self.norms.append(torch.nn.BatchNorm1d(hidden_dim))
+        
+        # Hidden layers
+        for _ in range(self.num_layers - 1):
+            self.convs.append(GINConv(
+                hidden_dim, hidden_dim, 
+                eps=0.0, train_eps=True,
+                use_layer_norm=(self.norm_type == "layer"),
+                use_residual=False
+            ))
+            if self.norm_type == "batch":
+                self.norms.append(torch.nn.BatchNorm1d(hidden_dim))
+    
+    def _get_norm_layer(self, dim: int) -> torch.nn.Module:
+        """Get normalization layer based on norm_type."""
+        if self.norm_type == "batch":
+            return torch.nn.BatchNorm1d(dim)
+        elif self.norm_type == "layer":
+            return torch.nn.LayerNorm(dim)
+        else:
+            raise ValueError(f"Unknown norm type: {self.norm_type}")
+    
+    def forward(self, x: torch.Tensor, edge_index: torch.Tensor) -> torch.Tensor:
+        """Forward pass through GNN encoder."""
+        if self.gnn_type == "fagcn":
+            return self._forward_fagcn(x, edge_index)
+        elif self.gnn_type == "gin":
+            return self._forward_gin(x, edge_index)
+        else:
+            return self._forward_standard_gnn(x, edge_index)
+    
+    def _forward_fagcn(self, x: torch.Tensor, edge_index: torch.Tensor) -> torch.Tensor:
+        """Forward pass for FAGCN."""
+        h = x
+        for i, conv in enumerate(self.convs):
+            h = conv(h, edge_index)
+            if self.norm_type != "none":
+                h = self.norms[i](h)
+            h = F.relu(h)
+            h = F.dropout(h, p=self.dropout, training=self.training)
+        return h
+    
+    def _forward_gin(self, x: torch.Tensor, edge_index: torch.Tensor) -> torch.Tensor:
+        """Forward pass for GIN."""
+        h = x
+        for i, conv in enumerate(self.convs):
+            h = conv(h, edge_index)
+            if self.norm_type == "batch":
+                h = self.norms[i](h)
+            h = F.relu(h)
+            h = F.dropout(h, p=self.dropout, training=self.training)
+        return h
+    
+    def _forward_standard_gnn(self, x: torch.Tensor, edge_index: torch.Tensor) -> torch.Tensor:
+        """Forward pass for standard GNNs."""
+        h = x
+        for i, conv in enumerate(self.convs):
+            h = conv(h, edge_index)
+            if self.norm_type != "none":
+                h = self.norms[i](h)
+            h = F.relu(h)
+            h = F.dropout(h, p=self.dropout, training=self.training)
+        return h
+
+
 class GNNModel(torch.nn.Module):
-    """Graph Neural Network model for node classification or regression."""
+    """Full GNN model with prediction head."""
     
     def __init__(
         self,
@@ -153,295 +316,123 @@ class GNNModel(torch.nn.Module):
         num_layers: int = 2,
         dropout: float = 0.5,
         is_regression: bool = False,
+        is_graph_level_task: bool = False,
         residual: bool = False,
         norm_type: str = "none",
         agg_type: str = "mean",
         heads: int = 1,
         concat_heads: bool = True,
-        eps: float = 0.3  # For FAGCN residual connection
+        eps: float = 0.3
     ):
-        """
-        Initialize GNN model.
-        
-        Args:
-            input_dim: Input feature dimension
-            hidden_dim: Hidden layer dimension
-            output_dim: Output dimension (number of classes for classification, number of communities for regression)
-            gnn_type: Type of GNN to use ("gcn", "gat", "sage", or "fagcn")
-            num_layers: Number of GNN layers
-            dropout: Dropout rate
-            is_regression: Whether this is a regression task (True) or classification task (False)
-            residual: Whether to use residual connections (not applicable for FAGCN)
-            norm_type: Type of normalization to use (not applicable for FAGCN)
-            agg_type: Type of aggregation to use (not applicable for FAGCN)
-            heads: Number of attention heads for GAT (not applicable for FAGCN)
-            concat_heads: Whether to concatenate attention heads for GAT (not applicable for FAGCN)
-            eps: Residual connection weight for FAGCN (ignored for other models)
-        """
         super().__init__()
         
-        self.gnn_type = gnn_type
-        self.num_layers = num_layers
+        # Create encoder
+        self.encoder = GNNEncoder(
+            input_dim=input_dim,
+            hidden_dim=hidden_dim,
+            gnn_type=gnn_type,
+            num_layers=num_layers,
+            dropout=dropout,
+            residual=residual,
+            norm_type=norm_type,
+            agg_type=agg_type,
+            heads=heads,
+            concat_heads=concat_heads,
+            eps=eps
+        )
+        
+        # Create prediction head
+        self.is_graph_level_task = is_graph_level_task
         self.is_regression = is_regression
-        self.residual = residual
-        self.norm_type = norm_type
-        self.agg_type = agg_type
-        self.heads = heads
-        self.concat_heads = concat_heads
-        self.eps = eps
-        
-        # FAGCN has a different architecture
-        if gnn_type == "fagcn":
-            self._init_fagcn(input_dim, hidden_dim, output_dim, dropout)
-        elif gnn_type == "gin":
-            self._init_gin(input_dim, hidden_dim, output_dim, dropout)
+
+        if is_graph_level_task:
+            # Graph-level prediction head
+            self.readout = torch.nn.Sequential(
+                torch.nn.Linear(hidden_dim, hidden_dim),
+                torch.nn.ReLU(),
+                torch.nn.Dropout(dropout),
+                torch.nn.Linear(hidden_dim, output_dim)
+            )
         else:
-            self._init_standard_gnn(input_dim, hidden_dim, output_dim, dropout)
+            # Node-level prediction head
+            self.readout = torch.nn.Sequential(
+                torch.nn.Linear(hidden_dim, hidden_dim),
+                torch.nn.ReLU(),
+                torch.nn.Dropout(dropout),
+                torch.nn.Linear(hidden_dim, output_dim)
+            )
+        
+        if not is_regression:
+            self.readout.add_module("sigmoid", torch.nn.Sigmoid())
     
-    def _init_fagcn(self, input_dim: int, hidden_dim: int, output_dim: int, dropout: float):
-        """Initialize FAGCN architecture."""
-        self.layers = nn.ModuleList()
-        for i in range(self.num_layers):
-            self.layers.append(FALayer(hidden_dim, dropout))
+    def forward(self, x: torch.Tensor, edge_index: torch.Tensor, batch: Optional[torch.Tensor] = None) -> torch.Tensor:
+        """Forward pass through full model."""
+        # Get node embeddings from encoder
+        h = self.encoder(x, edge_index)
         
-        self.input_transform = nn.Linear(input_dim, hidden_dim)
-        self.output_transform = nn.Linear(hidden_dim, output_dim)
-        self.dropout = nn.Dropout(dropout)
-        
-        # Initialize weights
-        nn.init.xavier_normal_(self.input_transform.weight, gain=1.414)
-        nn.init.xavier_normal_(self.output_transform.weight, gain=1.414)
-        
-        # Activation for regression (ReLU to ensure non-negative counts)
-        self.regression_activation = torch.nn.ReLU() if self.is_regression else None
-    
-    def _init_standard_gnn(self, input_dim: int, hidden_dim: int, output_dim: int, dropout: float):
-        """Initialize standard GNN architecture (GCN, GAT, SAGE)."""
-        # GNN layers
-        self.convs = torch.nn.ModuleList()
-        self.norms = torch.nn.ModuleList()
-        
-        # Input layer
-        if self.gnn_type == "gcn":
-            self.convs.append(GCNConv(input_dim, hidden_dim))
-        elif self.gnn_type == "gat":
-            self.convs.append(GATv2Conv(input_dim, hidden_dim, heads=self.heads, concat=self.concat_heads))
-        elif self.gnn_type == "sage":
-            self.convs.append(SAGEConv(input_dim, hidden_dim, aggr=self.agg_type))
-        
-        # Add normalization layer if specified
-        if self.norm_type == "batch":
-            self.norms.append(torch.nn.BatchNorm1d(hidden_dim * self.heads if self.gnn_type == "gat" and self.concat_heads else hidden_dim))
-        elif self.norm_type == "layer":
-            self.norms.append(torch.nn.LayerNorm(hidden_dim * self.heads if self.gnn_type == "gat" and self.concat_heads else hidden_dim))
-        else:
-            self.norms.append(torch.nn.Identity())
-        
-        # Hidden layers
-        for _ in range(self.num_layers - 1):
-            if self.gnn_type == "gcn":
-                self.convs.append(GCNConv(hidden_dim, hidden_dim))
-            elif self.gnn_type == "gat":
-                self.convs.append(GATv2Conv(hidden_dim * self.heads if self.concat_heads else hidden_dim, 
-                                        hidden_dim, heads=self.heads, concat=self.concat_heads))
-            elif self.gnn_type == "sage":
-                self.convs.append(SAGEConv(hidden_dim, hidden_dim, aggr=self.agg_type))
-            
-            # Add normalization layer if specified
-            if self.norm_type == "batch":
-                self.norms.append(torch.nn.BatchNorm1d(hidden_dim * self.heads if self.gnn_type == "gat" and self.concat_heads else hidden_dim))
-            elif self.norm_type == "layer":
-                self.norms.append(torch.nn.LayerNorm(hidden_dim * self.heads if self.gnn_type == "gat" and self.concat_heads else hidden_dim))
+        # Apply prediction head
+        if self.is_graph_level_task:
+            # Global mean pooling for graph-level tasks
+            if batch is None:
+                # Single graph case - add batch dimension
+                h = torch.mean(h, dim=0, keepdim=True)
             else:
-                self.norms.append(torch.nn.Identity())
+                # Batched case - use global_mean_pool to maintain batch dimension
+                h = global_mean_pool(h, batch)  # Shape: [batch_size, hidden_dim]
         
-        # Output layer
-        self.lin = torch.nn.Linear(hidden_dim * self.heads if self.gnn_type == "gat" and self.concat_heads else hidden_dim, output_dim)
-        
-        # Dropout
-        self.dropout = torch.nn.Dropout(dropout)
-        
-        # Activation for regression (ReLU to ensure non-negative counts)
-        self.regression_activation = torch.nn.ReLU() if self.is_regression else None
-    
-    def _init_gin(self, input_dim: int, hidden_dim: int, output_dim: int, dropout: float):
-        """Initialize GIN architecture."""
-        self.convs = nn.ModuleList()
-        
-        # Use layer norm and residual if specified in the GNNModel constructor
-        use_layer_norm = getattr(self, 'norm_type', 'none') == 'layer'
-        use_residual = getattr(self, 'residual', False)
-        
-        # Input layer (no residual for first layer since dimensions may differ)
-        self.convs.append(GINConv(
-            input_dim, hidden_dim, 
-            eps=0.0, train_eps=True,
-            use_layer_norm=use_layer_norm,
-            use_residual=False
-        ))
-        
-        # Hidden layers (can use residual since dimensions match)
-        for _ in range(self.num_layers - 1):
-            self.convs.append(GINConv(
-                hidden_dim, hidden_dim, 
-                eps=0.0, train_eps=True,
-                use_layer_norm=use_layer_norm,
-                use_residual=use_residual
-            ))
-        
-        # Output projection
-        self.lin = nn.Linear(hidden_dim, output_dim)
-        
-        # Dropout
-        self.dropout = nn.Dropout(dropout)
-        
-        # Activation for regression
-        self.regression_activation = nn.ReLU() if self.is_regression else None
-
-    def forward(self, x, edge_index):
-        """Forward pass."""
-        if self.gnn_type == "fagcn":
-            return self._forward_fagcn(x, edge_index)
-        elif self.gnn_type == "gin":
-            return self._forward_gin(x, edge_index)
+        # Apply prediction head
+        if self.is_graph_level_task:
+            out = self.readout(h).squeeze(-1)  # Shape: [batch_size, output_dim]
         else:
-            return self._forward_standard_gnn(x, edge_index)
-    
-    def _forward_fagcn(self, x, edge_index):
-        """Forward pass for FAGCN."""
-        x = self.dropout(x)
-        x = torch.relu(self.input_transform(x))
-        x = self.dropout(x)
-        
-        raw = x  # Store initial representation for residual connections
-        
-        for i in range(self.num_layers):
-            x = self.layers[i](x, edge_index)
-            x = self.eps * raw + x  # Residual connection with epsilon weighting
-        
-        x = self.output_transform(x)
-        
-        # For regression, ensure non-negative outputs
-        if self.is_regression:
-            x = self.regression_activation(x)
-            return x
-        else:
-            return F.log_softmax(x, dim=1)
-    
-    def _forward_gin(self, x, edge_index):
-        """Forward pass for GIN."""
-        # Apply GIN layers
-        for conv in self.convs:
-            x = conv(x, edge_index)
-            x = F.relu(x)
-            x = self.dropout(x)
-        
-        # Output projection
-        x = self.lin(x)
-        
-        # For regression, ensure non-negative outputs
-        if self.is_regression:
-            x = self.regression_activation(x)
-        
-        return x
-
-    def _forward_standard_gnn(self, x, edge_index):
-        """Forward pass for standard GNN architectures."""
-        # GNN layers
-        for i in range(self.num_layers):
-            identity = x
-            x = self.convs[i](x, edge_index)
-            x = self.norms[i](x)
-            x = F.relu(x)
-            x = self.dropout(x)
-            
-            # Add residual connection if enabled
-            if self.residual and x.shape == identity.shape:
-                x = x + identity
-        
-        # Output layer
-        x = self.lin(x)
-        
-        # For regression, ensure non-negative outputs
-        if self.is_regression:
-            x = self.regression_activation(x)
-        
-        return x
+            out = self.readout(h)  # Shape: [batch_size, output_dim]
+        return out
 
 
-class GraphTransformerModel(torch.nn.Module):
-    """Graph Transformer model for node classification or regression."""
+class GraphTransformerEncoder(torch.nn.Module):
+    """Base Graph Transformer encoder without prediction head."""
     
     def __init__(
         self,
         input_dim: int,
         hidden_dim: int,
-        output_dim: int,
         transformer_type: str = "graphormer",
         num_layers: int = 3,
         dropout: float = 0.1,
-        is_regression: bool = False,
         num_heads: int = 8,
-        max_nodes: int = 200,  # For pre-computing encodings
-        max_path_length: int = 10,  # For shortest path encoding
+        max_nodes: int = 200,
+        max_path_length: int = 10,
         use_edge_features: bool = False,
         prenorm: bool = True,
-        # GraphGPS specific
         local_gnn_type: str = "gcn",
         global_model_type: str = "transformer",
-        # Optimization flags
         precompute_encodings: bool = True,
         cache_encodings: bool = True
     ):
-        """
-        Initialize Graph Transformer model.
-        
-        Args:
-            input_dim: Input feature dimension
-            hidden_dim: Hidden layer dimension
-            output_dim: Output dimension
-            transformer_type: "graphormer" or "graphgps"
-            num_layers: Number of transformer layers
-            dropout: Dropout rate
-            is_regression: Whether this is regression
-            num_heads: Number of attention heads
-            max_nodes: Maximum nodes for encoding pre-computation
-            max_path_length: Maximum path length for shortest path encoding
-            use_edge_features: Whether to use edge features
-            prenorm: Whether to use pre-normalization
-            local_gnn_type: Local GNN type for GraphGPS
-            global_model_type: Global model type for GraphGPS
-            precompute_encodings: Whether to precompute structural encodings
-            cache_encodings: Whether to cache encodings between batches
-        """
         super().__init__()
-        
-        self.transformer_type = transformer_type
+        self.input_dim = input_dim
         self.hidden_dim = hidden_dim
+        self.transformer_type = transformer_type
         self.num_layers = num_layers
-        self.is_regression = is_regression
+        self.dropout = dropout
         self.num_heads = num_heads
         self.max_nodes = max_nodes
         self.max_path_length = max_path_length
+        self.use_edge_features = use_edge_features
+        self.prenorm = prenorm
+        self.local_gnn_type = local_gnn_type
+        self.global_model_type = global_model_type
         self.precompute_encodings = precompute_encodings
         self.cache_encodings = cache_encodings
         
-        # Encoding cache
-        self._encoding_cache = {} if cache_encodings else None
-        
+        # Initialize appropriate transformer type
         if transformer_type == "graphormer":
-            self._init_graphormer(input_dim, hidden_dim, output_dim, dropout)
+            self._init_graphormer(input_dim, hidden_dim, dropout)
         elif transformer_type == "graphgps":
-            self._init_graphgps(input_dim, hidden_dim, output_dim, dropout, 
-                              local_gnn_type, global_model_type, prenorm)
+            self._init_graphgps(input_dim, hidden_dim, dropout, local_gnn_type, global_model_type, prenorm)
         else:
             raise ValueError(f"Unknown transformer type: {transformer_type}")
-        
-        # Output layer
-        self.output_layer = nn.Linear(hidden_dim, output_dim)
-        self.regression_activation = nn.ReLU() if is_regression else None
-        
-    def _init_graphormer(self, input_dim: int, hidden_dim: int, output_dim: int, dropout: float):
+    
+    def _init_graphormer(self, input_dim: int, hidden_dim: int, dropout: float):
         """Initialize Graphormer architecture."""
         # Input projection
         self.input_proj = nn.Linear(input_dim, hidden_dim)
@@ -683,13 +674,7 @@ class GraphTransformerModel(torch.nn.Module):
         return pe
     
     def forward(self, x: torch.Tensor, edge_index: torch.Tensor, batch: Optional[torch.Tensor] = None):
-        """Forward pass.
-        
-        Args:
-            x: Node features [num_nodes, input_dim]
-            edge_index: Edge indices [2, num_edges]
-            batch: Optional batch assignment tensor [num_nodes]
-        """
+        """Forward pass through transformer encoder."""
         num_nodes = x.size(0)
         
         # Project input features
@@ -737,12 +722,6 @@ class GraphTransformerModel(torch.nn.Module):
             # Combine outputs from all graphs
             h = torch.cat(outputs, dim=0)
         
-        # Output projection
-        h = self.output_layer(h)
-        
-        if self.is_regression:
-            h = self.regression_activation(h)
-        
         return h
     
     def _forward_graphormer(self, h: torch.Tensor, edge_index: torch.Tensor, encodings: Dict):
@@ -774,6 +753,92 @@ class GraphTransformerModel(torch.nn.Module):
             h = layer(h, edge_index)
         
         return h
+
+
+class GraphTransformerModel(torch.nn.Module):
+    """Full Graph Transformer model with prediction head."""
+    
+    def __init__(
+        self,
+        input_dim: int,
+        hidden_dim: int,
+        output_dim: int,
+        transformer_type: str = "graphormer",
+        num_layers: int = 3,
+        dropout: float = 0.1,
+        num_heads: int = 8,
+        max_nodes: int = 200,
+        max_path_length: int = 10,
+        use_edge_features: bool = False,
+        prenorm: bool = True,
+        local_gnn_type: str = "gcn",
+        global_model_type: str = "transformer",
+        precompute_encodings: bool = True,
+        cache_encodings: bool = True,
+        is_regression: bool = False,
+        is_graph_level_task: bool = False
+    ):
+        super().__init__()
+        
+        # Create encoder
+        self.encoder = GraphTransformerEncoder(
+            input_dim=input_dim,
+            hidden_dim=hidden_dim,
+            transformer_type=transformer_type,
+            num_layers=num_layers,
+            dropout=dropout,
+            num_heads=num_heads,
+            max_nodes=max_nodes,
+            max_path_length=max_path_length,
+            use_edge_features=use_edge_features,
+            prenorm=prenorm,
+            local_gnn_type=local_gnn_type,
+            global_model_type=global_model_type,
+            precompute_encodings=precompute_encodings,
+            cache_encodings=cache_encodings
+        )
+        
+        # Create prediction head
+        self.is_graph_level_task = is_graph_level_task
+        self.is_regression = is_regression
+        
+        if is_graph_level_task:
+            # Graph-level prediction head
+            self.readout = torch.nn.Sequential(
+                torch.nn.Linear(hidden_dim, hidden_dim),
+                torch.nn.ReLU(),
+                torch.nn.Dropout(dropout),
+                torch.nn.Linear(hidden_dim, output_dim)
+            )
+        else:
+            # Node-level prediction head
+            self.readout = torch.nn.Sequential(
+                torch.nn.Linear(hidden_dim, hidden_dim),
+                torch.nn.ReLU(),
+                torch.nn.Dropout(dropout),
+                torch.nn.Linear(hidden_dim, output_dim)
+            )
+        
+        if not is_regression:
+            self.readout.add_module("sigmoid", torch.nn.Sigmoid())
+    
+    def forward(self, x: torch.Tensor, edge_index: torch.Tensor, batch: Optional[torch.Tensor] = None) -> torch.Tensor:
+        """Forward pass through full model."""
+        # Get node embeddings from encoder
+        h = self.encoder(x, edge_index, batch)
+        
+        # Apply prediction head
+        if self.is_graph_level_task:
+            # Global mean pooling for graph-level tasks
+            if batch is None:
+                # Single graph case - add batch dimension
+                h = torch.mean(h, dim=0, keepdim=True)
+            else:
+                # Batched case - use global_mean_pool to maintain batch dimension
+                h = global_mean_pool(h, batch)  # Shape: [batch_size, hidden_dim]
+        
+        # Apply prediction head
+        return self.readout(h)  # Shape: [batch_size, output_dim]
 
 
 class SpatialEncoder(nn.Module):
@@ -1469,3 +1534,86 @@ class SklearnModel:
         """Set model parameters."""
         self.model.set_params(**params)
         return self
+
+
+class FineTuningModel(torch.nn.Module):
+    """
+    Model for fine-tuning pre-trained graph encoders.
+    
+    This model takes a pre-trained encoder and adds a task-specific prediction head.
+    The encoder can be frozen during training if desired.
+    """
+    
+    def __init__(
+        self,
+        encoder: torch.nn.Module,
+        hidden_dim: int,
+        output_dim: int,
+        dropout: float = 0.5,
+        is_regression: bool = False,
+        is_graph_level_task: bool = False,
+        freeze_encoder: bool = False,
+        use_hidden_head: bool = False,
+        head_hidden_dim: Optional[int] = None
+    ):
+        super().__init__()
+        self.encoder = encoder
+        self.hidden_dim = hidden_dim
+        self.output_dim = output_dim
+        self.is_regression = is_regression
+        self.is_graph_level_task = is_graph_level_task
+        
+        # Create prediction head
+        self.head = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim, output_dim)
+        )
+        
+        # Add sigmoid for binary classification
+        if not is_regression:
+            self.head.add_module("sigmoid", nn.Sigmoid())
+        
+        # Freeze encoder if requested
+        if freeze_encoder:
+            for param in self.encoder.parameters():
+                param.requires_grad = False
+    
+    def forward(self, x: torch.Tensor, edge_index: Optional[torch.Tensor] = None, batch: Optional[torch.Tensor] = None) -> torch.Tensor:
+        """
+        Forward pass.
+        
+        Args:
+            x: Node features [num_nodes, input_dim]
+            edge_index: Edge indices [2, num_edges] (optional for non-GNN encoders)
+            batch: Batch indices [num_nodes] (optional for graph-level tasks)
+            
+        Returns:
+            Predictions [num_nodes, output_dim] or [batch_size, output_dim] for graph-level tasks
+        """
+        # Get embeddings from encoder
+        if hasattr(self.encoder, 'convs'):  # This is a GNN model
+            if edge_index is None:
+                raise ValueError("GNN model requires edge_index")
+            h = self.encoder(x, edge_index)
+        else:  # This is an MLP or other non-GNN model
+            h = self.encoder(x)
+        
+        # For graph-level tasks, perform pooling
+        if self.is_graph_level_task:
+            if batch is None:
+                # If no batch provided, assume single graph
+                h = torch.mean(h, dim=0, keepdim=True)
+            else:
+                # Pool per graph in batch
+                h = global_mean_pool(h, batch)
+        
+        # Apply prediction head
+        out = self.head(h)
+        
+        # Squeeze the output to match target shape
+        if self.is_graph_level_task and self.is_regression:
+            out = out.squeeze(-1)  # Remove last dimension for classification tasks
+        
+        return out

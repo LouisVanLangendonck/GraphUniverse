@@ -94,6 +94,7 @@ def get_total_classes_from_dataloaders(dataloaders: Dict[str, DataLoader]) -> in
 
 def train_inductive_model(
     model: Union[GNNModel, MLPModel, SklearnModel, GraphTransformerModel],
+    model_name: str,
     dataloaders: Dict[str, DataLoader],
     config: InductiveExperimentConfig,
     task: str,
@@ -139,7 +140,7 @@ def train_inductive_model(
         criterion = torch.nn.CrossEntropyLoss()
     
     # Training loop
-    best_val_metric = float('-inf') if is_regression else 0.0
+    best_val_metric = float('inf') if is_regression else 0.0
     patience_counter = 0
     best_model_state = None
     
@@ -164,6 +165,14 @@ def train_inductive_model(
     print(f"\nStarting training with patience={effective_patience}")
     print("Early stopping will trigger if validation metric doesn't improve for", effective_patience, "epochs")
     
+    # Check if the model is graph-based
+    if model_name in ['gat', 'fagcn', 'gin', 'gcn', 'sage', 'graphormer', 'graphgps']:
+        graph_based_model = True
+    else:
+        graph_based_model = False
+    
+    print(model)
+    
     for epoch in range(config.epochs):
         # Training
         model.train()
@@ -176,7 +185,7 @@ def train_inductive_model(
             optimizer.zero_grad()
             
             # Forward pass - check if model requires edge_index
-            if hasattr(model, 'gnn_type') or hasattr(model, 'transformer_type') or finetuning:
+            if graph_based_model:
                 out = model(batch.x, batch.edge_index)
             else:  # MLPModel or other non-GNN model
                 out = model(batch.x)
@@ -208,7 +217,7 @@ def train_inductive_model(
             for batch in val_loader:
                 batch = batch.to(device)
                 
-                if hasattr(model, 'gnn_type') or hasattr(model, 'transformer_type') or finetuning:
+                if graph_based_model:
                     out = model(batch.x, batch.edge_index)
                 else:
                     out = model(batch.x)
@@ -290,7 +299,7 @@ def train_inductive_model(
         print("Loaded best model weights")
     
     # Final evaluation on test set
-    test_metrics = evaluate_inductive_model(model, dataloaders['test'], is_regression, device, finetuning)
+    test_metrics = evaluate_inductive_model(model, graph_based_model, dataloaders['test'], is_regression, device, finetuning)
     
     return {
         'train_time': train_time,
@@ -404,6 +413,7 @@ def train_sklearn_inductive(
 
 def evaluate_inductive_model(
     model: Union[GNNModel, MLPModel],
+    graph_based_model: bool,
     test_loader: DataLoader,
     is_regression: bool,
     device: torch.device,
@@ -430,7 +440,7 @@ def evaluate_inductive_model(
             batch = batch.to(device)
             
             # Forward pass - check if model requires edge_index
-            if hasattr(model, 'gnn_type') or hasattr(model, 'transformer_type') or finetuning:
+            if graph_based_model:
                 out = model(batch.x, batch.edge_index)
             else:  # MLPModel or other non-GNN model
                 out = model(batch.x)
@@ -468,22 +478,6 @@ def optimize_inductive_hyperparameters(
 ) -> Dict[str, Any]:
     """
     Optimize hyperparameters for inductive learning using validation graphs.
-    
-    Args:
-        model_creator: Function that creates model instances
-        dataloaders: Dictionary with train/val dataloaders
-        config: Experiment configuration
-        model_type: Type of model ("gnn", "mlp", "rf")
-        gnn_type: GNN type if model_type is "gnn"
-        n_trials: Number of optimization trials
-        timeout: Timeout in seconds
-        device: Device to use
-        is_regression: Whether this is regression
-        experiment_name: Name of the experiment for optuna storage
-        run_id: ID of the current run for optuna storage
-        
-    Returns:
-        Dictionary with optimization results
     """
     import optuna
     from optuna import create_study, Trial
@@ -494,93 +488,43 @@ def optimize_inductive_hyperparameters(
     # Get sample batch to determine dimensions
     sample_batch = next(iter(dataloaders['train']))
     input_dim = sample_batch.x.shape[1]
-    
     output_dim = config.universe_K
+    
+    # Create study
+    study = create_study(
+        direction='maximize' if not is_regression else 'minimize',
+        study_name=f"{experiment_name}_{run_id}" if experiment_name and run_id else None,
+        storage=get_optuna_storage_path(experiment_name, run_id) if experiment_name and run_id else None,
+        load_if_exists=True
+    )
     
     def objective(trial: Trial) -> float:
         # Common hyperparameters
         lr = trial.suggest_float('lr', 1e-4, 1e-2, log=True)
         weight_decay = trial.suggest_float('weight_decay', 1e-5, 1e-2, log=True)
-        patience = trial.suggest_int('patience', 10, 50)
+        patience = trial.suggest_int('patience', 5, 30)
         
         # Model-specific hyperparameters
-        if model_type == "transformer":  # NEW TRANSFORMER OPTIMIZATION
-            # First suggest number of heads (must be a power of 2 for efficiency)
-            num_heads = trial.suggest_categorical('num_heads', [4, 8, 16])
-            
-            # Then suggest hidden_dim that is divisible by num_heads
-            # We'll suggest a base dimension and multiply by num_heads
-            base_dim = trial.suggest_int('base_dim', 8, 32)
-            hidden_dim = base_dim * num_heads
-            
-            num_layers = trial.suggest_int('num_layers', 2, 6)
-            dropout = trial.suggest_float('dropout', 0.0, 0.3)
-            
-            # Transformer-specific parameters
-            if transformer_type == "graphormer":
-                max_path_length = trial.suggest_int('max_path_length', 5, 15)
-                precompute_encodings = trial.suggest_categorical('precompute_encodings', [True, False])
-            elif transformer_type == "graphgps":
-                local_gnn_type = trial.suggest_categorical('local_gnn_type', ['gcn', 'sage'])
-                prenorm = trial.suggest_categorical('prenorm', [True, False])
-            
-            # Create transformer model
-            from experiments.core.models import GraphTransformerModel
-            model = GraphTransformerModel(
-                input_dim=input_dim,
-                hidden_dim=hidden_dim,
-                output_dim=output_dim,
-                transformer_type=transformer_type,
-                num_layers=num_layers,
-                dropout=dropout,
-                is_regression=is_regression,
-                num_heads=num_heads,
-                max_path_length=max_path_length if transformer_type == "graphormer" else 10,
-                precompute_encodings=precompute_encodings if transformer_type == "graphormer" else True,
-                local_gnn_type=local_gnn_type if transformer_type == "graphgps" else "gcn",
-                prenorm=prenorm if transformer_type == "graphgps" else True
-            ).to(device)
-        
-        # Model-specific hyperparameters
-        elif model_type == "gnn":
+        if model_type == "gnn":
             hidden_dim = trial.suggest_int('hidden_dim', 32, 256)
             num_layers = trial.suggest_int('num_layers', 1, 4)
             dropout = trial.suggest_float('dropout', 0.1, 0.7)
             
-            # Initialize default values
-            heads = 1
-            concat_heads = True
-            eps = 0.3
-            residual = False
-            norm_type = 'none'
-            agg_type = 'mean'
-            
             # GNN-specific parameters
-            if gnn_type == "gat":
+            if gnn_type == 'gin':
+                eps = trial.suggest_float('eps', 0.0, 0.1)
+                residual = trial.suggest_categorical('residual', [True, False])
+                norm_type = trial.suggest_categorical('norm_type', ['batch', 'layer', 'none'])
+                agg_type = trial.suggest_categorical('agg_type', ['sum', 'mean', 'max'])
+            elif gnn_type == 'gat':
                 heads = trial.suggest_int('heads', 1, 8)
                 concat_heads = trial.suggest_categorical('concat_heads', [True, False])
                 residual = trial.suggest_categorical('residual', [True, False])
-                norm_type = trial.suggest_categorical('norm_type', ['none', 'layer'])
-                agg_type = trial.suggest_categorical('agg_type', ['mean', 'max', 'sum'])
-            elif gnn_type == "fagcn":
-                # FAGCN-specific parameters
-                eps = trial.suggest_float('eps', 0.0, 1.0)
-                # Suggest more layers for FAGCN since it can handle more layers
-                num_layers = trial.suggest_int('num_layers', 2, 6)
-                # Don't optimize irrelevant parameters for FAGCN
-            elif gnn_type == "gin":
-                # GIN-specific parameters
-                eps = trial.suggest_float('eps', 0.0, 1.0)
+                norm_type = trial.suggest_categorical('norm_type', ['batch', 'layer', 'none'])
+            else:
                 residual = trial.suggest_categorical('residual', [True, False])
-                norm_type = trial.suggest_categorical('norm_type', ['none', 'layer'])
-
-                
-
-            elif gnn_type in ["gcn", "sage", "gat", "gin"]:
-                residual = trial.suggest_categorical('residual', [True, False])
-                norm_type = trial.suggest_categorical('norm_type', ['none', 'layer'])
-                if gnn_type == "sage":
-                    agg_type = trial.suggest_categorical('agg_type', ['mean', 'max', 'sum'])
+                norm_type = trial.suggest_categorical('norm_type', ['batch', 'layer', 'none'])
+                agg_type = trial.suggest_categorical('agg_type', ['sum', 'mean', 'max'])
             
             # Create model
             model = model_creator(
@@ -593,188 +537,141 @@ def optimize_inductive_hyperparameters(
                 residual=residual,
                 norm_type=norm_type,
                 agg_type=agg_type,
-                heads=heads,
-                concat_heads=concat_heads,
-                eps=eps,
-                is_regression=is_regression
+                heads=heads if gnn_type == 'gat' else None,
+                concat_heads=concat_heads if gnn_type == 'gat' else None,
+                eps=eps if gnn_type == 'gin' else None,
+                is_regression=is_regression,
+                is_graph_level_task=task == 'triangle_count'
             ).to(device)
-                
-        elif model_type == "mlp":
-            hidden_dim = trial.suggest_int('hidden_dim', 32, 256)
-            num_layers = trial.suggest_int('num_layers', 1, 4)
-            dropout = trial.suggest_float('dropout', 0.1, 0.7)
             
-            # Create model
-            model = model_creator(
-                input_dim=input_dim,
-                hidden_dim=hidden_dim,
-                output_dim=output_dim,
-                num_layers=num_layers,
-                dropout=dropout,
-                is_regression=is_regression
-            ).to(device)
-
-        elif model_type == "rf":
-            # Create RF model
-            model = model_creator(
-                input_dim=input_dim,
-                output_dim=output_dim,
-                is_regression=is_regression
-            )
-        
-        else:  # sklearn
-            # Create sklearn model
-            model = model_creator(
-                input_dim=input_dim,
-                output_dim=output_dim,
-                is_regression=is_regression
-            )
+            # Train model with reduced epochs for speed
+            optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
             
-            # Train and evaluate sklearn model quickly
-            results = train_sklearn_inductive(model, dataloaders, config, is_regression)
-            if is_regression:
-                return -results['test_metrics']['mae']  # Negative because we minimize MAE
-            else:
-                return results['test_metrics']['f1_macro']
-        
-        # Train PyTorch model with reduced epochs for speed
-        optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
-        
-        # Set up loss function based on regression type
-        if is_regression:
-            if config.regression_loss == 'mae':
-                criterion = torch.nn.L1Loss()
-            else:
-                criterion = torch.nn.MSELoss()
-        else:
-            criterion = torch.nn.CrossEntropyLoss()
-        
-        # Quick training loop
-        max_epochs = min(50, config.epochs // 4)  # Reduced epochs for hyperopt
-        best_val_metric = float('inf') if is_regression else 0.0  # Initialize based on task
-        patience_counter = 0
-        
-        for epoch in range(max_epochs):
-            # Training
-            model.train()
-            for batch in dataloaders['train']:
-                batch = batch.to(device)
-                optimizer.zero_grad()
-                
-                # Forward pass - works for all model types
-                if hasattr(model, 'transformer_type'):
-                    out = model(batch.x, batch.edge_index)
-                elif hasattr(model, 'gnn_type'):
-                    out = model(batch.x, batch.edge_index)
-                else:
-                    out = model(batch.x)
-                
-                loss = criterion(out, batch.y)
-                loss.backward()
-                optimizer.step()
-            
-            # Validation
-            model.eval()
-            val_predictions = []
-            val_targets = []
-            
-            with torch.no_grad():
-                for batch in dataloaders['val']:
-                    batch = batch.to(device)
-                    
-                    if hasattr(model, 'transformer_type'):
-                        out = model(batch.x, batch.edge_index)
-                    elif hasattr(model, 'gnn_type'):
-                        out = model(batch.x, batch.edge_index)
-                    else:
-                        out = model(batch.x)
-                        
-                    if is_regression:
-                        val_predictions.append(out.detach().cpu())
-                    else:
-                        val_predictions.append(out.argmax(dim=1).detach().cpu())
-                    
-                    val_targets.append(batch.y.detach().cpu())
-            
-            # Calculate validation metric
-            val_pred = torch.cat(val_predictions, dim=0).numpy()
-            val_true = torch.cat(val_targets, dim=0).numpy()
-            val_metrics = compute_metrics(val_true, val_pred, is_regression)
-            
+            # Set up loss function
             if is_regression:
                 if config.regression_loss == 'mae':
-                    val_metric = val_metrics['mae']
-                    if val_metric < best_val_metric:  # Lower is better for MAE
-                        best_val_metric = val_metric
-                        patience_counter = 0
-                    else:
-                        patience_counter += 1
+                    criterion = torch.nn.L1Loss()
                 else:
-                    val_metric = val_metrics['r2']
-                    if val_metric > best_val_metric:  # Higher is better for R²
-                        best_val_metric = val_metric
-                        patience_counter = 0
-                    else:
-                        patience_counter += 1
+                    criterion = torch.nn.MSELoss()
             else:
-                val_metric = val_metrics['f1_macro']
-                if val_metric > best_val_metric:  # Higher is better for F1
+                criterion = torch.nn.CrossEntropyLoss()
+            
+            # Quick training loop
+            max_epochs = min(50, config.epochs // 4)  # Reduced epochs for hyperopt
+            best_val_metric = float('inf') if is_regression else 0.0
+            patience_counter = 0
+            
+            for epoch in range(max_epochs):
+                # Training
+                model.train()
+                train_loss = 0.0
+                train_predictions = []
+                train_targets = []
+                
+                for batch in dataloaders['train']:
+                    batch = batch.to(device)
+                    optimizer.zero_grad()
+                    
+                    # Forward pass
+                    out = model(batch.x, batch.edge_index)
+                    loss = criterion(out, batch.y)
+                    loss.backward()
+                    optimizer.step()
+                    
+                    train_loss += loss.item()
+                    
+                    # Store predictions for metrics
+                    if is_regression:
+                        train_predictions.append(out.detach().cpu())
+                        train_targets.append(batch.y.detach().cpu())
+                    else:
+                        train_predictions.append(out.argmax(dim=1).detach().cpu())
+                        train_targets.append(batch.y.detach().cpu())
+                
+                # Validation
+                model.eval()
+                val_loss = 0.0
+                val_predictions = []
+                val_targets = []
+                
+                with torch.no_grad():
+                    for batch in dataloaders['val']:
+                        batch = batch.to(device)
+                        out = model(batch.x, batch.edge_index)
+                        loss = criterion(out, batch.y)
+                        val_loss += loss.item()
+                        
+                        if is_regression:
+                            val_predictions.append(out.detach().cpu())
+                        else:
+                            val_predictions.append(out.argmax(dim=1).detach().cpu())
+                        
+                        val_targets.append(batch.y.detach().cpu())
+                
+                # Calculate metrics
+                train_pred = torch.cat(train_predictions, dim=0).numpy()
+                train_true = torch.cat(train_targets, dim=0).numpy()
+                val_pred = torch.cat(val_predictions, dim=0).numpy()
+                val_true = torch.cat(val_targets, dim=0).numpy()
+                
+                train_metrics = compute_metrics(train_true, train_pred, is_regression)
+                val_metrics = compute_metrics(val_true, val_pred, is_regression)
+                
+                # Get primary metrics
+                if is_regression:
+                    if config.regression_loss == 'mae':
+                        train_metric = train_metrics['mae']
+                        val_metric = val_metrics['mae']
+                    else:
+                        train_metric = train_metrics['r2']
+                        val_metric = val_metrics['r2']
+                else:
+                    train_metric = train_metrics['f1_macro']
+                    val_metric = val_metrics['f1_macro']
+                
+                # Model selection
+                improved = False
+                if is_regression:
+                    if config.regression_loss == 'mae':
+                        # For MAE, lower is better
+                        if val_metric < best_val_metric:
+                            improved = True
+                    elif config.regression_loss == 'r2':
+                        # For R², higher is better
+                        if val_metric > best_val_metric:
+                            improved = True
+                    else:
+                        raise ValueError(f"Invalid regression loss: {config.regression_loss}")
+                else:
+                    if val_metric > best_val_metric:  # Higher F1 is better
+                        improved = True
+                
+                if improved:
                     best_val_metric = val_metric
+                    best_model_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
                     patience_counter = 0
                 else:
                     patience_counter += 1
+                    if patience_counter >= patience:
+                        break
             
-            if patience_counter >= patience:
-                break
-        
-        # Return negative MAE for minimization or positive R²/F1 for maximization
-        if is_regression:
-            if config.regression_loss == 'mae':
-                return -best_val_metric  # Negative because we minimize MAE
+            # Return metric for optimization
+            if is_regression:
+                if config.regression_loss == 'mae':
+                    return -best_val_metric  # Negative because we minimize MAE
+                else:
+                    return best_val_metric  # Positive because we maximize R²
             else:
-                return best_val_metric  # Positive because we maximize R²
-        else:
-            return best_val_metric  # Positive because we maximize F1
-        
-    # Create study with early termination
-    def should_terminate(study, trial):
-        """Check if we should terminate optimization early."""
-        if is_regression:
-            if config.regression_loss == 'mae':
-                # For MAE, perfect score is 0, but we return negative values
-                return trial.value >= -1e-6  # Essentially 0 MAE
-            else:
-                # For R², perfect score is 1.0
-                return trial.value >= 0.999
-        else:
-            # For classification metrics (F1, accuracy), perfect score is 1.0
-            return trial.value >= 0.999
-    
-    # Create study with storage if experiment info provided
-    study_name = f"{model_type}_{transformer_type if transformer_type else gnn_type}_{'regression' if is_regression else 'classification'}"
-    study = create_study(direction='maximize')
+                return best_val_metric  # Positive because we maximize F1
     
     # Run optimization
-    study.optimize(objective, n_trials=n_trials, timeout=timeout, callbacks=[lambda study, trial: study.stop() if should_terminate(study, trial) else None])
-    
-    # study_name = f"{model_type}_{gnn_type if gnn_type else ''}_{'regression' if is_regression else 'classification'}"
-    # if experiment_name and run_id is not None:
-    #     storage_path = get_optuna_storage_path(experiment_name, run_id)
-    #     study = create_study(
-    #         study_name=study_name,
-    #         storage=storage_path,
-    #         direction='maximize',  # We always maximize because we negate MAE
-    #         load_if_exists=True
-    #     )
-    #     print(f"Using optuna storage: {storage_path}")
-    # else:
-    #     study = create_study(direction='maximize')  # We always maximize because we negate MAE
+    study.optimize(objective, n_trials=n_trials, timeout=timeout)
     
     return {
         'best_params': study.best_params,
-        'best_value': -study.best_value if is_regression and config.regression_loss == 'mae' else study.best_value,  # Convert back from negative MAE
+        'best_value': study.best_value,
         'n_trials': len(study.trials),
-        'study_name': study_name
+        'study_name': study.study_name
     }
 
 def optimize_finetuning_hyperparameters(
@@ -1030,6 +927,7 @@ def create_optimized_finetuning_model(
 
 def train_and_evaluate_inductive(
     model: Union[GNNModel, MLPModel, SklearnModel, GraphTransformerModel],  # Updated type hint
+    model_name: str,
     dataloaders: Dict[str, DataLoader],
     config: InductiveExperimentConfig,
     task: str,
@@ -1050,7 +948,7 @@ def train_and_evaluate_inductive(
         print(f"Training from scratch")
 
         # Handle Graph Transformer models specifically
-        if hasattr(model, 'transformer_type'):
+        if model_name in ['graphormer', 'graphgps']:
             print(f"🔄 Training Graph Transformer: {model.transformer_type}")
             
             # Share precomputed cache if available
@@ -1186,22 +1084,11 @@ def train_and_evaluate_inductive(
                                 if val_metric < best_val_metric:  # Lower is better for MAE
                                     best_val_metric = val_metric
                                     patience_counter = 0
-                                else:
-                                    patience_counter += 1
                             else:
                                 val_metric = val_metrics['r2']
                                 if val_metric > best_val_metric:  # Higher is better for R²
                                     best_val_metric = val_metric
                                     patience_counter = 0
-                                else:
-                                    patience_counter += 1
-                        else:
-                            val_metric = val_metrics['f1_macro']
-                            if val_metric > best_val_metric:  # Higher is better for F1
-                                best_val_metric = val_metric
-                                patience_counter = 0
-                            else:
-                                patience_counter += 1
                         
                         if patience_counter >= patience:
                             break
@@ -1257,8 +1144,8 @@ def train_and_evaluate_inductive(
                     config.optimized_patience = best_params.get('patience', config.patience)
         
         # Handle GNN models
-        elif hasattr(model, 'gnn_type'):
-            print(f"🔄 Training GNN: {model.gnn_type}")
+        elif model_name in ['gat', 'fagcn', 'gin', 'gcn', 'sage']:
+            print(f"🔄 Training GNN: {model_name}")
             
             # Update hyperparameter optimization for GNNs
             if optimize_hyperparams and not isinstance(model, SklearnModel):
@@ -1280,11 +1167,11 @@ def train_and_evaluate_inductive(
                 import optuna
                 from optuna import create_study, Trial
                 
-                study_name = f"gnn_{model.gnn_type}_{'regression' if is_regression else 'classification'}"
+                study_name = f"gnn_{model_name}_{'regression' if is_regression else 'classification'}"
                 study = create_study(direction='maximize')
                 
                 # Store GNN type for the objective function
-                gnn_type = model.gnn_type
+                gnn_type = model_name
                 
                 def objective(trial: Trial) -> float:
                     # Common hyperparameters
@@ -1303,7 +1190,7 @@ def train_and_evaluate_inductive(
                     eps = 0.3
                     residual = False
                     norm_type = 'none'
-                    agg_type = 'mean'
+                    agg_type = 'sum'
                     
                     # GNN-specific parameters
                     if gnn_type == "gat":
@@ -1311,14 +1198,14 @@ def train_and_evaluate_inductive(
                         concat_heads = trial.suggest_categorical('concat_heads', [True, False])
                         residual = trial.suggest_categorical('residual', [True, False])
                         norm_type = trial.suggest_categorical('norm_type', ['none', 'layer'])
-                        agg_type = trial.suggest_categorical('agg_type', ['mean', 'max', 'sum'])
-                    elif gnn_type in ["fagcn", "gin"]:
+                        agg_type = trial.suggest_categorical('agg_type', ['mean', 'sum'])
+                    elif gnn_type == "fagcn":
                         eps = trial.suggest_float('eps', 0.0, 1.0)
                     elif gnn_type in ["gcn", "sage", "gat", "gin"]:
                         residual = trial.suggest_categorical('residual', [True, False])
                         norm_type = trial.suggest_categorical('norm_type', ['none', 'layer'])
                         if gnn_type in ["sage", "gcn"]:
-                            agg_type = trial.suggest_categorical('agg_type', ['mean', 'max', 'sum'])
+                            agg_type = trial.suggest_categorical('agg_type', ['mean', 'sum'])
                     
                     # Create GNN model with all parameters
                     trial_model = GNNModel(
@@ -1334,7 +1221,8 @@ def train_and_evaluate_inductive(
                         heads=heads,
                         concat_heads=concat_heads,
                         eps=eps,
-                        is_regression=is_regression
+                        is_regression=is_regression,
+                        is_graph_level_task=task == 'triangle_count'
                     ).to(device)
                     
                     # Train model with reduced epochs for speed
@@ -1393,22 +1281,11 @@ def train_and_evaluate_inductive(
                                 if val_metric < best_val_metric:  # Lower is better for MAE
                                     best_val_metric = val_metric
                                     patience_counter = 0
-                                else:
-                                    patience_counter += 1
                             else:
                                 val_metric = val_metrics['r2']
                                 if val_metric > best_val_metric:  # Higher is better for R²
                                     best_val_metric = val_metric
                                     patience_counter = 0
-                                else:
-                                    patience_counter += 1
-                        else:
-                            val_metric = val_metrics['f1_macro']
-                            if val_metric > best_val_metric:  # Higher is better for F1
-                                best_val_metric = val_metric
-                                patience_counter = 0
-                            else:
-                                patience_counter += 1
                         
                         if patience_counter >= patience:
                             break
@@ -1442,11 +1319,12 @@ def train_and_evaluate_inductive(
                         gnn_type=gnn_type,
                         residual=best_params.get('residual', False),
                         norm_type=best_params.get('norm_type', 'none'),
-                        agg_type=best_params.get('agg_type', 'mean'),
+                        agg_type=best_params.get('agg_type', 'sum'),
                         heads=best_params.get('heads', 1),
                         concat_heads=best_params.get('concat_heads', True),
                         eps=best_params.get('eps', 0.3),
-                        is_regression=is_regression
+                        is_regression=is_regression,
+                        is_graph_level_task=task == 'triangle_count'
                     ).to(device)
                     
                     # Update config with optimized parameters
@@ -1556,22 +1434,11 @@ def train_and_evaluate_inductive(
                                 if val_metric < best_val_metric:  # Lower is better for MAE
                                     best_val_metric = val_metric
                                     patience_counter = 0
-                                else:
-                                    patience_counter += 1
                             else:
                                 val_metric = val_metrics['r2']
                                 if val_metric > best_val_metric:  # Higher is better for R²
                                     best_val_metric = val_metric
                                     patience_counter = 0
-                                else:
-                                    patience_counter += 1
-                        else:
-                            val_metric = val_metrics['f1_macro']
-                            if val_metric > best_val_metric:  # Higher is better for F1
-                                best_val_metric = val_metric
-                                patience_counter = 0
-                            else:
-                                patience_counter += 1
                         
                         if patience_counter >= patience:
                             break
@@ -1744,6 +1611,7 @@ def train_and_evaluate_inductive(
     # Train the model (either original or optimized)
     results = train_inductive_model(
         model=model,
+        model_name=model_name,
         dataloaders=dataloaders,
         config=config,
         task=task,

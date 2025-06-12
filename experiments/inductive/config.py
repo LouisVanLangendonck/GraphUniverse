@@ -48,6 +48,10 @@ class InductiveExperimentConfig:
     universe_edge_density: float = 0.1
     universe_homophily: float = 0.8
     universe_randomness_factor: float = 0.0
+    community_density_variation: float = 0.2
+    community_cooccurrence_homogeneity: float = 0.7
+    triangle_density: float = 0.1
+    triangle_community_relation_homogeneity: float = 0.7
     
     # === FEATURE GENERATION ===
     cluster_count_factor: float = 1.0
@@ -95,8 +99,9 @@ class InductiveExperimentConfig:
     inductive_mode: str = "graph_level"  # "graph_level" or "mixed"
     
     # === TASKS ===
-    tasks: List[str] = field(default_factory=lambda: ['community'])
-    is_regression: Dict[str, bool] = field(default_factory=lambda: {'community': False, 'k_hop_community_counts': True, 'metapath_classification': False})
+    tasks: List[str] = field(default_factory=lambda: ['community', 'triangle_count'])
+    is_regression: Dict[str, bool] = field(default_factory=lambda: {'community': False, 'k_hop_community_counts': True, 'triangle_count': True})
+    is_graph_level_tasks: Dict[str, bool] = field(default_factory=lambda: {'community': False, 'k_hop_community_counts': False, 'triangle_count': True})
     khop_community_counts_k: int = 2
 
     # === METAPATH TASK SETTINGS ===
@@ -121,7 +126,7 @@ class InductiveExperimentConfig:
     optimized_patience: Optional[int] = None  # Store optimized patience value if available
     batch_size: int = 1
     hidden_dim: int = 64
-    num_layers: int = 15
+    num_layers: int = 3
     dropout: float = 0.5
     # Special parameter for FAGCN
     eps: float = 0.2
@@ -174,10 +179,6 @@ class InductiveExperimentConfig:
             valid_distributions = ["standard", "power_law", "exponential", "uniform"]
             if self.degree_distribution not in valid_distributions:
                 raise ValueError(f"Invalid degree distribution: {self.degree_distribution}")
-        
-        # Validate minimum requirements
-        if self.n_graphs < 10:
-            raise ValueError("Need at least 10 graphs for meaningful inductive experiments")
         
         if self.max_communities > self.universe_K:
             raise ValueError("max_communities cannot exceed universe_K")
@@ -287,12 +288,17 @@ class PreTrainingConfig:
     universe_feature_dim: int = 32
     universe_edge_density: float = 0.1
     universe_homophily: float = 0.8
-    universe_randomness_factor: float = 1.0
+    universe_randomness_factor: float = 0.8
     use_dccc_sbm: bool = False
     degree_distribution: str = "power_law"
     cluster_count_factor: float = 1.0
     center_variance: float = 1.0
     cluster_variance: float = 0.1
+    community_density_variation: float = 0.2
+    community_cooccurrence_homogeneity: float = 0.6
+    triangle_density: float = 0.2
+    triangle_community_relation_homogeneity: float = 0.5
+
     assignment_skewness: float = 0.0
     community_exclusivity: float = 1.0
     degree_center_method: str = "linear"
@@ -303,11 +309,11 @@ class PreTrainingConfig:
     max_retries: int = 10
     min_edge_density: float = 0.005
     disable_deviation_limiting: bool = False
-    max_mean_community_deviation: float = 0.10
-    max_max_community_deviation: float = 0.20
+    max_mean_community_deviation: float = 0.20
+    max_max_community_deviation: float = 0.35
     min_component_size: int = 10
     homophily_range: Tuple[float, float] = (0.0, 0.2)
-    density_range: Tuple[float, float] = (0.0, 0.2)
+    density_range: Tuple[float, float] = (0.0, 0.1)
     community_imbalance_range: Tuple[float, float] = (0.0, 0.3)
     degree_separation_range: Tuple[float, float] = (0.0, 1.0)
     power_law_exponent_range: Tuple[float, float] = (2.0, 3.5)
@@ -334,8 +340,8 @@ class PreTrainingConfig:
     global_model_type: str = "transformer"
     transformer_prenorm: bool = True
     residual: bool = True  # Whether to use residual connections in transformer
-    norm_type: str = "layer"  # Type of normalization to use ("layer", "batch", or "none")
-    agg_type: str = "mean"  # Type of aggregation to use ("mean", "max", or "sum")
+    norm_type: str = "layer"  # Type of normalization to use ("layer", "none")
+    agg_type: str = "sum"  # Type of aggregation to use ("mean", "max", or "sum")
     
     # GAT-specific parameters
     heads: int = 1  # Number of attention heads for GAT
@@ -346,7 +352,7 @@ class PreTrainingConfig:
     
     # === TRAINING PARAMETERS ===
     epochs: int = 300
-    learning_rate: float = 0.001
+    learning_rate: float = 0.01
     weight_decay: float = 1e-5
     batch_size: int = 32
     patience: int = 50
@@ -487,6 +493,10 @@ class PreTrainingConfig:
             'assignment_skewness': self.assignment_skewness,
             'community_exclusivity': self.community_exclusivity,
             'degree_center_method': self.degree_center_method,
+            'community_density_variation': self.community_density_variation,
+            'community_cooccurrence_homogeneity': self.community_cooccurrence_homogeneity,
+            'triangle_density': self.triangle_density,
+            'triangle_community_relation_homogeneity': self.triangle_community_relation_homogeneity,
             'seed': self.seed
         }
     

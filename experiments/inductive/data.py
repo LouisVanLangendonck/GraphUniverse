@@ -568,6 +568,10 @@ def prepare_inductive_data(
                 if task == "community":
                     # Standard community prediction - use universe-indexed labels
                     pyg_data.y = torch.tensor(graph_sample.community_labels_universe_level, dtype=torch.long)
+                
+                elif task == "triangle_count":
+                    # Triangle counting (via networkx then to tensor)
+                    pyg_data.y = torch.tensor(count_trianges_graph(graph_sample.graph), dtype=torch.long)
                     
                 elif task == "k_hop_community_counts":
                     # K-hop community counting - already universe-indexed
@@ -605,7 +609,8 @@ def prepare_inductive_data(
             if split_name == 'train':
                 batch_size = min(len(pyg_graphs), config.batch_size) if pyg_graphs else 1
             else:
-                batch_size = len(pyg_graphs) if pyg_graphs else 1
+                # Use same batch size as training for consistency
+                batch_size = min(len(pyg_graphs), config.batch_size) if pyg_graphs else 1
             
             # Store data for this split
             task_data[split_name] = {
@@ -621,6 +626,10 @@ def prepare_inductive_data(
         if task == "community":
             # For community prediction, use universe K
             output_dim = universe_K
+            
+        elif task == "triangle_count":
+            # For triangle counting, use 1 output dimension
+            output_dim = 1
             
         elif task == "k_hop_community_counts":
             # For k-hop counting, use universe K
@@ -1035,3 +1044,11 @@ def list_graph_families(graph_family_dir: str = "graph_families") -> List[Dict]:
     config = PreTrainingConfig(graph_family_dir=graph_family_dir)
     manager = GraphFamilyManager(config)
     return manager.list_families()
+
+def count_trianges_graph(graph: nx.Graph) -> int:
+    """Count the number of triangles in a graph."""
+    # Get all triangles using networkx's find_cliques
+    triangles = list(nx.find_cliques(graph))
+    # Filter for triangles (cliques of size 3)
+    triangles = [t for t in triangles if len(t) == 3]
+    return len(triangles)

@@ -17,6 +17,7 @@ from torch.cuda.amp import autocast, GradScaler
 from torch.nn import init
 from torch.nn.init import xavier_uniform_, kaiming_uniform_, normal_
 import torch.nn as nn
+import copy
 
 from mmsb.model import GraphUniverse
 from mmsb.graph_family import GraphFamilyGenerator, FamilyConsistencyAnalyzer
@@ -123,6 +124,10 @@ class InductiveExperiment:
             assignment_skewness=self.config.assignment_skewness,
             community_exclusivity=self.config.community_exclusivity,
             degree_center_method=self.config.degree_center_method,
+            community_density_variation=self.config.community_density_variation,
+            community_cooccurrence_homogeneity=self.config.community_cooccurrence_homogeneity,
+            triangle_density=self.config.triangle_density,
+            triangle_community_relation_homogeneity=self.config.triangle_community_relation_homogeneity,
             seed=self.config.seed
         )
         
@@ -319,7 +324,8 @@ class InductiveExperiment:
             
             task_results = {}
             task_dataloaders = self.dataloaders[task]
-            is_regression = task == 'k_hop_community_counts'
+            is_regression = task in ['k_hop_community_counts', 'triangle_count']
+            is_graph_level_task = task == 'triangle_count'
             
             # Get dimensions
             sample_batch = next(iter(task_dataloaders['train']))
@@ -354,7 +360,8 @@ class InductiveExperiment:
                         pretrained_model,
                         metadata,
                         output_dim,
-                        is_regression
+                        is_regression,
+                        is_graph_level_task
                     ).to(self.device)
                     print(f"Created fine-tuning model by using the original pre-trained encoder: {finetune_model}")
 
@@ -366,6 +373,7 @@ class InductiveExperiment:
                     # Fine-tune model
                     results = train_and_evaluate_inductive(
                         model=finetune_model,
+                        model_name=pretrained_specific_model_type,
                         dataloaders=task_dataloaders,
                         config=self.config,
                         task=task,
@@ -400,7 +408,8 @@ class InductiveExperiment:
                             pretrained_model,  # We only use this for architecture info
                             metadata,
                             output_dim,
-                            is_regression
+                            is_regression,
+                            is_graph_level_task
                         ).to(self.device)
                         
                         # Randomize weights                    
@@ -442,6 +451,7 @@ class InductiveExperiment:
                         # Train from scratch
                         scratch_results = train_and_evaluate_inductive(
                             model=from_scratch_model,
+                            model_name=pretrained_specific_model_type,
                             dataloaders=task_dataloaders,
                             config=self.config,
                             task=task,
@@ -523,6 +533,7 @@ class InductiveExperiment:
                                 dropout=self.config.dropout,
                                 gnn_type=model_name,
                                 is_regression=is_regression,
+                                is_graph_level_task=is_graph_level_task,
                                 eps=self.config.eps
                             )
                         else:
@@ -533,7 +544,8 @@ class InductiveExperiment:
                                 num_layers=self.config.num_layers,
                                 dropout=self.config.dropout,
                                 gnn_type=model_name,
-                                is_regression=is_regression
+                                is_regression=is_regression,
+                                is_graph_level_task=is_graph_level_task
                             )
                     
                     elif model_name in self.config.transformer_types or pretrained_model_type == 'transformer':
@@ -546,6 +558,7 @@ class InductiveExperiment:
                             num_layers=self.config.num_layers,
                             dropout=self.config.dropout,
                             is_regression=is_regression,
+                            is_graph_level_task=is_graph_level_task,
                             num_heads=self.config.transformer_num_heads,
                             max_nodes=self.config.transformer_max_nodes,
                             max_path_length=self.config.transformer_max_path_length,
@@ -568,12 +581,17 @@ class InductiveExperiment:
                             output_dim=output_dim,
                             num_layers=self.config.num_layers,
                             dropout=self.config.dropout,
-                            is_regression=is_regression
+                            is_regression=is_regression,
+                            is_graph_level_task=is_graph_level_task
                         )
                     
                     # Train model
+                    # Print a small overview of components of the model
+                    print(f"Model to train: {model}")
+
                     results = train_and_evaluate_inductive(
                         model=model,
+                        model_name=model_name,
                         dataloaders=task_dataloaders,
                         config=self.config,
                         task=task,
@@ -885,10 +903,14 @@ class InductiveExperiment:
             pattern_score = self.family_consistency.get('pattern_preservation', {}).get('score', 0.0)
             fidelity_score = self.family_consistency.get('generation_fidelity', {}).get('score', 0.0)
             degree_score = self.family_consistency.get('degree_consistency', {}).get('score', 0.0)
+            triangle_score = self.family_consistency.get('triangle_consistency', {}).get('score', 0.0)
+            cooccurrence_score = self.family_consistency.get('cooccurrence_consistency', {}).get('score', 0.0)
             
             lines.append(f"  Pattern preservation: {pattern_score:.3f}")
             lines.append(f"  Generation fidelity: {fidelity_score:.3f}")
             lines.append(f"  Degree consistency: {degree_score:.3f}")
+            lines.append(f"  Triangle consistency: {triangle_score:.3f}")
+            lines.append(f"  Co-occurrence consistency: {cooccurrence_score:.3f}")
             lines.append("")
         
         # Community signals summary 
@@ -974,46 +996,26 @@ class InductiveExperiment:
         
         return model, metadata
 
-    def create_model_from_pretrained(self, pretrained_model, metadata, output_dim: int, is_regression: bool):
-        """Create a fine-tuning model from pre-trained model."""
-        
-        # Extract encoder from pre-trained model
+    def create_model_from_pretrained(self, pretrained_model, metadata, output_dim: int, is_regression: bool, is_graph_level_task: bool):
+        """Create a model for fine-tuning from a pre-trained model."""
+        # Get the encoder from the pre-trained model
         if hasattr(pretrained_model, 'encoder'):
             encoder = pretrained_model.encoder
         else:
-            raise ValueError("Pre-trained model does not have an encoder!")
+            raise ValueError("Pre-trained model does not have an encoder")
         
-        # Get encoder output dimension from metadata
-        encoder_output_dim = metadata['config']['hidden_dim']
+        # Create fine-tuning model
+        from experiments.core.models import FineTuningModel
         
-        # Create new classification/regression head
-        if is_regression:
-            head = torch.nn.Linear(encoder_output_dim, output_dim)
-        else:
-            head = torch.nn.Sequential(
-                torch.nn.Linear(encoder_output_dim, output_dim),
-                torch.nn.LogSoftmax(dim=-1)
-            )
-        
-        # Combine into new model
-        class FineTuningModel(torch.nn.Module):
-            def __init__(self, encoder, head, freeze_encoder=False):
-                super().__init__()
-                self.encoder = encoder
-                self.head = head
-                
-                if freeze_encoder:
-                    for param in self.encoder.parameters():
-                        param.requires_grad = False
-            
-            def forward(self, x, edge_index=None):
-                if edge_index is not None:
-                    embeddings = self.encoder(x, edge_index)
-                else:
-                    embeddings = self.encoder(x)
-                return self.head(embeddings)
-        
-        return FineTuningModel(encoder, head)
+        return FineTuningModel(
+            encoder=encoder,
+            hidden_dim=metadata['architecture']['hidden_dim'],
+            output_dim=output_dim,
+            dropout=metadata['config']['dropout'],
+            is_regression=is_regression,
+            is_graph_level_task=is_graph_level_task,
+            freeze_encoder=self.config.freeze_encoder
+        )
 
 class PreTrainingRunner:
     """Main runner for self-supervised pre-training with hyperparameter optimization."""
@@ -1196,7 +1198,7 @@ class PreTrainingRunner:
             # GNN-specific parameters
             params['residual'] = trial.suggest_categorical('residual', [True, False])
             params['norm_type'] = trial.suggest_categorical('norm_type', ['none', 'layer'])
-            params['agg_type'] = trial.suggest_categorical('agg_type', ['mean', 'max', 'sum'])
+            params['agg_type'] = trial.suggest_categorical('agg_type', ['mean', 'sum'])
 
             if self.config.gnn_type == "gat":
                 params['heads'] = trial.suggest_int('heads', 1, 8)
@@ -1359,163 +1361,83 @@ class PreTrainingRunner:
         }
 
     def _train_model(self, pretraining_graphs: List, optimized_params: Optional[Dict] = None) -> Tuple[torch.nn.Module, Dict]:
-        """Train model with proper parameter application."""
-        
-        # Apply optimized parameters to config
-        if optimized_params:
-            print(f"Applying optimized parameters:")
-            for key, value in optimized_params.items():
-                if hasattr(self.config, key):
-                    old_value = getattr(self.config, key)
-                    setattr(self.config, key, value)
-                    print(f"  {key}: {old_value} -> {value}")
-                else:
-                    print(f"  WARNING: Unknown parameter {key} = {value}")
-        
-        # Create dataloader
-        train_loader = create_pretraining_dataloader(
-            pretraining_graphs,
-            batch_size=self.config.batch_size,
-            shuffle=True
-        )
-        
-        # Get input dimension
-        sample_batch = next(iter(train_loader))
-        input_dim = sample_batch.x.shape[1]
-        
-        # Create task with updated config
+        """Train a model on the pre-training task."""
+        # Create task
         task = create_ssl_task(self.config)
         
-        model = task.create_model(input_dim).to(self.device)
+        # Create model
+        input_dim = pretraining_graphs[0].features.shape[1]
+        model = task.create_model(input_dim)
         
-        print(f"Training with final parameters:")
-        print(f"  Model: {self.config.gnn_type}")
-        print(f"  Task: {self.config.pretraining_task}")
-        print(f"  Learning rate: {self.config.learning_rate}")
-        print(f"  Hidden dim: {self.config.hidden_dim}")
-        print(f"  Mixed precision: {self.config.use_mixed_precision}")
+        # Move to device
+        model = model.to(self.device)
         
-        # Print task-specific parameters
-        if self.config.pretraining_task == "link_prediction":
-            print(f"  Negative sampling ratio: {getattr(self.config, 'negative_sampling_ratio', 1.0)}")
-        elif self.config.pretraining_task == "dgi":
-            print(f"  DGI corruption type: {getattr(self.config, 'dgi_corruption_type', 'feature_shuffle')}")
-            print(f"  DGI noise std: {getattr(self.config, 'dgi_noise_std', 0.1)}")
-            print(f"  DGI perturbation rate: {getattr(self.config, 'dgi_perturb_rate', 0.1)}")
-            print(f"  DGI corruption rate: {getattr(self.config, 'dgi_corruption_rate', 0.1)}")
-        elif self.config.pretraining_task == "graphmae":
-            print(f"  GraphMAE mask rate: {getattr(self.config, 'graphmae_mask_rate', 0.1)}")
-        
-        # Setup optimizer
+        # Create optimizer
         optimizer = torch.optim.Adam(
             model.parameters(),
             lr=self.config.learning_rate,
             weight_decay=self.config.weight_decay
         )
         
-        # Setup mixed precision training if enabled
-        scaler = GradScaler() if self.config.use_mixed_precision else None
+        # Create dataloader
+        dataloader = create_pretraining_dataloader(
+            pretraining_graphs,
+            batch_size=self.config.batch_size,
+            shuffle=True,
+            pin_memory=True
+        )
         
-        # Training loop (rest remains the same)
+        # Training loop
+        best_loss = float('inf')
+        best_model = None
+        training_results = {}
         training_history = {
             'train_loss': [],
-            'eval_loss': [],
-            'eval_metric': []
+            'val_loss': [],
+            'train_metrics': [],
+            'val_metrics': [],
         }
         
-        best_metric = float('-inf')
-        best_model_state = None
-        patience_counter = 0
-        
-        print(f"\nStarting pre-training with patience={self.config.patience}")
-        print("Early stopping will trigger if validation metric doesn't improve for", self.config.patience, "epochs")
-        print(f"Training for {self.config.epochs} epochs...")
-        
-        for epoch in range(self.config.epochs):
-            # Training phase
+        for idx, epoch in enumerate(range(self.config.epochs)):
+            # Training
             model.train()
-            epoch_loss = 0.0
+            total_loss = 0.0
             n_batches = 0
             
-            for batch in train_loader:
+            for batch in dataloader:
                 batch = batch.to(self.device)
+                
                 optimizer.zero_grad()
+                loss = task.compute_loss(model, batch)
+                loss.backward()
+                optimizer.step()
                 
-                # Use mixed precision if enabled
-                if self.config.use_mixed_precision:
-                    with autocast():
-                        loss = task.compute_loss(model, batch)
-                    scaler.scale(loss).backward()
-                    scaler.step(optimizer)
-                    scaler.update()
-                else:
-                    loss = task.compute_loss(model, batch)
-                    loss.backward()
-                    optimizer.step()
-                
-                epoch_loss += loss.item()
+                total_loss += loss.item()
                 n_batches += 1
             
-            avg_train_loss = epoch_loss / n_batches
+            avg_train_loss = total_loss / n_batches if n_batches > 0 else 0.0
             training_history['train_loss'].append(avg_train_loss)
             
-            # Evaluation every epoch
+            # Validation
             model.eval()
-            with torch.no_grad():
-                eval_metrics = task.evaluate(model, train_loader)
-                eval_loss = eval_metrics.get('loss', avg_train_loss)
-                
-                # Get primary metric with fallbacks
-                if self.config.pretraining_task == "link_prediction":
-                    primary_metric = eval_metrics.get('auc', 0.0)
-                elif self.config.pretraining_task in ["dgi"]:
-                    primary_metric = -eval_metrics.get('loss', float('inf'))
-                elif self.config.pretraining_task in ["graphcl"]:
-                    # Use alignment for contrastive tasks, fallback to accuracy
-                    primary_metric = eval_metrics.get('alignment', eval_metrics.get('accuracy', 0.0))
-                elif self.config.pretraining_task in ["graphmae"]:
-                    primary_metric = eval_metrics.get('cosine_similarity', 0.0)
-                else:
-                    primary_metric = list(eval_metrics.values())[0] if eval_metrics else 0.0
-                
-                training_history['eval_loss'].append(eval_loss)
-                training_history['eval_metric'].append(primary_metric)
-                
-                # Model selection
-                if primary_metric > best_metric:
-                    best_metric = primary_metric
-                    best_model_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
-                    patience_counter = 0
-                else:
-                    patience_counter += 1
-                
-                # Early stopping
-                if patience_counter >= self.config.patience:
-                    print(f"🛑 Early stopping triggered at epoch {epoch}!")
-                    break
+            val_metrics = task.evaluate(model, dataloader)
+            training_history['val_loss'].append(val_metrics['loss'])
+            training_history['val_metrics'].append(val_metrics)
             
-            # Logging every 2 epochs
-            if epoch % 2 == 0:
-                print(f"Epoch {epoch:4d}: Train Loss = {avg_train_loss:.4f}, Val Loss = {eval_loss:.4f}, Metric = {primary_metric:.4f}")
+            # Save best model
+            if val_metrics['loss'] < best_loss:
+                best_loss = val_metrics['loss']
+                best_model = copy.deepcopy(model)
+                best_metrics = val_metrics
+            
+            if idx % 10 == 0:
+                print(f"Epoch {idx} of {self.config.epochs} - Training Loss: {avg_train_loss} - Validation Loss: {val_metrics['loss']}")
+                print(f"Best Validation Metrics: {best_metrics}")
+
+        training_results['final_metrics'] = best_metrics
+        training_results['training_history'] = training_history
         
-        # Load best model
-        if best_model_state is not None:
-            model.load_state_dict(best_model_state)
-            print("Loaded best model weights")
-        
-        # Final evaluation
-        final_metrics = task.evaluate(model, train_loader)
-        
-        print(f"Training completed! Best metric: {best_metric:.4f}")
-        
-        return model, {
-            'training_history': training_history,
-            'final_metrics': final_metrics,
-            'best_metric': best_metric,
-            'total_epochs': epoch + 1,
-            'optimized_params_applied': optimized_params or {},
-            'mixed_precision_used': self.config.use_mixed_precision
-        }
+        return best_model, training_results
 
     def run_pretraining_only(
         self, 
