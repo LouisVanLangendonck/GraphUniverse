@@ -60,7 +60,7 @@ def parse_args():
                         help='k value for k-hop community counting task')
     
     # === GRAPH FAMILY GENERATION ===
-    parser.add_argument('--n_graphs', type=int, default=10,
+    parser.add_argument('--n_graphs', type=int, default=50,
                         help='Number of graphs to generate in family')
     parser.add_argument('--min_n_nodes', type=int, default=80,
                         help='Minimum number of nodes per graph')
@@ -93,7 +93,7 @@ def parse_args():
     # === GRAPH FAMILY VARIATION ===
     parser.add_argument('--homophily_range', type=float, nargs=2, default=[0.0, 0.2],
                         help='Range around universe homophily')
-    parser.add_argument('--density_range', type=float, nargs=2, default=[0.0, 0.2],
+    parser.add_argument('--density_range', type=float, nargs=2, default=[0.0, 0.1],
                         help='Range around universe density')
     parser.add_argument('--degree_heterogeneity', type=float, default=0.5,
                         help='Degree heterogeneity parameter')
@@ -119,7 +119,7 @@ def parse_args():
                         help='Maximum allowed participation rate per community')
     
     # === MODELS ===
-    parser.add_argument('--gnn_types', type=str, nargs='+', default=['gat', 'gcn', 'sage', 'fagcn', 'gin'],
+    parser.add_argument('--gnn_types', type=str, nargs='+', default=['gat', 'fagcn'],
                         choices=['gcn', 'fagcn', 'sage', 'gat', 'gin'],
                         help='Types of GNN models to run')
     parser.add_argument('--transformer_types', type=str, nargs='+', 

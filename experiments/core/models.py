@@ -37,22 +37,29 @@ class FALayer(MessagePassing):
     def __init__(self, num_hidden: int, dropout: float):
         super(FALayer, self).__init__(aggr='add')
         self.dropout = nn.Dropout(dropout)
-        self.gate = nn.Linear(2 * num_hidden, 1)
+        self.gate = nn.Linear(num_hidden, 1)
+        # Add linear transformation for input features
+        self.transform = nn.Linear(num_hidden, num_hidden)
         nn.init.xavier_normal_(self.gate.weight, gain=1.414)
+        nn.init.xavier_normal_(self.transform.weight, gain=1.414)
     
     def forward(self, h, edge_index):
+        # Transform input features
+        h = self.transform(h)
+        
         # Compute edge normalization for current batch/graph
         row, col = edge_index
         norm_degree = degree(row, num_nodes=h.size(0)).clamp(min=1)
         norm_degree = torch.pow(norm_degree, -0.5)
         
         # Compute attention weights
-        h2 = torch.cat([h[row], h[col]], dim=1)
-        g = torch.tanh(self.gate(h2)).squeeze()
+        g = torch.tanh(self.gate(h[row])).squeeze()
         norm = g * norm_degree[row] * norm_degree[col]
         norm = self.dropout(norm)
         
-        return self.propagate(edge_index, size=(h.size(0), h.size(0)), x=h, norm=norm)
+        # Add residual connection
+        out = self.propagate(edge_index, size=(h.size(0), h.size(0)), x=h, norm=norm)
+        return out + h  # Add residual connection
     
     def message(self, x_j, norm):
         return norm.view(-1, 1) * x_j
@@ -204,26 +211,52 @@ class GNNEncoder(torch.nn.Module):
         if self.gnn_type == "gcn":
             self.convs.append(GCNConv(input_dim, hidden_dim))
         elif self.gnn_type == "gat":
-            self.convs.append(GATv2Conv(input_dim, hidden_dim // self.heads, heads=self.heads, concat=self.concat_heads))
+            # For GAT, ensure hidden_dim is divisible by heads
+            if self.concat_heads:
+                # When concatenating heads, each head's output should be hidden_dim/heads
+                out_channels = hidden_dim // self.heads
+                if hidden_dim % self.heads != 0:
+                    # Adjust hidden_dim to be divisible by heads
+                    out_channels = hidden_dim // self.heads
+                    hidden_dim = out_channels * self.heads
+            else:
+                # When not concatenating, each head's output should be hidden_dim
+                out_channels = hidden_dim
+            self.convs.append(GATv2Conv(input_dim, out_channels, heads=self.heads, concat=self.concat_heads))
         elif self.gnn_type == "sage":
             self.convs.append(SAGEConv(input_dim, hidden_dim))
         else:
             raise ValueError(f"Unknown GNN type: {self.gnn_type}")
             
         if self.norm_type != "none":
-            self.norms.append(self._get_norm_layer(hidden_dim))
+            # For GAT with multiple heads, we need to handle the concatenated dimension
+            norm_dim = hidden_dim if self.gnn_type != "gat" or not self.concat_heads else hidden_dim
+            self.norms.append(self._get_norm_layer(norm_dim))
         
         # Hidden layers
         for _ in range(self.num_layers - 1):
             if self.gnn_type == "gcn":
                 self.convs.append(GCNConv(hidden_dim, hidden_dim))
             elif self.gnn_type == "gat":
-                self.convs.append(GATv2Conv(hidden_dim, hidden_dim // self.heads, heads=self.heads, concat=self.concat_heads))
+                # For GAT, ensure hidden_dim is divisible by heads
+                if self.concat_heads:
+                    # When concatenating heads, each head's output should be hidden_dim/heads
+                    out_channels = hidden_dim // self.heads
+                    if hidden_dim % self.heads != 0:
+                        # Adjust hidden_dim to be divisible by heads
+                        out_channels = hidden_dim // self.heads
+                        hidden_dim = out_channels * self.heads
+                else:
+                    # When not concatenating, each head's output should be hidden_dim
+                    out_channels = hidden_dim
+                self.convs.append(GATv2Conv(hidden_dim, out_channels, heads=self.heads, concat=self.concat_heads))
             elif self.gnn_type == "sage":
                 self.convs.append(SAGEConv(hidden_dim, hidden_dim))
                 
             if self.norm_type != "none":
-                self.norms.append(self._get_norm_layer(hidden_dim))
+                # For GAT with multiple heads, we need to handle the concatenated dimension
+                norm_dim = hidden_dim if self.gnn_type != "gat" or not self.concat_heads else hidden_dim
+                self.norms.append(self._get_norm_layer(norm_dim))
     
     def _init_gin(self, input_dim: int, hidden_dim: int, dropout: float):
         """Initialize GIN layers."""
@@ -1389,68 +1422,43 @@ def create_transformer_config_recommendations(
     return recommendations
 
 
-class MLPModel(torch.nn.Module):
-    """Multi-layer perceptron for node classification or regression."""
+class MLPModel(nn.Module):
+    """MLP model for graph-level tasks."""
     
-    def __init__(
-        self,
-        input_dim: int,
-        hidden_dim: int,
-        output_dim: int,
-        num_layers: int = 2,
-        dropout: float = 0.5,
-        is_regression: bool = False
-    ):
-        """
-        Initialize MLP model.
-        
-        Args:
-            input_dim: Input feature dimension
-            hidden_dim: Hidden layer dimension
-            output_dim: Output dimension (number of classes for classification, number of communities for regression)
-            num_layers: Number of hidden layers
-            dropout: Dropout rate
-            is_regression: Whether this is a regression task (True) or classification task (False)
-        """
-        super().__init__()
-        
-        self.num_layers = num_layers
+    def __init__(self, input_dim: int, hidden_dim: int, output_dim: int, num_layers: int, dropout: float, is_regression: bool = True):
+        super(MLPModel, self).__init__()
         self.is_regression = is_regression
         
-        # Input layer
-        self.layers = torch.nn.ModuleList([
-            torch.nn.Linear(input_dim, hidden_dim)
-        ])
+        # Build MLP layers
+        layers = []
+        in_dim = input_dim
+        for _ in range(num_layers):
+            layers.extend([
+                nn.Linear(in_dim, hidden_dim),
+                nn.ReLU(),
+                nn.Dropout(dropout)
+            ])
+            in_dim = hidden_dim
         
-        # Hidden layers
-        for _ in range(num_layers - 1):
-            self.layers.append(torch.nn.Linear(hidden_dim, hidden_dim))
+        # Add final layer
+        layers.append(nn.Linear(hidden_dim, output_dim))
         
-        # Output layer
-        self.layers.append(torch.nn.Linear(hidden_dim, output_dim))
-        
-        # Dropout  
-        self.dropout = torch.nn.Dropout(dropout)
-        
-        # Activation for regression (ReLU to ensure non-negative counts)
-        self.regression_activation = torch.nn.ReLU() if is_regression else None
+        self.mlp = nn.Sequential(*layers)
     
-    def forward(self, x):
-        """Forward pass."""
-        # Hidden layers
-        for i in range(self.num_layers):
-            x = self.layers[i](x)
-            x = F.relu(x)
-            x = self.dropout(x)
+    def forward(self, x, batch=None):
+        # For graph-level tasks, we need to aggregate node features
+        if batch is not None:
+            # Use global mean pooling to get graph-level features
+            x = global_mean_pool(x, batch)
         
-        # Output layer
-        x = self.layers[-1](x)
+        # Pass through MLP
+        out = self.mlp(x)
         
-        # For regression, ensure non-negative outputs
+        # For regression tasks, ensure output is properly shaped
         if self.is_regression:
-            x = self.regression_activation(x)
-        
-        return x
+            out = out.squeeze(-1)  # Remove last dimension if it's 1
+            
+        return out
 
 
 class SklearnModel:

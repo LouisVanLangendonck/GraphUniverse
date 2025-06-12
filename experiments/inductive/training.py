@@ -517,10 +517,15 @@ def optimize_inductive_hyperparameters(
                 norm_type = trial.suggest_categorical('norm_type', ['batch', 'layer', 'none'])
                 agg_type = trial.suggest_categorical('agg_type', ['sum', 'mean', 'max'])
             elif gnn_type == 'gat':
+                # First suggest number of heads
                 heads = trial.suggest_int('heads', 1, 8)
+                # Then suggest a base dimension and multiply by heads to ensure divisibility
+                base_dim = trial.suggest_int('base_dim', 8, 32)
+                hidden_dim = base_dim * heads
                 concat_heads = trial.suggest_categorical('concat_heads', [True, False])
                 residual = trial.suggest_categorical('residual', [True, False])
-                norm_type = trial.suggest_categorical('norm_type', ['batch', 'layer', 'none'])
+                norm_type = trial.suggest_categorical('norm_type', ['none', 'layer'])
+                agg_type = trial.suggest_categorical('agg_type', ['mean', 'sum'])
             else:
                 residual = trial.suggest_categorical('residual', [True, False])
                 norm_type = trial.suggest_categorical('norm_type', ['batch', 'layer', 'none'])
@@ -809,8 +814,6 @@ def optimize_finetuning_hyperparameters(
                 if val_metric > best_val_metric:  # Higher is better for F1
                     best_val_metric = val_metric
                     patience_counter = 0
-                else:
-                    patience_counter += 1
             
             if patience_counter >= patience:
                 break
@@ -924,6 +927,37 @@ def create_optimized_finetuning_model(
             return self.head(embeddings)
     
     return FineTuningModel(encoder, head, freeze_encoder)
+
+def get_hyperparameter_space(trial, model_type: str, is_regression: bool) -> Dict[str, Any]:
+    """Get hyperparameter space for different model types."""
+    params = {
+        'lr': trial.suggest_float('lr', 1e-4, 1e-2, log=True),
+        'weight_decay': trial.suggest_float('weight_decay', 1e-5, 1e-2, log=True),
+        'patience': trial.suggest_int('patience', 20, 50),
+        'hidden_dim': trial.suggest_int('hidden_dim', 32, 256),
+        'num_layers': trial.suggest_int('num_layers', 1, 4),
+        'dropout': trial.suggest_float('dropout', 0.1, 0.7)
+    }
+    
+    if model_type in ['gat', 'fagcn']:
+        # For GAT and FAGCN, add specific parameters
+        params.update({
+            'heads': trial.suggest_int('heads', 1, 8),
+            'concat_heads': trial.suggest_categorical('concat_heads', [True, False]),
+            'residual': trial.suggest_categorical('residual', [True, False]),
+            'norm_type': trial.suggest_categorical('norm_type', ['none', 'batch', 'layer']),
+            'agg_type': trial.suggest_categorical('agg_type', ['mean', 'sum'])
+        })
+        
+        # For GAT with concatenated heads, ensure hidden_dim is divisible by heads
+        if model_type == 'gat' and params['concat_heads']:
+            # Adjust hidden_dim to be divisible by heads
+            base_dim = params['hidden_dim']
+            params['hidden_dim'] = (base_dim // params['heads']) * params['heads']
+            if params['hidden_dim'] < 32:  # Ensure minimum dimension
+                params['hidden_dim'] = params['heads'] * 32
+    
+    return params
 
 def train_and_evaluate_inductive(
     model: Union[GNNModel, MLPModel, SklearnModel, GraphTransformerModel],  # Updated type hint
@@ -1194,7 +1228,11 @@ def train_and_evaluate_inductive(
                     
                     # GNN-specific parameters
                     if gnn_type == "gat":
+                        # First suggest number of heads
                         heads = trial.suggest_int('heads', 1, 8)
+                        # Then suggest a base dimension and multiply by heads to ensure divisibility
+                        base_dim = trial.suggest_int('base_dim', 8, 32)
+                        hidden_dim = base_dim * heads
                         concat_heads = trial.suggest_categorical('concat_heads', [True, False])
                         residual = trial.suggest_categorical('residual', [True, False])
                         norm_type = trial.suggest_categorical('norm_type', ['none', 'layer'])
