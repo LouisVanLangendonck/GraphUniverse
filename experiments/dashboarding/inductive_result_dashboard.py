@@ -142,7 +142,7 @@ def create_2d_parameter_manifold(df, param1, param2, model, task='community', me
             if not is_higher_better_metric(metric):
                 z_values = -z_values  # Flip sign for lower-is-better metrics
             
-            colorscale = 'RdBu_r'  # Red = good (positive), Blue = bad (negative)
+            colorscale = 'RdBu'  # Red = good (positive), Blue = bad (negative)
         else:  # ranking - show average ranking spot
             z_col = f'{task}-{model}-rank'
             z_values = distance_df[z_col].values  # These are the actual rankings

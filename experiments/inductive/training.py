@@ -134,8 +134,10 @@ def train_inductive_model(
     if is_regression:
         if config.regression_loss == 'mae':
             criterion = torch.nn.L1Loss()
-        else:
+        elif config.regression_loss == 'mse':
             criterion = torch.nn.MSELoss()
+        else:
+            raise ValueError(f"Invalid regression loss: {config.regression_loss}")
     else:
         criterion = torch.nn.CrossEntropyLoss()
     
@@ -144,11 +146,8 @@ def train_inductive_model(
     patience_counter = 0
     best_model_state = None
     
-    # Get the effective patience value - take max of original and optimized if available
+    # Get the effective patience value
     effective_patience = config.patience
-    if hasattr(config, 'optimized_patience') and config.optimized_patience is not None:
-        effective_patience = min(30, max(config.patience, config.optimized_patience))
-        print(f"Using effective patience of {effective_patience} (max of original {config.patience} and optimized {config.optimized_patience})")
     
     train_loader = dataloaders['train']
     val_loader = dataloaders['val']
@@ -246,9 +245,11 @@ def train_inductive_model(
             if config.regression_loss == 'mae':
                 train_metric = train_metrics['mae']
                 val_metric = val_metrics['mae']
+            elif config.regression_loss == 'mse':
+                train_metric = train_metrics['mse']
+                val_metric = val_metrics['mse']
             else:
-                train_metric = train_metrics['r2']
-                val_metric = val_metrics['r2']
+                raise ValueError(f"Invalid regression loss: {config.regression_loss}")
         else:
             train_metric = train_metrics['f1_macro']
             val_metric = val_metrics['f1_macro']
@@ -261,25 +262,42 @@ def train_inductive_model(
         
         # Print progress
         if epoch % 10 == 0 or epoch == config.epochs - 1:
-            print(f"Epoch {epoch:3d}: Train Loss: {train_loss/len(train_loader):.4f}, Val Loss: {val_loss/len(val_loader):.4f}, "
-                  f"Train Metric: {train_metric:.4f}, Val Metric: {val_metric:.4f}")
+            print_str = f"Epoch {epoch:3d}: Train Loss: {train_loss/len(train_loader):.4f}, Val Loss: {val_loss/len(val_loader):.4f}, " \
+                       f"Train Metric: {train_metric:.4f}, Val Metric: {val_metric:.4f}"
+            
+            # Add relative error for k_hop task
+            if task == 'k_hop_community_counts':
+                train_rel_error = train_metrics.get('relative_error', 0.0)
+                val_rel_error = val_metrics.get('relative_error', 0.0)
+                print_str += f", Train Rel Error: {train_rel_error:.4f}, Val Rel Error: {val_rel_error:.4f}"
+                
+                # Print random node's target and predicted vectors
+                if len(val_predictions) > 0:
+                    # Get a random batch
+                    random_batch_idx = np.random.randint(0, len(val_predictions))
+                    random_pred = val_predictions[random_batch_idx]
+                    random_true = val_targets[random_batch_idx]
+                    
+                    # Get a random node from that batch
+                    random_node_idx = np.random.randint(0, len(random_pred))
+                    
+                    print(f"\nRandom node vectors at epoch {epoch}:")
+                    print(f"Target vector: {random_true[random_node_idx].numpy()}")
+                    print(f"Predicted vector (rounded): {np.round(random_pred[random_node_idx].numpy())}")
+            
+            print(print_str)
         
         # Model selection
         improved = False
         if is_regression:
             if config.regression_loss == 'mae':
-                # For MAE, lower is better
-                if val_metric < best_val_metric:
-                    improved = True
-            elif config.regression_loss == 'r2':
-                # For R², higher is better
-                if val_metric > best_val_metric:
-                    improved = True
+                improved = val_metric < best_val_metric
+            elif config.regression_loss == 'mse':
+                improved = val_metric < best_val_metric
             else:
                 raise ValueError(f"Invalid regression loss: {config.regression_loss}")
         else:
-            if val_metric > best_val_metric:  # Higher F1 is better
-                improved = True
+            improved = val_metric > best_val_metric
         
         if improved:
             best_val_metric = val_metric
@@ -462,223 +480,6 @@ def evaluate_inductive_model(
     
     return metrics
 
-def optimize_inductive_hyperparameters(
-    model_creator: Callable,
-    dataloaders: Dict[str, DataLoader],
-    config: InductiveExperimentConfig,
-    model_type: str = "gnn",
-    gnn_type: Optional[str] = None,
-    transformer_type: Optional[str] = None,  # NEW
-    n_trials: int = 20,
-    timeout: Optional[int] = 600,
-    device: Optional[torch.device] = None,
-    is_regression: bool = False,
-    experiment_name: Optional[str] = None,
-    run_id: Optional[int] = None
-) -> Dict[str, Any]:
-    """
-    Optimize hyperparameters for inductive learning using validation graphs.
-    """
-    import optuna
-    from optuna import create_study, Trial
-    
-    if device is None:
-        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    
-    # Get sample batch to determine dimensions
-    sample_batch = next(iter(dataloaders['train']))
-    input_dim = sample_batch.x.shape[1]
-    output_dim = config.universe_K
-    
-    # Create study
-    study = create_study(
-        direction='maximize' if not is_regression else 'minimize',
-        study_name=f"{experiment_name}_{run_id}" if experiment_name and run_id else None,
-        storage=get_optuna_storage_path(experiment_name, run_id) if experiment_name and run_id else None,
-        load_if_exists=True
-    )
-    
-    def objective(trial: Trial) -> float:
-        # Common hyperparameters
-        lr = trial.suggest_float('lr', 1e-4, 1e-2, log=True)
-        weight_decay = trial.suggest_float('weight_decay', 1e-5, 1e-2, log=True)
-        patience = trial.suggest_int('patience', 5, 30)
-        
-        # Model-specific hyperparameters
-        if model_type == "gnn":
-            hidden_dim = trial.suggest_int('hidden_dim', 32, 256)
-            num_layers = trial.suggest_int('num_layers', 1, 4)
-            dropout = trial.suggest_float('dropout', 0.1, 0.7)
-            
-            # GNN-specific parameters
-            if gnn_type == 'gin':
-                eps = trial.suggest_float('eps', 0.0, 0.1)
-                residual = trial.suggest_categorical('residual', [True, False])
-                norm_type = trial.suggest_categorical('norm_type', ['batch', 'layer', 'none'])
-                agg_type = trial.suggest_categorical('agg_type', ['sum', 'mean', 'max'])
-            elif gnn_type == 'gat':
-                # First suggest number of heads
-                heads = trial.suggest_int('heads', 1, 8)
-                # Then suggest a base dimension and multiply by heads to ensure divisibility
-                base_dim = trial.suggest_int('base_dim', 8, 32)
-                hidden_dim = base_dim * heads
-                concat_heads = trial.suggest_categorical('concat_heads', [True, False])
-                residual = trial.suggest_categorical('residual', [True, False])
-                norm_type = trial.suggest_categorical('norm_type', ['none', 'layer'])
-                agg_type = trial.suggest_categorical('agg_type', ['mean', 'sum'])
-            else:
-                residual = trial.suggest_categorical('residual', [True, False])
-                norm_type = trial.suggest_categorical('norm_type', ['batch', 'layer', 'none'])
-                agg_type = trial.suggest_categorical('agg_type', ['sum', 'mean', 'max'])
-            
-            # Create model
-            model = model_creator(
-                input_dim=input_dim,
-                hidden_dim=hidden_dim,
-                output_dim=output_dim,
-                num_layers=num_layers,
-                dropout=dropout,
-                gnn_type=gnn_type,
-                residual=residual,
-                norm_type=norm_type,
-                agg_type=agg_type,
-                heads=heads if gnn_type == 'gat' else None,
-                concat_heads=concat_heads if gnn_type == 'gat' else None,
-                eps=eps if gnn_type == 'gin' else None,
-                is_regression=is_regression,
-                is_graph_level_task=task == 'triangle_count'
-            ).to(device)
-            
-            # Train model with reduced epochs for speed
-            optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
-            
-            # Set up loss function
-            if is_regression:
-                if config.regression_loss == 'mae':
-                    criterion = torch.nn.L1Loss()
-                else:
-                    criterion = torch.nn.MSELoss()
-            else:
-                criterion = torch.nn.CrossEntropyLoss()
-            
-            # Quick training loop
-            max_epochs = min(50, config.epochs // 4)  # Reduced epochs for hyperopt
-            best_val_metric = float('inf') if is_regression else 0.0
-            patience_counter = 0
-            
-            for epoch in range(max_epochs):
-                # Training
-                model.train()
-                train_loss = 0.0
-                train_predictions = []
-                train_targets = []
-                
-                for batch in dataloaders['train']:
-                    batch = batch.to(device)
-                    optimizer.zero_grad()
-                    
-                    # Forward pass
-                    out = model(batch.x, batch.edge_index)
-                    loss = criterion(out, batch.y)
-                    loss.backward()
-                    optimizer.step()
-                    
-                    train_loss += loss.item()
-                    
-                    # Store predictions for metrics
-                    if is_regression:
-                        train_predictions.append(out.detach().cpu())
-                        train_targets.append(batch.y.detach().cpu())
-                    else:
-                        train_predictions.append(out.argmax(dim=1).detach().cpu())
-                        train_targets.append(batch.y.detach().cpu())
-                
-                # Validation
-                model.eval()
-                val_loss = 0.0
-                val_predictions = []
-                val_targets = []
-                
-                with torch.no_grad():
-                    for batch in dataloaders['val']:
-                        batch = batch.to(device)
-                        out = model(batch.x, batch.edge_index)
-                        loss = criterion(out, batch.y)
-                        val_loss += loss.item()
-                        
-                        if is_regression:
-                            val_predictions.append(out.detach().cpu())
-                        else:
-                            val_predictions.append(out.argmax(dim=1).detach().cpu())
-                        
-                        val_targets.append(batch.y.detach().cpu())
-                
-                # Calculate metrics
-                train_pred = torch.cat(train_predictions, dim=0).numpy()
-                train_true = torch.cat(train_targets, dim=0).numpy()
-                val_pred = torch.cat(val_predictions, dim=0).numpy()
-                val_true = torch.cat(val_targets, dim=0).numpy()
-                
-                train_metrics = compute_metrics(train_true, train_pred, is_regression)
-                val_metrics = compute_metrics(val_true, val_pred, is_regression)
-                
-                # Get primary metrics
-                if is_regression:
-                    if config.regression_loss == 'mae':
-                        train_metric = train_metrics['mae']
-                        val_metric = val_metrics['mae']
-                    else:
-                        train_metric = train_metrics['r2']
-                        val_metric = val_metrics['r2']
-                else:
-                    train_metric = train_metrics['f1_macro']
-                    val_metric = val_metrics['f1_macro']
-                
-                # Model selection
-                improved = False
-                if is_regression:
-                    if config.regression_loss == 'mae':
-                        # For MAE, lower is better
-                        if val_metric < best_val_metric:
-                            improved = True
-                    elif config.regression_loss == 'r2':
-                        # For R², higher is better
-                        if val_metric > best_val_metric:
-                            improved = True
-                    else:
-                        raise ValueError(f"Invalid regression loss: {config.regression_loss}")
-                else:
-                    if val_metric > best_val_metric:  # Higher F1 is better
-                        improved = True
-                
-                if improved:
-                    best_val_metric = val_metric
-                    best_model_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
-                    patience_counter = 0
-                else:
-                    patience_counter += 1
-                    if patience_counter >= patience:
-                        break
-            
-            # Return metric for optimization
-            if is_regression:
-                if config.regression_loss == 'mae':
-                    return -best_val_metric  # Negative because we minimize MAE
-                else:
-                    return best_val_metric  # Positive because we maximize R²
-            else:
-                return best_val_metric  # Positive because we maximize F1
-    
-    # Run optimization
-    study.optimize(objective, n_trials=n_trials, timeout=timeout)
-    
-    return {
-        'best_params': study.best_params,
-        'best_value': study.best_value,
-        'n_trials': len(study.trials),
-        'study_name': study.study_name
-    }
-
 def optimize_finetuning_hyperparameters(
     pretrained_model,
     metadata: Dict[str, Any],
@@ -721,7 +522,7 @@ def optimize_finetuning_hyperparameters(
         head_dropout = trial.suggest_float('head_dropout', 0.0, 0.7)
         
         # 5. Patience for early stopping
-        patience = trial.suggest_int('patience', 5, 25)
+        patience = config.patience
         
         # 6. Optional: Task head architecture
         if not is_regression:
@@ -798,31 +599,53 @@ def optimize_finetuning_hyperparameters(
             # Calculate validation metric
             val_pred = torch.cat(val_predictions, dim=0).numpy()
             val_true = torch.cat(val_targets, dim=0).numpy()
-            
-            from experiments.core.metrics import compute_metrics
             val_metrics = compute_metrics(val_true, val_pred, is_regression)
             
             if is_regression:
-                val_metric = val_metrics['mse']
-                if val_metric < best_val_metric:  # Lower is better for MSE
-                    best_val_metric = val_metric
-                    patience_counter = 0
+                if config.regression_loss == 'mae':
+                    val_metric = val_metrics['mae']
+                    if val_metric < best_val_metric:  # Lower is better for MAE
+                        best_val_metric = val_metric
+                        patience_counter = 0
+                    else:
+                        patience_counter += 1
+                elif config.regression_loss == 'mse':
+                    val_metric = val_metrics['mse']
+                    if val_metric < best_val_metric:  # Lower is better for MSE
+                        best_val_metric = val_metric
+                        patience_counter = 0
+                    else:
+                        patience_counter += 1
                 else:
-                    patience_counter += 1
+                    val_metric = val_metrics['r2']
+                    if val_metric > best_val_metric:  # Higher is better for R²
+                        best_val_metric = val_metric
+                        patience_counter = 0
             else:
+                # For classification, use F1 score
                 val_metric = val_metrics['f1_macro']
                 if val_metric > best_val_metric:  # Higher is better for F1
                     best_val_metric = val_metric
                     patience_counter = 0
+                else:
+                    patience_counter += 1
             
             if patience_counter >= patience:
                 break
         
         # Return metric for optimization
         if is_regression:
-            return -best_val_metric  # Negative because we minimize MSE
+            if config.regression_loss == 'mae':
+                final_metric = -best_val_metric  # Negative because we minimize MAE
+            elif config.regression_loss == 'mse':
+                final_metric = -best_val_metric  # Negative because we minimize MSE
+            else:
+                final_metric = best_val_metric  # Positive because we maximize R²
         else:
-            return best_val_metric  # Positive because we maximize F1
+            # For classification, use F1 score
+            final_metric = best_val_metric  # Positive because we maximize F1
+        
+        return final_metric
     
     # ADD EARLY TERMINATION
     def should_terminate_finetuning(study, trial):
@@ -1018,12 +841,13 @@ def train_and_evaluate_inductive(
                 
                 def objective(trial: Trial) -> float:
                     # Common hyperparameters
-                    lr = trial.suggest_float('lr', 1e-4, 1e-2, log=True)
+                    lr = trial.suggest_float('lr', 1e-3, 1e-2, log=True)
                     weight_decay = trial.suggest_float('weight_decay', 1e-5, 1e-2, log=True)
-                    patience = trial.suggest_int('patience', 10, 50)
+                    # Use config patience instead of optimizing it
+                    patience = config.patience
                     
                     # Transformer-specific hyperparameters
-                    num_heads = trial.suggest_categorical('num_heads', [4, 8, 16])
+                    num_heads = trial.suggest_categorical('num_heads', [4, 8])
                     base_dim = trial.suggest_int('base_dim', 8, 32)
                     hidden_dim = base_dim * num_heads
                     num_layers = trial.suggest_int('num_layers', 2, 6)
@@ -1069,6 +893,8 @@ def train_and_evaluate_inductive(
                     if is_regression:
                         if config.regression_loss == 'mae':
                             criterion = torch.nn.L1Loss()
+                        elif config.regression_loss == 'mse':
+                            criterion = torch.nn.MSELoss()
                         else:
                             criterion = torch.nn.MSELoss()
                     else:
@@ -1111,18 +937,36 @@ def train_and_evaluate_inductive(
                         val_pred = torch.cat(val_predictions, dim=0).numpy()
                         val_true = torch.cat(val_targets, dim=0).numpy()
                         val_metrics = compute_metrics(val_true, val_pred, is_regression)
-                        
+
                         if is_regression:
                             if config.regression_loss == 'mae':
                                 val_metric = val_metrics['mae']
                                 if val_metric < best_val_metric:  # Lower is better for MAE
                                     best_val_metric = val_metric
                                     patience_counter = 0
+                                else:
+                                    patience_counter += 1
+                            elif config.regression_loss == 'mse':
+                                val_metric = val_metrics['mse']
+                                if val_metric < best_val_metric:  # Lower is better for MSE
+                                    best_val_metric = val_metric
+                                    patience_counter = 0
+                                else:
+                                    patience_counter += 1
                             else:
                                 val_metric = val_metrics['r2']
                                 if val_metric > best_val_metric:  # Higher is better for R²
                                     best_val_metric = val_metric
                                     patience_counter = 0
+                        else:
+                            # For classification, use F1 score
+                            val_metric = val_metrics['f1_macro']
+                            if val_metric > best_val_metric:  # Higher is better for F1
+                                best_val_metric = val_metric
+                                patience_counter = 0
+                            else:
+                                patience_counter += 1
+                        
                         
                         if patience_counter >= patience:
                             break
@@ -1130,11 +974,16 @@ def train_and_evaluate_inductive(
                     # Return metric for optimization
                     if is_regression:
                         if config.regression_loss == 'mae':
-                            return -best_val_metric  # Negative because we minimize MAE
+                            final_metric = -best_val_metric  # Negative because we minimize MAE
+                        elif config.regression_loss == 'mse':
+                            final_metric = -best_val_metric  # Negative because we minimize MSE
                         else:
-                            return best_val_metric  # Positive because we maximize R²
+                            final_metric = best_val_metric  # Positive because we maximize R²
                     else:
-                        return best_val_metric  # Positive because we maximize F1
+                        # For classification, use F1 score
+                        final_metric = best_val_metric  # Positive because we maximize F1
+                    
+                    return final_metric
                 
                 # Run optimization
                 study.optimize(objective, n_trials=config.n_trials, timeout=config.optimization_timeout)
@@ -1174,8 +1023,6 @@ def train_and_evaluate_inductive(
                     # Update config with optimized parameters
                     config.learning_rate = best_params.get('lr', config.learning_rate)
                     config.weight_decay = best_params.get('weight_decay', config.weight_decay)
-                    config.patience = best_params.get('patience', config.patience)
-                    config.optimized_patience = best_params.get('patience', config.patience)
         
         # Handle GNN models
         elif model_name in ['gat', 'fagcn', 'gin', 'gcn', 'sage']:
@@ -1209,14 +1056,19 @@ def train_and_evaluate_inductive(
                 
                 def objective(trial: Trial) -> float:
                     # Common hyperparameters
-                    lr = trial.suggest_float('lr', 1e-4, 1e-2, log=True)
+                    lr = trial.suggest_float('lr', 1e-3, 1e-2, log=True)
                     weight_decay = trial.suggest_float('weight_decay', 1e-5, 1e-2, log=True)
-                    patience = trial.suggest_int('patience', 10, 50)
+                    # Use config patience instead of optimizing it
+                    patience = config.patience
                     
                     # GNN-specific hyperparameters
-                    hidden_dim = trial.suggest_int('hidden_dim', 32, 256)
-                    num_layers = trial.suggest_int('num_layers', 1, 4)
-                    dropout = trial.suggest_float('dropout', 0.1, 0.7)
+                    hidden_dim = config.hidden_dim #trial.suggest_int('hidden_dim', 32, 256)
+                    if task == 'k_hop_community_counts':
+                        num_layers = trial.suggest_int('num_layers', config.khop_community_counts_k + 1, config.khop_community_counts_k + 2)
+                    else:
+                        num_layers = config.num_layers
+
+                    dropout = trial.suggest_float('dropout', 0.1, 0.5)
                     
                     # Initialize default values
                     heads = 1
@@ -1239,7 +1091,7 @@ def train_and_evaluate_inductive(
                         agg_type = trial.suggest_categorical('agg_type', ['mean', 'sum'])
                     elif gnn_type == "fagcn":
                         eps = trial.suggest_float('eps', 0.0, 1.0)
-                    elif gnn_type in ["gcn", "sage", "gat", "gin"]:
+                    elif gnn_type in ["gcn", "sage", "gin"]:
                         residual = trial.suggest_categorical('residual', [True, False])
                         norm_type = trial.suggest_categorical('norm_type', ['none', 'layer'])
                         if gnn_type in ["sage", "gcn"]:
@@ -1270,6 +1122,8 @@ def train_and_evaluate_inductive(
                     if is_regression:
                         if config.regression_loss == 'mae':
                             criterion = torch.nn.L1Loss()
+                        elif config.regression_loss == 'mse':
+                            criterion = torch.nn.MSELoss()
                         else:
                             criterion = torch.nn.MSELoss()
                     else:
@@ -1319,23 +1173,39 @@ def train_and_evaluate_inductive(
                                 if val_metric < best_val_metric:  # Lower is better for MAE
                                     best_val_metric = val_metric
                                     patience_counter = 0
+                                else:
+                                    patience_counter += 1
+                            elif config.regression_loss == 'mse':
+                                val_metric = val_metrics['mse']
+                                if val_metric < best_val_metric:  # Lower is better for MSE
+                                    best_val_metric = val_metric
+                                    patience_counter = 0
+                                else:
+                                    patience_counter += 1
                             else:
                                 val_metric = val_metrics['r2']
                                 if val_metric > best_val_metric:  # Higher is better for R²
                                     best_val_metric = val_metric
                                     patience_counter = 0
+                        else:
+                            val_metric = val_metrics['f1_macro']
+                            if val_metric > best_val_metric:  # Higher is better for F1
+                                best_val_metric = val_metric
+                                patience_counter = 0
                         
                         if patience_counter >= patience:
                             break
                     
                     # Return metric for optimization
                     if is_regression:
-                        if config.regression_loss == 'mae':
-                            return -best_val_metric  # Negative because we minimize MAE
+                        if config.regression_loss in ['mae', 'mse']:
+                            final_metric = -best_val_metric  # Negative because we minimize MAE
                         else:
-                            return best_val_metric  # Positive because we maximize R²
+                            final_metric = best_val_metric  # Positive because we maximize R²
                     else:
-                        return best_val_metric  # Positive because we maximize F1
+                        final_metric = best_val_metric  # Positive because we maximize F1
+                    
+                    return final_metric
                 
                 # Run optimization
                 study.optimize(objective, n_trials=config.n_trials, timeout=config.optimization_timeout)
@@ -1348,9 +1218,17 @@ def train_and_evaluate_inductive(
                         print(f"   {key}: {value}")
                     
                     # Recreate model with optimized parameters
+                    if gnn_type == 'gat':
+                        # For GAT, ensure hidden_dim is properly calculated from base_dim and heads
+                        base_dim = best_params.get('base_dim', 8)
+                        heads = best_params.get('heads', 1)
+                        hidden_dim = base_dim * heads
+                    else:
+                        hidden_dim = best_params.get('hidden_dim', 64)
+
                     model = GNNModel(
                         input_dim=input_dim,
-                        hidden_dim=best_params.get('hidden_dim', 64),
+                        hidden_dim=hidden_dim,
                         output_dim=output_dim,
                         num_layers=best_params.get('num_layers', 2),
                         dropout=best_params.get('dropout', 0.5),
@@ -1368,9 +1246,7 @@ def train_and_evaluate_inductive(
                     # Update config with optimized parameters
                     config.learning_rate = best_params.get('lr', config.learning_rate)
                     config.weight_decay = best_params.get('weight_decay', config.weight_decay)
-                    config.patience = best_params.get('patience', config.patience)
-                    config.optimized_patience = best_params.get('patience', config.patience)
-                
+        
         # Handle MLP models
         elif isinstance(model, MLPModel):
             print(f"🔄 Training MLP")
@@ -1399,7 +1275,8 @@ def train_and_evaluate_inductive(
                     # Common hyperparameters
                     lr = trial.suggest_float('lr', 1e-4, 1e-2, log=True)
                     weight_decay = trial.suggest_float('weight_decay', 1e-5, 1e-2, log=True)
-                    patience = trial.suggest_int('patience', 10, 50)
+                    # Use config patience instead of optimizing it
+                    patience = config.patience
                     
                     # MLP-specific hyperparameters
                     hidden_dim = trial.suggest_int('hidden_dim', 32, 256)
@@ -1423,6 +1300,8 @@ def train_and_evaluate_inductive(
                     if is_regression:
                         if config.regression_loss == 'mae':
                             criterion = torch.nn.L1Loss()
+                        elif config.regression_loss == 'mse':
+                            criterion = torch.nn.MSELoss()
                         else:
                             criterion = torch.nn.MSELoss()
                     else:
@@ -1472,23 +1351,39 @@ def train_and_evaluate_inductive(
                                 if val_metric < best_val_metric:  # Lower is better for MAE
                                     best_val_metric = val_metric
                                     patience_counter = 0
+                                else:
+                                    patience_counter += 1
+                            elif config.regression_loss == 'mse':
+                                val_metric = val_metrics['mse']
+                                if val_metric < best_val_metric:  # Lower is better for MSE
+                                    best_val_metric = val_metric
+                                    patience_counter = 0
+                                else:
+                                    patience_counter += 1
                             else:
                                 val_metric = val_metrics['r2']
                                 if val_metric > best_val_metric:  # Higher is better for R²
                                     best_val_metric = val_metric
                                     patience_counter = 0
+                        else:
+                            val_metric = val_metrics['f1_macro']
+                            if val_metric > best_val_metric:  # Higher is better for F1
+                                best_val_metric = val_metric
+                                patience_counter = 0
                         
                         if patience_counter >= patience:
                             break
                     
                     # Return metric for optimization
                     if is_regression:
-                        if config.regression_loss == 'mae':
-                            return -best_val_metric  # Negative because we minimize MAE
+                        if config.regression_loss in ['mae', 'mse']:
+                            final_metric = -best_val_metric  # Negative because we minimize MAE
                         else:
-                            return best_val_metric  # Positive because we maximize R²
+                            final_metric = best_val_metric  # Positive because we maximize R²
                     else:
-                        return best_val_metric  # Positive because we maximize F1
+                        final_metric = best_val_metric  # Positive because we maximize F1
+                    
+                    return final_metric
                 
                 # Run optimization
                 study.optimize(objective, n_trials=config.n_trials, timeout=config.optimization_timeout)
@@ -1513,8 +1408,6 @@ def train_and_evaluate_inductive(
                     # Update config with optimized parameters
                     config.learning_rate = best_params.get('lr', config.learning_rate)
                     config.weight_decay = best_params.get('weight_decay', config.weight_decay)
-                    config.patience = best_params.get('patience', config.patience)
-                    config.optimized_patience = best_params.get('patience', config.patience)
         
         # Handle sklearn models
         elif isinstance(model, SklearnModel):
@@ -1599,11 +1492,13 @@ def train_and_evaluate_inductive(
                     # Return metric for optimization
                     if is_regression:
                         if config.regression_loss == 'mae':
-                            return -results['test_metrics']['mae']  # Negative because we minimize MAE
+                            final_metric = -results['test_metrics']['mae']  # Negative because we minimize MAE
                         else:
-                            return results['test_metrics']['r2']  # Positive because we maximize R²
+                            final_metric = results['test_metrics']['r2']  # Positive because we maximize R²
                     else:
-                        return results['test_metrics']['f1_macro']  # Positive because we maximize F1
+                        final_metric = results['test_metrics']['f1_macro']  # Positive because we maximize F1
+                    
+                    return final_metric
                 
                 # Run optimization
                 study.optimize(objective, n_trials=config.n_trials, timeout=config.optimization_timeout)

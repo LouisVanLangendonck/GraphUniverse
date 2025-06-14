@@ -952,7 +952,7 @@ class InductiveExperiment:
                     lines.append(f"    {primary_metric.upper()}: {score:.4f}")
                     lines.append(f"    Training time: {train_time:.2f}s")
                     
-                    if is_regression and primary_metric == 'mae':
+                    if is_regression and primary_metric in ['mae', 'mse']:
                         if score < best_score:
                             best_score = score
                             best_model = model_name.upper()
@@ -1294,36 +1294,78 @@ class PreTrainingRunner:
                     train_loss += loss.item()
                     train_batches += 1
                 
+                avg_train_loss = train_loss / train_batches if train_batches > 0 else 0.0
+                print(f"\nTrial {trial.number} - Epoch {epoch}")
+                print(f"Average training loss: {avg_train_loss}")
+                
                 # Validation every 5 epochs to save time
                 if epoch % 5 == 0:
                     model.eval()
                     with torch.no_grad():
+                        print(f"Computing validation metrics...")
                         val_metrics = temp_task.evaluate(model, val_loader)
+                        print(f"Raw validation metrics: {val_metrics}")
                     
                     # Get primary metric based on task
                     if self.config.pretraining_task == "link_prediction":
                         metric = val_metrics.get('auc', 0.0)
+                        print(f"Using AUC metric: {metric}")
+                        if metric > best_metric:  # Higher is better for AUC
+                            best_metric = metric
+                            patience_counter = 0
+                            print(f"New best metric: {best_metric}")
+                        else:
+                            patience_counter += 1
+                            print(f"No improvement. Patience: {patience_counter}/{patience}")
                     elif self.config.pretraining_task in ["dgi"]:
-                        metric = -val_metrics.get('loss', float('inf'))
+                        metric = val_metrics.get('discrimination_score', 0.0)  # Use discrimination score instead of negative loss
+                        print(f"Using discrimination score: {metric}")
+                        if metric > best_metric:  # Higher is better for discrimination score
+                            best_metric = metric
+                            patience_counter = 0
+                            print(f"New best metric: {best_metric}")
+                        else:
+                            patience_counter += 1
+                            print(f"No improvement. Patience: {patience_counter}/{patience}")
                     elif self.config.pretraining_task in ["graphcl"]:
                         # Use alignment for contrastive tasks if accuracy is unreliable
                         metric = val_metrics.get('alignment', val_metrics.get('accuracy', 0.0))
+                        print(f"Using alignment/accuracy metric: {metric}")
+                        if metric > best_metric:  # Higher is better for alignment/accuracy
+                            best_metric = metric
+                            patience_counter = 0
+                            print(f"New best metric: {best_metric}")
+                        else:
+                            patience_counter += 1
+                            print(f"No improvement. Patience: {patience_counter}/{patience}")
                     elif self.config.pretraining_task in ["graphmae"]:
                         metric = val_metrics.get('cosine_similarity', 0.0)
+                        print(f"Using cosine similarity metric: {metric}")
+                        if metric > best_metric:  # Higher is better for cosine similarity
+                            best_metric = metric
+                            patience_counter = 0
+                            print(f"New best metric: {best_metric}")
+                        else:
+                            patience_counter += 1
+                            print(f"No improvement. Patience: {patience_counter}/{patience}")
                     else:
                         # Fallback to any available metric
                         metric = list(val_metrics.values())[0] if val_metrics else 0.0
-                    
-                    if metric > best_metric:
-                        best_metric = metric
-                        patience_counter = 0
-                    else:
-                        patience_counter += 1
-                    
-                    if patience_counter >= patience:
-                        break
-            
-            return best_metric
+                        print(f"Using fallback metric: {metric}")
+                        if metric > best_metric:  # Higher is better for most metrics
+                            best_metric = metric
+                            patience_counter = 0
+                            print(f"New best metric: {best_metric}")
+                        else:
+                            patience_counter += 1
+                            print(f"No improvement. Patience: {patience_counter}/{patience}")
+                        
+                        if patience_counter >= patience:
+                            print(f"Early stopping triggered after {epoch} epochs")
+                            break
+                
+                print(f"\nTrial {trial.number} completed with final best metric: {best_metric}")
+                return best_metric
         
         # Create study
         study = optuna.create_study(

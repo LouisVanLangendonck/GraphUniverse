@@ -356,22 +356,58 @@ class DeepGraphInfoMaxTask(SelfSupervisedTask):
         return loss
     
     def evaluate(self, model: nn.Module, dataloader: DataLoader) -> Dict[str, float]:
-        """ADDED: Evaluate Deep Graph InfoMax performance."""
+        """Evaluate Deep Graph InfoMax performance."""
         model.eval()
         total_loss = 0.0
+        total_pos_score = 0.0
+        total_neg_score = 0.0
         n_batches = 0
         
         with torch.no_grad():
             for batch in dataloader:
                 batch = batch.to(self.device)
                 
-                # Compute loss
-                loss = self.compute_loss(model, batch)
-                total_loss += loss.item()
+                # Get embeddings
+                node_embeddings = model.encoder(batch.x, batch.edge_index)
+                graph_embedding = model.readout(node_embeddings)
                 
+                # Get corrupted embeddings
+                corrupted_batch = self._corrupt_graph(batch)
+                corrupted_embeddings = model.encoder(corrupted_batch.x, corrupted_batch.edge_index)
+                corrupted_graph_embedding = model.readout(corrupted_embeddings)
+                
+                # Compute scores
+                pos_pairs = torch.cat([
+                    node_embeddings, 
+                    graph_embedding.repeat(node_embeddings.size(0), 1)
+                ], dim=1)
+                pos_scores = model.discriminator(pos_pairs).squeeze()
+                
+                neg_pairs = torch.cat([
+                    node_embeddings,
+                    corrupted_graph_embedding.repeat(node_embeddings.size(0), 1)
+                ], dim=1)
+                neg_scores = model.discriminator(neg_pairs).squeeze()
+                
+                # Compute loss
+                pos_term = torch.log(pos_scores + 1e-8).mean()
+                neg_term = torch.log(1 - neg_scores + 1e-8).mean()
+                loss = -(pos_term + neg_term)
+                
+                total_loss += loss.item()
+                total_pos_score += pos_scores.mean().item()
+                total_neg_score += neg_scores.mean().item()
                 n_batches += 1
         
-        return {'loss': total_loss / n_batches if n_batches > 0 else 0.0}
+        avg_loss = total_loss / n_batches if n_batches > 0 else 0.0
+        avg_pos_score = total_pos_score / n_batches if n_batches > 0 else 0.0
+        avg_neg_score = total_neg_score / n_batches if n_batches > 0 else 0.0
+        
+        # Return both loss and discrimination score (higher is better)
+        return {
+            'loss': avg_loss,
+            'discrimination_score': avg_pos_score - avg_neg_score  # Higher means better discrimination
+        }
 
 class LinkPredictionTask(SelfSupervisedTask):
     """Link prediction self-supervised task."""

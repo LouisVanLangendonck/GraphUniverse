@@ -573,17 +573,19 @@ def prepare_inductive_data(
                     # Triangle counting (via networkx then to tensor)
                     pyg_data.y = torch.tensor(count_trianges_graph(graph_sample.graph), dtype=torch.long)
                     
-                elif task == "k_hop_community_counts":
+                elif task.startswith("k_hop_community_counts_k"):
+                    # Extract k value from task name
+                    k = int(task.split("k")[-1])
                     # K-hop community counting - already universe-indexed
                     community_counts = compute_khop_community_counts_universe_indexed(
                         graph_sample.graph,
                         graph_sample.community_labels,
                         graph_sample.community_id_mapping,
                         universe_K,
-                        getattr(config, 'khop_community_counts_k', 2)
+                        k
                     )
                     pyg_data.y = community_counts
-                    
+                
                 elif task == "metapath" and metapath_data:
                     # Metapath task
                     original_graph_idx = split_indices[i]
@@ -609,8 +611,8 @@ def prepare_inductive_data(
             if split_name == 'train':
                 batch_size = min(len(pyg_graphs), config.batch_size) if pyg_graphs else 1
             else:
-                # Use same batch size as training for consistency
-                batch_size = min(len(pyg_graphs), config.batch_size) if pyg_graphs else 1
+                # For validation and test, use all graphs in one batch
+                batch_size = len(pyg_graphs) if pyg_graphs else 1
             
             # Store data for this split
             task_data[split_name] = {
@@ -631,7 +633,7 @@ def prepare_inductive_data(
             # For triangle counting, use 1 output dimension
             output_dim = 1
             
-        elif task == "k_hop_community_counts":
+        elif task.startswith("k_hop_community_counts_k"):
             # For k-hop counting, use universe K
             output_dim = universe_K
             
@@ -648,9 +650,10 @@ def prepare_inductive_data(
         }
         
         # Add task-specific metadata
-        if task == "k_hop_community_counts":
+        if task.startswith("k_hop_community_counts_k"):
+            k = int(task.split("k")[-1])
             task_data['metadata'].update({
-                'k_value': getattr(config, 'khop_community_counts_k', 2),
+                'k_value': k,
                 'universe_K': universe_K
             })
             

@@ -53,22 +53,22 @@ def parse_args():
                         help='Dont do any other experiments. Only fine-tune pre-trained models and from scratch version of it and hyperparameter optimization of that model type.')    
         
     # === TASKS ===
-    parser.add_argument('--tasks', type=str, nargs='+', default=['triangle_count'],
+    parser.add_argument('--tasks', type=str, nargs='+', default=['k_hop_community_counts'],
                         choices=['community', 'k_hop_community_counts', 'triangle_count'],
                         help='Learning tasks to run')
-    parser.add_argument('--khop_k', type=int, default=2,
+    parser.add_argument('--khop_k', type=int, default=1,
                         help='k value for k-hop community counting task')
     
     # === GRAPH FAMILY GENERATION ===
-    parser.add_argument('--n_graphs', type=int, default=50,
+    parser.add_argument('--n_graphs', type=int, default=20,
                         help='Number of graphs to generate in family')
     parser.add_argument('--min_n_nodes', type=int, default=80,
                         help='Minimum number of nodes per graph')
     parser.add_argument('--max_n_nodes', type=int, default=120,
                         help='Maximum number of nodes per graph')
-    parser.add_argument('--min_communities', type=int, default=3,
+    parser.add_argument('--min_communities', type=int, default=4,
                         help='Minimum number of communities per graph')
-    parser.add_argument('--max_communities', type=int, default=7,
+    parser.add_argument('--max_communities', type=int, default=6,
                         help='Maximum number of communities per graph')
     
     # === UNIVERSE PARAMETERS ===
@@ -78,13 +78,13 @@ def parse_args():
                         help='Feature dimension for universe')
     parser.add_argument('--universe_edge_density', type=float, default=0.07,
                         help='Base edge density for universe')
-    parser.add_argument('--universe_homophily', type=float, default=0.6,
+    parser.add_argument('--universe_homophily', type=float, default=0.7,
                         help='Homophily parameter for universe')
     parser.add_argument('--universe_randomness_factor', type=float, default=1.0,
                         help='Randomness factor for universe')
     
     # === METHOD SELECTION ===
-    parser.add_argument('--use_dccc_sbm', action='store_true',
+    parser.add_argument('--use_dccc_sbm', action='store_true', default=True,
                         help='Use DCCC-SBM instead of standard DC-SBM')
     parser.add_argument('--degree_distribution', type=str, default='power_law',
                         choices=['standard', 'power_law', 'exponential', 'uniform'],
@@ -119,7 +119,7 @@ def parse_args():
                         help='Maximum allowed participation rate per community')
     
     # === MODELS ===
-    parser.add_argument('--gnn_types', type=str, nargs='+', default=['gat', 'fagcn'],
+    parser.add_argument('--gnn_types', type=str, nargs='+', default=['gcn', 'sage', 'gat'],
                         choices=['gcn', 'fagcn', 'sage', 'gat', 'gin'],
                         help='Types of GNN models to run')
     parser.add_argument('--transformer_types', type=str, nargs='+', 
@@ -142,9 +142,9 @@ def parse_args():
                         help='Skip Random Forest model')
     
     # === TRAINING ===
-    parser.add_argument('--epochs', type=int, default=200,
+    parser.add_argument('--epochs', type=int, default=400,
                         help='Maximum number of epochs')
-    parser.add_argument('--patience', type=int, default=50,
+    parser.add_argument('--patience', type=int, default=100,
                         help='Patience for early stopping')
     parser.add_argument('--learning_rate', type=float, default=0.001,
                         help='Learning rate for neural models')
@@ -164,9 +164,9 @@ def parse_args():
     # === FEATURE GENERATION ===
     parser.add_argument('--cluster_count_factor', type=float, default=1.0,
                         help='Factor for cluster count')
-    parser.add_argument('--center_variance', type=float, default=0.1,
+    parser.add_argument('--center_variance', type=float, default=1.0,
                         help='Variance for center of clusters')
-    parser.add_argument('--cluster_variance', type=float, default=1.0,
+    parser.add_argument('--cluster_variance', type=float, default=0.1,
                         help='Variance for cluster sizes')
     parser.add_argument('--assignment_skewness', type=float, default=0.0,
                         help='Skewness for feature assignment')

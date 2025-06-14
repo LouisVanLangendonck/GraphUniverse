@@ -42,6 +42,11 @@ def compute_metrics(
         metrics['rmse'] = np.sqrt(metrics['mse'])
         metrics['mae'] = mean_absolute_error(y_true, y_pred)
         
+        # Calculate relative error
+        numerator = np.sum(np.abs(y_pred - y_true))
+        denominator = np.sum(np.abs(y_true)) + 1e-8  # Add small epsilon to avoid division by zero
+        metrics['relative_error'] = numerator / denominator
+        
         # Handle R² calculation for potentially problematic cases
         try:
             r2 = r2_score(y_true, y_pred)
@@ -57,6 +62,11 @@ def compute_metrics(
                 per_label_metrics[f'mse_label_{i}'] = label_mse
                 per_label_metrics[f'rmse_label_{i}'] = np.sqrt(label_mse)
                 per_label_metrics[f'mae_label_{i}'] = mean_absolute_error(y_true[:, i], y_pred[:, i])
+                
+                # Calculate relative error per label
+                label_numerator = np.sum(np.abs(y_pred[:, i] - y_true[:, i]))
+                label_denominator = np.sum(np.abs(y_true[:, i])) + 1e-8
+                per_label_metrics[f'relative_error_label_{i}'] = label_numerator / label_denominator
                 
                 try:
                     label_r2 = r2_score(y_true[:, i], y_pred[:, i])
@@ -519,6 +529,7 @@ def model_performance_summary(
                 summary_lines.append(f"MSE: {test_metrics.get('mse', 0):.4f}")
                 summary_lines.append(f"MAE: {test_metrics.get('mae', 0):.4f}")
                 summary_lines.append(f"RMSE: {test_metrics.get('rmse', 0):.4f}")
+                summary_lines.append(f"Relative Error: {test_metrics.get('relative_error', 0):.4f}")
             else:
                 summary_lines.append(f"Accuracy: {test_metrics.get('accuracy', 0):.4f}")
                 summary_lines.append(f"F1 Macro: {test_metrics.get('f1_macro', 0):.4f}")

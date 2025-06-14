@@ -14,9 +14,6 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from experiments.inductive.multi_config import (
     CleanMultiExperimentConfig, 
     ParameterRange,
-    create_homophily_density_sweep,
-    create_dccc_method_comparison,
-    create_large_scale_benchmark
 )
 from experiments.inductive.multi_experiment import run_clean_multi_experiments, create_analysis_plots
 
@@ -42,19 +39,15 @@ def parse_args():
     # Task configuration
     parser.add_argument('--tasks', type=str, nargs='+', 
                         default=['community', 'k_hop_community_counts'],
-                        choices=['community', 'k_hop_community_counts', 'metapath'],
+                        choices=['community', 'k_hop_community_counts'],
                         help='Learning tasks to run')
-    parser.add_argument('--khop_k', type=int, default=2,
-                        help='k value for k-hop community counting task')
-    parser.add_argument('--metapath_k_values', type=int, nargs='+', default=[3, 4, 5],
-                        help='K-values for metapath lengths')
     
     # Base experiment settings
-    parser.add_argument('--n_graphs', type=int, default=12,
+    parser.add_argument('--n_graphs', type=int, default=30,
                         help='Number of graphs per family')
     parser.add_argument('--min_n_nodes', type=int, default=80,
                         help='Minimum nodes per graph')
-    parser.add_argument('--max_n_nodes', type=int, default=100,
+    parser.add_argument('--max_n_nodes', type=int, default=120,
                         help='Maximum nodes per graph')
     parser.add_argument('--universe_K', type=int, default=10,
                         help='Number of communities in universe')
@@ -64,24 +57,24 @@ def parse_args():
                         help='Maximum number of communities')
     
     # Method selection
-    parser.add_argument('--use_dccc_sbm', action='store_true',
+    parser.add_argument('--use_dccc_sbm', action='store_true', default=True,
                         help='Use DCCC-SBM (for custom experiments)')
     parser.add_argument('--degree_distribution', type=str, default='power_law',
                         choices=['standard', 'power_law', 'exponential', 'uniform'],
                         help='Degree distribution for DCCC-SBM')
     
     # Training settings
-    parser.add_argument('--epochs', type=int, default=150,
+    parser.add_argument('--epochs', type=int, default=500,
                         help='Training epochs')
-    parser.add_argument('--patience', type=int, default=50,
+    parser.add_argument('--patience', type=int, default=100,
                         help='Early stopping patience')
-    parser.add_argument('--batch_size', type=int, default=2,
+    parser.add_argument('--batch_size', type=int, default=1,
                         help='Batch size for training (per graph)')
     
     # Hyperparameter optimization settings
     parser.add_argument('--optimize_hyperparams', action='store_true',
                         help='Enable hyperparameter optimization')
-    parser.add_argument('--n_trials', type=int, default=20,
+    parser.add_argument('--n_trials', type=int, default=10,
                         help='Number of hyperparameter optimization trials')
     parser.add_argument('--optimization_timeout', type=int, default=600,
                         help='Timeout in seconds for hyperparameter optimization')
@@ -154,15 +147,23 @@ def create_custom_experiment(args) -> CleanMultiExperimentConfig:
         degree_distribution=args.degree_distribution,
 
         # Tasks configuration
-        tasks=args.tasks,
-        khop_community_counts_k=args.khop_k,
+        tasks=['community', 'k_hop_community_counts_k1', 'k_hop_community_counts_k2', 'k_hop_community_counts_k3'],
         is_regression={
             'community': False,
-            'k_hop_community_counts': True
+            'k_hop_community_counts_k1': True,
+            'k_hop_community_counts_k2': True,
+            'k_hop_community_counts_k3': True
         },
+        is_graph_level_tasks={
+            'community': False,
+            'k_hop_community_counts_k1': False,
+            'k_hop_community_counts_k2': False,
+            'k_hop_community_counts_k3': False
+        },
+        khop_community_counts_k=1,  # This will be overridden per task
         
         # Tasks and models
-        gnn_types=['fagcn', 'gat', 'gcn', 'sage', 'gin'],
+        gnn_types=['gcn', 'gat', 'sage', 'gin'], # ['fagcn', 'gat', 'gcn', 'sage', 'gin']
         run_gnn=args.run_gnn,
         run_mlp=args.run_mlp,
         run_rf=args.run_rf,
@@ -202,13 +203,13 @@ def create_custom_experiment(args) -> CleanMultiExperimentConfig:
         'universe_homophily': ParameterRange(
             min_val=0.0,
             max_val=1.0,
-            step=0.2,
+            step=0.25,
             is_sweep=True
         ),
         'universe_edge_density': ParameterRange(
             min_val=0.02,
             max_val=0.22,
-            step=0.1,
+            step=0.2,
             is_sweep=True
         )
     }
@@ -240,37 +241,37 @@ def create_custom_experiment(args) -> CleanMultiExperimentConfig:
             is_sweep=False
         ),
         'cluster_count_factor': ParameterRange(
-            min_val=0.5,
-            max_val=1.5,
+            min_val=0.8,
+            max_val=1.2,
             distribution="uniform",
             is_sweep=False
         ),
         'cluster_variance': ParameterRange(
-            min_val=0.01,
+            min_val=0.05,
             max_val=0.5,
             distribution="uniform",
             is_sweep=False
         ),
         'center_variance': ParameterRange(
-            min_val=0.01,
-            max_val=1.5,
+            min_val=0.1,
+            max_val=1.0,
             distribution="uniform",
             is_sweep=False
         ),
         'assignment_skewness': ParameterRange(
             min_val=0.0,
-            max_val=0.5,
+            max_val=0.3,
             distribution="uniform",
             is_sweep=False
         ),
         'community_exclusivity': ParameterRange(
-            min_val=0.6,
+            min_val=0.8,
             max_val=1.0,
             distribution="uniform",
             is_sweep=False
         ),
         'universe_randomness_factor': ParameterRange(
-            min_val=0.0,
+            min_val=0.7,
             max_val=1.0,
             distribution="uniform",
             is_sweep=False
@@ -282,12 +283,12 @@ def create_custom_experiment(args) -> CleanMultiExperimentConfig:
         random_parameters.update({
             'community_imbalance_range_width': ParameterRange(
                 min_val=0.0,
-                max_val=0.5,
+                max_val=0.1,
                 distribution="uniform",
                 is_sweep=False
             ),
             'degree_separation_range_width': ParameterRange(
-                min_val=0.3,
+                min_val=0.4,
                 max_val=1.0,
                 distribution="uniform",
                 is_sweep=False

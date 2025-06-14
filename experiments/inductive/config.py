@@ -50,7 +50,7 @@ class InductiveExperimentConfig:
     universe_randomness_factor: float = 0.0
     community_density_variation: float = 0.2
     community_cooccurrence_homogeneity: float = 0.7
-    triangle_density: float = 0.1
+    triangle_density: float = 0.0
     triangle_community_relation_homogeneity: float = 0.7
     
     # === FEATURE GENERATION ===
@@ -160,7 +160,7 @@ class InductiveExperimentConfig:
     save_individual_graphs: bool = False
     
     # Regression-specific parameters
-    regression_loss: str = 'mae'  # 'mse' or 'mae'
+    regression_loss: str = 'mse'  # 'mse' or 'mae'
     regression_metrics: List[str] = field(default_factory=lambda: ['mae', 'mse', 'rmse', 'r2'])
     
     def __post_init__(self):
@@ -296,7 +296,7 @@ class PreTrainingConfig:
     cluster_variance: float = 0.1
     community_density_variation: float = 0.2
     community_cooccurrence_homogeneity: float = 0.6
-    triangle_density: float = 0.2
+    triangle_density: float = 0.0
     triangle_community_relation_homogeneity: float = 0.5
 
     assignment_skewness: float = 0.0
