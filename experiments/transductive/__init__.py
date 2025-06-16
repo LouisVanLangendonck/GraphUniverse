@@ -2,28 +2,28 @@
 Core module for MMSB graph learning experiments.
 """
 
-from experiments.core.config import TransductiveExperimentConfig
-from experiments.core.experiment import TransductiveExperiment
-from experiments.core.data import prepare_transductive_data
-from experiments.core.models import GNNModel, MLPModel, SklearnModel
-from experiments.core.training import (
+from experiments.transductive.config import TransductiveExperimentConfig
+from experiments.transductive.experiment import TransductiveExperiment
+from experiments.transductive.data import prepare_transductive_data
+from experiments.models import GNNModel, MLPModel, SklearnModel
+from experiments.transductive.training import (
     train_transductive_model,
     train_sklearn_transductive,
     evaluate_transductive_model
 )
-from experiments.core.metrics import (
+from experiments.transductive.metrics import (
     compute_metrics,
     model_performance_summary
 )
-from experiments.core.analysis import (
+from experiments.transductive.analysis import (
     create_task_performance_summary,
     create_overall_performance_summary
 )
 
 # Transductive experiment components
-from experiments.core.config import TransductiveExperimentConfig
-from experiments.core.experiment import run_transductive_experiment
-from experiments.core.analysis import (
+from experiments.transductive.config import TransductiveExperimentConfig
+from experiments.transductive.experiment import run_transductive_experiment
+from experiments.transductive.analysis import (
     analyze_transductive_results,
     create_analysis_plots
 )

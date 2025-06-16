@@ -16,12 +16,175 @@ import os
 import time
 from dataclasses import asdict
 import pandas as pd
+from torch_geometric.utils import get_laplacian, to_scipy_sparse_matrix
+from scipy.sparse.linalg import eigsh
+import copy
 
 from mmsb.model import GraphSample, GraphUniverse
 from mmsb.feature_regimes import graphsample_to_pyg
 from utils.metapath_analysis import MetapathAnalyzer, UniverseMetapathSelector, FamilyMetapathEvaluator
-from experiments.inductive.config import PreTrainingConfig
+from experiments.inductive.config import PreTrainingConfig, InductiveExperimentConfig
 
+class PositionalEncodingComputer:
+    """Compute various types of positional encodings for graphs."""
+    
+    def __init__(self, max_pe_dim: int = 16, pe_types: List[str] = None, normalize: bool = False):
+        """
+        Initialize PE computer.
+        
+        Args:
+            max_pe_dim: Maximum PE dimension
+            pe_types: List of PE types to compute ['laplacian', 'random_walk', 'shortest_path']
+            normalize: Whether to also compute graph-normalized versions of PEs
+        """
+        self.max_pe_dim = max_pe_dim
+        self.pe_types = pe_types or ['laplacian']
+        self.normalize = normalize
+    
+    def _graph_normalize(self, pe: torch.Tensor, edge_index: torch.Tensor, num_nodes: int) -> torch.Tensor:
+        """
+        Normalize PE features within each connected component of the graph.
+        
+        Args:
+            pe: Positional encoding tensor [num_nodes, pe_dim]
+            edge_index: Edge indices [2, num_edges]
+            num_nodes: Number of nodes
+            
+        Returns:
+            Graph-normalized PE tensor [num_nodes, pe_dim]
+        """
+        # Convert to NetworkX to find connected components
+        G = nx.Graph()
+        G.add_nodes_from(range(num_nodes))
+        edges = edge_index.t().cpu().numpy()
+        G.add_edges_from(edges)
+        
+        # Find connected components
+        components = list(nx.connected_components(G))
+        
+        # Create normalized PE tensor
+        normalized_pe = torch.zeros_like(pe)
+        
+        # Normalize within each component
+        for component in components:
+            component = list(component)
+            if len(component) > 1:  # Only normalize if component has more than 1 node
+                component_pe = pe[component]
+                mean = component_pe.mean(dim=0, keepdim=True)
+                var = component_pe.var(dim=0, keepdim=True, unbiased=False)
+                normalized_pe[component] = (component_pe - mean) / torch.sqrt(var + 1e-5)
+            else:
+                # Single node component - keep original values
+                normalized_pe[component] = pe[component]
+        
+        return normalized_pe
+    
+    def compute_laplacian_pe(self, edge_index: torch.Tensor, num_nodes: int) -> torch.Tensor:
+        """Compute Laplacian eigenvector PE."""
+        try:
+            # Get normalized Laplacian
+            edge_index_np = edge_index.cpu().numpy()
+            L = to_scipy_sparse_matrix(
+                *get_laplacian(edge_index, normalization='sym', num_nodes=num_nodes)
+            )
+            
+            # Compute smallest eigenvalues/eigenvectors
+            k = min(self.max_pe_dim, num_nodes - 2)
+            if k <= 0:
+                return torch.zeros(num_nodes, self.max_pe_dim)
+            
+            eigenvals, eigenvecs = eigsh(L, k=k, which='SM', return_eigenvectors=True)
+            
+            # Pad if needed
+            if eigenvecs.shape[1] < self.max_pe_dim:
+                pad_width = self.max_pe_dim - eigenvecs.shape[1]
+                eigenvecs = np.pad(eigenvecs, ((0, 0), (0, pad_width)), mode='constant')
+            
+            return torch.tensor(eigenvecs[:, :self.max_pe_dim], dtype=torch.float)
+            
+        except Exception as e:
+            print(f"Warning: Laplacian PE computation failed: {e}")
+            return torch.zeros(num_nodes, self.max_pe_dim)
+    
+    def compute_random_walk_pe(self, edge_index: torch.Tensor, num_nodes: int) -> torch.Tensor:
+        """Compute random walk PE (landing probabilities)."""
+        try:
+            # Simple random walk PE based on degree
+            degrees = torch.zeros(num_nodes)
+            degrees = degrees.scatter_add(0, edge_index[0], torch.ones(edge_index.size(1)))
+            degrees = degrees.scatter_add(0, edge_index[1], torch.ones(edge_index.size(1)))
+            
+            # Normalize and create features
+            rw_pe = torch.zeros(num_nodes, self.max_pe_dim)
+            for i in range(min(self.max_pe_dim, 8)):  # Simple approximation
+                rw_pe[:, i] = (degrees ** (i / 4.0)) / (1 + degrees ** (i / 4.0))
+            
+            return rw_pe
+            
+        except Exception as e:
+            print(f"Warning: Random walk PE computation failed: {e}")
+            return torch.zeros(num_nodes, self.max_pe_dim)
+    
+    def compute_shortest_path_pe(self, edge_index: torch.Tensor, num_nodes: int) -> torch.Tensor:
+        """Compute shortest path PE."""
+        try:
+            # Convert to NetworkX for shortest paths
+            G = nx.Graph()
+            G.add_nodes_from(range(num_nodes))
+            edges = edge_index.t().cpu().numpy()
+            G.add_edges_from(edges)
+            
+            # Compute shortest path matrix (limited to avoid memory issues)
+            max_samples = min(num_nodes, 50)  # Sample nodes for efficiency
+            sample_nodes = np.random.choice(num_nodes, max_samples, replace=False)
+            
+            sp_pe = torch.zeros(num_nodes, self.max_pe_dim)
+            
+            for i, source in enumerate(sample_nodes):
+                if i >= self.max_pe_dim:
+                    break
+                    
+                try:
+                    lengths = nx.single_source_shortest_path_length(G, source)
+                    for node in range(num_nodes):
+                        sp_pe[node, i] = lengths.get(node, num_nodes)  # Use num_nodes as "infinity"
+                except:
+                    sp_pe[:, i] = num_nodes
+            
+            # Normalize
+            sp_pe = sp_pe / num_nodes
+            
+            return sp_pe
+            
+        except Exception as e:
+            print(f"Warning: Shortest path PE computation failed: {e}")
+            return torch.zeros(num_nodes, self.max_pe_dim)
+    
+    def compute_all_pe(self, edge_index: torch.Tensor, num_nodes: int) -> Dict[str, torch.Tensor]:
+        """Compute all requested PE types."""
+        pe_dict = {}
+        
+        for pe_type in self.pe_types:
+            if pe_type == 'laplacian':
+                pe = self.compute_laplacian_pe(edge_index, num_nodes)
+                pe_dict['laplacian_pe'] = pe
+                if self.normalize:
+                    pe_dict['laplacian_pe_norm'] = self._graph_normalize(pe, edge_index, num_nodes)
+                    
+            elif pe_type == 'random_walk':
+                pe = self.compute_random_walk_pe(edge_index, num_nodes)
+                pe_dict['random_walk_pe'] = pe
+                if self.normalize:
+                    pe_dict['random_walk_pe_norm'] = self._graph_normalize(pe, edge_index, num_nodes)
+                    
+            elif pe_type == 'shortest_path':
+                pe = self.compute_shortest_path_pe(edge_index, num_nodes)
+                pe_dict['shortest_path_pe'] = pe
+                if self.normalize:
+                    pe_dict['shortest_path_pe_norm'] = self._graph_normalize(pe, edge_index, num_nodes)
+        
+        return pe_dict
+ 
 class GraphFamilyManager:
     """Manages graph family generation, saving, and loading for SSL experiments."""
     
@@ -376,7 +539,7 @@ class PreTrainedModelSaver:
         """Get all models trained on a specific graph family."""
         all_models = self.list_models()
         return [model for model in all_models if model.get('family_id') == family_id]
-
+   
 def select_graphs_for_maximum_coverage(
     family_graphs: List[GraphSample],
     universe_K: int,
@@ -438,7 +601,8 @@ def select_graphs_for_maximum_coverage(
 
 def prepare_inductive_data(
     family_graphs: List[GraphSample],
-    config
+    config,
+    pe_types: List[str] = ['laplacian', 'random_walk', 'shortest_path']
 ) -> Dict[str, Dict[str, Any]]:
     """
     Central function to prepare graph family data for inductive learning.
@@ -672,14 +836,27 @@ def prepare_inductive_data(
         
         inductive_data[task] = task_data
     
+    # Add PE precomputation if using transformers
+    if config.run_transformers and config.precompute_pe:
+        print(f"\nPrecomputing positional encodings...")
+        print(f"PE types: {pe_types}")
+        print(f"PE dimension: {config.max_pe_dim}")
+
+        inductive_data = add_positional_encodings_to_data(
+            inductive_data, 
+            pe_types=pe_types,
+            max_pe_dim=config.max_pe_dim,
+            normalize=True
+        )
+
     # Add metapath analysis if available
-    if metapath_data:
-        inductive_data['metapath_analysis'] = {
-            'evaluation_results': metapath_data['evaluation_results'],
-            'candidate_analysis': metapath_data['candidate_analysis'],
-            'detailed_report': metapath_data['detailed_report'],
-            'universe_info': metapath_data['universe_info']
-        }
+    # if metapath_data:
+    #     inductive_data['metapath_analysis'] = {
+    #         'evaluation_results': metapath_data['evaluation_results'],
+    #         'candidate_analysis': metapath_data['candidate_analysis'],
+    #         'detailed_report': metapath_data['detailed_report'],
+    #         'universe_info': metapath_data['universe_info']
+    #     }
     
     return inductive_data
 
@@ -1050,6 +1227,102 @@ def list_graph_families(graph_family_dir: str = "graph_families") -> List[Dict]:
     config = PreTrainingConfig(graph_family_dir=graph_family_dir)
     manager = GraphFamilyManager(config)
     return manager.list_families()
+
+def add_positional_encodings_to_data(
+    inductive_data: Dict[str, Dict[str, Any]], 
+    pe_types: List[str] = ['laplacian'],
+    max_pe_dim: int = 16,
+    normalize: bool = False
+) -> Dict[str, Dict[str, Any]]:
+    """
+    Add precomputed positional encodings to all graphs in inductive data.
+    
+    Args:
+        inductive_data: The prepared inductive data dictionary
+        pe_types: Types of PE to compute
+        max_pe_dim: Maximum PE dimension
+        normalize: Whether to also compute graph-normalized versions of PEs
+    
+    Returns:
+        Updated inductive data with PE added to each graph
+    """
+    pe_computer = PositionalEncodingComputer(
+        max_pe_dim=max_pe_dim, 
+        pe_types=pe_types,
+        normalize=normalize
+    )
+    
+    print(f"Precomputing positional encodings: {pe_types}")
+    if normalize:
+        print("Also computing graph-normalized versions")
+    total_graphs = 0
+    
+    # Process each task
+    for task_name, task_data in inductive_data.items():
+        if task_name in ['metadata', 'metapath_analysis']:
+            continue
+            
+        print(f"  Processing task: {task_name}")
+        
+        # Process each split
+        for split_name, split_data in task_data.items():
+            if split_name == 'metadata':
+                continue
+                
+            graphs = split_data['graphs']
+            print(f"    Processing {split_name}: {len(graphs)} graphs")
+            
+            for i, graph in enumerate(graphs):
+                # Compute PE for this graph
+                pe_dict = pe_computer.compute_all_pe(graph.edge_index, graph.x.size(0))
+                
+                # Add PE to graph data
+                for pe_name, pe_tensor in pe_dict.items():
+                    setattr(graph, pe_name, pe_tensor)
+                
+                total_graphs += 1
+                
+                if (i + 1) % 10 == 0:
+                    print(f"      Processed {i + 1}/{len(graphs)} graphs")
+    
+    print(f"✓ Added PE to {total_graphs} graphs total")
+    return inductive_data
+
+def _cache_pe_globally(inductive_data: Dict, config: InductiveExperimentConfig):
+    """Cache PE tensors globally to save memory when using multiple models."""
+    global_pe_cache = {}
+    
+    for task_name, task_data in inductive_data.items():
+        if task_name in ['metadata', 'metapath_analysis']:
+            continue
+            
+        for split_name, split_data in task_data.items():
+            if split_name == 'metadata':
+                continue
+                
+            for graph_idx, graph in enumerate(split_data['graphs']):
+                cache_key = f"{task_name}_{split_name}_{graph_idx}"
+                
+                # Store PE in global cache
+                pe_data = {}
+                for pe_type in config.pe_types:
+                    pe_attr = f"{pe_type}_pe"
+                    if hasattr(graph, pe_attr):
+                        pe_tensor = getattr(graph, pe_attr)
+                        
+                        # Convert to specified precision
+                        if config.pe_precision == 'float16':
+                            pe_tensor = pe_tensor.half()
+                        
+                        pe_data[pe_attr] = pe_tensor
+                        
+                        # Remove from graph to save memory
+                        delattr(graph, pe_attr)
+                
+                global_pe_cache[cache_key] = pe_data
+    
+    # Store cache reference in config
+    config._global_pe_cache = global_pe_cache
 
 def count_trianges_graph(graph: nx.Graph) -> int:
     """Count the number of triangles in a graph."""

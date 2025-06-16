@@ -18,9 +18,9 @@ from tqdm import tqdm
 # Add project root to path
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-from experiments.core.config import TransductiveExperimentConfig
-from experiments.core.experiment import run_transductive_experiment
-from experiments.core.analysis import (
+from experiments.transductive.config import TransductiveExperimentConfig
+from experiments.transductive.experiment import run_transductive_experiment
+from experiments.transductive.analysis import (
     analyze_transductive_results, 
     create_analysis_plots,
     generate_experiment_report

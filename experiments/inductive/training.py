@@ -16,8 +16,8 @@ from typing import Dict, List, Optional, Tuple, Union, Any, Callable
 from torch_geometric.loader import DataLoader
 from torch_geometric.data import Batch
 
-from experiments.core.models import GNNModel, MLPModel, SklearnModel, GraphTransformerModel
-from experiments.core.metrics import compute_metrics
+from experiments.models import GNNModel, MLPModel, SklearnModel, GraphTransformerModel
+from experiments.transductive.metrics import compute_metrics
 from experiments.inductive.config import InductiveExperimentConfig
 
 # Set up logging
@@ -167,8 +167,13 @@ def train_inductive_model(
     # Check if the model is graph-based
     if model_name in ['mlp', 'sklearn', 'rf']:
         graph_based_model = False
+        transformer_based_model = False
+    elif model_name == 'graphgps':
+        transformer_based_model = True
+        graph_based_model = False
     else:
         graph_based_model = True
+        transformer_based_model = False
     
     for epoch in range(config.epochs):
         # Training
@@ -184,6 +189,8 @@ def train_inductive_model(
             # Forward pass - check if model requires edge_index
             if graph_based_model:
                 out = model(batch.x, batch.edge_index)
+            elif transformer_based_model:
+                out = model(batch.x, batch.edge_index, data=batch)
             else:  # MLPModel or other non-GNN model
                 out = model(batch.x)
             
@@ -216,6 +223,8 @@ def train_inductive_model(
                 
                 if graph_based_model:
                     out = model(batch.x, batch.edge_index)
+                elif transformer_based_model:
+                    out = model(batch.x, batch.edge_index, data=batch)
                 else:
                     out = model(batch.x)
                 
@@ -316,7 +325,7 @@ def train_inductive_model(
         print("Loaded best model weights")
     
     # Final evaluation on test set
-    test_metrics = evaluate_inductive_model(model, graph_based_model, dataloaders['test'], is_regression, device, finetuning)
+    test_metrics = evaluate_inductive_model(model, graph_based_model, transformer_based_model, dataloaders['test'], is_regression, device, finetuning)
     
     return {
         'train_time': train_time,
@@ -431,6 +440,7 @@ def train_sklearn_inductive(
 def evaluate_inductive_model(
     model: Union[GNNModel, MLPModel],
     graph_based_model: bool,
+    transformer_based_model: bool,
     test_loader: DataLoader,
     is_regression: bool,
     device: torch.device,
@@ -456,9 +466,11 @@ def evaluate_inductive_model(
         for batch in test_loader:
             batch = batch.to(device)
             
-            # Forward pass - check if model requires edge_index
+            # Forward pass - check if model requires edge_index and extra batch info (for PE)
             if graph_based_model:
                 out = model(batch.x, batch.edge_index)
+            elif transformer_based_model:
+                out = model(batch.x, batch.edge_index, data=batch)
             else:  # MLPModel or other non-GNN model
                 out = model(batch.x)
             
@@ -864,9 +876,11 @@ def train_and_evaluate_inductive(
                         prenorm = True  # Default for GraphFormer
                     elif transformer_type == "graphgps":
                         max_path_length = 10  # Default for GraphGPS
-                        precompute_encodings = False  # Default for GraphGPS
+                        precompute_encodings = True  # Default for GraphGPS
                         local_gnn_type = trial.suggest_categorical('local_gnn_type', ['gcn', 'sage'])
                         prenorm = trial.suggest_categorical('prenorm', [True, False])
+                        pe_type = trial.suggest_categorical('pe_type', ['laplacian', 'random_walk', 'shortest_path'])
+                        pe_norm_type = trial.suggest_categorical('pe_norm_type', ['layer', 'batch', 'instance', 'graph', None])
                     
                     # Create transformer model with all parameters
                     trial_model = GraphTransformerModel(
@@ -882,7 +896,9 @@ def train_and_evaluate_inductive(
                         precompute_encodings=precompute_encodings,
                         cache_encodings=config.transformer_cache_encodings,
                         local_gnn_type=local_gnn_type,
-                        prenorm=prenorm
+                        prenorm=prenorm,
+                        pe_type=pe_type,
+                        pe_norm_type=pe_norm_type
                     ).to(device)
                     
                     # Restore cache if available
@@ -914,7 +930,7 @@ def train_and_evaluate_inductive(
                         for batch in dataloaders['train']:
                             batch = batch.to(device)
                             optimizer.zero_grad()
-                            out = trial_model(batch.x, batch.edge_index)
+                            out = trial_model(batch.x, batch.edge_index, data=batch)
                             loss = criterion(out, batch.y)
                             loss.backward()
                             optimizer.step()
@@ -927,7 +943,7 @@ def train_and_evaluate_inductive(
                         with torch.no_grad():
                             for batch in dataloaders['val']:
                                 batch = batch.to(device)
-                                out = trial_model(batch.x, batch.edge_index)
+                                out = trial_model(batch.x, batch.edge_index, data=batch)
                                 
                                 if is_regression:
                                     val_predictions.append(out.detach().cpu())

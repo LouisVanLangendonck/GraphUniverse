@@ -158,6 +158,10 @@ class InductiveExperimentConfig:
     local_gnn_type: str = "gcn"
     global_model_type: str = "transformer"
     transformer_prenorm: bool = True
+    pe_type: List[str] = 'laplacian' # Choose from 'laplacian', 'random_walk', 'shortest_path'
+    max_pe_dim: int = 16
+    precompute_pe: bool = True
+    pe_norm_type: str = 'graph' # 'layer', 'batch', 'instance', 'graph', None
     
     # === HYPERPARAMETER OPTIMIZATION ===
     optimize_hyperparams: bool = False
@@ -168,7 +172,7 @@ class InductiveExperimentConfig:
     min_family_consistency: float = 0.1
     require_consistency_check: bool = False
     collect_family_stats: bool = True
-    collect_signal_metrics: bool = True  # NEW: collect community signals
+    collect_signal_metrics: bool = True
     save_individual_graphs: bool = False
     
     # Regression-specific parameters

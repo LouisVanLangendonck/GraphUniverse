@@ -53,7 +53,7 @@ def parse_args():
                         help='Dont do any other experiments. Only fine-tune pre-trained models and from scratch version of it and hyperparameter optimization of that model type.')    
         
     # === TASKS ===
-    parser.add_argument('--tasks', type=str, nargs='+', default=['k_hop_community_counts_k1', 'k_hop_community_counts_k2'],
+    parser.add_argument('--tasks', type=str, nargs='+', default=['community', 'k_hop_community_counts_k1', 'k_hop_community_counts_k2'],
                         choices=['community', 'k_hop_community_counts_k1', 'k_hop_community_counts_k2', 'k_hop_community_counts_k3', 'triangle_count'],
                         help='Learning tasks to run')
     parser.add_argument('--khop_k', type=int, default=1,
@@ -119,7 +119,7 @@ def parse_args():
                         help='Maximum allowed participation rate per community')
     
     # === MODELS ===
-    parser.add_argument('--gnn_types', type=str, nargs='+', default=['gcn', 'sage', 'gat'],
+    parser.add_argument('--gnn_types', type=str, nargs='+', default=['gcn', 'sage', 'gat', 'gin'],
                         choices=['gcn', 'fagcn', 'sage', 'gat', 'gin'],
                         help='Types of GNN models to run')
     parser.add_argument('--transformer_types', type=str, nargs='+', 

@@ -593,6 +593,8 @@ class GraphTransformerEncoder(torch.nn.Module):
         cache_encodings: bool = True,
         attn_type: str = "multihead",
         pe_dim: int = 16,
+        pe_type: str = 'laplacian',  # New parameter
+        pe_norm_type: str = 'layer',    # New parameter
     ):
         super().__init__()
         self.input_dim = input_dim
@@ -610,6 +612,9 @@ class GraphTransformerEncoder(torch.nn.Module):
         self.precompute_encodings = precompute_encodings
         self.cache_encodings = cache_encodings
         self.pe_dim = pe_dim
+        self.pe_type = pe_type
+        self.pe_norm_type = pe_norm_type
+        self.use_precomputed_graph_norm = False
         
         # Encoding cache
         self._encoding_cache = {} if cache_encodings else None
@@ -642,99 +647,61 @@ class GraphTransformerEncoder(torch.nn.Module):
         
     def _init_graphgps(self, input_dim: int, hidden_dim: int, dropout: float, 
                       local_gnn_type: str, attn_type: str):
-        """Initialize GraphGPS architecture using PyG's GPSConv."""
+        """Initialize GraphGPS architecture using enhanced implementation."""
         # Input projection that combines features and PE
-        self.input_proj = nn.Linear(input_dim, hidden_dim)
+        self.input_proj = nn.Linear(input_dim + self.pe_dim, hidden_dim)
         
-        # PE projection
-        self.pe_lin = nn.Linear(self.pe_dim, hidden_dim)
-        self.pe_norm = nn.BatchNorm1d(self.pe_dim)
-        
-        # Create local GNN layers based on type
-        if local_gnn_type == "gcn":
-            from torch_geometric.nn import GCNConv
-            conv_fn = lambda: GCNConv(hidden_dim, hidden_dim)
-        elif local_gnn_type == "sage":
-            from torch_geometric.nn import SAGEConv
-            conv_fn = lambda: SAGEConv(hidden_dim, hidden_dim)
-        elif local_gnn_type == "gin":
-            from torch_geometric.nn import GINConv
-            mlp = nn.Sequential(
-                nn.Linear(hidden_dim, hidden_dim),
-                nn.ReLU(),
-                nn.Linear(hidden_dim, hidden_dim)
-            )
-            conv_fn = lambda: GINConv(mlp)
+        # PE normalization - configurable
+        if self.pe_norm_type == 'layer':
+            self.pe_norm = nn.LayerNorm(self.pe_dim)
+        elif self.pe_norm_type == 'batch':
+            self.pe_norm = nn.BatchNorm1d(self.pe_dim)
+        elif self.pe_norm_type == 'instance':
+            self.pe_norm = nn.InstanceNorm1d(self.pe_dim)
+        # For graph-normalized PEs, we don't need to normalize since it's precomputed. We just need to select other dataloader
+        elif self.pe_norm_type == 'graph':
+            self.use_precomputed_graph_norm = True
+            self.pe_norm = nn.Identity()
         else:
-            raise ValueError(f"Unknown local GNN type: {local_gnn_type}")
+            self.pe_norm = nn.Identity()
         
-        # GPS layers
+        # Create GPS layers
         self.layers = nn.ModuleList()
         for _ in range(self.num_layers):
             self.layers.append(
-                GPSConv(
-                    channels=hidden_dim,
-                    conv=conv_fn(),
-                    heads=self.num_heads,
-                    dropout=dropout,
-                    attn_type=attn_type,
-                    norm='batch_norm' if not self.prenorm else 'layer_norm'
-                )
+                self._create_gps_layer(hidden_dim, self.num_heads, dropout, local_gnn_type)
             )
     
-    def _compute_laplacian_pe(self, edge_index: torch.Tensor, num_nodes: int) -> torch.Tensor:
-        """Compute Laplacian positional encoding."""
-        try:
-            from torch_geometric.utils import to_dense_adj
-            
-            # Convert to dense adjacency matrix
-            adj = to_dense_adj(edge_index, max_num_nodes=num_nodes).squeeze(0)
-            
-            # Compute degree matrix
-            deg = adj.sum(dim=1)
-            
-            # Handle isolated nodes
-            deg_inv_sqrt = torch.zeros_like(deg)
-            non_zero_mask = deg > 0
-            deg_inv_sqrt[non_zero_mask] = deg[non_zero_mask].pow(-0.5)
-            
-            # Compute normalized Laplacian
-            deg_matrix = torch.diag(deg_inv_sqrt)
-            normalized_adj = deg_matrix @ adj @ deg_matrix
-            laplacian = torch.eye(num_nodes, device=adj.device) - normalized_adj
-            
-            # Compute eigendecomposition
-            eigenvals, eigenvecs = torch.linalg.eigh(laplacian)
-            
-            # Sort by eigenvalues
-            idx = eigenvals.argsort()
-            eigenvals = eigenvals[idx]
-            eigenvecs = eigenvecs[:, idx]
-            
-            # Take smallest eigenvalues (skip first which is ~0)
-            pe_dim = min(self.pe_dim, num_nodes - 1)
-            if pe_dim > 0:
-                pe = eigenvecs[:, 1:pe_dim + 1]
-                
-                # Pad if necessary
-                if pe.size(1) < self.pe_dim:
-                    padding = torch.zeros(num_nodes, self.pe_dim - pe.size(1), device=pe.device)
-                    pe = torch.cat([pe, padding], dim=1)
-            else:
-                pe = torch.zeros(num_nodes, self.pe_dim, device=edge_index.device)
-                
-        except Exception as e:
-            # Fallback to zero features
-            pe = torch.zeros(num_nodes, self.pe_dim, device=edge_index.device)
+    def _create_gps_layer(self, hidden_dim: int, num_heads: int, dropout: float, local_gnn_type: str):
+        """Create a GPS layer with local + global components."""
+        # Create local GNN layer
+        if local_gnn_type == "gcn":
+            local_conv = GCNConv(hidden_dim, hidden_dim)
+        elif local_gnn_type == "sage":
+            local_conv = SAGEConv(hidden_dim, hidden_dim)
+        else:
+            raise ValueError(f"Unknown local GNN type: {local_gnn_type}")
         
-        return pe
+        # Create GPS layer components
+        return nn.ModuleDict({
+            'local_conv': local_conv,
+            'global_attn': nn.MultiheadAttention(hidden_dim, num_heads, dropout, batch_first=True),
+            'norm1': nn.LayerNorm(hidden_dim) if self.prenorm else nn.Identity(),
+            'norm2': nn.LayerNorm(hidden_dim) if self.prenorm else nn.Identity(),
+            'ffn': nn.Sequential(
+                nn.Linear(hidden_dim, hidden_dim * 2),
+                nn.ReLU(),
+                nn.Dropout(dropout),
+                nn.Linear(hidden_dim * 2, hidden_dim)
+            )
+        })
     
-    def forward(self, x: torch.Tensor, edge_index: torch.Tensor, batch: Optional[torch.Tensor] = None):
+    def forward(self, x: torch.Tensor, edge_index: torch.Tensor, batch: Optional[torch.Tensor] = None, **kwargs):
         """Forward pass through transformer encoder."""
         if self.transformer_type == "graphormer":
             return self._forward_graphormer(x, edge_index, batch)
         elif self.transformer_type == "graphgps":
-            return self._forward_graphgps(x, edge_index, batch)
+            return self._forward_graphgps(x, edge_index, batch, **kwargs)
     
     def _forward_graphormer(self, x: torch.Tensor, edge_index: torch.Tensor, batch: Optional[torch.Tensor] = None):
         """Forward pass for Graphormer."""
@@ -783,36 +750,61 @@ class GraphTransformerEncoder(torch.nn.Module):
             # Fallback to zero matrix
             return torch.zeros(num_nodes, num_nodes, dtype=torch.long, device=edge_index.device)
     
-    def _forward_graphgps(self, x: torch.Tensor, edge_index: torch.Tensor, batch: Optional[torch.Tensor] = None):
-        """Forward pass for GraphGPS."""
-        # Compute PE if needed
-        pe = None
-        if self.precompute_encodings:
-            # Check cache first
-            if self.cache_encodings and hasattr(self, '_pe_cache'):
-                cache_key = f"{x.size(0)}_{edge_index.size(1)}"
-                if cache_key in self._pe_cache:
-                    pe = self._pe_cache[cache_key]
-            
+    def _forward_graphgps(self, x: torch.Tensor, edge_index: torch.Tensor, batch: Optional[torch.Tensor] = None, **kwargs):
+        """Enhanced forward pass for GraphGPS."""
+        # Get precomputed PE
+        if self.use_precomputed_graph_norm:
+            pe_attr_name = f"{self.pe_type}_pe_norm"
+        else:
+            pe_attr_name = f"{self.pe_type}_pe"
+        
+        if pe_attr_name in kwargs:
+            pe = kwargs[pe_attr_name]
+        else:
+            # Try to get from first graph in batch (assuming homogeneous batch)
+            pe = getattr(kwargs.get('data', None), pe_attr_name, None)
+            # Print Attribute names from kwargs
             if pe is None:
-                pe = self._compute_laplacian_pe(edge_index, x.size(0))
-                if self.cache_encodings:
-                    if not hasattr(self, '_pe_cache'):
-                        self._pe_cache = {}
-                    self._pe_cache[f"{x.size(0)}_{edge_index.size(1)}"] = pe
+                raise ValueError(f"PE not found for {pe_attr_name} in kwargs")
         
-        # Project input features
-        h = self.input_proj(x)
+        # Ensure PE is on same device
+        pe = pe.to(x.device)
         
-        # Add PE if available
-        if pe is not None:
-            pe_normalized = self.pe_norm(pe)
-            pe_proj = self.pe_lin(pe_normalized)
-            h = h + pe_proj
+        # Normalize PE
+        if self.pe_norm_type == 'batch' and pe.size(0) > 1:
+            pe = self.pe_norm(pe)
+        elif self.pe_norm_type != 'batch':
+            pe = self.pe_norm(pe)
+        
+        # Combine input features with PE
+        h = torch.cat([x, pe], dim=-1)
+        h = self.input_proj(h)
         
         # Apply GPS layers
         for layer in self.layers:
-            h = layer(h, edge_index, batch=batch)
+            # Local message passing
+            h_local = layer['local_conv'](h, edge_index)
+            
+            # Global attention
+            if batch is None:
+                # Single graph case
+                h_global, _ = layer['global_attn'](h.unsqueeze(0), h.unsqueeze(0), h.unsqueeze(0))
+                h_global = h_global.squeeze(0)
+            else:
+                # Batched case - process each graph separately
+                h_global = []
+                for b in range(batch.max().item() + 1):
+                    mask = (batch == b)
+                    graph_h = h[mask]
+                    graph_h_global, _ = layer['global_attn'](
+                        graph_h.unsqueeze(0), graph_h.unsqueeze(0), graph_h.unsqueeze(0)
+                    )
+                    h_global.append(graph_h_global.squeeze(0))
+                h_global = torch.cat(h_global, dim=0)
+            
+            # Combine and apply residual + norm
+            h = layer['norm1'](h + h_local + h_global)
+            h = layer['norm2'](h + layer['ffn'](h))
         
         return h
 
@@ -825,7 +817,7 @@ class GraphTransformerModel(torch.nn.Module):
         input_dim: int,
         hidden_dim: int,
         output_dim: int,
-        transformer_type: str = "graphormer",
+        transformer_type: str = "graphgps",
         num_layers: int = 3,
         dropout: float = 0.1,
         num_heads: int = 8,
@@ -836,16 +828,22 @@ class GraphTransformerModel(torch.nn.Module):
         local_gnn_type: str = "gcn",
         global_model_type: str = "transformer",
         precompute_encodings: bool = True,
-        cache_encodings: bool = True,
+        cache_encodings: bool = False,
         is_regression: bool = False,
         is_graph_level_task: bool = False,
         attn_type: str = "multihead",
         pe_dim: int = 16,
+        pe_type: str = 'laplacian',  # New parameter for PE type
+        pe_norm_type: str = 'layer',    # New parameter for normalization type
     ):
         super().__init__()
         
-        # Store transformer type
+        # Store transformer type and configuration
         self.transformer_type = transformer_type
+        self.pe_type = pe_type
+        self.pe_norm_type = pe_norm_type
+        self.is_regression = is_regression
+        self.is_graph_level_task = is_graph_level_task
         
         # Create encoder
         self.encoder = GraphTransformerEncoder(
@@ -865,12 +863,11 @@ class GraphTransformerModel(torch.nn.Module):
             cache_encodings=cache_encodings,
             attn_type=attn_type,
             pe_dim=pe_dim,
+            pe_type=pe_type,
+            pe_norm_type=pe_norm_type,
         )
         
         # Create prediction head
-        self.is_graph_level_task = is_graph_level_task
-        self.is_regression = is_regression
-        
         if is_graph_level_task:
             # Graph-level prediction head
             self.readout = torch.nn.Sequential(
@@ -895,10 +892,10 @@ class GraphTransformerModel(torch.nn.Module):
             # Add scaling factor for regression tasks
             self.scale_factor = torch.nn.Parameter(torch.ones(output_dim))
     
-    def forward(self, x: torch.Tensor, edge_index: torch.Tensor, batch: Optional[torch.Tensor] = None) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, edge_index: torch.Tensor, batch: Optional[torch.Tensor] = None, **kwargs) -> torch.Tensor:
         """Forward pass through full model."""
         # Get node embeddings from encoder
-        h = self.encoder(x, edge_index, batch)
+        h = self.encoder(x, edge_index, batch, **kwargs)
         
         # Apply prediction head
         if self.is_graph_level_task:

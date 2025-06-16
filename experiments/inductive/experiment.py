@@ -27,7 +27,7 @@ from experiments.inductive.data import (
     analyze_graph_family_properties
 )
 from experiments.inductive.training import train_and_evaluate_inductive, get_total_classes_from_dataloaders
-from experiments.core.models import GNNModel, MLPModel, SklearnModel
+from experiments.models import GNNModel, MLPModel, SklearnModel
 from experiments.inductive.self_supervised_task import (
     PreTrainingConfig, 
     SelfSupervisedTask, 
@@ -553,7 +553,7 @@ class InductiveExperiment:
                             )
                     
                     elif model_name in self.config.transformer_types or pretrained_model_type == 'transformer':
-                        from experiments.core.models import GraphTransformerModel
+                        from experiments.models import GraphTransformerModel
                         model = GraphTransformerModel(
                             input_dim=input_dim,
                             hidden_dim=self.config.hidden_dim,
@@ -564,13 +564,14 @@ class InductiveExperiment:
                             num_heads=self.config.transformer_num_heads,
                             max_nodes=self.config.transformer_max_nodes,
                             max_path_length=self.config.transformer_max_path_length,
+                            prenorm=self.config.transformer_prenorm,
                             precompute_encodings=self.config.transformer_precompute_encodings,
-                            cache_encodings=self.config.transformer_cache_encodings,
                             local_gnn_type=self.config.local_gnn_type,
                             global_model_type=self.config.global_model_type,
                             is_regression=is_regression,
                             is_graph_level_task=is_graph_level_task,
-                            prenorm=self.config.transformer_prenorm
+                            pe_type=self.config.pe_type,
+                            pe_norm_type=self.config.pe_norm_type,
                         )
                         
                         # Share precomputed cache if available
@@ -848,7 +849,7 @@ class InductiveExperiment:
         print("PRECOMPUTING TRANSFORMER ENCODINGS")
         print("="*60)
         
-        from experiments.core.models import GraphTransformerModel
+        from experiments.models import GraphTransformerModel
         
         # Create a temporary transformer model for precomputation
         sample_graph = self.family_graphs[0]
@@ -869,7 +870,7 @@ class InductiveExperiment:
             )
             
             # Precompute for all graphs
-            from experiments.core.models import precompute_family_encodings
+            from experiments.models import precompute_family_encodings
             precompute_family_encodings(self.family_graphs, temp_model)
             
             # Store the cache globally for use during training
@@ -1009,7 +1010,7 @@ class InductiveExperiment:
             raise ValueError("Pre-trained model does not have an encoder")
         
         # Create fine-tuning model
-        from experiments.core.models import FineTuningModel
+        from experiments.models import FineTuningModel
         
         return FineTuningModel(
             encoder=encoder,

@@ -14,14 +14,14 @@ import torch
 
 from mmsb.model import GraphUniverse
 from mmsb.graph_family import GraphFamilyGenerator
-from experiments.core.data import (
+from experiments.transductive.data import (
     prepare_transductive_data,
     analyze_graph_properties,
     validate_transductive_data
 )
-from experiments.core.training import train_and_evaluate_transductive
-from experiments.core.models import GNNModel, MLPModel, SklearnModel, GraphTransformerModel
-from experiments.core.config import TransductiveExperimentConfig
+from experiments.transductive.training import train_and_evaluate_transductive
+from experiments.models import GNNModel, MLPModel, SklearnModel, GraphTransformerModel
+from experiments.transductive.config import TransductiveExperimentConfig
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)

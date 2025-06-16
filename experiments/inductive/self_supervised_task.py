@@ -19,7 +19,7 @@ import numpy as np
 from abc import ABC, abstractmethod
 import random
 from experiments.inductive.config import PreTrainingConfig
-from experiments.core.models import GNNModel
+from experiments.models import GNNModel
 import torch
 import torch.nn.functional as F
 from torch_geometric.utils import to_dense_adj, dense_to_sparse, subgraph
@@ -251,7 +251,7 @@ class DeepGraphInfoMaxTask(SelfSupervisedTask):
         """Create enhanced DGI model."""
         # Encoder
         if self.config.model_type == "transformer" or self.config.run_transformers:
-            from experiments.core.models import GraphTransformerEncoder
+            from experiments.models import GraphTransformerEncoder
             encoder = GraphTransformerEncoder(
                 input_dim=input_dim,
                 hidden_dim=self.config.hidden_dim,
@@ -268,7 +268,7 @@ class DeepGraphInfoMaxTask(SelfSupervisedTask):
             )
         else:
             # Base GNN encoder
-            from experiments.core.models import GNNEncoder
+            from experiments.models import GNNEncoder
             encoder = GNNEncoder(
                 input_dim=input_dim,
                 hidden_dim=self.config.hidden_dim,
@@ -416,7 +416,7 @@ class LinkPredictionTask(SelfSupervisedTask):
         """Create GNN model with link prediction head."""
         # Check if we should use transformer
         if self.config.model_type == "transformer" or self.config.run_transformers:
-            from experiments.core.models import GraphTransformerEncoder
+            from experiments.models import GraphTransformerEncoder
             encoder = GraphTransformerEncoder(
                 input_dim=input_dim,
                 hidden_dim=self.config.hidden_dim,
@@ -433,7 +433,7 @@ class LinkPredictionTask(SelfSupervisedTask):
             )
         else:
             # Base GNN encoder
-            from experiments.core.models import GNNEncoder
+            from experiments.models import GNNEncoder
             encoder = GNNEncoder(
                 input_dim=input_dim,
                 hidden_dim=self.config.hidden_dim,
@@ -552,7 +552,7 @@ class ContrastiveTask(SelfSupervisedTask):
         """Create GNN model with contrastive learning head."""
         # Check if we should use transformer
         if self.config.model_type == "transformer" or self.config.run_transformers:
-            from experiments.core.models import GraphTransformerEncoder
+            from experiments.models import GraphTransformerEncoder
             encoder = GraphTransformerEncoder(
                 input_dim=input_dim,
                 hidden_dim=self.config.hidden_dim,
@@ -569,7 +569,7 @@ class ContrastiveTask(SelfSupervisedTask):
             )
         else:
             # Base GNN encoder
-            from experiments.core.models import GNNEncoder
+            from experiments.models import GNNEncoder
             encoder = GNNEncoder(
                 input_dim=input_dim,
                 hidden_dim=self.config.hidden_dim,
@@ -698,7 +698,7 @@ class GraphCLTask(SelfSupervisedTask):
         """Create GraphCL model with projection head."""
         # Encoder setup
         if self.config.model_type == "transformer" or self.config.run_transformers:
-            from experiments.core.models import GraphTransformerEncoder
+            from experiments.models import GraphTransformerEncoder
             encoder = GraphTransformerEncoder(
                 input_dim=input_dim,
                 hidden_dim=self.config.hidden_dim,
@@ -714,7 +714,7 @@ class GraphCLTask(SelfSupervisedTask):
                 prenorm=self.config.transformer_prenorm
             )
         else:
-            from experiments.core.models import GNNEncoder
+            from experiments.models import GNNEncoder
             encoder = GNNEncoder(
                 input_dim=input_dim,
                 hidden_dim=self.config.hidden_dim,
@@ -968,7 +968,7 @@ class GraphMAETask(SelfSupervisedTask):
         
         # Create encoder
         if self.config.model_type == "transformer" or self.config.run_transformers:
-            from experiments.core.models import GraphTransformerEncoder
+            from experiments.models import GraphTransformerEncoder
             encoder = GraphTransformerEncoder(
                 input_dim=input_dim,
                 hidden_dim=self.config.hidden_dim,
@@ -984,7 +984,7 @@ class GraphMAETask(SelfSupervisedTask):
                 prenorm=self.config.transformer_prenorm
             )
         else:
-            from experiments.core.models import GNNEncoder
+            from experiments.models import GNNEncoder
             encoder = GNNEncoder(
                 input_dim=input_dim,
                 hidden_dim=self.config.hidden_dim,
@@ -1002,7 +1002,7 @@ class GraphMAETask(SelfSupervisedTask):
         if self.decoder_type == 'gnn':
             # Use GNN decoder as in the paper
             decoder_gnn_type = getattr(self.config, 'graphmae_decoder_gnn_type', self.config.gnn_type)
-            from experiments.core.models import GNNEncoder
+            from experiments.models import GNNEncoder
             decoder = GNNEncoder(
                 input_dim=self.config.hidden_dim,
                 hidden_dim=input_dim,
