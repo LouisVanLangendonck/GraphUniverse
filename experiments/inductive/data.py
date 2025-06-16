@@ -633,13 +633,16 @@ def prepare_inductive_data(
             # For triangle counting, use 1 output dimension
             output_dim = 1
             
-        elif task.startswith("k_hop_community_counts_k"):
+        elif task.startswith("k_hop_community_counts"):
             # For k-hop counting, use universe K
             output_dim = universe_K
             
         elif task == "metapath" and metapath_data:
             # For metapath tasks, use binary classification
             output_dim = 2
+        
+        else:
+            raise ValueError(f"Unknown task: {task}")
         
         task_data['metadata'] = {
             'is_regression': is_regression,

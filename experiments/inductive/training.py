@@ -165,12 +165,10 @@ def train_inductive_model(
     print("Early stopping will trigger if validation metric doesn't improve for", effective_patience, "epochs")
     
     # Check if the model is graph-based
-    if model_name in ['gat', 'fagcn', 'gin', 'gcn', 'sage', 'graphormer', 'graphgps']:
-        graph_based_model = True
-    else:
+    if model_name in ['mlp', 'sklearn', 'rf']:
         graph_based_model = False
-    
-    print(model)
+    else:
+        graph_based_model = True
     
     for epoch in range(config.epochs):
         # Training
@@ -266,7 +264,7 @@ def train_inductive_model(
                        f"Train Metric: {train_metric:.4f}, Val Metric: {val_metric:.4f}"
             
             # Add relative error for k_hop task
-            if task == 'k_hop_community_counts':
+            if task.startswith('k_hop_community_counts'):
                 train_rel_error = train_metrics.get('relative_error', 0.0)
                 val_rel_error = val_metrics.get('relative_error', 0.0)
                 print_str += f", Train Rel Error: {train_rel_error:.4f}, Val Rel Error: {val_rel_error:.4f}"
@@ -809,9 +807,9 @@ def train_and_evaluate_inductive(
             print(f"🔄 Training Graph Transformer: {model.transformer_type}")
             
             # Share precomputed cache if available
-            if hasattr(config, 'transformer_caches') and model.transformer_type in config.transformer_caches:
-                model._encoding_cache = config.transformer_caches[model.transformer_type]
-                print(f"✅ Using precomputed encodings cache with {len(model._encoding_cache)} entries")
+            # if hasattr(config, 'transformer_caches') and model.transformer_type in config.transformer_caches:
+            #     model._encoding_cache = config.transformer_caches[model.transformer_type]
+            #     print(f"✅ Using precomputed encodings cache with {len(model._encoding_cache)} entries")
             
             # Update hyperparameter optimization for transformers
             if optimize_hyperparams and not isinstance(model, SklearnModel):
@@ -847,10 +845,14 @@ def train_and_evaluate_inductive(
                     patience = config.patience
                     
                     # Transformer-specific hyperparameters
-                    num_heads = trial.suggest_categorical('num_heads', [4, 8])
-                    base_dim = trial.suggest_int('base_dim', 8, 32)
+                    num_heads = trial.suggest_categorical('num_heads', [2, 4, 8])
+                    base_dim = trial.suggest_int('base_dim', 4, 32)
                     hidden_dim = base_dim * num_heads
-                    num_layers = trial.suggest_int('num_layers', 2, 6)
+                    if task.startswith('k_hop_community_counts'):
+                        k = int(task.split('_k')[-1])
+                        num_layers = trial.suggest_int('num_layers', k + 1, k + 2)
+                    else:
+                        num_layers = config.num_layers
                     dropout = trial.suggest_float('dropout', 0.0, 0.3)
                     
                     # Transformer-type specific parameters
@@ -861,7 +863,7 @@ def train_and_evaluate_inductive(
                         prenorm = True  # Default for GraphFormer
                     elif transformer_type == "graphgps":
                         max_path_length = 10  # Default for GraphGPS
-                        precompute_encodings = True  # Default for GraphGPS
+                        precompute_encodings = False  # Default for GraphGPS
                         local_gnn_type = trial.suggest_categorical('local_gnn_type', ['gcn', 'sage'])
                         prenorm = trial.suggest_categorical('prenorm', [True, False])
                     
@@ -883,8 +885,8 @@ def train_and_evaluate_inductive(
                     ).to(device)
                     
                     # Restore cache if available
-                    if hasattr(config, 'transformer_caches') and transformer_type in config.transformer_caches:
-                        trial_model._encoding_cache = config.transformer_caches[transformer_type]
+                    # if hasattr(config, 'transformer_caches') and transformer_type in config.transformer_caches:
+                    #     trial_model._encoding_cache = config.transformer_caches[transformer_type]
                     
                     # Train model with reduced epochs for speed
                     optimizer = torch.optim.Adam(trial_model.parameters(), lr=lr, weight_decay=weight_decay)
@@ -996,8 +998,8 @@ def train_and_evaluate_inductive(
                         print(f"   {key}: {value}")
                     
                     # Recreate model with optimized parameters
-                    base_dim = best_params.get('base_dim', 8)
-                    num_heads = best_params.get('num_heads', 8)
+                    base_dim = best_params['base_dim']
+                    num_heads = best_params['num_heads']
                     hidden_dim = base_dim * num_heads
                     
                     model = GraphTransformerModel(
@@ -1005,20 +1007,20 @@ def train_and_evaluate_inductive(
                         hidden_dim=hidden_dim,
                         output_dim=output_dim,
                         transformer_type=transformer_type,
-                        num_layers=best_params.get('num_layers', 2),
+                        num_layers=best_params.get('num_layers', config.num_layers),
                         dropout=best_params.get('dropout', 0.1),
                         is_regression=is_regression,
                         num_heads=num_heads,
                         max_path_length=best_params.get('max_path_length', 10),
-                        precompute_encodings=best_params.get('precompute_encodings', True),
+                        precompute_encodings=best_params.get('precompute_encodings', False),
                         cache_encodings=config.transformer_cache_encodings,
                         local_gnn_type=best_params.get('local_gnn_type', 'gcn'),
                         prenorm=best_params.get('prenorm', True)
                     ).to(device)
                     
                     # Restore cache if available
-                    if hasattr(config, 'transformer_caches') and transformer_type in config.transformer_caches:
-                        model._encoding_cache = config.transformer_caches[transformer_type]
+                    # if hasattr(config, 'transformer_caches') and transformer_type in config.transformer_caches:
+                    #     model._encoding_cache = config.transformer_caches[transformer_type]
                     
                     # Update config with optimized parameters
                     config.learning_rate = best_params.get('lr', config.learning_rate)
@@ -1063,7 +1065,7 @@ def train_and_evaluate_inductive(
                     
                     # GNN-specific hyperparameters
                     hidden_dim = config.hidden_dim #trial.suggest_int('hidden_dim', 32, 256)
-                    if task == 'k_hop_community_counts':
+                    if task.startswith('k_hop_community_counts'):
                         num_layers = trial.suggest_int('num_layers', config.khop_community_counts_k + 1, config.khop_community_counts_k + 2)
                     else:
                         num_layers = config.num_layers

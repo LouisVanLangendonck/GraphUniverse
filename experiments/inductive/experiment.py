@@ -317,6 +317,7 @@ class InductiveExperiment:
         
         all_results = {}
         
+        print("Tasks to run: ", self.config.tasks)
         for task in self.config.tasks:
             print(f"\n{'='*40}")
             print(f"TASK: {task.upper()}")
@@ -557,8 +558,6 @@ class InductiveExperiment:
                             transformer_type=model_name,
                             num_layers=self.config.num_layers,
                             dropout=self.config.dropout,
-                            is_regression=is_regression,
-                            is_graph_level_task=is_graph_level_task,
                             num_heads=self.config.transformer_num_heads,
                             max_nodes=self.config.transformer_max_nodes,
                             max_path_length=self.config.transformer_max_path_length,
@@ -566,13 +565,15 @@ class InductiveExperiment:
                             cache_encodings=self.config.transformer_cache_encodings,
                             local_gnn_type=self.config.local_gnn_type,
                             global_model_type=self.config.global_model_type,
+                            is_regression=is_regression,
+                            is_graph_level_task=is_graph_level_task,
                             prenorm=self.config.transformer_prenorm
                         )
                         
                         # Share precomputed cache if available
-                        if hasattr(self, 'transformer_caches') and model_name in self.transformer_caches:
-                            model._encoding_cache = self.transformer_caches[model_name]
-                            print(f"✅ Using precomputed cache with {len(model._encoding_cache)} entries")
+                        # if hasattr(self, 'transformer_caches') and model_name in self.transformer_caches:
+                        #     model._encoding_cache = self.transformer_caches[model_name]
+                        #     print(f"✅ Using precomputed cache with {len(model._encoding_cache)} entries")
                     
                     elif model_name == 'mlp':
                         model = MLPModel(
@@ -784,7 +785,7 @@ class InductiveExperiment:
             graph_signals = self.calculate_graph_signals()
             
             # Precompute transformer encodings if needed
-            self.precompute_transformer_encodings()
+            # self.precompute_transformer_encodings()
             
             # Prepare data
             self.prepare_data()

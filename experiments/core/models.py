@@ -19,6 +19,7 @@ import networkx as nx
 from sklearn.base import BaseEstimator
 from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
 from collections import deque
+import inspect
 
 def create_model(model_type: str, **kwargs):
     """Extended model creation to include Graph Transformers."""
@@ -588,7 +589,7 @@ class GraphTransformerEncoder(torch.nn.Module):
         prenorm: bool = True,
         local_gnn_type: str = "gcn",
         global_model_type: str = "transformer",
-        precompute_encodings: bool = True,
+        precompute_encodings: bool = False,
         cache_encodings: bool = True,
         attn_type: str = "multihead",
         pe_dim: int = 16,
@@ -746,6 +747,11 @@ class GraphTransformerEncoder(torch.nn.Module):
             deg = degree(edge_index[0], num_nodes=x.size(0), dtype=torch.long)
             degree_emb = self.degree_encoder(deg)
             h = h + degree_emb
+            
+            # Compute spatial encoding
+            spatial_matrix = self._compute_spatial_matrix(edge_index, x.size(0))
+            spatial_emb = self.spatial_encoder(spatial_matrix)
+            h = h + spatial_emb
         
         # Apply transformer layers
         for layer in self.layers:
@@ -753,6 +759,29 @@ class GraphTransformerEncoder(torch.nn.Module):
         
         h = self.layer_norm(h)
         return h
+    
+    def _compute_spatial_matrix(self, edge_index: torch.Tensor, num_nodes: int) -> torch.Tensor:
+        """Compute spatial encoding matrix for Graphormer."""
+        try:
+            # Convert to dense adjacency matrix
+            adj = to_dense_adj(edge_index, max_num_nodes=num_nodes).squeeze(0)
+            
+            # Compute shortest path distances
+            spatial_matrix = torch.zeros(num_nodes, num_nodes, dtype=torch.long, device=edge_index.device)
+            
+            # Use Floyd-Warshall algorithm for shortest paths
+            for k in range(num_nodes):
+                for i in range(num_nodes):
+                    for j in range(num_nodes):
+                        if adj[i,k] and adj[k,j]:
+                            if spatial_matrix[i,j] == 0 or spatial_matrix[i,j] > spatial_matrix[i,k] + spatial_matrix[k,j]:
+                                spatial_matrix[i,j] = spatial_matrix[i,k] + spatial_matrix[k,j]
+            
+            return spatial_matrix
+            
+        except Exception as e:
+            # Fallback to zero matrix
+            return torch.zeros(num_nodes, num_nodes, dtype=torch.long, device=edge_index.device)
     
     def _forward_graphgps(self, x: torch.Tensor, edge_index: torch.Tensor, batch: Optional[torch.Tensor] = None):
         """Forward pass for GraphGPS."""
@@ -1171,3 +1200,74 @@ class FineTuningModel(torch.nn.Module):
             out = out.squeeze(-1)  # Remove last dimension for classification tasks
         
         return out
+
+
+def precompute_family_encodings(family_graphs: List, model: GraphTransformerModel) -> None:
+    """
+    Precompute encodings for a family of graphs to improve training efficiency.
+    
+    Args:
+        family_graphs: List of graphs in the family
+        model: GraphTransformerModel instance to use for precomputation
+    """
+    print(f"Precomputing encodings for {len(family_graphs)} graphs...")
+    
+    # Get the encoder
+    if not hasattr(model, 'encoder'):
+        raise ValueError("Model must have an encoder attribute")
+    encoder = model.encoder
+    
+    # Ensure encoder has caching enabled
+    if not encoder.cache_encodings:
+        print("Warning: Encoder caching is disabled. Enabling for precomputation...")
+        encoder.cache_encodings = True
+    
+    # Initialize appropriate cache based on transformer type
+    if encoder.transformer_type == "graphormer":
+        if not hasattr(encoder, '_encoding_cache'):
+            encoder._encoding_cache = {}
+    elif encoder.transformer_type == "graphgps":
+        if not hasattr(encoder, '_pe_cache'):
+            encoder._pe_cache = {}
+    
+    # Process each graph
+    for i, graph in enumerate(family_graphs):
+        if i % 10 == 0:
+            print(f"Processing graph {i+1}/{len(family_graphs)}")
+        
+        try:
+            # Get graph data
+            x = torch.tensor(graph.features, dtype=torch.float)
+            
+            # Convert NetworkX edges to tensor format
+            edge_list = list(graph.graph.edges())
+            if not edge_list:  # Handle empty graph case
+                edge_index = torch.zeros((2, 0), dtype=torch.long)
+            else:
+                edge_index = torch.tensor(edge_list, dtype=torch.long).t().contiguous()
+            
+            # Compute encodings based on transformer type
+            if encoder.transformer_type == "graphormer":
+                # Compute degree encoding
+                deg = degree(edge_index[0], num_nodes=x.size(0), dtype=torch.long)
+                _ = encoder.degree_encoder(deg)  # This will be cached
+                
+                # Compute spatial encoding
+                spatial_matrix = encoder._compute_spatial_matrix(edge_index, x.size(0))
+                _ = encoder.spatial_encoder(spatial_matrix)  # This will be cached
+                
+            elif encoder.transformer_type == "graphgps":
+                # Compute Laplacian PE
+                pe = encoder._compute_laplacian_pe(edge_index, x.size(0))
+                cache_key = f"{x.size(0)}_{edge_index.size(1)}"
+                encoder._pe_cache[cache_key] = pe
+            
+        except Exception as e:
+            print(f"Warning: Failed to precompute encodings for graph {i}: {str(e)}")
+            continue
+    
+    # Print cache statistics
+    if encoder.transformer_type == "graphormer":
+        print(f"Precomputation completed. Cache size: {len(encoder._encoding_cache)} entries")
+    elif encoder.transformer_type == "graphgps":
+        print(f"Precomputation completed. PE cache size: {len(encoder._pe_cache)} entries")

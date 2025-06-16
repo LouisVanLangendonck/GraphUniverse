@@ -100,8 +100,20 @@ class InductiveExperimentConfig:
     
     # === TASKS ===
     tasks: List[str] = field(default_factory=lambda: ['community', 'triangle_count'])
-    is_regression: Dict[str, bool] = field(default_factory=lambda: {'community': False, 'k_hop_community_counts': True, 'triangle_count': True})
-    is_graph_level_tasks: Dict[str, bool] = field(default_factory=lambda: {'community': False, 'k_hop_community_counts': False, 'triangle_count': True})
+    is_regression: Dict[str, bool] = field(default_factory=lambda: {
+        'community': False, 
+        'k_hop_community_counts_k1': True, 
+        'k_hop_community_counts_k2': True, 
+        'k_hop_community_counts_k3': True, 
+        'triangle_count': True
+    })
+    is_graph_level_tasks: Dict[str, bool] = field(default_factory=lambda: {
+        'community': False, 
+        'k_hop_community_counts_k1': False, 
+        'k_hop_community_counts_k2': False, 
+        'k_hop_community_counts_k3': False, 
+        'triangle_count': True
+    })
     khop_community_counts_k: int = 2
 
     # === METAPATH TASK SETTINGS ===
@@ -139,8 +151,8 @@ class InductiveExperimentConfig:
     transformer_num_heads: int = 8
     transformer_max_nodes: int = 200
     transformer_max_path_length: int = 10
-    transformer_precompute_encodings: bool = True
-    transformer_cache_encodings: bool = True
+    transformer_precompute_encodings: bool = False
+    transformer_cache_encodings: bool = False
     
     # GraphGPS specific
     local_gnn_type: str = "gcn"
