@@ -627,162 +627,123 @@ def prepare_inductive_data(
     
     # Calculate split sizes
     n_graphs = len(family_graphs)
-    if config.use_pretrained and config.max_train_graphs_for_finetuning > 0:
-        if hasattr(config, 'minimum_train_graphs_to_cover_k') and config.minimum_train_graphs_to_cover_k:
-            # Use community coverage-based selection
-            train_indices = select_graphs_for_maximum_coverage(
-                family_graphs=family_graphs,
-                universe_K=universe_K,
-                max_graphs=config.max_train_graphs_for_finetuning,
-                seed=config.seed
-            )
-            n_train = len(train_indices)
-        else:
-            # Use original random selection
-            n_train = min(config.max_train_graphs_for_finetuning, int(n_graphs * config.train_graph_ratio))
-            np.random.seed(config.seed)
-            indices = np.random.permutation(n_graphs)
-            train_indices = indices[:n_train].tolist()
-    else:
-        n_train = int(n_graphs * config.train_graph_ratio)
-        np.random.seed(config.seed)
-        indices = np.random.permutation(n_graphs)
-        train_indices = indices[:n_train].tolist()
-    
+    n_train = int(n_graphs * config.train_graph_ratio)
     n_val = int(n_graphs * config.val_graph_ratio)
     n_test = n_graphs - n_train - n_val
-    
+
     print(f"\nSplitting {n_graphs} graphs: {n_train} train, {n_val} val, {n_test} test")
-    
-    # Get remaining indices for val and test
-    if not hasattr(config, 'minimum_train_graphs_to_cover_k') or not config.minimum_train_graphs_to_cover_k:
-        # If we didn't use coverage-based selection, we need to get remaining indices
-        remaining_indices = list(set(range(n_graphs)) - set(train_indices))
-        np.random.shuffle(remaining_indices)
-        val_indices = remaining_indices[:n_val]
-        test_indices = remaining_indices[n_val:n_val + n_test]
-    else:
-        # If we used coverage-based selection, we need to get remaining indices
-        remaining_indices = list(set(range(n_graphs)) - set(train_indices))
-        np.random.shuffle(remaining_indices)
-        val_indices = remaining_indices[:n_val]
-        test_indices = remaining_indices[n_val:n_val + n_test]
-    
-    graph_split_dict = {
-        'train': [family_graphs[i] for i in train_indices],
-        'val': [family_graphs[i] for i in val_indices],
-        'test': [family_graphs[i] for i in test_indices]
-    }
-    
+
     # Initialize results dictionary
     inductive_data = {}
     
-    # Generate metapath tasks if enabled
-    metapath_data = None
-    if hasattr(config, 'enable_metapath_tasks') and config.enable_metapath_tasks:
-        print("\nGenerating universe-based metapath tasks...")
-        metapath_data = generate_universe_based_metapath_tasks(
-            family_graphs=family_graphs,
-            universe=universe,
-            train_indices=train_indices,
-            val_indices=val_indices,
-            test_indices=test_indices,
-            k_values=getattr(config, 'metapath_k_values', [3, 4, 5]),
-            require_loop=getattr(config, 'metapath_require_loop', False),
-            degree_weight=getattr(config, 'metapath_degree_weight', 0.3),
-            max_community_participation=getattr(config, 'max_community_participation', 1.0),
-            n_candidates_per_k=getattr(config, 'n_candidates_per_k', 40)
-        )
+    # First convert all graphs to PyG format and compute labels for each task
+    print("\nConverting graphs to PyG format and computing labels...")
+    pyg_graphs_by_task = {}
     
+    for task in config.tasks:
+        print(f"  Processing task: {task}")
+        pyg_graphs = []
+        
+        for i, graph_sample in enumerate(family_graphs):
+            # Convert to PyG format
+            pyg_data = graphsample_to_pyg(graph_sample)
+            
+            # Add universe K to each graph
+            pyg_data.universe_K = universe_K
+            
+            # Generate task-specific labels
+            if task == "community":
+                # Standard community prediction - use universe-indexed labels
+                pyg_data.y = torch.tensor(graph_sample.community_labels_universe_level, dtype=torch.long)
+            
+            elif task == "triangle_count":
+                # Triangle counting (via networkx then to tensor)
+                pyg_data.y = torch.tensor(count_trianges_graph(graph_sample.graph), dtype=torch.long)
+                
+            elif task.startswith("k_hop_community_counts_k"):
+                # Extract k value from task name
+                k = int(task.split("k")[-1])
+                # K-hop community counting - already universe-indexed
+                community_counts = compute_khop_community_counts_universe_indexed(
+                    graph_sample.graph,
+                    graph_sample.community_labels,
+                    graph_sample.community_id_mapping,
+                    universe_K,
+                    k
+                )
+                pyg_data.y = community_counts
+            
+            # Add graph-level metadata
+            pyg_data.graph_id = i
+            pyg_data.n_communities = len(np.unique(graph_sample.community_labels))
+            
+            pyg_graphs.append(pyg_data)
+            
+            if (i + 1) % 10 == 0:
+                print(f"    Processed {i + 1}/{len(family_graphs)} graphs")
+        
+        pyg_graphs_by_task[task] = pyg_graphs
+
+    # Add PE precomputation if using transformers
+    if config.run_transformers and config.precompute_pe:
+        print(f"\nPrecomputing positional encodings...")
+        print(f"PE types: {pe_types}")
+        print(f"PE dimension: {config.max_pe_dim}")
+
+        # Create temporary data structure for PE computation
+        temp_data = {task: {'graphs': graphs} for task, graphs in pyg_graphs_by_task.items()}
+        temp_data = add_positional_encodings_to_data(
+            temp_data, 
+            pe_types=pe_types,
+            max_pe_dim=config.max_pe_dim,
+            normalize=True
+        )
+        # Update graphs with PE
+        for task in pyg_graphs_by_task:
+            pyg_graphs_by_task[task] = temp_data[task]['graphs']
+
+    # Now create k-fold splits
+    if config.k_fold <= 0:
+        raise ValueError(f"K-fold must be greater than 0")
+
     # Process each task
     for task in config.tasks:
-        print(f"\nPreparing inductive data for task: {task}")
-        
+        print(f"\nPreparing k-fold splits for task: {task}")
         task_data = {}
         
-        # Process each split
-        for split_name, graphs_in_split in graph_split_dict.items():
-            n_graphs_in_split = len(graphs_in_split)
-            print(f"  Processing {split_name} split with {n_graphs_in_split} graphs")
+        # Get the pre-processed graphs for this task
+        pyg_graphs = pyg_graphs_by_task[task]
+
+        # First get the TEST SET (FIXED FOR ALL FOLDS)
+        test_indices = np.random.permutation(n_graphs)[:n_test].tolist()
+        test_graphs = [pyg_graphs[i] for i in test_indices]
+        remaining_indices = [i for i in range(n_graphs) if i not in test_indices]
+
+        # Create k-fold splits
+        for i in range(config.k_fold):
+            # Randomly shuffle the indices
+            np.random.seed(config.seed + i)  # Different seed for each fold
+            indices = np.random.permutation(remaining_indices)
+            train_indices = indices[:n_train].tolist()
+            val_indices = indices[n_train:n_train + n_val].tolist()
             
-            if n_graphs_in_split == 0:
-                task_data[split_name] = {
-                    'graphs': [],
-                    'n_graphs': 0,
-                    'batch_size': 1
+            fold_name = f'fold_{i}'
+            task_data[fold_name] = {
+                'train': {
+                    'graphs': [pyg_graphs[i] for i in train_indices],
+                    'n_graphs': len(train_indices),
+                    'batch_size': min(len(train_indices), config.batch_size)
+                },
+                'val': {
+                    'graphs': [pyg_graphs[i] for i in val_indices],
+                    'n_graphs': len(val_indices),
+                    'batch_size': len(val_indices)
+                },
+                'test': {
+                    'graphs': test_graphs,
+                    'n_graphs': len(test_graphs),
+                    'batch_size': len(test_graphs)
                 }
-                continue
-            
-            # Convert graphs to PyTorch Geometric format
-            pyg_graphs = []
-            
-            # Get indices for this split
-            split_indices = train_indices if split_name == 'train' else (
-                val_indices if split_name == 'val' else test_indices
-            )
-            
-            for i, graph_sample in enumerate(graphs_in_split):
-                # Convert to PyG format
-                pyg_data = graphsample_to_pyg(graph_sample)
-                
-                # Add universe K to each graph
-                pyg_data.universe_K = universe_K
-                
-                # Generate task-specific labels
-                if task == "community":
-                    # Standard community prediction - use universe-indexed labels
-                    pyg_data.y = torch.tensor(graph_sample.community_labels_universe_level, dtype=torch.long)
-                
-                elif task == "triangle_count":
-                    # Triangle counting (via networkx then to tensor)
-                    pyg_data.y = torch.tensor(count_trianges_graph(graph_sample.graph), dtype=torch.long)
-                    
-                elif task.startswith("k_hop_community_counts_k"):
-                    # Extract k value from task name
-                    k = int(task.split("k")[-1])
-                    # K-hop community counting - already universe-indexed
-                    community_counts = compute_khop_community_counts_universe_indexed(
-                        graph_sample.graph,
-                        graph_sample.community_labels,
-                        graph_sample.community_id_mapping,
-                        universe_K,
-                        k
-                    )
-                    pyg_data.y = community_counts
-                
-                elif task == "metapath" and metapath_data:
-                    # Metapath task
-                    original_graph_idx = split_indices[i]
-                    task_info = list(metapath_data['tasks'].values())[0]
-                    
-                    if original_graph_idx in task_info['labels_by_graph']:
-                        metapath_labels = task_info['labels_by_graph'][original_graph_idx]
-                        if metapath_labels is not None:
-                            binary_labels = (metapath_labels > 0).astype(int)
-                            pyg_data.y = torch.tensor(binary_labels, dtype=torch.long)
-                        else:
-                            continue
-                    else:
-                        continue
-                
-                # Add graph-level metadata
-                pyg_data.graph_id = len(pyg_graphs)
-                pyg_data.n_communities = len(np.unique(graph_sample.community_labels))
-                
-                pyg_graphs.append(pyg_data)
-            
-            # Calculate batch size for this split
-            if split_name == 'train':
-                batch_size = min(len(pyg_graphs), config.batch_size) if pyg_graphs else 1
-            else:
-                # For validation and test, use all graphs in one batch
-                batch_size = len(pyg_graphs) if pyg_graphs else 1
-            
-            # Store data for this split
-            task_data[split_name] = {
-                'graphs': pyg_graphs,
-                'n_graphs': len(pyg_graphs),
-                'batch_size': max(1, batch_size)
             }
         
         # Add task-specific metadata
@@ -790,21 +751,11 @@ def prepare_inductive_data(
         
         # Calculate output dimension based on task type
         if task == "community":
-            # For community prediction, use universe K
             output_dim = universe_K
-            
         elif task == "triangle_count":
-            # For triangle counting, use 1 output dimension
             output_dim = 1
-            
         elif task.startswith("k_hop_community_counts"):
-            # For k-hop counting, use universe K
             output_dim = universe_K
-            
-        elif task == "metapath" and metapath_data:
-            # For metapath tasks, use binary classification
-            output_dim = 2
-        
         else:
             raise ValueError(f"Unknown task: {task}")
         
@@ -823,40 +774,8 @@ def prepare_inductive_data(
                 'k_value': k,
                 'universe_K': universe_K
             })
-            
-        elif task == "metapath" and metapath_data:
-            task_info = list(metapath_data['tasks'].values())[0]
-            task_data['metadata'].update({
-                'metapath': task_info['metapath'],
-                'universe_probability': task_info['universe_probability'],
-                'coverage': task_info['coverage'],
-                'avg_positive_rate': task_info['avg_positive_rate'],
-                'is_loop_task': task_info['is_loop_task']
-            })
         
         inductive_data[task] = task_data
-    
-    # Add PE precomputation if using transformers
-    if config.run_transformers and config.precompute_pe:
-        print(f"\nPrecomputing positional encodings...")
-        print(f"PE types: {pe_types}")
-        print(f"PE dimension: {config.max_pe_dim}")
-
-        inductive_data = add_positional_encodings_to_data(
-            inductive_data, 
-            pe_types=pe_types,
-            max_pe_dim=config.max_pe_dim,
-            normalize=True
-        )
-
-    # Add metapath analysis if available
-    # if metapath_data:
-    #     inductive_data['metapath_analysis'] = {
-    #         'evaluation_results': metapath_data['evaluation_results'],
-    #         'candidate_analysis': metapath_data['candidate_analysis'],
-    #         'detailed_report': metapath_data['detailed_report'],
-    #         'universe_info': metapath_data['universe_info']
-    #     }
     
     return inductive_data
 
@@ -1043,7 +962,7 @@ def validate_khop_consistency(family_graphs: List, universe_K: int) -> Dict[str,
     return validation_results
 
 def create_inductive_dataloaders(
-    inductive_data: Dict[str, Dict[str, Any]],
+    inductive_data: Dict[str, Dict[str, Dict[str, Any]]],
     config
 ) -> Dict[str, Dict[str, Any]]:
     """
@@ -1061,30 +980,29 @@ def create_inductive_dataloaders(
     dataloaders = {}
     
     for task, task_data in inductive_data.items():
-        if task == 'metadata' or task == 'metapath_analysis':
-            continue
-            
         task_loaders = {}
-        
-        for split_name, split_data in task_data.items():
-            if split_name == 'metadata':
+        for fold_name, fold_data in task_data.items():
+            fold_loaders = {}
+            if fold_name == 'metadata' or fold_name == 'metapath_analysis':
                 continue
+            
+            for split_name, split_data in fold_data.items():
+                if split_name == 'metadata' or split_name == 'metapath_analysis':
+                    continue
                 
-            # Create dataloader
-            batch_size = split_data['batch_size']
-            shuffle = (split_name == 'train')
+                shuffle = (split_name == 'train')
+                
+                loader = DataLoader(
+                    split_data['graphs'],
+                    batch_size=split_data['batch_size'],
+                    shuffle=shuffle,
+                    num_workers=0  # Set to 0 to avoid multiprocessing issues
+                )
+                
+                fold_loaders[split_name] = loader
+                
             
-            loader = DataLoader(
-                split_data['graphs'],
-                batch_size=batch_size,
-                shuffle=shuffle,
-                num_workers=0  # Set to 0 to avoid multiprocessing issues
-            )
-            
-            task_loaders[split_name] = loader
-        
-        # Add metadata
-        task_loaders['metadata'] = task_data['metadata']
+            task_loaders[fold_name] = fold_loaders
         
         dataloaders[task] = task_loaders
     

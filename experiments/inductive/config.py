@@ -93,6 +93,7 @@ class InductiveExperimentConfig:
     min_component_size: int = 10
     
     # === DATA SPLITS ===
+    k_fold: int = 3
     train_graph_ratio: float = 0.5
     val_graph_ratio: float = 0.25
     test_graph_ratio: float = 0.25

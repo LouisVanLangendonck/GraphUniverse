@@ -15,6 +15,7 @@ import os
 from typing import Dict, List, Optional, Tuple, Union, Any, Callable
 from torch_geometric.loader import DataLoader
 from torch_geometric.data import Batch
+import copy
 
 from experiments.models import GNNModel, MLPModel, SklearnModel, GraphTransformerModel
 from experiments.transductive.metrics import compute_metrics
@@ -73,7 +74,8 @@ def get_total_classes_from_dataloaders(dataloaders: Dict[str, DataLoader]) -> in
         return output_dim
     
     # Fallback: Get from first batch if metadata not available
-    sample_batch = next(iter(dataloaders['train']))
+    first_fold_name = list(dataloaders.keys())[0]
+    sample_batch = next(iter(dataloaders[first_fold_name]['train']))
     if hasattr(sample_batch, 'universe_K'):
         output_dim = sample_batch.universe_K
         print(f"Using universe K from batch: {output_dim}")
@@ -81,12 +83,15 @@ def get_total_classes_from_dataloaders(dataloaders: Dict[str, DataLoader]) -> in
     
     # Last resort: Try to infer from labels
     all_labels = set()
-    for split_name, dataloader in dataloaders.items():
-        if split_name == 'metadata':
+    for fold_name, fold_data in dataloaders.items():
+        if fold_name == 'metadata':
             continue
-        for batch in dataloader:
-            labels = batch.y
-            all_labels.update(labels.cpu().numpy().tolist())
+        for split_name, dataloader in fold_data.items():
+            if split_name == 'metadata':
+                continue
+            for batch in dataloader:
+                labels = batch.y
+                all_labels.update(labels.cpu().numpy().tolist())
     
     output_dim = max(all_labels) + 1
     print(f"Warning: Inferring output dimension from labels: {output_dim}")
@@ -95,7 +100,7 @@ def get_total_classes_from_dataloaders(dataloaders: Dict[str, DataLoader]) -> in
 def train_inductive_model(
     model: Union[GNNModel, MLPModel, SklearnModel, GraphTransformerModel],
     model_name: str,
-    dataloaders: Dict[str, DataLoader],
+    dataloaders: Dict[str, Dict[str, DataLoader]],
     config: InductiveExperimentConfig,
     task: str,
     device: torch.device,
@@ -118,48 +123,22 @@ def train_inductive_model(
     
     # Handle sklearn models separately
     if isinstance(model, SklearnModel):
-        return train_sklearn_inductive(model, dataloaders, config, is_regression)
-    
-    # PyTorch models
-    model = model.to(device)
-    
-    # Setup optimizer and loss
-    optimizer = optim.Adam(
-        model.parameters(),
-        lr=config.learning_rate,
-        weight_decay=config.weight_decay
-    )
-    
-    # Set up loss function
-    if is_regression:
-        if config.regression_loss == 'mae':
-            criterion = torch.nn.L1Loss()
-        elif config.regression_loss == 'mse':
-            criterion = torch.nn.MSELoss()
-        else:
-            raise ValueError(f"Invalid regression loss: {config.regression_loss}")
-    else:
-        criterion = torch.nn.CrossEntropyLoss()
-    
-    # Training loop
-    best_val_metric = float('inf') if is_regression else 0.0
-    patience_counter = 0
-    best_model_state = None
+        return train_sklearn_inductive(model, dataloaders, config, is_regression)    
     
     # Get the effective patience value
     effective_patience = config.patience
-    
-    train_loader = dataloaders['train']
-    val_loader = dataloaders['val']
-    
-    training_history = {
-        'train_loss': [],
-        'val_loss': [],
-        'train_metric': [],
-        'val_metric': []
+
+    training_history = {}
+    for fold_name, fold_data in dataloaders.items():
+        training_history[fold_name] = {
+            'train_loss': [],
+            'val_loss': [],
+            'train_metric': [],
+            'val_metric': []
     }
-    
-    start_time = time.time()
+    fold_train_time = {}
+    fold_test_metrics = {}
+    fold_best_val_metrics = {}
     
     print(f"\nStarting training with patience={effective_patience}")
     print("Early stopping will trigger if validation metric doesn't improve for", effective_patience, "epochs")
@@ -174,166 +153,235 @@ def train_inductive_model(
     else:
         graph_based_model = True
         transformer_based_model = False
-    
-    for epoch in range(config.epochs):
-        # Training
-        model.train()
-        train_loss = 0.0
-        train_predictions = []
-        train_targets = []
-        
-        for batch_idx, batch in enumerate(train_loader):
-            batch = batch.to(device)
-            optimizer.zero_grad()
+
+    # Make deep copy of model to always start from for each fold
+    model_copy = copy.deepcopy(model)
+
+    # Track initial GPU memory
+    initial_memory = torch.cuda.memory_allocated() if torch.cuda.is_available() else 0
+
+    try:
+        # Train for each fold
+        for fold_name, fold_data in dataloaders.items():
+            start_time = time.time()
+            print("--------------------------------")
+            print(f"--- Training fold {fold_name} ---")
+            print("--------------------------------\n")
+            train_loader = fold_data['train']
+            val_loader = fold_data['val']
+            test_loader = fold_data['test']
+
+            model = copy.deepcopy(model_copy)
+            optimizer = optim.Adam(
+                model.parameters(),
+                lr=config.learning_rate,
+                weight_decay=config.weight_decay
+            )
             
-            # Forward pass - check if model requires edge_index
-            if graph_based_model:
-                out = model(batch.x, batch.edge_index)
-            elif transformer_based_model:
-                out = model(batch.x, batch.edge_index, data=batch)
-            else:  # MLPModel or other non-GNN model
-                out = model(batch.x)
-            
-            # Compute loss
-            loss = criterion(out, batch.y)
-            
-            # Backward pass
-            loss.backward()
-            optimizer.step()
-            
-            train_loss += loss.item()
-            
-            # Store predictions for metrics
+            # Set up loss function
             if is_regression:
-                train_predictions.append(out.detach().cpu())
-                train_targets.append(batch.y.detach().cpu())
-            else:
-                train_predictions.append(out.argmax(dim=1).detach().cpu())
-                train_targets.append(batch.y.detach().cpu())
-        
-        # Validation
-        model.eval()
-        val_loss = 0.0
-        val_predictions = []
-        val_targets = []
-        
-        with torch.no_grad():
-            for batch in val_loader:
-                batch = batch.to(device)
-                
-                if graph_based_model:
-                    out = model(batch.x, batch.edge_index)
-                elif transformer_based_model:
-                    out = model(batch.x, batch.edge_index, data=batch)
+                if config.regression_loss == 'mae':
+                    criterion = torch.nn.L1Loss()
+                elif config.regression_loss == 'mse':
+                    criterion = torch.nn.MSELoss()
                 else:
-                    out = model(batch.x)
-                
-                loss = criterion(out, batch.y)
-                val_loss += loss.item()
-                
-                if is_regression:
-                    val_predictions.append(out.detach().cpu())
-                else:
-                    val_predictions.append(out.argmax(dim=1).detach().cpu())
-                
-                val_targets.append(batch.y.detach().cpu())
-        
-        # Calculate metrics
-        train_pred = torch.cat(train_predictions, dim=0).numpy()
-        train_true = torch.cat(train_targets, dim=0).numpy()
-        val_pred = torch.cat(val_predictions, dim=0).numpy()
-        val_true = torch.cat(val_targets, dim=0).numpy()
-        
-        train_metrics = compute_metrics(train_true, train_pred, is_regression)
-        val_metrics = compute_metrics(val_true, val_pred, is_regression)
-        
-        # Get primary metrics
-        if is_regression:
-            if config.regression_loss == 'mae':
-                train_metric = train_metrics['mae']
-                val_metric = val_metrics['mae']
-            elif config.regression_loss == 'mse':
-                train_metric = train_metrics['mse']
-                val_metric = val_metrics['mse']
+                    raise ValueError(f"Invalid regression loss: {config.regression_loss}")
             else:
-                raise ValueError(f"Invalid regression loss: {config.regression_loss}")
-        else:
-            train_metric = train_metrics['f1_macro']
-            val_metric = val_metrics['f1_macro']
-        
-        # Store metrics
-        training_history['train_loss'].append(train_loss / len(train_loader))
-        training_history['val_loss'].append(val_loss / len(val_loader))
-        training_history['train_metric'].append(train_metric)
-        training_history['val_metric'].append(val_metric)
-        
-        # Print progress
-        if epoch % 10 == 0 or epoch == config.epochs - 1:
-            print_str = f"Epoch {epoch:3d}: Train Loss: {train_loss/len(train_loader):.4f}, Val Loss: {val_loss/len(val_loader):.4f}, " \
-                       f"Train Metric: {train_metric:.4f}, Val Metric: {val_metric:.4f}"
+                criterion = torch.nn.CrossEntropyLoss()
             
-            # Add relative error for k_hop task
-            if task.startswith('k_hop_community_counts'):
-                train_rel_error = train_metrics.get('relative_error', 0.0)
-                val_rel_error = val_metrics.get('relative_error', 0.0)
-                print_str += f", Train Rel Error: {train_rel_error:.4f}, Val Rel Error: {val_rel_error:.4f}"
-                
-                # Print random node's target and predicted vectors
-                if len(val_predictions) > 0:
-                    # Get a random batch
-                    random_batch_idx = np.random.randint(0, len(val_predictions))
-                    random_pred = val_predictions[random_batch_idx]
-                    random_true = val_targets[random_batch_idx]
-                    
-                    # Get a random node from that batch
-                    random_node_idx = np.random.randint(0, len(random_pred))
-                    
-                    print(f"\nRandom node vectors at epoch {epoch}:")
-                    print(f"Target vector: {random_true[random_node_idx].numpy()}")
-                    # Rounded and minimum 0:
-                    print(f"Predicted vector (rounded): {np.round(np.maximum(random_pred[random_node_idx].numpy(), 0))}")
-            
-            print(print_str)
-        
-        # Model selection
-        improved = False
-        if is_regression:
-            if config.regression_loss == 'mae':
-                improved = val_metric < best_val_metric
-            elif config.regression_loss == 'mse':
-                improved = val_metric < best_val_metric
-            else:
-                raise ValueError(f"Invalid regression loss: {config.regression_loss}")
-        else:
-            improved = val_metric > best_val_metric
-        
-        if improved:
-            best_val_metric = val_metric
-            best_model_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
+            best_val_metric = float('inf') if is_regression else 0.0
             patience_counter = 0
-        else:
-            patience_counter += 1
-            if patience_counter >= effective_patience:
-                print(f"Early stopping triggered at epoch {epoch}!")
-                break
-    
-    train_time = time.time() - start_time
-    
-    # Load best model
-    if best_model_state is not None:
-        model.load_state_dict(best_model_state)
-        print("Loaded best model weights")
-    
-    # Final evaluation on test set
-    test_metrics = evaluate_inductive_model(model, graph_based_model, transformer_based_model, dataloaders['test'], is_regression, device, finetuning)
-    
+            best_model_state = None
+
+            # PyTorch models
+            model = model.to(device)
+
+            # Setup optimizer and loss
+            optimizer = optim.Adam(
+                model.parameters(),
+                lr=config.learning_rate,
+                weight_decay=config.weight_decay
+            )
+            
+            for epoch in range(config.epochs):
+                # Training
+                model.train()
+                train_loss = 0.0
+                train_predictions = []
+                train_targets = []
+                
+                for batch_idx, batch in enumerate(train_loader):
+                    batch = batch.to(device)
+                    optimizer.zero_grad()
+                    
+                    # Forward pass - check if model requires edge_index
+                    if graph_based_model:
+                        out = model(batch.x, batch.edge_index)
+                    elif transformer_based_model:
+                        out = model(batch.x, batch.edge_index, data=batch)
+                    else:  # MLPModel or other non-GNN model
+                        out = model(batch.x)
+                    
+                    # Compute loss
+                    loss = criterion(out, batch.y)
+                    
+                    # Backward pass
+                    loss.backward()
+                    optimizer.step()
+                    
+                    train_loss += loss.item()
+                    
+                    # Store predictions for metrics
+                    if is_regression:
+                        train_predictions.append(out.detach().cpu())
+                        train_targets.append(batch.y.detach().cpu())
+                    else:
+                        train_predictions.append(out.argmax(dim=1).detach().cpu())
+                        train_targets.append(batch.y.detach().cpu())
+                
+                # Validation
+                model.eval()
+                val_loss = 0.0
+                val_predictions = []
+                val_targets = []
+                
+                with torch.no_grad():
+                    for batch in val_loader:
+                        batch = batch.to(device)
+                        
+                        if graph_based_model:
+                            out = model(batch.x, batch.edge_index)
+                        elif transformer_based_model:
+                            out = model(batch.x, batch.edge_index, data=batch)
+                        else:
+                            out = model(batch.x)
+                        
+                        loss = criterion(out, batch.y)
+                        val_loss += loss.item()
+                        
+                        if is_regression:
+                            val_predictions.append(out.detach().cpu())
+                        else:
+                            val_predictions.append(out.argmax(dim=1).detach().cpu())
+                        
+                        val_targets.append(batch.y.detach().cpu())
+                
+                # Calculate metrics
+                train_pred = torch.cat(train_predictions, dim=0).numpy()
+                train_true = torch.cat(train_targets, dim=0).numpy()
+                val_pred = torch.cat(val_predictions, dim=0).numpy()
+                val_true = torch.cat(val_targets, dim=0).numpy()
+                
+                # Clear prediction lists
+                train_predictions.clear()
+                train_targets.clear()
+                val_predictions.clear()
+                val_targets.clear()
+                
+                train_metrics = compute_metrics(train_true, train_pred, is_regression)
+                val_metrics = compute_metrics(val_true, val_pred, is_regression)
+                
+                # Get primary metrics
+                if is_regression:
+                    if config.regression_loss == 'mae':
+                        train_metric = train_metrics['mae']
+                        val_metric = val_metrics['mae']
+                    elif config.regression_loss == 'mse':
+                        train_metric = train_metrics['mse']
+                        val_metric = val_metrics['mse']
+                    else:
+                        raise ValueError(f"Invalid regression loss: {config.regression_loss}")
+                else:
+                    train_metric = train_metrics['f1_macro']
+                    val_metric = val_metrics['f1_macro']
+                
+                # Store metrics
+                training_history[fold_name]['train_loss'].append(train_loss / len(train_loader))
+                training_history[fold_name]['val_loss'].append(val_loss / len(val_loader))
+                training_history[fold_name]['train_metric'].append(train_metric)
+                training_history[fold_name]['val_metric'].append(val_metric)
+                
+                # Print progress
+                if epoch % 10 == 0 or epoch == config.epochs - 1:
+                    print_str = f"FOLD {fold_name} - Epoch {epoch:3d}: Train Loss: {train_loss/len(train_loader):.4f}, Val Loss: {val_loss/len(val_loader):.4f}, " \
+                            f"Train Metric: {train_metric:.4f}, Val Metric: {val_metric:.4f}"
+                    
+                    # Add relative error for k_hop task
+                    if task.startswith('k_hop_community_counts'):
+                        train_rel_error = train_metrics.get('relative_error', 0.0)
+                        val_rel_error = val_metrics.get('relative_error', 0.0)
+                        print_str += f", Train Rel Error: {train_rel_error:.4f}, Val Rel Error: {val_rel_error:.4f}"
+                        
+                        # Print random node's target and predicted vectors
+                        if len(val_predictions) > 0:
+                            # Get a random batch
+                            random_batch_idx = np.random.randint(0, len(val_predictions))
+                            random_pred = val_predictions[random_batch_idx]
+                            random_true = val_targets[random_batch_idx]
+                            
+                            # Get a random node from that batch
+                            random_node_idx = np.random.randint(0, len(random_pred))
+                            
+                            print(f"\nRandom node vectors at epoch {epoch}:")
+                            print(f"Target vector: {random_true[random_node_idx].numpy()}")
+                            # Rounded and minimum 0:
+                            print(f"Predicted vector (rounded): {np.round(np.maximum(random_pred[random_node_idx].numpy(), 0))}")
+                    
+                    print(print_str)
+                
+                # Model selection
+                improved = False
+                if is_regression:
+                    if config.regression_loss == 'mae':
+                        improved = val_metric < best_val_metric
+                    elif config.regression_loss == 'mse':
+                        improved = val_metric < best_val_metric
+                    else:
+                        raise ValueError(f"Invalid regression loss: {config.regression_loss}")
+                else:
+                    improved = val_metric > best_val_metric
+                
+                if improved:
+                    best_val_metric = val_metric
+                    best_model_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
+                    patience_counter = 0
+                else:
+                    patience_counter += 1
+                    if patience_counter >= effective_patience:
+                        print(f"Early stopping triggered at epoch {epoch}!")
+                        break
+            
+            train_time = time.time() - start_time
+        
+            # Load best model
+            if best_model_state is not None:
+                model.load_state_dict(best_model_state)
+                print("Loaded best model weights")
+            
+            # Final evaluation on test set
+            test_metrics = evaluate_inductive_model(model, graph_based_model, transformer_based_model, test_loader, is_regression, device, finetuning)
+
+            fold_train_time[fold_name] = train_time
+            fold_best_val_metrics[fold_name] = best_val_metric
+            fold_test_metrics[fold_name] = test_metrics
+            
+            # Clear model from GPU after fold
+            model = model.cpu()
+            del model
+            torch.cuda.empty_cache()
+            
+    finally:
+        # Print final GPU memory usage
+        if torch.cuda.is_available():
+            final_memory = torch.cuda.memory_allocated()
+            print(f"GPU memory used: {(final_memory - initial_memory) / 1024**2:.2f} MB")
+            torch.cuda.empty_cache()
+        
     return {
-        'train_time': train_time,
-        'best_val_metric': best_val_metric,
-        'test_metrics': test_metrics,
+        'fold_train_time': fold_train_time,
+        'fold_best_val_metrics': fold_best_val_metrics,
+        'fold_test_metrics': fold_test_metrics,
         'training_history': training_history,
-        'model': model,
-        'effective_patience': effective_patience
     }
 
 def train_sklearn_inductive(
@@ -796,7 +844,7 @@ def get_hyperparameter_space(trial, model_type: str, is_regression: bool) -> Dic
 def train_and_evaluate_inductive(
     model: Union[GNNModel, MLPModel, SklearnModel, GraphTransformerModel],  # Updated type hint
     model_name: str,
-    dataloaders: Dict[str, DataLoader],
+    dataloaders: Dict[str, Dict[str, DataLoader]],
     config: InductiveExperimentConfig,
     task: str,
     device: torch.device,
@@ -819,11 +867,6 @@ def train_and_evaluate_inductive(
         if model_name in ['graphormer', 'graphgps']:
             print(f"🔄 Training Graph Transformer: {model.transformer_type}")
             
-            # Share precomputed cache if available
-            # if hasattr(config, 'transformer_caches') and model.transformer_type in config.transformer_caches:
-            #     model._encoding_cache = config.transformer_caches[model.transformer_type]
-            #     print(f"✅ Using precomputed encodings cache with {len(model._encoding_cache)} entries")
-            
             # Update hyperparameter optimization for transformers
             if optimize_hyperparams and not isinstance(model, SklearnModel):
                 print(f"🎯 Optimizing Graph Transformer hyperparameters...")
@@ -832,7 +875,8 @@ def train_and_evaluate_inductive(
                 model_creator = lambda **kwargs: GraphTransformerModel(**kwargs)
                 
                 # Get sample batch to determine dimensions
-                sample_batch = next(iter(dataloaders['train']))
+                first_fold_name = list(dataloaders.keys())[0]
+                sample_batch = next(iter(dataloaders[first_fold_name]['train']))
                 input_dim = sample_batch.x.shape[1]
                 
                 if is_regression:
@@ -880,7 +924,7 @@ def train_and_evaluate_inductive(
                         local_gnn_type = trial.suggest_categorical('local_gnn_type', ['gcn', 'sage'])
                         prenorm = trial.suggest_categorical('prenorm', [True, False])
                         pe_type = trial.suggest_categorical('pe_type', ['laplacian', 'random_walk', 'shortest_path'])
-                        pe_norm_type = trial.suggest_categorical('pe_norm_type', ['layer', 'batch', 'instance', 'graph', None])
+                        pe_norm_type = trial.suggest_categorical('pe_norm_type', ['layer', 'graph', None])
                     
                     # Create transformer model with all parameters
                     trial_model = GraphTransformerModel(
@@ -901,10 +945,6 @@ def train_and_evaluate_inductive(
                         pe_norm_type=pe_norm_type
                     ).to(device)
                     
-                    # Restore cache if available
-                    # if hasattr(config, 'transformer_caches') and transformer_type in config.transformer_caches:
-                    #     trial_model._encoding_cache = config.transformer_caches[transformer_type]
-                    
                     # Train model with reduced epochs for speed
                     optimizer = torch.optim.Adam(trial_model.parameters(), lr=lr, weight_decay=weight_decay)
                     
@@ -923,11 +963,13 @@ def train_and_evaluate_inductive(
                     max_epochs = min(50, config.epochs // 4)  # Reduced epochs for hyperopt
                     best_val_metric = float('inf') if is_regression else 0.0
                     patience_counter = 0
+
+                    first_fold_dataloader = dataloaders[first_fold_name]
                     
                     for epoch in range(max_epochs):
                         # Training
                         trial_model.train()
-                        for batch in dataloaders['train']:
+                        for batch in first_fold_dataloader['train']:
                             batch = batch.to(device)
                             optimizer.zero_grad()
                             out = trial_model(batch.x, batch.edge_index, data=batch)
@@ -941,7 +983,7 @@ def train_and_evaluate_inductive(
                         val_targets = []
                         
                         with torch.no_grad():
-                            for batch in dataloaders['val']:
+                            for batch in first_fold_dataloader['val']:
                                 batch = batch.to(device)
                                 out = trial_model(batch.x, batch.edge_index, data=batch)
                                 
@@ -983,8 +1025,6 @@ def train_and_evaluate_inductive(
                             if val_metric > best_val_metric:  # Higher is better for F1
                                 best_val_metric = val_metric
                                 patience_counter = 0
-                            else:
-                                patience_counter += 1
                         
                         
                         if patience_counter >= patience:
@@ -1055,7 +1095,8 @@ def train_and_evaluate_inductive(
                 model_creator = lambda **kwargs: GNNModel(**kwargs)
                 
                 # Get sample batch to determine dimensions
-                sample_batch = next(iter(dataloaders['train']))
+                first_fold_name = list(dataloaders.keys())[0]
+                sample_batch = next(iter(dataloaders[first_fold_name]['train']))
                 input_dim = sample_batch.x.shape[1]
                 
                 if is_regression:
@@ -1152,11 +1193,12 @@ def train_and_evaluate_inductive(
                     max_epochs = min(50, config.epochs // 4)  # Reduced epochs for hyperopt
                     best_val_metric = float('inf') if is_regression else 0.0
                     patience_counter = 0
-                    
+
+                    first_fold_dataloader = dataloaders[first_fold_name]
                     for epoch in range(max_epochs):
                         # Training
                         trial_model.train()
-                        for batch in dataloaders['train']:
+                        for batch in first_fold_dataloader['train']:
                             batch = batch.to(device)
                             optimizer.zero_grad()
                             out = trial_model(batch.x, batch.edge_index)
@@ -1170,7 +1212,7 @@ def train_and_evaluate_inductive(
                         val_targets = []
                         
                         with torch.no_grad():
-                            for batch in dataloaders['val']:
+                            for batch in first_fold_dataloader['val']:
                                 batch = batch.to(device)
                                 out = trial_model(batch.x, batch.edge_index)
                                 
@@ -1275,7 +1317,8 @@ def train_and_evaluate_inductive(
                 print(f"🎯 Optimizing MLP hyperparameters...")
                 
                 # Get sample batch to determine dimensions
-                sample_batch = next(iter(dataloaders['train']))
+                first_fold_name = list(dataloaders.keys())[0]
+                sample_batch = next(iter(dataloaders[first_fold_name]['train']))
                 input_dim = sample_batch.x.shape[1]
                 
                 if is_regression:
@@ -1331,10 +1374,11 @@ def train_and_evaluate_inductive(
                     best_val_metric = float('inf') if is_regression else 0.0
                     patience_counter = 0
                     
+                    first_fold_dataloader = dataloaders[first_fold_name]
                     for epoch in range(max_epochs):
                         # Training
                         trial_model.train()
-                        for batch in dataloaders['train']:
+                        for batch in first_fold_dataloader['train']:
                             batch = batch.to(device)
                             optimizer.zero_grad()
                             out = trial_model(batch.x)
@@ -1348,7 +1392,7 @@ def train_and_evaluate_inductive(
                         val_targets = []
                         
                         with torch.no_grad():
-                            for batch in dataloaders['val']:
+                            for batch in first_fold_dataloader['val']:
                                 batch = batch.to(device)
                                 out = trial_model(batch.x)
                                 
@@ -1437,7 +1481,8 @@ def train_and_evaluate_inductive(
                 print(f"🎯 Optimizing sklearn model hyperparameters...")
                 
                 # Get sample batch to determine dimensions
-                sample_batch = next(iter(dataloaders['train']))
+                first_fold_name = list(dataloaders.keys())[0]
+                sample_batch = next(iter(dataloaders[first_fold_name]['train']))
                 input_dim = sample_batch.x.shape[1]
                 
                 if is_regression:
@@ -1506,7 +1551,8 @@ def train_and_evaluate_inductive(
                         )
                     
                     # Train and evaluate model
-                    results = train_sklearn_inductive(trial_model, dataloaders, config, is_regression)
+                    first_fold_dataloader = dataloaders[first_fold_name]
+                    results = train_sklearn_inductive(trial_model, first_fold_dataloader, config, is_regression)
                     
                     # Return metric for optimization
                     if is_regression:

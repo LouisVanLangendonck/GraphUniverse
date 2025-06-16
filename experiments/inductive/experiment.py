@@ -298,10 +298,16 @@ class InductiveExperiment:
         # Print split information
         for task in self.config.tasks:
             print(f"\nTask: {task}")
-            for split in ['train', 'val', 'test']:
-                n_graphs = inductive_data[task][split]['n_graphs']
-                batch_size = inductive_data[task][split]['batch_size']
-                print(f"  {split}: {n_graphs} graphs, batch size {batch_size}")
+            for fold_name, fold_data in inductive_data[task].items():
+                if fold_name == 'metadata':  # Skip metadata entry
+                    continue
+                print(f"  Fold: {fold_name}")
+                for split_name, split_data in fold_data.items():
+                    if split_name == 'metadata':  # Skip metadata entry
+                        continue
+                    n_graphs = split_data['n_graphs']
+                    batch_size = split_data['batch_size']
+                    print(f"    {split_name}: {n_graphs} graphs, batch size {batch_size}")
         
         self.dataloaders = dataloaders
         return dataloaders
@@ -329,10 +335,11 @@ class InductiveExperiment:
             is_graph_level_task = task == 'triangle_count'
             
             # Get dimensions
-            sample_batch = next(iter(task_dataloaders['train']))
+            first_fold_name = list(task_dataloaders.keys())[0]
+            sample_batch = next(iter(task_dataloaders[first_fold_name]['train']))
             input_dim = sample_batch.x.shape[1]
             if is_regression:
-                    output_dim = sample_batch.y.shape[1] if len(sample_batch.y.shape) > 1 else 1
+                output_dim = sample_batch.y.shape[1] if len(sample_batch.y.shape) > 1 else 1
             else:
                 output_dim = get_total_classes_from_dataloaders(task_dataloaders)
             
@@ -608,9 +615,10 @@ class InductiveExperiment:
                     
                     # Store results including hyperopt results if available
                     task_results[model_name] = {
-                        'test_metrics': results.get('test_metrics', {}),
+                        'fold_test_metrics': results.get('fold_test_metrics', {}),
+                        'fold_best_val_metrics': results.get('fold_best_val_metrics', {}),
+                        'fold_train_time': results.get('fold_train_time', {}),
                         'optimal_hyperparams': results.get('optimal_hyperparams', {}),
-                        'train_time': results.get('train_time', 0.0),
                         'training_history': results.get('training_history', {}),
                         'hyperopt_results': results.get('hyperopt_results', None),
                         't_sne_training_results': results.get('t_sne_training_results', {}),
@@ -671,6 +679,9 @@ class InductiveExperiment:
             # Generation statistics
             'generation_stats': self._get_generation_stats()
         }
+
+        # Save clean model results as self.clean_model_results
+        self.clean_model_results = self._clean_model_results()
         
         # Save comprehensive results
         results_file = os.path.join(self.output_dir, "results.json")
@@ -697,23 +708,60 @@ class InductiveExperiment:
             return {}
         
         clean_results = {}
+
         for task, task_results in self.results.items():
             clean_results[task] = {}
+
             for model_name, model_results in task_results.items():
-                clean_results[task][model_name] = {
-                    'test_metrics': model_results.get('test_metrics', {}),
-                    'train_time': model_results.get('train_time', 0.0),
-                    'best_epoch': model_results.get('best_epoch', 0),
-                    'error': model_results.get('error'),
-                    'optimal_hyperparams': model_results.get('optimal_hyperparams', {}),
-                    't_sne_training_results': model_results.get('t_sne_training_results', {}),
-                    'training_silhouette_scores': model_results.get('training_silhouette_scores', []),
-                    'training_history': {
-                        'train_loss': [float(x) for x in model_results.get('training_history', {}).get('train_loss', [])],
-                        'val_loss': [float(x) for x in model_results.get('training_history', {}).get('val_loss', [])],
-                        'train_metric': [float(x) for x in model_results.get('training_history', {}).get('train_metric', [])],
-                        'val_metric': [float(x) for x in model_results.get('training_history', {}).get('val_metric', [])]
+                test_metrics = {}
+                best_val_metrics = []
+                train_times = []
+
+                if 'fold_test_metrics' in model_results:
+                    success = True
+                else:
+                    success = False
+
+                model_fold_test_metrics = model_results.get('fold_test_metrics', {})
+                model_fold_best_val_metrics = model_results.get('fold_best_val_metrics', [])
+                model_fold_train_time = model_results.get('fold_train_time', 0.0)
+
+                for fold_name, fold_data in model_fold_test_metrics.items():
+                    for metric in fold_data:
+                        if metric not in test_metrics:
+                            test_metrics[metric] = [fold_data[metric]]
+                        else:
+                            test_metrics[metric].append(fold_data[metric])
+
+                    best_val_metrics.append(model_fold_best_val_metrics[fold_name])
+                    train_times.append(model_fold_train_time[fold_name])
+
+                # Go over each metric in test metrics and take the mean and std
+                final_test_metrics = {}
+                for metric in test_metrics:
+                    final_test_metrics[metric] = {
+                        'mean': np.mean(test_metrics[metric]),
+                        'std': np.std(test_metrics[metric])
                     }
+                    
+                # Same for best val metrics
+                final_best_val_metrics = {
+                    'mean': np.mean(best_val_metrics),
+                    'std': np.std(best_val_metrics)
+                }
+                    
+                # Same for train time
+                final_train_time = {
+                    'mean': np.mean(train_times),
+                    'std': np.std(train_times)
+                }
+
+                clean_results[task][model_name] = {
+                    'test_metrics': final_test_metrics,
+                    'best_val_metrics': final_best_val_metrics,
+                    'train_time': final_train_time,
+                    'optimal_hyperparams': model_results.get('optimal_hyperparams', {}),
+                    'success': success
                 }
         
         return clean_results
@@ -936,8 +984,8 @@ class InductiveExperiment:
                 lines.append(f"  Feature signal: {feature_mean:.3f} ± {feature_std:.3f}")
             lines.append("")
         
-        # Results summary
-        for task, task_results in self.results.items():
+        # Results summary using clean_model_results
+        for task, task_results in self.clean_model_results.items():
             lines.append(f"TASK: {task.upper()}")
             lines.append("-" * 40)
             
@@ -948,37 +996,42 @@ class InductiveExperiment:
             best_model = None
             
             for model_name, model_results in task_results.items():
-                if 'test_metrics' in model_results and model_results['test_metrics']:
-                    test_metrics = model_results['test_metrics']
-                    score = test_metrics.get(primary_metric, 0.0)
-                    train_time = model_results.get('train_time', 0.0)
-                    
-                    lines.append(f"  {model_name.upper()}:")
-                    lines.append(f"    {primary_metric.upper()}: {score:.4f}")
-                    lines.append(f"    Training time: {train_time:.2f}s")
-                    
+                test_metrics = model_results.get('test_metrics', {})
+                train_time = model_results.get('train_time', {}).get('mean', 0.0)
+                
+                lines.append(f"  {model_name.upper()}:")
+                
+                # Display metrics using pre-calculated mean and std
+                for metric_name, metric_values in test_metrics.items():
+                    mean_val = metric_values.get('mean', 0.0)
+                    std_val = metric_values.get('std', 0.0)
+                    lines.append(f"    {metric_name.upper()}: {mean_val:.4f} ± {std_val:.4f}")
+                
+                lines.append(f"    Training time: {train_time:.2f}s")
+                
+                # Update best score using mean value of primary metric
+                if primary_metric in test_metrics:
+                    score = test_metrics[primary_metric]['mean']
                     if is_regression and primary_metric in ['mae', 'mse']:
-                        if score < best_score:
+                        if score < best_score or best_score == 0.0:
                             best_score = score
                             best_model = model_name.upper()
                     else:
                         if score > best_score:
                             best_score = score
                             best_model = model_name.upper()
-
-                else:
-                    lines.append(f"  {model_name.upper()}: Failed")
             
             if best_model:
                 lines.append(f"  BEST: {best_model} ({primary_metric.upper()}: {best_score:.4f})")
             lines.append("")
         
         # Overall summary
-        total_models = sum(len(task_results) for task_results in self.results.values())
+        total_models = sum(len(task_results) for task_results in self.clean_model_results.values())
+        
         successful_models = sum(
             sum(1 for model_results in task_results.values() 
-                if 'test_metrics' in model_results and model_results['test_metrics'])
-            for task_results in self.results.values()
+                if model_results['success'])
+            for task_results in self.clean_model_results.values()
         )
         
         lines.append("OVERALL:")

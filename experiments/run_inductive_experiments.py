@@ -53,7 +53,7 @@ def parse_args():
                         help='Dont do any other experiments. Only fine-tune pre-trained models and from scratch version of it and hyperparameter optimization of that model type.')    
         
     # === TASKS ===
-    parser.add_argument('--tasks', type=str, nargs='+', default=['community', 'k_hop_community_counts_k1', 'k_hop_community_counts_k2'],
+    parser.add_argument('--tasks', type=str, nargs='+', default=['community'],
                         choices=['community', 'k_hop_community_counts_k1', 'k_hop_community_counts_k2', 'k_hop_community_counts_k3', 'triangle_count'],
                         help='Learning tasks to run')
     parser.add_argument('--khop_k', type=int, default=1,
@@ -119,7 +119,7 @@ def parse_args():
                         help='Maximum allowed participation rate per community')
     
     # === MODELS ===
-    parser.add_argument('--gnn_types', type=str, nargs='+', default=['gcn', 'sage', 'gat', 'gin'],
+    parser.add_argument('--gnn_types', type=str, nargs='+', default=['gcn'],
                         choices=['gcn', 'fagcn', 'sage', 'gat', 'gin'],
                         help='Types of GNN models to run')
     parser.add_argument('--transformer_types', type=str, nargs='+', 
@@ -142,7 +142,7 @@ def parse_args():
                         help='Skip Random Forest model')
     
     # === TRAINING ===
-    parser.add_argument('--epochs', type=int, default=400,
+    parser.add_argument('--epochs', type=int, default=10,
                         help='Maximum number of epochs')
     parser.add_argument('--patience', type=int, default=100,
                         help='Patience for early stopping')
@@ -347,39 +347,6 @@ def main():
         
         print(f"\nExperiment completed successfully!")
         print(f"Results saved to: {config.output_dir}")
-        
-        # Print quick summary
-        if 'results' in results:
-            total_models = sum(len(task_results) for task_results in results['results'].values())
-            successful_models = sum(
-                sum(1 for model_results in task_results.values() 
-                    if 'test_metrics' in model_results and model_results['test_metrics'])
-                for task_results in results['results'].values()
-            )
-            print(f"Models trained: {total_models}")
-            print(f"Successful: {successful_models}")
-            print(f"Success rate: {successful_models/total_models:.1%}" if total_models > 0 else "Success rate: 0%")
-        
-        # Print signal metrics if collected
-        if 'graph_signals' in results and results['graph_signals']:
-            print(f"\nCommunity Signal Metrics (averaged over graphs):")
-            signals = results['graph_signals']
-            
-            degree_mean = signals.get('degree_signals', {}).get('mean', 0.0)
-            print(f"  Degree signal: {degree_mean:.3f}")
-            
-            structure_mean = signals.get('structure_signals', {}).get('mean', 0.0)
-            print(f"  Structure signal: {structure_mean:.3f}")
-            
-            if 'feature_signals' in signals and signals['feature_signals']['individual_values']:
-                feature_mean = signals.get('feature_signals', {}).get('mean', 0.0)
-                print(f"  Feature signal: {feature_mean:.3f}")
-        
-        # Print consistency metrics if available
-        if 'family_consistency' in results and results['family_consistency']:
-            consistency = results['family_consistency']
-            overall_score = consistency.get('overall', {}).get('score', 0.0)
-            print(f"\nFamily Consistency Score: {overall_score:.3f}")
         
         return 0
         
