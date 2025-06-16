@@ -281,7 +281,8 @@ def train_inductive_model(
                     
                     print(f"\nRandom node vectors at epoch {epoch}:")
                     print(f"Target vector: {random_true[random_node_idx].numpy()}")
-                    print(f"Predicted vector (rounded): {np.round(random_pred[random_node_idx].numpy())}")
+                    # Rounded and minimum 0:
+                    print(f"Predicted vector (rounded): {np.round(np.maximum(random_pred[random_node_idx].numpy(), 0))}")
             
             print(print_str)
         

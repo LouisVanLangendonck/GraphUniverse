@@ -331,7 +331,10 @@ class InductiveExperiment:
             # Get dimensions
             sample_batch = next(iter(task_dataloaders['train']))
             input_dim = sample_batch.x.shape[1]
-            output_dim = get_total_classes_from_dataloaders(task_dataloaders)
+            if is_regression:
+                    output_dim = sample_batch.y.shape[1] if len(sample_batch.y.shape) > 1 else 1
+            else:
+                output_dim = get_total_classes_from_dataloaders(task_dataloaders)
             
             print(f"Model configuration:")
             print(f"  Input dim: {input_dim}")
