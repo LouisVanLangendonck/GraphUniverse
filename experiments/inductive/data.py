@@ -1182,26 +1182,22 @@ def add_positional_encodings_to_data(
             
         print(f"  Processing task: {task_name}")
         
-        # Process each split
-        for split_name, split_data in task_data.items():
-            if split_name == 'metadata':
-                continue
-                
-            graphs = split_data['graphs']
-            print(f"    Processing {split_name}: {len(graphs)} graphs")
+        # Get graphs for this task
+        graphs = task_data['graphs']
+        print(f"    Processing {len(graphs)} graphs")
+        
+        for i, graph in enumerate(graphs):
+            # Compute PE for this graph
+            pe_dict = pe_computer.compute_all_pe(graph.edge_index, graph.x.size(0))
             
-            for i, graph in enumerate(graphs):
-                # Compute PE for this graph
-                pe_dict = pe_computer.compute_all_pe(graph.edge_index, graph.x.size(0))
-                
-                # Add PE to graph data
-                for pe_name, pe_tensor in pe_dict.items():
-                    setattr(graph, pe_name, pe_tensor)
-                
-                total_graphs += 1
-                
-                if (i + 1) % 10 == 0:
-                    print(f"      Processed {i + 1}/{len(graphs)} graphs")
+            # Add PE to graph data
+            for pe_name, pe_tensor in pe_dict.items():
+                setattr(graph, pe_name, pe_tensor)
+            
+            total_graphs += 1
+            
+            if (i + 1) % 10 == 0:
+                print(f"      Processed {i + 1}/{len(graphs)} graphs")
     
     print(f"✓ Added PE to {total_graphs} graphs total")
     return inductive_data

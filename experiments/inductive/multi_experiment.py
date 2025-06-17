@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 class CleanMultiExperimentRunner:
     """Runner for multiple clean inductive experiments with parameter sweeps."""
     
-    def __init__(self, config: CleanMultiExperimentConfig):
+    def __init__(self, config: CleanMultiExperimentConfig, continue_from_results: dict = None):
         """Initialize multi-experiment runner."""
         self.config = config
         
@@ -49,6 +49,12 @@ class CleanMultiExperimentRunner:
         # Initialize result storage
         self.all_results = []
         self.failed_runs = []
+        
+        # If continuing from previous results, load them
+        if continue_from_results:
+            self.all_results = continue_from_results.get('all_results', [])
+            self.failed_runs = continue_from_results.get('failed_runs', [])
+            print(f"Loaded {len(self.all_results)} completed runs and {len(self.failed_runs)} failed runs")
         
         print(f"Multi-experiment runner initialized")
         print(f"Output directory: {self.output_dir}")
@@ -71,15 +77,32 @@ class CleanMultiExperimentRunner:
         print(f"Repetitions per combination: {self.config.n_repetitions}")
         print(f"Total runs: {total_runs}")
         
-        run_id = 0
-        base_seed = 42
+        # Get completed sweep parameter combinations
+        completed_combos = set()
+        for result in self.all_results:
+            sweep_params = result.get('sweep_parameters', {})
+            # Convert to tuple of sorted items for hashability
+            param_tuple = tuple(sorted(sweep_params.items()))
+            completed_combos.add(param_tuple)
+        
+        # Filter out completed combinations
+        remaining_combinations = []
+        for combo in sweep_combinations:
+            combo_tuple = tuple(sorted(combo.items()))
+            if combo_tuple not in completed_combos:
+                remaining_combinations.append(combo)
+        
+        print(f"Remaining combinations to run: {len(remaining_combinations)}")
+        
+        run_id = len(self.all_results)  # Start from the next run ID
+        base_seed = 42 + run_id  # Adjust base seed to avoid overlap
         
         # Progress tracking
-        with tqdm(total=total_runs, desc="Running experiments") as pbar:
+        with tqdm(total=len(remaining_combinations) * self.config.n_repetitions, desc="Running experiments") as pbar:
             
-            for combo_idx, sweep_params in enumerate(sweep_combinations):
+            for combo_idx, sweep_params in enumerate(remaining_combinations):
                 print(f"\n{'-'*60}")
-                print(f"COMBINATION {combo_idx + 1}/{total_combinations}")
+                print(f"COMBINATION {combo_idx + 1}/{len(remaining_combinations)}")
                 print(f"Sweep parameters: {sweep_params}")
                 print(f"{'-'*60}")
                 
@@ -272,22 +295,58 @@ class CleanMultiExperimentRunner:
         for task, task_results in experiment_results['results'].items():
             clean_results[task] = {}
             for model_name, model_results in task_results.items():
-                # Extract key metrics
-                test_metrics = model_results.get('test_metrics', {})
-                optimal_hyperparams = model_results.get('optimal_hyperparams', {})
+                # Extract fold metrics
+                fold_test_metrics = model_results.get('fold_test_metrics', {})
+                fold_best_val_metrics = model_results.get('fold_best_val_metrics', {})
+                fold_train_time = model_results.get('fold_train_time', {})
                 
-                # # Extract hyperopt results if available
-                # optimal_hyperparams = None
-                # if 'hyperopt_results' in model_results and model_results['hyperopt_results'] is not None:
-                #     hyperopt = model_results['hyperopt_results']
-                #     if isinstance(hyperopt, dict) and 'optimal_hyperparams' in hyperopt:
-                #         optimal_hyperparams = hyperopt['optimal_hyperparams']
+                # Calculate statistics for each metric
+                test_metrics = {}
+                best_val_metrics = []
+                train_times = []
+                
+                # Process test metrics
+                for fold_name, fold_data in fold_test_metrics.items():
+                    for metric, value in fold_data.items():
+                        if metric not in test_metrics:
+                            test_metrics[metric] = []
+                        test_metrics[metric].append(value)
+                
+                # Process best val metrics
+                for fold_name, value in fold_best_val_metrics.items():
+                    best_val_metrics.append(value)
+                
+                # Process train times
+                for fold_name, value in fold_train_time.items():
+                    train_times.append(value)
+                
+                # Calculate final statistics
+                final_test_metrics = {}
+                for metric, values in test_metrics.items():
+                    final_test_metrics[metric] = {
+                        'mean': float(np.mean(values)),
+                        'std': float(np.std(values)),
+                        'list': values
+                    }
+                
+                final_best_val_metrics = {
+                    'mean': float(np.mean(best_val_metrics)) if best_val_metrics else 0.0,
+                    'std': float(np.std(best_val_metrics)) if best_val_metrics else 0.0,
+                    'list': best_val_metrics
+                }
+                
+                final_train_time = {
+                    'mean': float(np.mean(train_times)) if train_times else 0.0,
+                    'std': float(np.std(train_times)) if train_times else 0.0,
+                    'list': train_times
+                }
                 
                 clean_results[task][model_name] = {
-                    'test_metrics': test_metrics,
-                    'train_time': model_results.get('train_time', 0.0),
-                    'success': bool(test_metrics),  # True if we have test metrics
-                    'optimal_hyperparams': optimal_hyperparams
+                    'test_metrics': final_test_metrics,
+                    'best_val_metrics': final_best_val_metrics,
+                    'train_time': final_train_time,
+                    'optimal_hyperparams': model_results.get('optimal_hyperparams', {}),
+                    'success': bool(fold_test_metrics)  # True if we have fold metrics
                 }
         
         return clean_results
@@ -388,15 +447,26 @@ class CleanMultiExperimentRunner:
             model_results = result.get('model_results', {})
             for task, task_results in model_results.items():
                 for model, model_data in task_results.items():
+                    # Add test metrics
                     test_metrics = model_data.get('test_metrics', {})
+                    for metric, metric_data in test_metrics.items():
+                        if isinstance(metric_data, dict):
+                            row[f'{task}_{model}_{metric}_mean'] = metric_data.get('mean', 0.0)
+                            row[f'{task}_{model}_{metric}_std'] = metric_data.get('std', 0.0)
                     
-                    # Add key metrics
-                    for metric in ['accuracy', 'f1_macro', 'r2', 'mse']:
-                        if metric in test_metrics:
-                            row[f'{task}_{model}_{metric}'] = test_metrics[metric]
+                    # Add best val metrics
+                    best_val_metrics = model_data.get('best_val_metrics', {})
+                    if isinstance(best_val_metrics, dict):
+                        row[f'{task}_{model}_best_val_mean'] = best_val_metrics.get('mean', 0.0)
+                        row[f'{task}_{model}_best_val_std'] = best_val_metrics.get('std', 0.0)
                     
-                    # Add training time and success
-                    row[f'{task}_{model}_train_time'] = model_data.get('train_time', 0.0)
+                    # Add training time
+                    train_time = model_data.get('train_time', {})
+                    if isinstance(train_time, dict):
+                        row[f'{task}_{model}_train_time_mean'] = train_time.get('mean', 0.0)
+                        row[f'{task}_{model}_train_time_std'] = train_time.get('std', 0.0)
+                    
+                    # Add success flag
                     row[f'{task}_{model}_success'] = model_data.get('success', False)
             
             rows.append(row)
@@ -527,13 +597,14 @@ class CleanMultiExperimentRunner:
                     method_df = df[df['method'] == method]
                     lines.append(f"  {method.upper()}: {len(method_df)} runs")
                     
-                    # Find best performance metric for this method
-                    perf_cols = [col for col in df.columns if 'f1_macro' in col or 'accuracy' in col]
+                    # Find performance metrics for this method
+                    perf_cols = [col for col in df.columns if '_mean' in col and any(metric in col for metric in ['f1_macro', 'accuracy', 'r2'])]
                     for col in perf_cols[:2]:  # Show top 2 metrics
                         if col in method_df.columns and not method_df[col].isna().all():
                             mean_perf = method_df[col].mean()
                             std_perf = method_df[col].std()
-                            lines.append(f"    {col}: {mean_perf:.3f} ± {std_perf:.3f}")
+                            metric_name = col.replace('_mean', '').replace('_', ' ').title()
+                            lines.append(f"    {metric_name}: {mean_perf:.3f} ± {std_perf:.3f}")
                 lines.append("")
             
             # Signal summary
@@ -1070,9 +1141,9 @@ class SSLMultiExperimentRunner:
                 print(f"  {method}: {count}")
 
 
-def run_clean_multi_experiments(config: CleanMultiExperimentConfig) -> Dict[str, Any]:
+def run_clean_multi_experiments(config: CleanMultiExperimentConfig, continue_from_results: dict = None) -> Dict[str, Any]:
     """Convenience function to run multi-experiments."""
-    runner = CleanMultiExperimentRunner(config)
+    runner = CleanMultiExperimentRunner(config, continue_from_results)
     return runner.run_all_experiments()
 
 

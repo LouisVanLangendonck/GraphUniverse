@@ -741,19 +741,22 @@ class InductiveExperiment:
                 for metric in test_metrics:
                     final_test_metrics[metric] = {
                         'mean': np.mean(test_metrics[metric]),
-                        'std': np.std(test_metrics[metric])
+                        'std': np.std(test_metrics[metric]),
+                        'list': test_metrics[metric]
                     }
                     
                 # Same for best val metrics
                 final_best_val_metrics = {
                     'mean': np.mean(best_val_metrics),
-                    'std': np.std(best_val_metrics)
+                    'std': np.std(best_val_metrics),
+                    'list': best_val_metrics
                 }
                     
                 # Same for train time
                 final_train_time = {
                     'mean': np.mean(train_times),
-                    'std': np.std(train_times)
+                    'std': np.std(train_times),
+                    'list': train_times
                 }
 
                 clean_results[task][model_name] = {

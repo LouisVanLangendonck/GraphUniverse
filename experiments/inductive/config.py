@@ -152,7 +152,7 @@ class InductiveExperimentConfig:
     transformer_num_heads: int = 8
     transformer_max_nodes: int = 200
     transformer_max_path_length: int = 10
-    transformer_precompute_encodings: bool = False
+    transformer_precompute_encodings: bool = True
     transformer_cache_encodings: bool = False
     
     # GraphGPS specific

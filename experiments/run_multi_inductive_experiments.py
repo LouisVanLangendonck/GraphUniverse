@@ -6,6 +6,7 @@ Example usage of parameter sweeps with random sampling.
 import os
 import sys
 import argparse
+import json
 from datetime import datetime
 
 # Add project root to path
@@ -36,14 +37,20 @@ def parse_args():
     parser.add_argument('--n_repetitions', type=int, default=1,
                         help='Number of repetitions per parameter combination')
     
+    # Continue from intermediate results
+    parser.add_argument('--continue_from_intermediate', action='store_true',
+                        help='Continue from intermediate results')
+    parser.add_argument('--intermediate_result_dir', type=str, default=None,
+                        help='Directory containing intermediate results to continue from')
+    
     # Task configuration
     parser.add_argument('--tasks', type=str, nargs='+', 
-                        default=['community', 'k_hop_community_counts'],
-                        choices=['community', 'k_hop_community_counts'],
+                        default=['community', 'k_hop_community_counts_k1', 'k_hop_community_counts_k2', 'k_hop_community_counts_k3'],
+                        choices=['community', 'k_hop_community_counts_k1', 'k_hop_community_counts_k2', 'k_hop_community_counts_k3'],
                         help='Learning tasks to run')
     
     # Base experiment settings
-    parser.add_argument('--n_graphs', type=int, default=30,
+    parser.add_argument('--n_graphs', type=int, default=20,
                         help='Number of graphs per family')
     parser.add_argument('--min_n_nodes', type=int, default=80,
                         help='Minimum nodes per graph')
@@ -51,9 +58,9 @@ def parse_args():
                         help='Maximum nodes per graph')
     parser.add_argument('--universe_K', type=int, default=10,
                         help='Number of communities in universe')
-    parser.add_argument('--min_communities', type=int, default=3,
+    parser.add_argument('--min_communities', type=int, default=4,
                         help='Minimum number of communities')
-    parser.add_argument('--max_communities', type=int, default=7,
+    parser.add_argument('--max_communities', type=int, default=6,
                         help='Maximum number of communities')
     
     # Method selection
@@ -64,17 +71,19 @@ def parse_args():
                         help='Degree distribution for DCCC-SBM')
     
     # Training settings
-    parser.add_argument('--epochs', type=int, default=500,
+    parser.add_argument('--epochs', type=int, default=300,
                         help='Training epochs')
-    parser.add_argument('--patience', type=int, default=100,
+    parser.add_argument('--patience', type=int, default=50,
                         help='Early stopping patience')
     parser.add_argument('--batch_size', type=int, default=1,
                         help='Batch size for training (per graph)')
-    
+    parser.add_argument('--k_fold', type=int, default=5,
+                        help='Number of folds for cross-validation')
+
     # Hyperparameter optimization settings
     parser.add_argument('--optimize_hyperparams', action='store_true',
                         help='Enable hyperparameter optimization')
-    parser.add_argument('--n_trials', type=int, default=10,
+    parser.add_argument('--n_trials', type=int, default=15,
                         help='Number of hyperparameter optimization trials')
     parser.add_argument('--optimization_timeout', type=int, default=600,
                         help='Timeout in seconds for hyperparameter optimization')
@@ -86,6 +95,10 @@ def parse_args():
                         help='Analyze existing results at given path')
     
     # Model selection
+    parser.add_argument('--gnn_types', type=str, nargs='+', 
+                        default=['gat', 'gcn', 'sage', 'gin'],
+                        choices=['fagcn', 'gat', 'gcn', 'sage', 'gin'],
+                        help='Types of GNN models to run')
     parser.add_argument('--no_gnn', action='store_false', dest='run_gnn',
                         help='Skip GNN models')
     parser.add_argument('--no_mlp', action='store_false', dest='run_mlp',
@@ -95,7 +108,7 @@ def parse_args():
     
     # Transformer configuration
     parser.add_argument('--transformer_types', type=str, nargs='+', 
-                        default=['graphormer', 'graphgps'], 
+                        default=['graphgps'], 
                         choices=['graphormer', 'graphgps'],
                         help='Types of Graph Transformer models to run')
     parser.add_argument('--run_transformers', action='store_true',
@@ -147,23 +160,13 @@ def create_custom_experiment(args) -> CleanMultiExperimentConfig:
         degree_distribution=args.degree_distribution,
 
         # Tasks configuration
-        tasks=['community', 'k_hop_community_counts_k1', 'k_hop_community_counts_k2', 'k_hop_community_counts_k3'],
-        is_regression={
-            'community': False,
-            'k_hop_community_counts_k1': True,
-            'k_hop_community_counts_k2': True,
-            'k_hop_community_counts_k3': True
-        },
-        is_graph_level_tasks={
-            'community': False,
-            'k_hop_community_counts_k1': False,
-            'k_hop_community_counts_k2': False,
-            'k_hop_community_counts_k3': False
-        },
+        tasks=args.tasks,
+        is_regression={},
+        is_graph_level_tasks={},
         khop_community_counts_k=1,  # This will be overridden per task
         
         # Tasks and models
-        gnn_types=['gcn', 'gat', 'sage', 'gin'], # ['fagcn', 'gat', 'gcn', 'sage', 'gin']
+        gnn_types=args.gnn_types, # ['fagcn', 'gat', 'gcn', 'sage', 'gin']
         run_gnn=args.run_gnn,
         run_mlp=args.run_mlp,
         run_rf=args.run_rf,
@@ -174,16 +177,21 @@ def create_custom_experiment(args) -> CleanMultiExperimentConfig:
         transformer_num_heads=args.transformer_num_heads,
         transformer_max_nodes=args.transformer_max_nodes,
         transformer_max_path_length=args.transformer_max_path_length,
-        transformer_precompute_encodings=args.transformer_precompute_encodings,
-        transformer_cache_encodings=getattr(args, 'transformer_cache_encodings', True),
+        transformer_precompute_encodings=True,
+        transformer_cache_encodings=False,
         local_gnn_type=args.local_gnn_type,
         global_model_type=args.global_model_type,
         transformer_prenorm=getattr(args, 'transformer_prenorm', True),
+        max_pe_dim=16,
+        precompute_pe=True,
+        pe_type='laplacian',
+        pe_norm_type='graph',
         
         # Training
         epochs=args.epochs,
         patience=args.patience,
         batch_size=args.batch_size,
+        k_fold=args.k_fold,
         
         # Hyperparameter optimization
         optimize_hyperparams=args.optimize_hyperparams,
@@ -197,6 +205,16 @@ def create_custom_experiment(args) -> CleanMultiExperimentConfig:
         # Seed
         seed=args.seed
     )
+
+    for task in args.tasks:
+        if task == 'community':
+            base_config.is_graph_level_tasks['community'] = False
+            base_config.is_regression[task] = False
+        elif 'k_hop_community_counts_k' in task:
+            base_config.is_graph_level_tasks[task] = False
+            base_config.is_regression[task] = True
+        else:
+            raise ValueError(f"Invalid task: {task}")
     
     # Define a simple sweep: homophily vs edge density
     sweep_parameters = {
@@ -207,9 +225,9 @@ def create_custom_experiment(args) -> CleanMultiExperimentConfig:
             is_sweep=True
         ),
         'universe_edge_density': ParameterRange(
-            min_val=0.02,
-            max_val=0.22,
-            step=0.2,
+            min_val=0.05,
+            max_val=0.15,
+            step=0.1,
             is_sweep=True
         )
     }
@@ -294,15 +312,6 @@ def create_custom_experiment(args) -> CleanMultiExperimentConfig:
                 is_sweep=False
             )
         })
-    # ADD metapath task configuration
-    if 'metapath' in args.tasks:
-        # Metapath tasks will be added automatically by the system
-        # Configure metapath parameters
-        base_config.enable_metapath_tasks = True
-        base_config.metapath_k_values = getattr(args, 'metapath_k_values', [4, 5])
-        base_config.metapath_require_loop = getattr(args, 'metapath_require_loop', False)
-        base_config.metapath_degree_weight = getattr(args, 'metapath_degree_weight', 0.3)
-        base_config.max_community_participation = getattr(args, 'max_community_participation', 0.95)
     
     return CleanMultiExperimentConfig(
         base_config=base_config,
@@ -314,6 +323,74 @@ def create_custom_experiment(args) -> CleanMultiExperimentConfig:
         continue_on_failure=True
     )
 
+
+def load_intermediate_results(result_dir: str) -> tuple:
+    """Load intermediate results and config from a directory."""
+    # Load config
+    config_path = os.path.join(result_dir, "multi_config.json")
+    if not os.path.exists(config_path):
+        raise ValueError(f"Config file not found at {config_path}")
+    
+    with open(config_path, 'r') as f:
+        config_dict = json.load(f)
+    
+    # Convert sweep and random parameters back to ParameterRange objects
+    if 'sweep_parameters' in config_dict:
+        sweep_params = {}
+        for param_name, param_dict in config_dict['sweep_parameters'].items():
+            # Convert any None values to proper None
+            for key, value in param_dict.items():
+                if value == "null":
+                    param_dict[key] = None
+            sweep_params[param_name] = ParameterRange(**param_dict)
+        config_dict['sweep_parameters'] = sweep_params
+    
+    if 'random_parameters' in config_dict:
+        random_params = {}
+        for param_name, param_dict in config_dict['random_parameters'].items():
+            # Convert any None values to proper None
+            for key, value in param_dict.items():
+                if value == "null":
+                    param_dict[key] = None
+            random_params[param_name] = ParameterRange(**param_dict)
+        config_dict['random_parameters'] = random_params
+    
+    # Convert base_config to InductiveExperimentConfig
+    if 'base_config' in config_dict:
+        from experiments.inductive.config import InductiveExperimentConfig
+        config_dict['base_config'] = InductiveExperimentConfig(**config_dict['base_config'])
+    
+    # Load results
+    results_path = os.path.join(result_dir, "intermediate_results.json")
+    if not os.path.exists(results_path):
+        raise ValueError(f"Results file not found at {results_path}")
+    
+    with open(results_path, 'r') as f:
+        results = json.load(f)
+    
+    return config_dict, results
+
+def get_next_sweep_params(config_dict: dict, completed_results: list) -> dict:
+    """Get the next sweep parameter combination to run."""
+    # Get all sweep parameter combinations
+    config = CleanMultiExperimentConfig(**config_dict)
+    all_combinations = config.get_parameter_combinations()
+    
+    # Get completed sweep parameter combinations
+    completed_combos = set()
+    for result in completed_results:
+        sweep_params = result.get('sweep_parameters', {})
+        # Convert to tuple of sorted items for hashability
+        param_tuple = tuple(sorted(sweep_params.items()))
+        completed_combos.add(param_tuple)
+    
+    # Find first uncompleted combination
+    for combo in all_combinations:
+        combo_tuple = tuple(sorted(combo.items()))
+        if combo_tuple not in completed_combos:
+            return combo
+    
+    return None
 
 def main():
     """Main function to run multi-experiments."""
@@ -330,13 +407,38 @@ def main():
             print("Analysis complete!")
             return 0
         
-        # Create configuration based on preset or custom
-        print("Creating custom configuration from arguments...")
-        config = create_custom_experiment(args)
-        
-        # Override repetitions if specified
-        if args.n_repetitions != 2:
-            config.n_repetitions = args.n_repetitions
+        # Handle continuing from intermediate results
+        if args.continue_from_intermediate:
+            if not args.intermediate_result_dir:
+                raise ValueError("--intermediate_result_dir must be specified when continuing from intermediate results")
+            
+            print(f"Loading intermediate results from: {args.intermediate_result_dir}")
+            config_dict, results = load_intermediate_results(args.intermediate_result_dir)
+            
+            # Get next sweep parameters to run
+            next_combo = get_next_sweep_params(config_dict, results['all_results'])
+            if next_combo is None:
+                print("All parameter combinations have been completed!")
+                return 0
+            
+            print(f"Continuing from last completed run. Next sweep parameters: {next_combo}")
+            
+            # Create new config with same settings but new output directory
+            config = CleanMultiExperimentConfig(**config_dict)
+            config.output_dir = os.path.join(args.output_dir, f"{args.experiment_name}_continued")
+            config.experiment_name = f"{args.experiment_name}_continued"
+            
+            # Override repetitions if specified
+            if args.n_repetitions != 2:
+                config.n_repetitions = args.n_repetitions
+        else:
+            # Create configuration based on preset or custom
+            print("Creating custom configuration from arguments...")
+            config = create_custom_experiment(args)
+            
+            # Override repetitions if specified
+            if args.n_repetitions != 2:
+                config.n_repetitions = args.n_repetitions
         
         # Print configuration summary
         print(f"\nMulti-Experiment Configuration:")
@@ -370,7 +472,10 @@ def main():
         
         # Run experiments
         print(f"\nStarting multi-experiment suite at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-        results = run_clean_multi_experiments(config)
+        if args.continue_from_intermediate:
+            results = run_clean_multi_experiments(config, continue_from_results=results)
+        else:
+            results = run_clean_multi_experiments(config)
         
         print(f"\nMulti-experiment suite completed successfully!")
         

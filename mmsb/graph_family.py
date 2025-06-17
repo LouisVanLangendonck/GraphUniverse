@@ -311,7 +311,8 @@ class GraphFamilyGenerator:
         self,
         show_progress: bool = True,
         collect_stats: bool = True,
-        max_attempts_per_graph: int = 5
+        max_attempts_per_graph: int = 5,
+        timeout_minutes: float = 2.0
     ) -> List[GraphSample]:
         """
         Generate a family of graphs from the universe.
@@ -320,21 +321,27 @@ class GraphFamilyGenerator:
             show_progress: Whether to show progress bar
             collect_stats: Whether to collect generation statistics
             max_attempts_per_graph: Maximum attempts per graph before giving up
+            timeout_minutes: Maximum time in minutes to spend generating graphs
             
         Returns:
             List of generated GraphSample objects
         """
         start_time = time.time()
+        timeout_seconds = timeout_minutes * 60
         self.graphs = []
         self.generation_metadata = []
         failed_graphs = 0
         
         # Progress bar setup
-        iterator = range(self.n_graphs)
         if show_progress:
-            iterator = tqdm(iterator, desc="Generating graph family")
+            pbar = tqdm(total=self.n_graphs, desc="Generating graph family")
         
-        for graph_idx in iterator:
+        while len(self.graphs) < self.n_graphs:
+            # Check for timeout
+            if time.time() - start_time > timeout_seconds:
+                warnings.warn(f"Timeout reached after {timeout_minutes} minutes. Generated {len(self.graphs)} graphs instead of {self.n_graphs}")
+                break
+                
             graph_generated = False
             attempts = 0
             
@@ -344,8 +351,6 @@ class GraphFamilyGenerator:
                 try:
                     # Sample parameters for this graph
                     params = self._sample_graph_parameters()
-
-                    print("Disable Deviation limiting: ", self.disable_deviation_limiting)
                     
                     # Create graph sample
                     graph_sample = GraphSample(
@@ -380,7 +385,7 @@ class GraphFamilyGenerator:
                     self.graphs.append(graph_sample)
                     
                     metadata = {
-                        'graph_id': graph_idx,
+                        'graph_id': len(self.graphs) - 1,
                         'attempts': attempts,
                         'final_n_nodes': graph_sample.n_nodes,
                         'final_n_edges': graph_sample.graph.number_of_edges(),
@@ -393,18 +398,24 @@ class GraphFamilyGenerator:
                     self.generation_metadata.append(metadata)
                     graph_generated = True
                     
+                    if show_progress:
+                        pbar.update(1)
+                    
                 except Exception as e:
                     if attempts == max_attempts_per_graph:
-                        warnings.warn(f"Failed to generate graph {graph_idx} after {attempts} attempts: {e}")
+                        warnings.warn(f"Failed to generate graph after {attempts} attempts: {e}")
                         failed_graphs += 1
                         # Add empty metadata for failed graph
                         self.generation_metadata.append({
-                            'graph_id': graph_idx,
+                            'graph_id': len(self.graphs),
                             'attempts': attempts,
                             'failed': True,
                             'error': str(e)
                         })
                     # Continue to next attempt
+        
+        if show_progress:
+            pbar.close()
         
         # Collect generation statistics
         if collect_stats:
