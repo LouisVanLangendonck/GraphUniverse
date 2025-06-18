@@ -354,7 +354,7 @@ class InductiveExperiment:
         return dataloaders, unseen_community_combination_score
     
     def run_experiments(self) -> Dict[str, Any]:
-        """Updated run_experiments with transformer support and fine-tuning."""
+        """Run experiments for all configured tasks and models."""
         print("\n" + "="*60)
         print("RUNNING INDUCTIVE EXPERIMENTS")
         print("="*60)
@@ -362,325 +362,131 @@ class InductiveExperiment:
         if not hasattr(self, 'dataloaders'):
             raise ValueError("Must prepare data before running experiments")
         
+        # Use parallel training if configured
+        if self.config.use_parallel_training:
+            from experiments.parallel_training import run_experiments_parallel
+            return run_experiments_parallel(self)
+        
+        # Original sequential training implementation
         all_results = {}
         
-        print("Tasks to run: ", self.config.tasks)
+        # Process each task
         for task in self.config.tasks:
             print(f"\n{'='*40}")
             print(f"TASK: {task.upper()}")
             print(f"{'='*40}")
             
-            task_results = {}
             task_dataloaders = self.dataloaders[task]
-            is_regression = task in ['k_hop_community_counts', 'triangle_count']
-            is_graph_level_task = task == 'triangle_count'
+            task_results = {}
             
-            # Get dimensions
+            # Get dimensions from sample batch
             first_fold_name = list(task_dataloaders.keys())[0]
             sample_batch = next(iter(task_dataloaders[first_fold_name]['train']))
             input_dim = sample_batch.x.shape[1]
+            
+            is_regression = task in ['k_hop_community_counts', 'triangle_count']
+            is_graph_level_task = task == 'triangle_count'
+            
+            # Determine output dimension
             if is_regression:
                 output_dim = sample_batch.y.shape[1] if len(sample_batch.y.shape) > 1 else 1
             else:
+                from experiments.inductive.training import get_total_classes_from_dataloaders
                 output_dim = get_total_classes_from_dataloaders(task_dataloaders)
             
-            print(f"Model configuration:")
-            print(f"  Input dim: {input_dim}")
-            print(f"  Output dim: {output_dim}")
-            print(f"  Is regression: {is_regression}")
-            
-            # First, handle fine-tuning if using pre-trained model
-            if self.config.use_pretrained and self.config.pretrained_model_id:
-                print("\n--- Fine-tuning from pre-trained model ---")
-                try:
-                    # Load pre-trained model
-                    pretrained_model, metadata = self.load_pretrained_model(
-                        self.config.pretrained_model_dir,
-                        self.config.pretrained_model_id,
+            # Train GNN models
+            if self.config.run_gnn:
+                for gnn_type in self.config.gnn_types:
+                    from experiments.models import GNNModel
+                    
+                    model = GNNModel(
+                        input_dim=input_dim,
+                        hidden_dim=self.config.hidden_dim,
+                        output_dim=output_dim,
+                        num_layers=self.config.num_layers,
+                        dropout=self.config.dropout,
+                        gnn_type=gnn_type,
+                        is_regression=is_regression,
+                        is_graph_level_task=is_graph_level_task
                     )
-                    pretrained_model_type = metadata['config'].get('model_type')
-
-                    if pretrained_model_type == 'gnn':
-                        pretrained_specific_model_type = metadata['config'].get('gnn_type')
-                    else:
-                        pretrained_specific_model_type = metadata['config'].get('transformer_type')
-
-                    print(f"Loaded Original pre-trained model: {pretrained_specific_model_type}")
                     
-                    # Create fine-tuning model with fixed architecture
-                    finetune_model = self.create_model_from_pretrained(
-                        pretrained_model,
-                        metadata,
-                        output_dim,
-                        is_regression,
-                        is_graph_level_task
-                    ).to(self.device)
-                    print(f"Created fine-tuning model by using the original pre-trained encoder: {finetune_model}")
-
-                    if self.config.calculate_silhouette_score and task == 'community':
-                        print(f"Calculating silhouette score of communities of pre-trained model")
-                        training_silhouette_scores = calculate_silhouette_scores(finetune_model, task_dataloaders)
-                        t_sne_training_results = calculate_tsne_coordinates(finetune_model, task_dataloaders, n_to_calculate=1)
-                    
-                    # Fine-tune model
-                    results = train_and_evaluate_inductive(
-                        model=finetune_model,
-                        model_name=pretrained_specific_model_type,
-                        dataloaders=task_dataloaders,
-                        config=self.config,
-                        task=task,
-                        device=self.device,
-                        optimize_hyperparams=False,  # No hyperopt for fine-tuning
-                        experiment_name=self.config.experiment_name if hasattr(self.config, 'experiment_name') else None,
-                        run_id=self.config.run_id if hasattr(self.config, 'run_id') else None,
-                        finetuning=True,
-                    )
-                    if self.config.calculate_silhouette_score and task == 'community':
-                        results['training_silhouette_scores'] = training_silhouette_scores
-                        results['t_sne_training_results'] = t_sne_training_results
-                    
-                    # Store results
-                    task_results['finetuned'] = {
-                        'test_metrics': results.get('test_metrics', {}),
-                        'train_time': results.get('train_time', 0.0),
-                        'training_history': results.get('training_history', {}),
-                        'pretrained_model_id': self.config.pretrained_model_id,
-                        'training_silhouette_scores': results.get('training_silhouette_scores', []),
-                        't_sne_training_results': results.get('t_sne_training_results', {}),
-                        'optimal_hyperparams': results.get('optimal_hyperparams', {})
-                    }
-                
-                    print(f"✓ Fine-tuning completed successfully")
-                    
-                    # Add from-scratch training of the same model architecture
-                    print("\n--- Training same model from scratch for comparison ---")
-                    try:
-                        # Create a new model with the same architecture but random weights
-                        from_scratch_model = self.create_model_from_pretrained(
-                            pretrained_model,  # We only use this for architecture info
-                            metadata,
-                            output_dim,
-                            is_regression,
-                            is_graph_level_task
-                        ).to(self.device)
-                        
-                        # Randomize weights                    
-                        if pretrained_model_type == 'transformer' or 'transformer' in str(type(from_scratch_model)).lower():
-                            # Transformers typically use Xavier/Glorot initialization
-                            init_scheme = 'xavier_uniform'
-                        elif pretrained_model_type == 'gnn':
-                            gnn_type = metadata['config'].get('gnn_type', 'gcn')
-                            if gnn_type in ['gcn', 'sage']:
-                                # GCN/SAGE work well with Xavier
-                                init_scheme = 'xavier_uniform'
-                            elif gnn_type in ['gat', 'gin']:
-                                # GAT/GIN often use Kaiming (He) initialization
-                                init_scheme = 'kaiming_uniform'
-                            else:
-                                init_scheme = 'xavier_uniform'
-                        else:
-                            # Default to Xavier for other model types
-                            init_scheme = 'xavier_uniform'
-                        
-                        print(f"Randomizing weights with {init_scheme} initialization")
-                        
-                        # Randomize all weights
-                        num_randomized, num_failed = randomize_model_weights(
-                            from_scratch_model, 
-                            initialization_scheme=init_scheme,
-                            verbose=False
-                        )
-                        if num_failed > 0:
-                            raise ValueError(f"Failed to randomize {num_failed} layers")
-                        else:
-                            print(f"Successfully randomized {num_randomized} layers")
-                        
-                        if self.config.calculate_silhouette_score and task == 'community':
-                            print(f"Calculating silhouette score of communities of from-scratch model")
-                            training_silhouette_scores = calculate_silhouette_scores(from_scratch_model, task_dataloaders)
-                            t_sne_training_results = calculate_tsne_coordinates(from_scratch_model, task_dataloaders, n_to_calculate=1)
-
-                        # Train from scratch
-                        scratch_results = train_and_evaluate_inductive(
-                            model=from_scratch_model,
-                            model_name=pretrained_specific_model_type,
-                            dataloaders=task_dataloaders,
-                            config=self.config,
-                            task=task,
-                            device=self.device,
-                            optimize_hyperparams=False,  # No hyperopt
-                            experiment_name=self.config.experiment_name if hasattr(self.config, 'experiment_name') else None,
-                            run_id=self.config.run_id if hasattr(self.config, 'run_id') else None,
-                            finetuning=True,
-                        )
-
-                        if self.config.calculate_silhouette_score and task == 'community':
-                            scratch_results['training_silhouette_scores'] = training_silhouette_scores
-                            scratch_results['t_sne_training_results'] = t_sne_training_results
-                        
-                        # Store results
-                        task_results['from_scratch'] = {
-                            'test_metrics': scratch_results.get('test_metrics', {}),
-                            'train_time': scratch_results.get('train_time', 0.0),
-                            'training_history': scratch_results.get('training_history', {}),
-                            'pretrained_model_id': self.config.pretrained_model_id,  # Keep reference to original model
-                            'is_from_scratch': True,
-                            'training_silhouette_scores': scratch_results.get('training_silhouette_scores', []),
-                            't_sne_training_results': scratch_results.get('t_sne_training_results', {}),
-                            'optimal_hyperparams': scratch_results.get('optimal_hyperparams', {})
-                        }
-                        
-                        print(f"✓ From-scratch training completed successfully")
-                        
-                    except Exception as e:
-                        error_msg = f"Error in from-scratch training: {str(e)}"
-                        print(f"✗ {error_msg}")
-                        logger.error(error_msg, exc_info=True)
-                        
-                        task_results['from_scratch'] = {
-                            'error': error_msg,
-                            'test_metrics': {},
-                            'is_from_scratch': True
-                        }
-                    
-                except Exception as e:
-                    error_msg = f"Error in fine-tuning: {str(e)}"
-                    print(f"✗ {error_msg}")
-                    logger.error(error_msg, exc_info=True)
-                    
-                    task_results['finetuned'] = {
-                        'error': error_msg,
-                        'test_metrics': {}
-                    } 
-            
-            # Determine models to run (excluding fine-tuned model)
-            models_to_run = []
-            if self.config.only_pretrained_experiments:
-                models_to_run = [pretrained_specific_model_type]
-            else:
-                pretrained_model_type = '' # empty string to avoid error
-                if self.config.run_gnn  :
-                    models_to_run.extend(self.config.gnn_types)
-                if self.config.run_transformers:
-                    models_to_run.extend(self.config.transformer_types)
-                if self.config.run_mlp:
-                    models_to_run.append('mlp')
-                if self.config.run_rf:
-                    models_to_run.append('rf')
-            
-            # Train each model
-            for model_name in models_to_run:
-                print(f"\n--- Training {model_name.upper()} ---")
-                
-                try:
-                    # Create model
-                    if model_name in self.config.gnn_types or pretrained_model_type == 'gnn':
-                        # Existing GNN model creation
-                        if model_name in ['fagcn', 'gin']:
-                            model = GNNModel(
-                                input_dim=input_dim,
-                                hidden_dim=self.config.hidden_dim,
-                                output_dim=output_dim,
-                                num_layers=self.config.num_layers,
-                                dropout=self.config.dropout,
-                                gnn_type=model_name,
-                                is_regression=is_regression,
-                                is_graph_level_task=is_graph_level_task,
-                                eps=self.config.eps
-                            )
-                        else:
-                            model = GNNModel(
-                                input_dim=input_dim,
-                                hidden_dim=self.config.hidden_dim,
-                                output_dim=output_dim,
-                                num_layers=self.config.num_layers,
-                                dropout=self.config.dropout,
-                                gnn_type=model_name,
-                                is_regression=is_regression,
-                                is_graph_level_task=is_graph_level_task
-                            )
-                    
-                    elif model_name in self.config.transformer_types or pretrained_model_type == 'transformer':
-                        from experiments.models import GraphTransformerModel
-                        model = GraphTransformerModel(
-                            input_dim=input_dim,
-                            hidden_dim=self.config.hidden_dim,
-                            output_dim=output_dim,
-                            transformer_type=model_name,
-                            num_layers=self.config.num_layers,
-                            dropout=self.config.dropout,
-                            num_heads=self.config.transformer_num_heads,
-                            max_nodes=self.config.transformer_max_nodes,
-                            max_path_length=self.config.transformer_max_path_length,
-                            prenorm=self.config.transformer_prenorm,
-                            precompute_encodings=self.config.transformer_precompute_encodings,
-                            local_gnn_type=self.config.local_gnn_type,
-                            global_model_type=self.config.global_model_type,
-                            is_regression=is_regression,
-                            is_graph_level_task=is_graph_level_task,
-                            pe_type=self.config.pe_type,
-                            pe_norm_type=self.config.pe_norm_type,
-                        )
-                        
-                        # Share precomputed cache if available
-                        # if hasattr(self, 'transformer_caches') and model_name in self.transformer_caches:
-                        #     model._encoding_cache = self.transformer_caches[model_name]
-                        #     print(f"✅ Using precomputed cache with {len(model._encoding_cache)} entries")
-                    
-                    elif model_name == 'mlp':
-                        model = MLPModel(
-                            input_dim=input_dim,
-                            hidden_dim=self.config.hidden_dim,
-                            output_dim=output_dim,
-                            num_layers=self.config.num_layers,
-                            dropout=self.config.dropout,
-                            is_regression=is_regression,
-                            is_graph_level_task=is_graph_level_task
-                        )
-                    
-                    # Train model
-                    # Print a small overview of components of the model
-                    print(f"Model to train: {model}")
-
+                    from experiments.inductive.training import train_and_evaluate_inductive
                     results = train_and_evaluate_inductive(
                         model=model,
-                        model_name=model_name,
+                        model_name=gnn_type,
                         dataloaders=task_dataloaders,
                         config=self.config,
                         task=task,
                         device=self.device,
                         optimize_hyperparams=self.config.optimize_hyperparams,
-                        experiment_name=self.config.experiment_name if hasattr(self.config, 'experiment_name') else None,
-                        run_id=self.config.run_id if hasattr(self.config, 'run_id') else None,
+                        experiment_name=getattr(self.config, 'experiment_name', None),
+                        run_id=getattr(self.config, 'run_id', None)
                     )
                     
-                    # Store results including hyperopt results if available
-                    task_results[model_name] = {
-                        'fold_test_metrics': results.get('fold_test_metrics', {}),
-                        'fold_best_val_metrics': results.get('fold_best_val_metrics', {}),
-                        'fold_train_time': results.get('fold_train_time', {}),
-                        'optimal_hyperparams': results.get('optimal_hyperparams', {}),
-                        'training_history': results.get('training_history', {}),
-                        'hyperopt_results': results.get('hyperopt_results', None),
-                        't_sne_training_results': results.get('t_sne_training_results', {}),
-                        'training_silhouette_scores': results.get('training_silhouette_scores', [])
-                    }
+                    task_results[gnn_type] = results
+            
+            # Train transformer models
+            if self.config.run_transformers:
+                for transformer_type in self.config.transformer_types:
+                    from experiments.models import GraphTransformerModel
                     
-                    print(f"✓ {model_name.upper()} completed successfully")
-                
-                except Exception as e:
-                    error_msg = f"Error in {model_name} model: {str(e)}"
-                    print(f"✗ {error_msg}")
-                    logger.error(error_msg, exc_info=True)
+                    model = GraphTransformerModel(
+                        input_dim=input_dim,
+                        hidden_dim=self.config.hidden_dim,
+                        output_dim=output_dim,
+                        transformer_type=transformer_type,
+                        num_layers=self.config.num_layers,
+                        dropout=self.config.dropout,
+                        is_regression=is_regression,
+                        is_graph_level_task=is_graph_level_task
+                    )
                     
-                    task_results[model_name] = {
-                        'error': error_msg,
-                        'test_metrics': {}
-                    }
+                    from experiments.inductive.training import train_and_evaluate_inductive
+                    results = train_and_evaluate_inductive(
+                        model=model,
+                        model_name=transformer_type,
+                        dataloaders=task_dataloaders,
+                        config=self.config,
+                        task=task,
+                        device=self.device,
+                        optimize_hyperparams=self.config.optimize_hyperparams,
+                        experiment_name=getattr(self.config, 'experiment_name', None),
+                        run_id=getattr(self.config, 'run_id', None)
+                    )
+                    
+                    task_results[transformer_type] = results
+            
+            # Train MLP model
+            if self.config.run_mlp:
+                from experiments.models import MLPModel
                 
+                model = MLPModel(
+                    input_dim=input_dim,
+                    hidden_dim=self.config.hidden_dim,
+                    output_dim=output_dim,
+                    num_layers=self.config.num_layers,
+                    dropout=self.config.dropout,
+                    is_regression=is_regression,
+                    is_graph_level_task=is_graph_level_task
+                )
+                
+                from experiments.inductive.training import train_and_evaluate_inductive
+                results = train_and_evaluate_inductive(
+                    model=model,
+                    model_name='mlp',
+                    dataloaders=task_dataloaders,
+                    config=self.config,
+                    task=task,
+                    device=self.device,
+                    optimize_hyperparams=self.config.optimize_hyperparams,
+                    experiment_name=getattr(self.config, 'experiment_name', None),
+                    run_id=getattr(self.config, 'run_id', None)
+                )
+                
+                task_results['mlp'] = results
+            
             all_results[task] = task_results
         
-        self.results = all_results
         return all_results
     
     def save_results(self) -> None:

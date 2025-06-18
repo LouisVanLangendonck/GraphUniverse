@@ -18,6 +18,8 @@ class InductiveExperimentConfig:
     seed: int = 42
     device_id: int = 0
     force_cpu: bool = False
+    use_parallel_training: bool = True
+    max_parallel_gpu_jobs: Optional[int] = None 
     
     # Performance optimization settings
     use_mixed_precision: bool = False
@@ -68,7 +70,7 @@ class InductiveExperimentConfig:
     edge_noise: float = 0.1
     
     # === GENERATION METHOD SELECTION ===
-    use_dccc_sbm: bool = False  # If False, uses standard DC-SBM
+    use_dccc_sbm: bool = True  # If False, uses standard DC-SBM
     
     # === DCCC-SBM PARAMETERS ===
     community_imbalance_range: Tuple[float, float] = (0.0, 0.3)
