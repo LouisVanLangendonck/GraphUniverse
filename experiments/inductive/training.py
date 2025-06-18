@@ -925,6 +925,7 @@ def train_and_evaluate_inductive(
                         prenorm = trial.suggest_categorical('prenorm', [True, False])
                         pe_type = trial.suggest_categorical('pe_type', ['laplacian', 'random_walk', 'shortest_path'])
                         pe_norm_type = trial.suggest_categorical('pe_norm_type', ['layer', 'graph', None])
+                        
                     
                     # Create transformer model with all parameters
                     trial_model = GraphTransformerModel(
