@@ -20,6 +20,7 @@ from sklearn.base import BaseEstimator
 from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
 from collections import deque
 import inspect
+import math
 
 def create_model(model_type: str, **kwargs):
     """Extended model creation to include Graph Transformers."""
@@ -474,6 +475,12 @@ class GPSConv(torch.nn.Module):
                 heads=heads,
                 **attn_kwargs,
             )
+        elif attn_type == 'bigbird':
+            self.attn = BigBirdAttention(
+                channels=channels,
+                heads=heads,
+                **attn_kwargs,
+            )
         else:
             raise ValueError(f'{attn_type} is not supported')
 
@@ -537,6 +544,8 @@ class GPSConv(torch.nn.Module):
             h, _ = self.attn(h, h, h, key_padding_mask=~mask, need_weights=False)
         elif isinstance(self.attn, PerformerAttention):
             h = self.attn(h, mask=mask)
+        elif isinstance(self.attn, BigBirdAttention):
+            h = self.attn(h, mask=mask)
 
         h = h[mask]
         h = F.dropout(h, p=self.dropout, training=self.training)
@@ -562,6 +571,257 @@ class GPSConv(torch.nn.Module):
         return out
 
 
+class BigBirdAttention(nn.Module):
+    """
+    BigBird attention mechanism implementation.
+    Based on the paper "Big Bird: Transformers for Longer Sequences" (Zaheer et al., 2020)
+    """
+    def __init__(
+        self,
+        channels: int,
+        heads: int = 1,
+        dropout: float = 0.0,
+        num_random_blocks: int = 3,
+        block_size: int = 64,
+        use_global_attention: bool = True,
+        use_window_attention: bool = True,
+        use_random_attention: bool = True,
+    ):
+        super().__init__()
+        self.channels = channels
+        self.heads = heads
+        self.dropout = dropout
+        self.num_random_blocks = num_random_blocks
+        self.block_size = block_size
+        self.use_global_attention = use_global_attention
+        self.use_window_attention = use_window_attention
+        self.use_random_attention = use_random_attention
+
+        # Projections for Q, K, V
+        self.q_proj = nn.Linear(channels, channels)
+        self.k_proj = nn.Linear(channels, channels)
+        self.v_proj = nn.Linear(channels, channels)
+        self.out_proj = nn.Linear(channels, channels)
+
+        # Dropout layers
+        self.attn_dropout = nn.Dropout(dropout)
+        self.out_dropout = nn.Dropout(dropout)
+
+        self._reset_parameters()
+
+    def _reset_parameters(self):
+        """Initialize parameters using Xavier initialization."""
+        nn.init.xavier_uniform_(self.q_proj.weight)
+        nn.init.xavier_uniform_(self.k_proj.weight)
+        nn.init.xavier_uniform_(self.v_proj.weight)
+        nn.init.xavier_uniform_(self.out_proj.weight)
+        if self.q_proj.bias is not None:
+            nn.init.zeros_(self.q_proj.bias)
+        if self.k_proj.bias is not None:
+            nn.init.zeros_(self.k_proj.bias)
+        if self.v_proj.bias is not None:
+            nn.init.zeros_(self.v_proj.bias)
+        if self.out_proj.bias is not None:
+            nn.init.zeros_(self.out_proj.bias)
+
+    def _get_attention_mask(self, seq_len: int, device: torch.device) -> torch.Tensor:
+        """Create attention mask for BigBird attention pattern."""
+        # Initialize full attention mask
+        mask = torch.zeros(seq_len, seq_len, device=device)
+
+        # Add window attention
+        if self.use_window_attention:
+            for i in range(seq_len):
+                start = max(0, i - self.block_size // 2)
+                end = min(seq_len, i + self.block_size // 2 + 1)
+                mask[i, start:end] = 1
+
+        # Add random attention
+        if self.use_random_attention:
+            for i in range(seq_len):
+                # Select random blocks
+                random_indices = torch.randperm(seq_len)[:self.num_random_blocks]
+                mask[i, random_indices] = 1
+
+        # Add global attention
+        if self.use_global_attention:
+            # First and last tokens attend to all
+            mask[0, :] = 1
+            mask[-1, :] = 1
+            mask[:, 0] = 1
+            mask[:, -1] = 1
+
+        return mask
+
+    def forward(self, x: torch.Tensor, mask: Optional[torch.Tensor] = None) -> torch.Tensor:
+        """
+        Forward pass of BigBird attention.
+        
+        Args:
+            x: Input tensor [batch_size, seq_len, channels]
+            mask: Optional padding mask [batch_size, seq_len]
+            
+        Returns:
+            Output tensor [batch_size, seq_len, channels]
+        """
+        batch_size, seq_len, _ = x.shape
+        device = x.device
+
+        # Project Q, K, V
+        q = self.q_proj(x)  # [batch_size, seq_len, channels]
+        k = self.k_proj(x)  # [batch_size, seq_len, channels]
+        v = self.v_proj(x)  # [batch_size, seq_len, channels]
+
+        # Reshape for multi-head attention
+        q = q.view(batch_size, seq_len, self.heads, -1).transpose(1, 2)
+        k = k.view(batch_size, seq_len, self.heads, -1).transpose(1, 2)
+        v = v.view(batch_size, seq_len, self.heads, -1).transpose(1, 2)
+
+        # Compute attention scores
+        scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(q.size(-1))
+
+        # Apply BigBird attention pattern
+        attn_mask = self._get_attention_mask(seq_len, device)
+        scores = scores.masked_fill(~attn_mask.unsqueeze(0).unsqueeze(0), float('-inf'))
+
+        # Apply padding mask if provided
+        if mask is not None:
+            scores = scores.masked_fill(~mask.unsqueeze(1).unsqueeze(2), float('-inf'))
+
+        # Apply softmax and dropout
+        attn_weights = F.softmax(scores, dim=-1)
+        attn_weights = self.attn_dropout(attn_weights)
+
+        # Compute output
+        out = torch.matmul(attn_weights, v)
+        out = out.transpose(1, 2).contiguous().view(batch_size, seq_len, -1)
+        out = self.out_proj(out)
+        out = self.out_dropout(out)
+
+        return out
+
+
+class PerformerAttention(nn.Module):
+    """
+    Performer attention mechanism implementation.
+    Based on the paper "Rethinking Attention with Performers" (Choromanski et al., 2020)
+    """
+    def __init__(
+        self,
+        channels: int,
+        heads: int = 1,
+        dropout: float = 0.0,
+        num_random_features: int = 256,
+        use_orthogonal_features: bool = True,
+        use_softmax: bool = True,
+    ):
+        super().__init__()
+        self.channels = channels
+        self.heads = heads
+        self.dropout = dropout
+        self.num_random_features = num_random_features
+        self.use_orthogonal_features = use_orthogonal_features
+        self.use_softmax = use_softmax
+
+        # Projections for Q, K, V
+        self.q_proj = nn.Linear(channels, channels)
+        self.k_proj = nn.Linear(channels, channels)
+        self.v_proj = nn.Linear(channels, channels)
+        self.out_proj = nn.Linear(channels, channels)
+
+        # Dropout layers
+        self.attn_dropout = nn.Dropout(dropout)
+        self.out_dropout = nn.Dropout(dropout)
+
+        # Random features for FAVOR+ attention
+        self._init_random_features()
+
+        self._reset_parameters()
+
+    def _init_random_features(self):
+        """Initialize random features for FAVOR+ attention."""
+        if self.use_orthogonal_features:
+            # Use orthogonal random features
+            q = torch.randn(self.num_random_features, self.channels // self.heads)
+            q = torch.linalg.qr(q)[0]
+            self.register_buffer('random_features', q)
+        else:
+            # Use standard random features
+            self.register_buffer('random_features', 
+                               torch.randn(self.num_random_features, self.channels // self.heads))
+
+    def _reset_parameters(self):
+        """Initialize parameters using Xavier initialization."""
+        nn.init.xavier_uniform_(self.q_proj.weight)
+        nn.init.xavier_uniform_(self.k_proj.weight)
+        nn.init.xavier_uniform_(self.v_proj.weight)
+        nn.init.xavier_uniform_(self.out_proj.weight)
+        if self.q_proj.bias is not None:
+            nn.init.zeros_(self.q_proj.bias)
+        if self.k_proj.bias is not None:
+            nn.init.zeros_(self.k_proj.bias)
+        if self.v_proj.bias is not None:
+            nn.init.zeros_(self.v_proj.bias)
+        if self.out_proj.bias is not None:
+            nn.init.zeros_(self.out_proj.bias)
+
+    def _get_random_features(self, x: torch.Tensor) -> torch.Tensor:
+        """Project input to random features space."""
+        return torch.matmul(x, self.random_features.t())
+
+    def forward(self, x: torch.Tensor, mask: Optional[torch.Tensor] = None) -> torch.Tensor:
+        """
+        Forward pass of Performer attention.
+        
+        Args:
+            x: Input tensor [batch_size, seq_len, channels]
+            mask: Optional padding mask [batch_size, seq_len]
+            
+        Returns:
+            Output tensor [batch_size, seq_len, channels]
+        """
+        batch_size, seq_len, _ = x.shape
+
+        # Project Q, K, V
+        q = self.q_proj(x)  # [batch_size, seq_len, channels]
+        k = self.k_proj(x)  # [batch_size, seq_len, channels]
+        v = self.v_proj(x)  # [batch_size, seq_len, channels]
+
+        # Reshape for multi-head attention
+        q = q.view(batch_size, seq_len, self.heads, -1).transpose(1, 2)
+        k = k.view(batch_size, seq_len, self.heads, -1).transpose(1, 2)
+        v = v.view(batch_size, seq_len, self.heads, -1).transpose(1, 2)
+
+        # Project to random features space
+        q_features = self._get_random_features(q)  # [batch_size, heads, seq_len, num_random_features]
+        k_features = self._get_random_features(k)  # [batch_size, heads, seq_len, num_random_features]
+
+        # Compute attention using random features
+        if self.use_softmax:
+            # Softmax attention
+            q_features = F.softmax(q_features, dim=-1)
+            k_features = F.softmax(k_features, dim=-1)
+            attn_weights = torch.matmul(q_features, k_features.transpose(-2, -1))
+        else:
+            # Linear attention
+            attn_weights = torch.matmul(q_features, k_features.transpose(-2, -1)) / math.sqrt(self.num_random_features)
+
+        # Apply padding mask if provided
+        if mask is not None:
+            attn_weights = attn_weights.masked_fill(~mask.unsqueeze(1).unsqueeze(2), float('-inf'))
+
+        # Apply dropout
+        attn_weights = self.attn_dropout(attn_weights)
+
+        # Compute output
+        out = torch.matmul(attn_weights, v)
+        out = out.transpose(1, 2).contiguous().view(batch_size, seq_len, -1)
+        out = self.out_proj(out)
+        out = self.out_dropout(out)
+
+        return out
+
+
 class LaplacianPE(nn.Module):
     """Laplacian positional encoding."""
     def __init__(self, channels: int, pe_dim: int):
@@ -579,7 +839,7 @@ class GraphTransformerEncoder(torch.nn.Module):
         self,
         input_dim: int,
         hidden_dim: int,
-        transformer_type: str = "graphormer",
+        transformer_type: str = "graphgps",
         num_layers: int = 3,
         dropout: float = 0.1,
         num_heads: int = 8,
@@ -592,9 +852,10 @@ class GraphTransformerEncoder(torch.nn.Module):
         precompute_encodings: bool = False,
         cache_encodings: bool = True,
         attn_type: str = "multihead",
+        attn_kwargs: Optional[Dict[str, Any]] = None,
         pe_dim: int = 16,
-        pe_type: str = 'laplacian',  # New parameter
-        pe_norm_type: str = 'layer',    # New parameter
+        pe_type: str = 'laplacian',
+        pe_norm_type: str = 'layer',
     ):
         super().__init__()
         self.input_dim = input_dim
@@ -611,6 +872,8 @@ class GraphTransformerEncoder(torch.nn.Module):
         self.global_model_type = global_model_type
         self.precompute_encodings = precompute_encodings
         self.cache_encodings = cache_encodings
+        self.attn_type = attn_type
+        self.attn_kwargs = attn_kwargs
         self.pe_dim = pe_dim
         self.pe_type = pe_type
         self.pe_norm_type = pe_norm_type
@@ -682,10 +945,30 @@ class GraphTransformerEncoder(torch.nn.Module):
         else:
             raise ValueError(f"Unknown local GNN type: {local_gnn_type}")
         
+        # Create global attention layer based on attn_type
+        if self.attn_type == 'multihead':
+            global_attn = nn.MultiheadAttention(hidden_dim, num_heads, dropout, batch_first=True)
+        elif self.attn_type == 'performer':
+            global_attn = PerformerAttention(
+                channels=hidden_dim,
+                heads=num_heads,
+                dropout=dropout,
+                **(self.attn_kwargs or {})
+            )
+        elif self.attn_type == 'bigbird':
+            global_attn = BigBirdAttention(
+                channels=hidden_dim,
+                heads=num_heads,
+                dropout=dropout,
+                **(self.attn_kwargs or {})
+            )
+        else:
+            raise ValueError(f"Unknown attention type: {self.attn_type}")
+        
         # Create GPS layer components
         return nn.ModuleDict({
             'local_conv': local_conv,
-            'global_attn': nn.MultiheadAttention(hidden_dim, num_heads, dropout, batch_first=True),
+            'global_attn': global_attn,
             'norm1': nn.LayerNorm(hidden_dim) if self.prenorm else nn.Identity(),
             'norm2': nn.LayerNorm(hidden_dim) if self.prenorm else nn.Identity(),
             'ffn': nn.Sequential(
@@ -832,9 +1115,10 @@ class GraphTransformerModel(torch.nn.Module):
         is_regression: bool = False,
         is_graph_level_task: bool = False,
         attn_type: str = "multihead",
+        attn_kwargs: Optional[Dict[str, Any]] = None,
         pe_dim: int = 16,
-        pe_type: str = 'laplacian',  # New parameter for PE type
-        pe_norm_type: str = 'layer',    # New parameter for normalization type
+        pe_type: str = 'laplacian',
+        pe_norm_type: str = 'layer',
     ):
         super().__init__()
         
@@ -862,6 +1146,7 @@ class GraphTransformerModel(torch.nn.Module):
             precompute_encodings=precompute_encodings,
             cache_encodings=cache_encodings,
             attn_type=attn_type,
+            attn_kwargs=attn_kwargs,
             pe_dim=pe_dim,
             pe_type=pe_type,
             pe_norm_type=pe_norm_type,

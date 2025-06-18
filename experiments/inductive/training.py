@@ -931,6 +931,7 @@ def train_and_evaluate_inductive(
                         prenorm = trial.suggest_categorical('prenorm', [True, False])
                         pe_type = trial.suggest_categorical('pe_type', ['laplacian', 'random_walk', 'shortest_path'])
                         pe_norm_type = trial.suggest_categorical('pe_norm_type', ['layer', 'graph', None])
+                        attn_type = trial.suggest_categorical('attn_type', ['multihead', 'performer'])
                         
                     
                     # Create transformer model with all parameters
@@ -949,7 +950,8 @@ def train_and_evaluate_inductive(
                         local_gnn_type=local_gnn_type,
                         prenorm=prenorm,
                         pe_type=pe_type,
-                        pe_norm_type=pe_norm_type
+                        pe_norm_type=pe_norm_type,
+                        attn_type=attn_type
                     ).to(device)
                     
                     # Train model with reduced epochs for speed
@@ -1077,15 +1079,18 @@ def train_and_evaluate_inductive(
                         hidden_dim=hidden_dim,
                         output_dim=output_dim,
                         transformer_type=transformer_type,
-                        num_layers=best_params.get('num_layers', config.num_layers),
-                        dropout=best_params.get('dropout', 0.1),
+                        num_layers=best_params['num_layers'],
+                        dropout=best_params['dropout'],
                         is_regression=is_regression,
                         num_heads=num_heads,
-                        max_path_length=best_params.get('max_path_length', 10),
-                        precompute_encodings=best_params.get('precompute_encodings', False),
+                        max_path_length=best_params['max_path_length'],
+                        precompute_encodings=best_params['precompute_encodings'],
                         cache_encodings=config.transformer_cache_encodings,
-                        local_gnn_type=best_params.get('local_gnn_type', 'gcn'),
-                        prenorm=best_params.get('prenorm', True)
+                        local_gnn_type=best_params['local_gnn_type'],
+                        prenorm=best_params['prenorm'],
+                        pe_type=best_params['pe_type'],
+                        pe_norm_type=best_params['pe_norm_type'],
+                        attn_type=best_params['attn_type']
                     ).to(device)
                     
                     # Restore cache if available
