@@ -98,6 +98,7 @@ class InductiveExperimentConfig:
     val_graph_ratio: float = 0.25
     test_graph_ratio: float = 0.25
     inductive_mode: str = "graph_level"  # "graph_level" or "mixed"
+    allow_unseen_community_combinations_for_eval: bool = True
     
     # === TASKS ===
     tasks: List[str] = field(default_factory=lambda: ['community', 'triangle_count'])

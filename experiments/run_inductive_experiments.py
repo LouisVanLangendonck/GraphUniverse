@@ -53,12 +53,16 @@ def parse_args():
                         help='Dont do any other experiments. Only fine-tune pre-trained models and from scratch version of it and hyperparameter optimization of that model type.')    
         
     # === TASKS ===
-    parser.add_argument('--tasks', type=str, nargs='+', default=['community'],
+    parser.add_argument('--tasks', type=str, nargs='+', default=['community', 'k_hop_community_counts_k2'],
                         choices=['community', 'k_hop_community_counts_k1', 'k_hop_community_counts_k2', 'k_hop_community_counts_k3', 'triangle_count'],
                         help='Learning tasks to run')
     parser.add_argument('--khop_k', type=int, default=1,
                         help='k value for k-hop community counting task')
     
+    # === DATA SPLITS ===
+    parser.add_argument('--no_unseen_community_combinations_for_eval', action='store_true', default=False,
+                        help='Do not allow unseen community combinations for evaluation')
+
     # === GRAPH FAMILY GENERATION ===
     parser.add_argument('--n_graphs', type=int, default=20,
                         help='Number of graphs to generate in family')
@@ -72,7 +76,7 @@ def parse_args():
                         help='Maximum number of communities per graph')
     
     # === UNIVERSE PARAMETERS ===
-    parser.add_argument('--universe_K', type=int, default=10,
+    parser.add_argument('--universe_K', type=int, default=15,
                         help='Number of communities in universe')
     parser.add_argument('--universe_feature_dim', type=int, default=32,
                         help='Feature dimension for universe')
@@ -119,7 +123,7 @@ def parse_args():
                         help='Maximum allowed participation rate per community')
     
     # === MODELS ===
-    parser.add_argument('--gnn_types', type=str, nargs='+', default=['gcn'],
+    parser.add_argument('--gnn_types', type=str, nargs='+', default=['gcn', 'sage'],
                         choices=['gcn', 'fagcn', 'sage', 'gat', 'gin'],
                         help='Types of GNN models to run')
     parser.add_argument('--transformer_types', type=str, nargs='+', 
@@ -142,9 +146,9 @@ def parse_args():
                         help='Skip Random Forest model')
     
     # === TRAINING ===
-    parser.add_argument('--epochs', type=int, default=10,
+    parser.add_argument('--epochs', type=int, default=200,
                         help='Maximum number of epochs')
-    parser.add_argument('--patience', type=int, default=100,
+    parser.add_argument('--patience', type=int, default=50,
                         help='Patience for early stopping')
     parser.add_argument('--learning_rate', type=float, default=0.001,
                         help='Learning rate for neural models')
@@ -152,7 +156,10 @@ def parse_args():
                         help='Hidden dimension for neural models')
     parser.add_argument('--batch_size', type=int, default=1,
                         help='Batch size for training')
-    
+    parser.add_argument('--n_trials', type=int, default=10,
+                        help='Number of trials for hyperparameter optimization')
+
+
     # === ANALYSIS ===
     parser.add_argument('--require_consistency_check', action='store_true', default=False,
                         help='Require family consistency check')
@@ -229,6 +236,9 @@ def create_config_from_args(args) -> InductiveExperimentConfig:
         tasks=args.tasks,
         khop_community_counts_k=args.khop_k,
 
+        # === DATA SPLITS ===
+        allow_unseen_community_combinations_for_eval=False if args.no_unseen_community_combinations_for_eval else True,
+
         # === METAPATH CONFIGURATION ===
         enable_metapath_tasks=args.enable_metapath_tasks,
         metapath_k_values=args.metapath_k_values,
@@ -296,6 +306,7 @@ def create_config_from_args(args) -> InductiveExperimentConfig:
         learning_rate=args.learning_rate,
         hidden_dim=args.hidden_dim,
         batch_size=args.batch_size,
+        n_trials=args.n_trials,
         
         # === ANALYSIS ===
         require_consistency_check=args.require_consistency_check,

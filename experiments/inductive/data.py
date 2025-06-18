@@ -602,7 +602,10 @@ def select_graphs_for_maximum_coverage(
 def prepare_inductive_data(
     family_graphs: List[GraphSample],
     config,
-    pe_types: List[str] = ['laplacian', 'random_walk', 'shortest_path']
+    pe_types: List[str] = ['laplacian', 'random_walk', 'shortest_path'],
+    family_graphs_training_indices: Optional[List[int]] = None,
+    family_graphs_val_test_indices: Optional[List[int]] = None,
+    family_graph_community_labels_list: Optional[List[List[int]]] = None,
 ) -> Dict[str, Dict[str, Any]]:
     """
     Central function to prepare graph family data for inductive learning.
@@ -626,12 +629,16 @@ def prepare_inductive_data(
     print(f"\nUsing universe K: {universe_K}")
     
     # Calculate split sizes
-    n_graphs = len(family_graphs)
+    if config.allow_unseen_community_combinations_for_eval:
+        n_graphs = len(family_graphs)
+    else:
+        n_graphs = len(family_graphs_training_indices)
+
     n_train = int(n_graphs * config.train_graph_ratio)
     n_val = int(n_graphs * config.val_graph_ratio)
     n_test = n_graphs - n_train - n_val
 
-    print(f"\nSplitting {n_graphs} graphs: {n_train} train, {n_val} val, {n_test} test")
+    print(f"\nGraph split for each run: {n_graphs} graphs, {n_train} train, {n_val} val, {n_test} test")
 
     # Initialize results dictionary
     inductive_data = {}
@@ -705,6 +712,30 @@ def prepare_inductive_data(
     # Now create k-fold splits
     if config.k_fold <= 0:
         raise ValueError(f"K-fold must be greater than 0")
+    
+    # For all folds, fix the test set to be the same for all folds
+    if config.allow_unseen_community_combinations_for_eval:
+        test_indices = np.random.permutation(n_graphs)[:n_test].tolist()
+        remaining_indices = [i for i in range(n_graphs) if i not in test_indices]
+    else:
+        print(family_graphs_val_test_indices)
+        test_indices = np.random.permutation(family_graphs_val_test_indices)[:n_test].tolist()
+        test_community_combinations = []
+        for idx in test_indices:
+            test_community_combinations.append(set(family_graph_community_labels_list[idx].tolist()))
+        print(f"Test community combinations: {test_community_combinations}")
+
+        mandatory_train_indices = []
+        seen_combinations_for_mandatory_train = []
+        for training_index in family_graphs_training_indices:
+            graph_community_labels = set(family_graph_community_labels_list[training_index].tolist())
+            if any(graph_community_labels == test_comb for test_comb in test_community_combinations) and not any(graph_community_labels == seen_comb for seen_comb in seen_combinations_for_mandatory_train):
+                mandatory_train_indices.append(training_index)
+                seen_combinations_for_mandatory_train.append(graph_community_labels)
+        
+        # Remove mandatory train indices from remaining train indices
+        remaining_train_indices = [i for i in family_graphs_training_indices if i not in mandatory_train_indices]
+        remaining_val_indices = [i for i in family_graphs_val_test_indices if i not in test_indices]
 
     # Process each task
     for task in config.tasks:
@@ -713,36 +744,75 @@ def prepare_inductive_data(
         
         # Get the pre-processed graphs for this task
         pyg_graphs = pyg_graphs_by_task[task]
-
-        # First get the TEST SET (FIXED FOR ALL FOLDS)
-        test_indices = np.random.permutation(n_graphs)[:n_test].tolist()
         test_graphs = [pyg_graphs[i] for i in test_indices]
-        remaining_indices = [i for i in range(n_graphs) if i not in test_indices]
 
         # Create k-fold splits
+        fold_indices = {}
         for i in range(config.k_fold):
+            fold_indices[i] = {'train': [], 'val': [], 'test': []}
             # Randomly shuffle the indices
             np.random.seed(config.seed + i)  # Different seed for each fold
-            indices = np.random.permutation(remaining_indices)
-            train_indices = indices[:n_train].tolist()
-            val_indices = indices[n_train:n_train + n_val].tolist()
-            
+
+            if config.allow_unseen_community_combinations_for_eval:
+                indices = np.random.permutation(remaining_indices)
+                train_indices = indices[:n_train].tolist()
+                val_indices = indices[n_train:n_train + n_val].tolist()
+                fold_indices[i]['train'] = train_indices
+                fold_indices[i]['val'] = val_indices
+                fold_indices[i]['test'] = test_indices
+            else:
+                # First add mandatory train indices
+                train_indices = mandatory_train_indices.copy()
+                
+                # Get remaining number of train indices needed
+                remaining_n_train_indices_to_sample = n_train - len(mandatory_train_indices)
+                
+                # Randomly sample remaining train indices
+                permuted_train_indices = np.random.permutation(remaining_train_indices)
+                train_indices.extend(permuted_train_indices[:remaining_n_train_indices_to_sample].tolist())
+                
+                # Get all community combinations in current train fold
+                train_community_combinations = set()
+                for train_idx in train_indices:
+                    train_community_combinations.add(tuple(sorted(family_graph_community_labels_list[train_idx].tolist())))
+                
+                # Select validation indices that have community combinations seen in train
+                val_indices = []
+                permuted_val_indices = np.random.permutation(remaining_val_indices)
+                
+                for val_idx in permuted_val_indices:
+                    val_community_combination = tuple(sorted(family_graph_community_labels_list[val_idx].tolist()))
+                    if val_community_combination in train_community_combinations and len(val_indices) < n_val:
+                        val_indices.append(val_idx)
+                
+                print(f"Fold {i}:")
+                print(f"  Train size: {len(train_indices)} (including {len(mandatory_train_indices)} mandatory)")
+                print(f"  Val size: {len(val_indices)}")
+                print(f"  Test size: {len(test_indices)}")
+                
+                fold_indices[i]['train'] = train_indices
+                fold_indices[i]['val'] = val_indices
+                fold_indices[i]['test'] = test_indices
+
             fold_name = f'fold_{i}'
             task_data[fold_name] = {
                 'train': {
                     'graphs': [pyg_graphs[i] for i in train_indices],
                     'n_graphs': len(train_indices),
-                    'batch_size': min(len(train_indices), config.batch_size)
+                    'batch_size': min(len(train_indices), config.batch_size),
+                    'indices': train_indices
                 },
                 'val': {
                     'graphs': [pyg_graphs[i] for i in val_indices],
                     'n_graphs': len(val_indices),
-                    'batch_size': len(val_indices)
+                    'batch_size': len(val_indices),
+                    'indices': val_indices
                 },
                 'test': {
                     'graphs': test_graphs,
                     'n_graphs': len(test_graphs),
-                    'batch_size': len(test_graphs)
+                    'batch_size': len(test_graphs),
+                    'indices': test_indices
                 }
             }
         
@@ -777,7 +847,7 @@ def prepare_inductive_data(
         
         inductive_data[task] = task_data
     
-    return inductive_data
+    return inductive_data, fold_indices
 
 def compute_khop_community_counts_universe_indexed(
     graph: nx.Graph,

@@ -27,7 +27,6 @@ class GraphFamilyGenerator:
     def __init__(
         self,
         universe: GraphUniverse,
-        n_graphs: int,
         min_n_nodes: int,
         max_n_nodes: int,
         min_communities: int = 2,
@@ -103,7 +102,6 @@ class GraphFamilyGenerator:
             seed: Random seed for reproducibility
         """
         self.universe = universe
-        self.n_graphs = n_graphs
         self.min_n_nodes = min_n_nodes
         self.max_n_nodes = max_n_nodes
         self.min_communities = min_communities
@@ -170,8 +168,6 @@ class GraphFamilyGenerator:
             raise ValueError(f"max_communities cannot exceed universe size ({self.universe.K})")
         if self.max_communities < self.min_communities:
             raise ValueError("max_communities must be >= min_communities")
-        if self.n_graphs <= 0:
-            raise ValueError("n_graphs must be positive")
         
         # Validate ranges
         if len(self.homophily_range) != 2 or self.homophily_range[0] > self.homophily_range[1]:
@@ -309,10 +305,12 @@ class GraphFamilyGenerator:
     
     def generate_family(
         self,
+        n_graphs: int,
         show_progress: bool = True,
         collect_stats: bool = True,
         max_attempts_per_graph: int = 5,
-        timeout_minutes: float = 2.0
+        timeout_minutes: float = 2.0,
+        allowed_community_combinations: Optional[List[List[int]]] = None
     ) -> List[GraphSample]:
         """
         Generate a family of graphs from the universe.
@@ -322,24 +320,26 @@ class GraphFamilyGenerator:
             collect_stats: Whether to collect generation statistics
             max_attempts_per_graph: Maximum attempts per graph before giving up
             timeout_minutes: Maximum time in minutes to spend generating graphs
-            
+            allowed_community_combinations: Optional list of lists of community indices to be sampled from the universe
         Returns:
             List of generated GraphSample objects
         """
         start_time = time.time()
         timeout_seconds = timeout_minutes * 60
         self.graphs = []
+        self.community_labels_per_graph = []
         self.generation_metadata = []
         failed_graphs = 0
         
         # Progress bar setup
         if show_progress:
-            pbar = tqdm(total=self.n_graphs, desc="Generating graph family")
+            pbar = tqdm(total=n_graphs, desc="Generating graph family")
+
         
-        while len(self.graphs) < self.n_graphs:
+        while len(self.graphs) < n_graphs:
             # Check for timeout
             if time.time() - start_time > timeout_seconds:
-                warnings.warn(f"Timeout reached after {timeout_minutes} minutes. Generated {len(self.graphs)} graphs instead of {self.n_graphs}")
+                warnings.warn(f"Timeout reached after {timeout_minutes} minutes. Generated {len(self.graphs)} graphs instead of {n_graphs}")
                 break
                 
             graph_generated = False
@@ -351,6 +351,10 @@ class GraphFamilyGenerator:
                 try:
                     # Sample parameters for this graph
                     params = self._sample_graph_parameters()
+
+                    if allowed_community_combinations is not None:
+                        sampled_community_combination_index = np.random.randint(0, len(allowed_community_combinations))
+                        sampled_community_combination = allowed_community_combinations[sampled_community_combination_index]
                     
                     # Create graph sample
                     graph_sample = GraphSample(
@@ -379,11 +383,13 @@ class GraphFamilyGenerator:
                         dccc_global_degree_params=params.get('dccc_global_degree_params', {}),
                         degree_method=self.degree_method,
                         disable_deviation_limiting=self.disable_deviation_limiting,
+                        # Optional Parameter for user-defined communites to be sampled (Such that NO unseen communities are sampled for val or test)
+                        user_defined_communities=sampled_community_combination if allowed_community_combinations is not None else None
                     )
                     
                     # Store graph and metadata
                     self.graphs.append(graph_sample)
-                    
+                    self.community_labels_per_graph.append(np.unique(graph_sample.community_labels_universe_level, axis=0))
                     metadata = {
                         'graph_id': len(self.graphs) - 1,
                         'attempts': attempts,
@@ -414,16 +420,25 @@ class GraphFamilyGenerator:
                         })
                     # Continue to next attempt
         
+        # Use set of sorted tuples for uniqueness
+        unique_set_of_community_combinations = {tuple(sorted(arr)) for arr in self.community_labels_per_graph}
+
+        # Convert back to list of lists
+        unique_list_of_community_combinations = [list(tup) for tup in unique_set_of_community_combinations]
+        self.seen_community_combinations = unique_list_of_community_combinations
+        
+        # print(f"Seen community combinations: {self.seen_community_combinations}")
+
         if show_progress:
             pbar.close()
         
         # Collect generation statistics
         if collect_stats:
-            self._collect_generation_stats(start_time, failed_graphs)
+            self._collect_generation_stats(start_time, failed_graphs, n_graphs)
         
         return self.graphs
-    
-    def _collect_generation_stats(self, start_time: float, failed_graphs: int) -> None:
+
+    def _collect_generation_stats(self, start_time: float, failed_graphs: int, n_graphs: int) -> None:
         """Collect statistics about the generation process."""
         total_time = time.time() - start_time
         successful_graphs = len(self.graphs)
@@ -433,8 +448,8 @@ class GraphFamilyGenerator:
             'total_time': total_time,
             'successful_graphs': successful_graphs,
             'failed_graphs': failed_graphs,
-            'success_rate': successful_graphs / self.n_graphs if self.n_graphs > 0 else 0,
-            'avg_time_per_graph': total_time / self.n_graphs if self.n_graphs > 0 else 0
+            'success_rate': successful_graphs / n_graphs if n_graphs > 0 else 0,
+            'avg_time_per_graph': total_time / n_graphs if n_graphs > 0 else 0
         }
         
         if successful_graphs > 0:
@@ -559,7 +574,7 @@ class GraphFamilyGenerator:
         
         return diversity_metrics
     
-    def save_family(self, filepath: str, include_graphs: bool = True) -> None:
+    def save_family(self, filepath: str, include_graphs: bool = True, n_graphs: int = 0) -> None:
         """
         Save the graph family to file.
         
@@ -573,7 +588,7 @@ class GraphFamilyGenerator:
             'generation_metadata': self.generation_metadata,
             'generation_stats': self.generation_stats,
             'parameters': {
-                'n_graphs': self.n_graphs,
+                'n_graphs': n_graphs,
                 'min_n_nodes': self.min_n_nodes,
                 'max_n_nodes': self.max_n_nodes,
                 'min_communities': self.min_communities,
@@ -1091,191 +1106,206 @@ class FamilyConsistencyAnalyzer:
         Returns:
             Matplotlib figure object
         """
-        if self.results is None:
-            raise ValueError("Must run analyze_consistency() first")
+        # Commented out to prevent memory issues with too many open figures
+        return None
         
-        fig = plt.figure(figsize=figsize)
+        # if self.results is None:
+        #     raise ValueError("Must run analyze_consistency() first")
         
-        # Create grid layout
-        gs = fig.add_gridspec(4, 2, hspace=0.3, wspace=0.3)
+        # fig = plt.figure(figsize=figsize)
         
-        # 1. Overall consistency scores (top left)
-        ax1 = fig.add_subplot(gs[0, 0])
-        self._plot_consistency_scores(ax1)
+        # # Create grid layout
+        # gs = fig.add_gridspec(4, 2, hspace=0.3, wspace=0.3)
         
-        # 2. Individual score distributions (top right)
-        ax2 = fig.add_subplot(gs[0, 1])
-        self._plot_score_distributions(ax2)
+        # # 1. Overall consistency scores (top left)
+        # ax1 = fig.add_subplot(gs[0, 0])
+        # self._plot_consistency_scores(ax1)
         
-        # 3. Community coverage (middle left)
-        ax3 = fig.add_subplot(gs[1, 0])
-        self._plot_community_coverage(ax3)
+        # # 2. Individual score distributions (top right)
+        # ax2 = fig.add_subplot(gs[0, 1])
+        # self._plot_score_distributions(ax2)
         
-        # 4. Pattern preservation details (middle right)
-        ax4 = fig.add_subplot(gs[1, 1])
-        self._plot_individual_scores(ax4, 'pattern_preservation', 'Pattern Preservation')
+        # # 3. Community coverage (middle left)
+        # ax3 = fig.add_subplot(gs[1, 0])
+        # self._plot_community_coverage(ax3)
         
-        # 5. Generation fidelity details (bottom left)
-        ax5 = fig.add_subplot(gs[2, 0])
-        self._plot_individual_scores(ax5, 'generation_fidelity', 'Generation Fidelity')
+        # # 4. Pattern preservation details (middle right)
+        # ax4 = fig.add_subplot(gs[1, 1])
+        # self._plot_individual_scores(ax4, 'pattern_preservation', 'Pattern Preservation')
         
-        # 6. Degree consistency details (bottom right)
-        ax6 = fig.add_subplot(gs[2, 1])
-        self._plot_individual_scores(ax6, 'degree_consistency', 'Degree Consistency')
+        # # 5. Generation fidelity details (bottom left)
+        # ax5 = fig.add_subplot(gs[2, 0])
+        # self._plot_individual_scores(ax5, 'generation_fidelity', 'Generation Fidelity')
         
-        # 7. Triangle consistency details (bottom left)
-        ax7 = fig.add_subplot(gs[3, 0])
-        self._plot_individual_scores(ax7, 'triangle_consistency', 'Triangle Consistency')
+        # # 6. Degree consistency details (bottom right)
+        # ax6 = fig.add_subplot(gs[2, 1])
+        # self._plot_individual_scores(ax6, 'degree_consistency', 'Degree Consistency')
         
-        # 8. Co-occurrence consistency details (bottom right)
-        ax8 = fig.add_subplot(gs[3, 1])
-        self._plot_individual_scores(ax8, 'cooccurrence_consistency', 'Co-occurrence Consistency')
+        # # 7. Triangle consistency details (bottom left)
+        # ax7 = fig.add_subplot(gs[3, 0])
+        # self._plot_individual_scores(ax7, 'triangle_consistency', 'Triangle Consistency')
         
-        plt.suptitle('Graph Family Consistency Analysis Dashboard', fontsize=16, fontweight='bold')
+        # # 8. Co-occurrence consistency details (bottom right)
+        # ax8 = fig.add_subplot(gs[3, 1])
+        # self._plot_individual_scores(ax8, 'cooccurrence_consistency', 'Co-occurrence Consistency')
         
-        return fig
+        # plt.suptitle('Graph Family Consistency Analysis Dashboard', fontsize=16, fontweight='bold')
+        
+        # return fig
     
     def _plot_consistency_scores(self, ax):
         """Plot overall consistency scores as a bar chart."""
-        scores = []
-        labels = []
-        colors = []
+        # Commented out to prevent memory issues with too many open figures
+        return
         
-        metrics = ['pattern_preservation', 'generation_fidelity', 'degree_consistency', 'overall']
-        metric_labels = ['Pattern\nPreservation', 'Generation\nFidelity', 'Degree\nConsistency', 'Overall']
+        # scores = []
+        # labels = []
+        # colors = []
         
-        for i, metric in enumerate(metrics):
-            if metric in self.results and 'score' in self.results[metric]:
-                score = self.results[metric]['score']
-                if not np.isnan(score):
-                    scores.append(score)
-                    labels.append(metric_labels[i])
-                    # Color based on score
-                    if score >= 0.8:
-                        colors.append('green')
-                    elif score >= 0.6:
-                        colors.append('orange')
-                    else:
-                        colors.append('red')
+        # metrics = ['pattern_preservation', 'generation_fidelity', 'degree_consistency', 'overall']
+        # metric_labels = ['Pattern\nPreservation', 'Generation\nFidelity', 'Degree\nConsistency', 'Overall']
         
-        if scores:
-            bars = ax.bar(labels, scores, color=colors, alpha=0.7)
-            ax.set_ylim(0, 1)
-            ax.set_ylabel('Consistency Score')
-            ax.set_title('Consistency Metrics Overview')
-            ax.tick_params(axis='x', rotation=45)
+        # for i, metric in enumerate(metrics):
+        #     if metric in self.results and 'score' in self.results[metric]:
+        #         score = self.results[metric]['score']
+        #         if not np.isnan(score):
+        #             scores.append(score)
+        #             labels.append(metric_labels[i])
+        #             # Color based on score
+        #             if score >= 0.8:
+        #                 colors.append('green')
+        #             elif score >= 0.6:
+        #                 colors.append('orange')
+        #             else:
+        #                 colors.append('red')
+        
+        # if scores:
+        #     bars = ax.bar(labels, scores, color=colors, alpha=0.7)
+        #     ax.set_ylim(0, 1)
+        #     ax.set_ylabel('Consistency Score')
+        #     ax.set_title('Consistency Metrics Overview')
+        #     ax.tick_params(axis='x', rotation=45)
             
-            # Add value labels on bars
-            for bar, score in zip(bars, scores):
-                height = bar.get_height()
-                ax.text(bar.get_x() + bar.get_width()/2., height + 0.01,
-                       f'{score:.3f}', ha='center', va='bottom')
-        else:
-            ax.text(0.5, 0.5, 'No data available', ha='center', va='center', transform=ax.transAxes)
+        #     # Add value labels on bars
+        #     for bar, score in zip(bars, scores):
+        #         height = bar.get_height()
+        #         ax.text(bar.get_x() + bar.get_width()/2., height + 0.01,
+        #                f'{score:.3f}', ha='center', va='bottom')
+        # else:
+        #     ax.text(0.5, 0.5, 'No data available', ha='center', va='center', transform=ax.transAxes)
     
     def _plot_score_distributions(self, ax):
         """Plot distributions of individual scores."""
-        all_scores = []
-        labels = []
+        # Commented out to prevent memory issues with too many open figures
+        return
         
-        metrics = ['pattern_preservation', 'generation_fidelity', 'degree_consistency']
+        # all_scores = []
+        # labels = []
         
-        for metric in metrics:
-            if metric in self.results and 'individual_correlations' in self.results[metric]:
-                scores = self.results[metric]['individual_correlations']
-            elif metric in self.results and 'individual_scores' in self.results[metric]:
-                scores = self.results[metric]['individual_scores']
-            else:
-                continue
-            
-            if scores:
-                all_scores.extend(scores)
-                labels.extend([metric.replace('_', ' ').title()] * len(scores))
+        # metrics = ['pattern_preservation', 'generation_fidelity', 'degree_consistency']
         
-        if all_scores:
-            # Create violin plot
-            data_dict = {}
-            for score, label in zip(all_scores, labels):
-                if label not in data_dict:
-                    data_dict[label] = []
-                data_dict[label].append(score)
+        # for metric in metrics:
+        #     if metric in self.results and 'individual_correlations' in self.results[metric]:
+        #         scores = self.results[metric]['individual_correlations']
+        #     elif metric in self.results and 'individual_scores' in self.results[metric]:
+        #         scores = self.results[metric]['individual_scores']
+        #     else:
+        #         continue
             
-            positions = []
-            data_for_violin = []
-            tick_labels = []
+        #     if scores:
+        #         all_scores.extend(scores)
+        #         labels.extend([metric.replace('_', ' ').title()] * len(scores))
+        
+        # if all_scores:
+        #     # Create violin plot
+        #     data_dict = {}
+        #     for score, label in zip(all_scores, labels):
+        #         if label not in data_dict:
+        #             data_dict[label] = []
+        #         data_dict[label].append(score)
             
-            for i, (label, scores) in enumerate(data_dict.items()):
-                positions.append(i)
-                data_for_violin.append(scores)
-                tick_labels.append(label)
+        #     positions = []
+        #     data_for_violin = []
+        #     tick_labels = []
             
-            parts = ax.violinplot(data_for_violin, positions=positions)
-            ax.set_xticks(positions)
-            ax.set_xticklabels(tick_labels, rotation=45, ha='right')
-            ax.set_ylabel('Individual Scores')
-            ax.set_title('Score Distributions')
-            ax.set_ylim(-1, 1)
-        else:
-            ax.text(0.5, 0.5, 'No individual scores available', ha='center', va='center', transform=ax.transAxes)
+        #     for i, (label, scores) in enumerate(data_dict.items()):
+        #         positions.append(i)
+        #         data_for_violin.append(scores)
+        #         tick_labels.append(label)
+            
+        #     parts = ax.violinplot(data_for_violin, positions=positions)
+        #     ax.set_xticks(positions)
+        #     ax.set_xticklabels(tick_labels, rotation=45, ha='right')
+        #     ax.set_ylabel('Individual Scores')
+        #     ax.set_title('Score Distributions')
+        #     ax.set_ylim(-1, 1)
+        # else:
+        #     ax.text(0.5, 0.5, 'No individual scores available', ha='center', va='center', transform=ax.transAxes)
     
     def _plot_community_coverage(self, ax):
         """Plot community coverage statistics."""
-        if 'community_coverage' in self.results:
-            coverage = self.results['community_coverage']
+        # Commented out to prevent memory issues with too many open figures
+        return
+        
+        # if 'community_coverage' in self.results:
+        #     coverage = self.results['community_coverage']
             
-            # Create pie chart of community usage
-            if 'community_usage' in coverage:
-                usage_counts = list(coverage['community_usage'].values())
-                if usage_counts:
-                    # Group by usage frequency
-                    usage_freq = {}
-                    for count in usage_counts:
-                        usage_freq[count] = usage_freq.get(count, 0) + 1
-                    
-                    if len(usage_freq) > 1:
-                        labels = [f'Used {k} times' for k in usage_freq.keys()]
-                        sizes = list(usage_freq.values())
-                        ax.pie(sizes, labels=labels, autopct='%1.1f%%')
-                        ax.set_title('Community Usage Distribution')
-                    else:
-                        ax.text(0.5, 0.5, f'All communities used\n{list(usage_freq.keys())[0]} times', 
-                               ha='center', va='center', transform=ax.transAxes)
+        #     # Create pie chart of community usage
+        #     if 'community_usage' in coverage:
+        #         usage_counts = list(coverage['community_usage'].values())
+        #         if usage_counts:
+        #             # Group by usage frequency
+        #             usage_freq = {}
+        #             for count in usage_counts:
+        #                 usage_freq[count] = usage_freq.get(count, 0) + 1
+                
+        #             if len(usage_freq) > 1:
+        #                 labels = [f'Used {k} times' for k in usage_freq.keys()]
+        #                 sizes = list(usage_freq.values())
+        #                 ax.pie(sizes, labels=labels, autopct='%1.1f%%')
+        #                 ax.set_title('Community Usage Distribution')
+        #             else:
+        #                 ax.text(0.5, 0.5, f'All communities used\n{list(usage_freq.keys())[0]} times', 
+        #                        ha='center', va='center', transform=ax.transAxes)
             
-            # Add coverage statistics as text
-            coverage_text = f"Coverage: {coverage.get('coverage_fraction', 0):.1%}\n"
-            coverage_text += f"Unique communities: {coverage.get('total_unique_communities', 0)}\n"
-            coverage_text += f"Universe total: {coverage.get('universe_communities', 0)}"
+        #     # Add coverage statistics as text
+        #     coverage_text = f"Coverage: {coverage.get('coverage_fraction', 0):.1%}\n"
+        #     coverage_text += f"Unique communities: {coverage.get('total_unique_communities', 0)}\n"
+        #     coverage_text += f"Universe total: {coverage.get('universe_communities', 0)}"
             
-            ax.text(0.02, 0.98, coverage_text, transform=ax.transAxes, 
-                   verticalalignment='top', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
-        else:
-            ax.text(0.5, 0.5, 'No coverage data available', ha='center', va='center', transform=ax.transAxes)
+        #     ax.text(0.02, 0.98, coverage_text, transform=ax.transAxes, 
+        #            verticalalignment='top', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+        # else:
+        #     ax.text(0.5, 0.5, 'No coverage data available', ha='center', va='center', transform=ax.transAxes)
     
     def _plot_individual_scores(self, ax, metric_key, title):
         """Plot individual scores for a specific metric."""
-        if metric_key in self.results:
-            result = self.results[metric_key]
+        # Commented out to prevent memory issues with too many open figures
+        return
+        
+        # if metric_key in self.results:
+        #     result = self.results[metric_key]
             
-            # Get individual scores
-            scores = None
-            if 'individual_correlations' in result:
-                scores = result['individual_correlations']
-            elif 'individual_scores' in result:
-                scores = result['individual_scores'] 
-            elif 'pairwise_correlations' in result:
-                scores = result['pairwise_correlations']
+        #     # Get individual scores
+        #     scores = None
+        #     if 'individual_correlations' in result:
+        #         scores = result['individual_correlations']
+        #     elif 'individual_scores' in result:
+        #         scores = result['individual_scores'] 
+        #     elif 'pairwise_correlations' in result:
+        #         scores = result['pairwise_correlations']
             
-            if scores:
-                x_values = range(len(scores))
-                ax.plot(x_values, scores, 'o-', alpha=0.7)
-                ax.axhline(y=np.mean(scores), color='red', linestyle='--', alpha=0.7, label=f'Mean: {np.mean(scores):.3f}')
-                ax.set_xlabel('Graph/Pair Index')
-                ax.set_ylabel('Score')
-                ax.set_title(f'{title}\n(Mean: {np.mean(scores):.3f}, Std: {np.std(scores):.3f})')
-                ax.legend()
-                ax.grid(True, alpha=0.3)
-            else:
-                ax.text(0.5, 0.5, f'No {title.lower()} data', ha='center', va='center', transform=ax.transAxes)
+        #     if scores:
+        #         x_values = range(len(scores))
+        #         ax.plot(x_values, scores, 'o-', alpha=0.7)
+        #         ax.axhline(y=np.mean(scores), color='red', linestyle='--', alpha=0.7, label=f'Mean: {np.mean(scores):.3f}')
+        #         ax.set_xlabel('Graph/Pair Index')
+        #         ax.set_ylabel('Score')
+        #         ax.set_title(f'{title}\n(Mean: {np.mean(scores):.3f}, Std: {np.std(scores):.3f})')
+        #         ax.legend()
+        #         ax.grid(True, alpha=0.3)
+        #     else:
+        #         ax.text(0.5, 0.5, f'No {title.lower()} data', ha='center', va='center', transform=ax.transAxes)
     
     def get_summary_report(self) -> str:
         """

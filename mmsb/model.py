@@ -508,7 +508,9 @@ class GraphSample:
         degree_separation: float = 0.5,
         dccc_global_degree_params: Optional[dict] = None,
         degree_method: str = "standard",
-        disable_deviation_limiting: bool = False
+        disable_deviation_limiting: bool = False,
+        # Optional Parameter for user-defined communuties to be sampled
+        user_defined_communities: Optional[List[int]] = None
     ):
         """
         Initialize and generate a graph sample.
@@ -533,11 +535,14 @@ class GraphSample:
         self.universe = universe
 
         # Sample communities from universe
-        self.communities = universe.sample_connected_community_subset(
-            num_communities,
-            seed=seed,
-            use_cooccurrence=True
-        )
+        if user_defined_communities is not None:
+            self.communities = user_defined_communities
+        else:
+            self.communities = universe.sample_connected_community_subset(
+                num_communities,
+                seed=seed,
+                use_cooccurrence=True
+            )
         
         self.original_n_nodes = n_nodes
         self.min_component_size = min_component_size
@@ -1750,24 +1755,15 @@ class GraphSample:
 
     def analyze_community_connections(self) -> Dict[str, Any]:
         """
-        Analyze the actual community connection patterns in the generated graph.
-        Now uses the exact stored graph that passed the deviation test.
+        Analyze community connection patterns and deviations from expected probabilities.
+        
+        Returns:
+            Dictionary with analysis results
         """
-        # Use the stored graph and labels directly
-        deviations = self._calculate_community_deviations(
-            self.graph,
-            self.community_labels,
-            self.P_sub
-        )
-        mean_deviation = deviations["mean_deviation"]
-        max_deviation = deviations["max_deviation"]
-        
         n_communities = len(self.communities)
-        
-        # Calculate actual connection probabilities
         actual_matrix = np.zeros((n_communities, n_communities))
-        connection_counts = np.zeros((n_communities, n_communities), dtype=int)
         community_sizes = np.zeros(n_communities, dtype=int)
+        connection_counts = np.zeros((n_communities, n_communities), dtype=int)
         
         # Count nodes in each community
         for label in self.community_labels:
@@ -1777,8 +1773,10 @@ class GraphSample:
         for i, j in self.graph.edges():
             comm_i = self.community_labels[i]
             comm_j = self.community_labels[j]
+            actual_matrix[comm_i, comm_j] += 1
+            actual_matrix[comm_j, comm_i] += 1  # Undirected graph
             connection_counts[comm_i, comm_j] += 1
-            connection_counts[comm_j, comm_i] += 1  # Undirected graph
+            connection_counts[comm_j, comm_i] += 1
         
         # Calculate actual probabilities
         for i in range(n_communities):
@@ -1787,51 +1785,38 @@ class GraphSample:
                     # Within community: divide by n(n-1)/2
                     n = community_sizes[i]
                     if n > 1:
-                        actual_matrix[i, j] = connection_counts[i, j] / (n * (n - 1))
+                        actual_matrix[i, j] = actual_matrix[i, j] / (n * (n - 1))
                 else:
                     # Between communities: divide by n1*n2
                     n1, n2 = community_sizes[i], community_sizes[j]
-                    if n1 > 0 and n2 > 0:  # Add check for zero community sizes
-                        actual_matrix[i, j] = connection_counts[i, j] / (n1 * n2)
+                    if n1 > 0 and n2 > 0:
+                        actual_matrix[i, j] = actual_matrix[i, j] / (n1 * n2)
         
-        # Calculate deviation matrix for visualization
+        # Calculate deviations
         deviation_matrix = np.abs(actual_matrix - self.P_sub)
+        mean_deviation = np.mean(deviation_matrix)
+        max_deviation = np.max(deviation_matrix)
         
         # Calculate average degrees per community
         avg_degrees = np.zeros(n_communities)
         for i in range(n_communities):
-            # Get nodes in this community
             community_nodes = np.where(self.community_labels == i)[0]
             if len(community_nodes) > 0:
-                # Calculate average degree for nodes in this community
-                community_degrees = [self.graph.degree(node) for node in community_nodes]
-                avg_degrees[i] = np.mean(community_degrees)
+                avg_degrees[i] = np.mean([self.graph.degree(n) for n in community_nodes])
         
         # Calculate community densities
         densities = np.zeros(n_communities)
         for i in range(n_communities):
             n = community_sizes[i]
             if n > 1:
-                # For each community, density is the ratio of actual edges to possible edges
-                # actual_matrix[i,i] already contains this ratio
                 densities[i] = actual_matrix[i, i]
         
-        # Basic degree analysis
-        degrees = np.array([d for _, d in self.graph.degree()])
+        # Degree analysis
         degree_analysis = {
-            'mean_actual_degree': np.mean(degrees),
-            'std_actual_degree': np.std(degrees),
-            'min_degree': np.min(degrees),
-            'max_degree': np.max(degrees),
-            'used_parameters': self.generation_params,
-            'generation_method': self.generation_method
+            "community_avg_degrees": avg_degrees.tolist(),
+            "community_densities": densities.tolist()
         }
         
-        # Add configuration model specific analysis if available
-        if hasattr(self, 'best_degree_stats'):
-            degree_analysis.update(self.best_degree_stats)
-        
-        # Verify that max deviation is within constraints using the SAME constraints from initialization
         if max_deviation > self.max_max_community_deviation:
             # Keep this warning as it indicates a real problem if it ever occurs
             print(f"\nWarning: Inconsistency detected - graph was generated with constraints but now exceeds them.")
@@ -1840,33 +1825,6 @@ class GraphSample:
             print(f"Original constraint: {self.max_max_community_deviation:.4f}")
             print(f"Generation method: {self.generation_method}")
             print(f"Generation parameters: {self.generation_params}")
-        
-        # Create visualization figure
-        import matplotlib.pyplot as plt
-        fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(18, 5))
-        
-        # Plot actual connection probabilities
-        im1 = ax1.imshow(actual_matrix, cmap='viridis')
-        ax1.set_title('Actual Connection Probabilities')
-        ax1.set_xlabel('Community')
-        ax1.set_ylabel('Community')
-        plt.colorbar(im1, ax=ax1)
-        
-        # Plot expected connection probabilities
-        im2 = ax2.imshow(self.P_sub, cmap='viridis')
-        ax2.set_title('Expected Connection Probabilities')
-        ax2.set_xlabel('Community')
-        ax2.set_ylabel('Community')
-        plt.colorbar(im2, ax=ax2)
-        
-        # Plot deviation matrix
-        im3 = ax3.imshow(deviation_matrix, cmap='RdBu_r')
-        ax3.set_title('Deviation Matrix')
-        ax3.set_xlabel('Community')
-        ax3.set_ylabel('Community')
-        plt.colorbar(im3, ax=ax3)
-        
-        plt.tight_layout()
         
         return {
             "actual_matrix": actual_matrix,
@@ -1881,7 +1839,6 @@ class GraphSample:
                 "max_mean_deviation": self.max_mean_community_deviation,
                 "max_max_deviation": self.max_max_community_deviation
             },
-            "figure": fig,  # Add the figure to the return dictionary
             "avg_degrees": avg_degrees,  # Add average degrees per community
             "densities": densities  # Add community densities
         }
@@ -2490,7 +2447,6 @@ class GraphSample:
             - triangles_per_community: Dict mapping community ID to number of triangles
             - additional_triangles_per_community: Dict mapping community ID to number of additionally created triangles
             - triangle_propensity_correlation: Correlation between community triangle counts and propensities
-            - triangle_propensity_plot: Figure showing triangle propensities vs actual counts
         """
         # Convert to dense for easier manipulation
         adj_dense = self.adjacency.toarray()
@@ -2540,7 +2496,7 @@ class GraphSample:
                                 total_additional_triangles += 1
                                 additional_triangles_per_community[primary_comm] += 1
         
-        # Get community propensities for our communities (for visualization)
+        # Get community propensities for our communities
         community_propensities_array = np.array([
             self.universe.community_triangle_propensities[comm_id] 
             for comm_id in self.communities
@@ -2550,63 +2506,10 @@ class GraphSample:
         triangle_counts = np.array([triangles_per_community[comm] for comm in self.communities])
         correlation = np.corrcoef(triangle_counts, community_propensities_array)[0, 1]
         
-        # Create plot comparing propensities with actual counts
-        fig, ax = plt.subplots(figsize=(10, 6))
-        
-        # Sort communities by propensity for better visualization
-        sorted_indices = np.argsort(community_propensities_array)
-        sorted_propensities = community_propensities_array[sorted_indices]
-        sorted_counts = triangle_counts[sorted_indices]
-        sorted_communities = np.array(self.communities)[sorted_indices]
-        
-        # Normalize propensities to [0,1] range for better comparison
-        normalized_propensities = sorted_propensities / np.max(sorted_propensities)
-        
-        # Create two y-axes
-        ax1 = ax
-        ax2 = ax1.twinx()
-        
-        # Define x positions and width for bars
-        x = np.arange(len(sorted_communities))
-        width = 0.35
-        
-        # Plot propensities on first y-axis
-        ax1.bar(x - width/2, normalized_propensities, width, label='Triangle Propensity (normalized)', color='skyblue', alpha=0.7)
-        ax1.set_ylabel('Normalized Propensity', color='skyblue')
-        ax1.tick_params(axis='y', labelcolor='skyblue')
-        ax1.set_ylim(0, 1.1)  # Add some padding at the top
-        
-        # Plot counts on second y-axis with log scale
-        ax2.bar(x + width/2, sorted_counts, width, label='Triangle Count', color='lightcoral', alpha=0.7)
-        ax2.set_ylabel('Triangle Count (log scale)', color='lightcoral')
-        ax2.tick_params(axis='y', labelcolor='lightcoral')
-        ax2.set_yscale('log')
-        
-        # Set x-axis labels
-        ax.set_xlabel('Community ID')
-        ax.set_xticks(x)
-        ax.set_xticklabels(sorted_communities)
-        
-        # Add title and legend
-        ax.set_title('Triangle Propensities vs Actual Triangle Counts')
-        
-        # Combine legends from both axes
-        lines1, labels1 = ax1.get_legend_handles_labels()
-        lines2, labels2 = ax2.get_legend_handles_labels()
-        ax1.legend(lines1 + lines2, labels1 + labels2, loc='upper left')
-        
-        # Add correlation coefficient as text
-        ax.text(0.02, 0.98, f'Correlation: {correlation:.3f}',
-                transform=ax.transAxes, verticalalignment='top',
-                bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
-        
-        plt.tight_layout()
-        
         return {
             "total_triangles": total_triangles,
             "total_additional_triangles": total_additional_triangles,
             "triangles_per_community": triangles_per_community,
             "additional_triangles_per_community": additional_triangles_per_community,
-            "triangle_propensity_correlation": correlation,
-            "triangle_propensity_plot": fig
+            "triangle_propensity_correlation": correlation
         }

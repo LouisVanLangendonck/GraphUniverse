@@ -133,9 +133,9 @@ class InductiveExperiment:
         
         # Create family generator with clean parameters
         print("Setting up graph family generator...")
+
         family_generator = GraphFamilyGenerator(
             universe=universe,
-            n_graphs=self.config.n_graphs,
             min_n_nodes=self.config.min_n_nodes,
             max_n_nodes=self.config.max_n_nodes,
             min_communities=self.config.min_communities,
@@ -173,20 +173,53 @@ class InductiveExperiment:
         )
         
         # Generate family
-        print(f"Generating family of {self.config.n_graphs} graphs...")
-        start_time = time.time()
-        family_graphs = family_generator.generate_family(
-            show_progress=True,
-            collect_stats=self.config.collect_family_stats
-        )
-        generation_time = time.time() - start_time
+        if self.config.allow_unseen_community_combinations_for_eval:
+            print(f"Generating family of {self.config.n_graphs} graphs...")
+            start_time = time.time()
+            self.family_graphs = family_generator.generate_family(
+                show_progress=True,
+                collect_stats=self.config.collect_family_stats,
+                n_graphs=self.config.n_graphs
+            )
+            self.communities_per_graph = family_generator.community_labels_per_graph
+            generation_time = time.time() - start_time
+
+            self.family_graphs_training_indices, self.family_graphs_val_test_indices = None, None
+            
+            print(f"Family generation completed in {generation_time:.2f} seconds")
+            print(f"Successfully generated {len(self.family_graphs)} graphs")
+        else:
+            print(f"Generating family of training graphs")
+            start_time = time.time()
+            family_graphs_training = family_generator.generate_family(
+                show_progress=True,
+                collect_stats=self.config.collect_family_stats,
+                n_graphs=self.config.n_graphs
+            )
+            communities_per_training_graph = family_generator.community_labels_per_graph
+            training_community_combinations = family_generator.seen_community_combinations
+
+            print(f"Generating family of validation and test graphs with community combinations that are seen in training graphs")
+            start_time = time.time()
+            # print(f"Training community combinations: {training_community_combinations}")
+            family_graphs_val_test = family_generator.generate_family(
+                show_progress=True,
+                collect_stats=self.config.collect_family_stats,
+                n_graphs=self.config.n_graphs,
+                allowed_community_combinations=training_community_combinations
+            )
+            communities_per_val_test_graph = family_generator.community_labels_per_graph
+
+            # Merge the two families but keep indices of training graphs and val/test graphs separate
+            self.family_graphs = family_graphs_training + family_graphs_val_test
+            self.family_graphs_training_indices = list(range(len(family_graphs_training)))
+            self.family_graphs_val_test_indices = list(range(len(family_graphs_training), len(family_graphs_training) + len(family_graphs_val_test)))
+
+            self.communities_per_graph = communities_per_training_graph + communities_per_val_test_graph
+
+            generation_time = time.time() - start_time
         
-        print(f"Family generation completed in {generation_time:.2f} seconds")
-        print(f"Successfully generated {len(family_graphs)} graphs")
-        
-        self.family_graphs = family_graphs
-        
-        return family_graphs
+        return self.family_graphs
     
     def analyze_family_consistency(self) -> Dict[str, Any]:
         """Analyze family consistency using existing methods."""
@@ -289,11 +322,19 @@ class InductiveExperiment:
             raise ValueError("Must generate graph family before preparing data")
         
         # Prepare inductive data
-        inductive_data = prepare_inductive_data(self.family_graphs, self.config)
+        inductive_data, fold_indices = prepare_inductive_data(self.family_graphs, 
+                                                self.config,
+                                                family_graphs_training_indices=self.family_graphs_training_indices,
+                                                family_graphs_val_test_indices=self.family_graphs_val_test_indices,
+                                                family_graph_community_labels_list=self.communities_per_graph)
+        
+        unseen_community_combination_score = self.calculate_unseen_community_combination_score(fold_indices)
+        print(f"Unseen community combination score: {unseen_community_combination_score}")
         
         # Create dataloaders
         print("Creating dataloaders...")
-        dataloaders = create_inductive_dataloaders(inductive_data, self.config)
+        dataloaders = create_inductive_dataloaders(inductive_data, 
+                                                   self.config)
         
         # Print split information
         for task in self.config.tasks:
@@ -310,7 +351,7 @@ class InductiveExperiment:
                     print(f"    {split_name}: {n_graphs} graphs, batch size {batch_size}")
         
         self.dataloaders = dataloaders
-        return dataloaders
+        return dataloaders, unseen_community_combination_score
     
     def run_experiments(self) -> Dict[str, Any]:
         """Updated run_experiments with transformer support and fine-tuning."""
@@ -824,6 +865,36 @@ class InductiveExperiment:
         else:
             return obj
     
+    def calculate_unseen_community_combination_score(self, fold_indices: Dict[int, Dict[str, List[int]]]) -> float:
+        """Calculate unseen community combination score."""
+        unseen_community_combination_scores = []
+        for fold_name, fold_data in fold_indices.items():
+            print(f"Fold {fold_name}:")
+            training_combinations = []
+            for graph_indices in fold_data['train']:
+                training_combinations.append(self.communities_per_graph[graph_indices])
+            # Use set of sorted tuples for uniqueness
+            unique_set_of_community_training_combinations = {tuple(sorted(arr)) for arr in training_combinations}
+            unique_list_of_community_training_combinations = [list(tup) for tup in unique_set_of_community_training_combinations]
+            print(f"Training combinations: {unique_list_of_community_training_combinations}")
+
+            val_test_fold_unseen_community_combinations = 0
+            number_of_val_test_graphs = len(fold_data['val']) + len(fold_data['test'])
+            for graph_indices in fold_data['val'] + fold_data['test']:
+                sorted_tuple_of_community_combination = tuple(sorted(self.communities_per_graph[graph_indices]))
+                # print(f"To add or not to add: {sorted_tuple_of_community_combination} in {unique_set_of_community_training_combinations}")
+                if sorted_tuple_of_community_combination not in unique_set_of_community_training_combinations:
+                    val_test_fold_unseen_community_combinations += 1
+
+            # print(f"Nummber of unseen community combinations: {val_test_fold_unseen_community_combinations}")
+            unseen_community_combination_score_fold = val_test_fold_unseen_community_combinations / number_of_val_test_graphs
+            unseen_community_combination_scores.append(unseen_community_combination_score_fold)
+
+        print(f"Unseen community combination scores: {unseen_community_combination_scores}")
+        unseen_community_combination_score = np.mean(unseen_community_combination_scores)
+
+        return unseen_community_combination_score
+
     def run(self) -> Dict[str, Any]:
         """Run complete experiment pipeline."""
         try:
@@ -831,7 +902,7 @@ class InductiveExperiment:
             experiment_start = time.time()
             
             # Generate graph family
-            self.generate_graph_family()
+            self.family_graphs = self.generate_graph_family()
             
             # Analyze family consistency
             family_consistency = self.analyze_family_consistency()
@@ -839,11 +910,8 @@ class InductiveExperiment:
             # Calculate community signals
             graph_signals = self.calculate_graph_signals()
             
-            # Precompute transformer encodings if needed
-            # self.precompute_transformer_encodings()
-            
             # Prepare data
-            self.prepare_data()
+            dataloaders, unseen_community_combination_score = self.prepare_data()
             
             # Run experiments
             results = self.run_experiments()
@@ -869,7 +937,8 @@ class InductiveExperiment:
                 'results': results,
                 'config': self.config,
                 'summary_report': summary_report,
-                'total_time': total_time
+                'total_time': total_time,
+                'unseen_community_combination_score': unseen_community_combination_score
             }
             
         except Exception as e:

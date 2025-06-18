@@ -16,6 +16,7 @@ from typing import Dict, List, Optional, Tuple, Union, Any, Callable
 from torch_geometric.loader import DataLoader
 from torch_geometric.data import Batch
 import copy
+import random
 
 from experiments.models import GNNModel, MLPModel, SklearnModel, GraphTransformerModel
 from experiments.transductive.metrics import compute_metrics
@@ -686,8 +687,6 @@ def optimize_finetuning_hyperparameters(
                 if val_metric > best_val_metric:  # Higher is better for F1
                     best_val_metric = val_metric
                     patience_counter = 0
-                else:
-                    patience_counter += 1
             
             if patience_counter >= patience:
                 break
@@ -894,6 +893,13 @@ def train_and_evaluate_inductive(
                 # Store transformer type for the objective function
                 transformer_type = model.transformer_type
                 
+                # Select two fixed folds for optimization
+                fold_names = list(dataloaders.keys())
+                if len(fold_names) < 2:
+                    raise ValueError("Need at least 2 folds for optimization")
+                opt_fold1, opt_fold2 = fold_names[0], fold_names[1]  # Use first two folds consistently
+                print(f"Using folds {opt_fold1} and {opt_fold2} for optimization")
+                
                 def objective(trial: Trial) -> float:
                     # Common hyperparameters
                     lr = trial.suggest_float('lr', 1e-3, 1e-2, log=True)
@@ -965,83 +971,89 @@ def train_and_evaluate_inductive(
                     best_val_metric = float('inf') if is_regression else 0.0
                     patience_counter = 0
 
-                    first_fold_dataloader = dataloaders[first_fold_name]
-                    
-                    for epoch in range(max_epochs):
-                        # Training
-                        trial_model.train()
-                        for batch in first_fold_dataloader['train']:
-                            batch = batch.to(device)
-                            optimizer.zero_grad()
-                            out = trial_model(batch.x, batch.edge_index, data=batch)
-                            loss = criterion(out, batch.y)
-                            loss.backward()
-                            optimizer.step()
+                    # Train and evaluate on both optimization folds
+                    fold_metrics = []
+                    for opt_fold in [opt_fold1, opt_fold2]:
+                        fold_dataloader = dataloaders[opt_fold]
+                        fold_best_metric = float('inf') if is_regression else 0.0
+                        fold_patience_counter = 0
                         
-                        # Validation
-                        trial_model.eval()
-                        val_predictions = []
-                        val_targets = []
-                        
-                        with torch.no_grad():
-                            for batch in first_fold_dataloader['val']:
+                        for epoch in range(max_epochs):
+                            # Training
+                            trial_model.train()
+                            for batch in fold_dataloader['train']:
                                 batch = batch.to(device)
+                                optimizer.zero_grad()
                                 out = trial_model(batch.x, batch.edge_index, data=batch)
-                                
-                                if is_regression:
-                                    val_predictions.append(out.detach().cpu())
-                                else:
-                                    val_predictions.append(out.argmax(dim=1).detach().cpu())
-                                
-                                val_targets.append(batch.y.detach().cpu())
-                        
-                        # Calculate validation metric
-                        val_pred = torch.cat(val_predictions, dim=0).numpy()
-                        val_true = torch.cat(val_targets, dim=0).numpy()
-                        val_metrics = compute_metrics(val_true, val_pred, is_regression)
+                                loss = criterion(out, batch.y)
+                                loss.backward()
+                                optimizer.step()
+                            
+                            # Validation
+                            trial_model.eval()
+                            val_predictions = []
+                            val_targets = []
+                            
+                            with torch.no_grad():
+                                for batch in fold_dataloader['val']:
+                                    batch = batch.to(device)
+                                    out = trial_model(batch.x, batch.edge_index, data=batch)
+                                    
+                                    if is_regression:
+                                        val_predictions.append(out.detach().cpu())
+                                    else:
+                                        val_predictions.append(out.argmax(dim=1).detach().cpu())
+                                    
+                                    val_targets.append(batch.y.detach().cpu())
+                            
+                            # Calculate validation metric
+                            val_pred = torch.cat(val_predictions, dim=0).numpy()
+                            val_true = torch.cat(val_targets, dim=0).numpy()
+                            val_metrics = compute_metrics(val_true, val_pred, is_regression)
 
-                        if is_regression:
-                            if config.regression_loss == 'mae':
-                                val_metric = val_metrics['mae']
-                                if val_metric < best_val_metric:  # Lower is better for MAE
-                                    best_val_metric = val_metric
-                                    patience_counter = 0
+                            if is_regression:
+                                if config.regression_loss == 'mae':
+                                    val_metric = val_metrics['mae']
+                                    if val_metric < fold_best_metric:  # Lower is better for MAE
+                                        fold_best_metric = val_metric
+                                        fold_patience_counter = 0
+                                    else:
+                                        fold_patience_counter += 1
+                                elif config.regression_loss == 'mse':
+                                    val_metric = val_metrics['mse']
+                                    if val_metric < fold_best_metric:  # Lower is better for MSE
+                                        fold_best_metric = val_metric
+                                        fold_patience_counter = 0
+                                    else:
+                                        fold_patience_counter += 1
                                 else:
-                                    patience_counter += 1
-                            elif config.regression_loss == 'mse':
-                                val_metric = val_metrics['mse']
-                                if val_metric < best_val_metric:  # Lower is better for MSE
-                                    best_val_metric = val_metric
-                                    patience_counter = 0
-                                else:
-                                    patience_counter += 1
+                                    val_metric = val_metrics['r2']
+                                    if val_metric > fold_best_metric:  # Higher is better for R²
+                                        fold_best_metric = val_metric
+                                        fold_patience_counter = 0
                             else:
-                                val_metric = val_metrics['r2']
-                                if val_metric > best_val_metric:  # Higher is better for R²
-                                    best_val_metric = val_metric
-                                    patience_counter = 0
-                        else:
-                            # For classification, use F1 score
-                            val_metric = val_metrics['f1_macro']
-                            if val_metric > best_val_metric:  # Higher is better for F1
-                                best_val_metric = val_metric
-                                patience_counter = 0
+                                # For classification, use F1 score
+                                val_metric = val_metrics['f1_macro']
+                                if val_metric > fold_best_metric:  # Higher is better for F1
+                                    fold_best_metric = val_metric
+                                    fold_patience_counter = 0
+                            
+                            if fold_patience_counter >= patience:
+                                break
                         
-                        
-                        if patience_counter >= patience:
-                            break
+                        fold_metrics.append(fold_best_metric)
+                    
+                    # Average the metrics from both folds
+                    avg_metric = sum(fold_metrics) / len(fold_metrics)
                     
                     # Return metric for optimization
                     if is_regression:
-                        if config.regression_loss == 'mae':
-                            final_metric = -best_val_metric  # Negative because we minimize MAE
-                        elif config.regression_loss == 'mse':
-                            final_metric = -best_val_metric  # Negative because we minimize MSE
+                        if config.regression_loss in ['mae', 'mse']:
+                            final_metric = -avg_metric  # Negative because we minimize MAE/MSE
                         else:
-                            final_metric = best_val_metric  # Positive because we maximize R²
+                            final_metric = avg_metric  # Positive because we maximize R²
                     else:
-                        # For classification, use F1 score
-                        final_metric = best_val_metric  # Positive because we maximize F1
+                        final_metric = avg_metric  # Positive because we maximize F1
                     
                     return final_metric
                 
@@ -1096,8 +1108,8 @@ def train_and_evaluate_inductive(
                 model_creator = lambda **kwargs: GNNModel(**kwargs)
                 
                 # Get sample batch to determine dimensions
-                first_fold_name = list(dataloaders.keys())[0]
-                sample_batch = next(iter(dataloaders[first_fold_name]['train']))
+                random_fold_name = random.choice(list(dataloaders.keys()))
+                sample_batch = next(iter(dataloaders[random_fold_name]['train']))
                 input_dim = sample_batch.x.shape[1]
                 
                 if is_regression:
@@ -1195,11 +1207,11 @@ def train_and_evaluate_inductive(
                     best_val_metric = float('inf') if is_regression else 0.0
                     patience_counter = 0
 
-                    first_fold_dataloader = dataloaders[first_fold_name]
+                    random_fold_dataloader = dataloaders[random_fold_name]
                     for epoch in range(max_epochs):
                         # Training
                         trial_model.train()
-                        for batch in first_fold_dataloader['train']:
+                        for batch in random_fold_dataloader['train']:
                             batch = batch.to(device)
                             optimizer.zero_grad()
                             out = trial_model(batch.x, batch.edge_index)
@@ -1213,7 +1225,7 @@ def train_and_evaluate_inductive(
                         val_targets = []
                         
                         with torch.no_grad():
-                            for batch in first_fold_dataloader['val']:
+                            for batch in random_fold_dataloader['val']:
                                 batch = batch.to(device)
                                 out = trial_model(batch.x, batch.edge_index)
                                 
@@ -1318,8 +1330,8 @@ def train_and_evaluate_inductive(
                 print(f"🎯 Optimizing MLP hyperparameters...")
                 
                 # Get sample batch to determine dimensions
-                first_fold_name = list(dataloaders.keys())[0]
-                sample_batch = next(iter(dataloaders[first_fold_name]['train']))
+                random_fold_name = random.choice(list(dataloaders.keys()))
+                sample_batch = next(iter(dataloaders[random_fold_name]['train']))
                 input_dim = sample_batch.x.shape[1]
                 
                 if is_regression:
@@ -1375,11 +1387,11 @@ def train_and_evaluate_inductive(
                     best_val_metric = float('inf') if is_regression else 0.0
                     patience_counter = 0
                     
-                    first_fold_dataloader = dataloaders[first_fold_name]
+                    random_fold_dataloader = dataloaders[random_fold_name]
                     for epoch in range(max_epochs):
                         # Training
                         trial_model.train()
-                        for batch in first_fold_dataloader['train']:
+                        for batch in random_fold_dataloader['train']:
                             batch = batch.to(device)
                             optimizer.zero_grad()
                             out = trial_model(batch.x)
@@ -1393,7 +1405,7 @@ def train_and_evaluate_inductive(
                         val_targets = []
                         
                         with torch.no_grad():
-                            for batch in first_fold_dataloader['val']:
+                            for batch in random_fold_dataloader['val']:
                                 batch = batch.to(device)
                                 out = trial_model(batch.x)
                                 
@@ -1482,8 +1494,8 @@ def train_and_evaluate_inductive(
                 print(f"🎯 Optimizing sklearn model hyperparameters...")
                 
                 # Get sample batch to determine dimensions
-                first_fold_name = list(dataloaders.keys())[0]
-                sample_batch = next(iter(dataloaders[first_fold_name]['train']))
+                random_fold_name = random.choice(list(dataloaders.keys()))
+                sample_batch = next(iter(dataloaders[random_fold_name]['train']))
                 input_dim = sample_batch.x.shape[1]
                 
                 if is_regression:
@@ -1552,8 +1564,8 @@ def train_and_evaluate_inductive(
                         )
                     
                     # Train and evaluate model
-                    first_fold_dataloader = dataloaders[first_fold_name]
-                    results = train_sklearn_inductive(trial_model, first_fold_dataloader, config, is_regression)
+                    random_fold_dataloader = dataloaders[random_fold_name]
+                    results = train_sklearn_inductive(trial_model, random_fold_dataloader, config, is_regression)
                     
                     # Return metric for optimization
                     if is_regression:
