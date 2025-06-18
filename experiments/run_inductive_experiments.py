@@ -29,7 +29,8 @@ def parse_args():
                         help='CUDA device ID to use')
     parser.add_argument('--force_cpu', action='store_true',
                         help='Force CPU usage even if CUDA is available')
-    
+    parser.add_argument('--use_parallel_training', action='store_true', default=False,
+                        help='Use parallel training')
     # Add these arguments to parse_args():
     parser.add_argument('--use_pretrained', action='store_true',
                         help='Use pre-trained models instead of random initialization')
@@ -218,7 +219,8 @@ def create_config_from_args(args) -> InductiveExperimentConfig:
         seed=args.seed,
         device_id=args.device_id,
         force_cpu=args.force_cpu,
-
+        use_parallel_training=args.use_parallel_training,
+        
         # === SSL FINE-TUNING SETUP ===
         use_pretrained=args.use_pretrained,
         pretrained_model_dir=args.pretrained_model_dir,

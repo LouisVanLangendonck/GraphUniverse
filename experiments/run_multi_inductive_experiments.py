@@ -36,7 +36,9 @@ def parse_args():
                         help='Base output directory')
     parser.add_argument('--n_repetitions', type=int, default=1,
                         help='Number of repetitions per parameter combination')
-    
+    parser.add_argument('--use_parallel_training', action='store_true', default=False,
+                        help='Use parallel training')
+
     # Continue from intermediate results
     parser.add_argument('--continue_from_intermediate', action='store_true',
                         help='Continue from intermediate results')
@@ -154,7 +156,8 @@ def create_custom_experiment(args) -> CleanMultiExperimentConfig:
         max_communities=args.max_communities,
         universe_K=args.universe_K,
         universe_feature_dim=32,
-        
+        use_parallel_training=args.use_parallel_training,
+
         # Method
         use_dccc_sbm=args.use_dccc_sbm,
         degree_distribution=args.degree_distribution,
