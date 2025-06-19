@@ -31,7 +31,8 @@ def parse_args():
                         help='Force CPU usage even if CUDA is available')
     parser.add_argument('--use_parallel_training', action='store_true', default=False,
                         help='Use parallel training')
-    # Add these arguments to parse_args():
+
+    # === PRETRAINED MODELS ===
     parser.add_argument('--use_pretrained', action='store_true',
                         help='Use pre-trained models instead of random initialization')
     parser.add_argument('--pretrained_model_dir', type=str, default='ssl_experiments',
@@ -57,7 +58,7 @@ def parse_args():
     parser.add_argument('--tasks', type=str, nargs='+', default=['community', 'k_hop_community_counts_k2'],
                         choices=['community', 'k_hop_community_counts_k1', 'k_hop_community_counts_k2', 'k_hop_community_counts_k3', 'triangle_count'],
                         help='Learning tasks to run')
-    parser.add_argument('--khop_k', type=int, default=1,
+    parser.add_argument('--khop_k', type=int, default=2,
                         help='k value for k-hop community counting task')
     
     # === DATA SPLITS ===
@@ -83,7 +84,7 @@ def parse_args():
                         help='Feature dimension for universe')
     parser.add_argument('--universe_edge_density', type=float, default=0.07,
                         help='Base edge density for universe')
-    parser.add_argument('--universe_homophily', type=float, default=0.7,
+    parser.add_argument('--universe_homophily', type=float, default=0.5,
                         help='Homophily parameter for universe')
     parser.add_argument('--universe_randomness_factor', type=float, default=1.0,
                         help='Randomness factor for universe')
@@ -124,7 +125,7 @@ def parse_args():
                         help='Maximum allowed participation rate per community')
     
     # === MODELS ===
-    parser.add_argument('--gnn_types', type=str, nargs='+', default=['gcn', 'sage'],
+    parser.add_argument('--gnn_types', type=str, nargs='+', default=['gcn', 'sage', 'gin', 'gat'],
                         choices=['gcn', 'fagcn', 'sage', 'gat', 'gin'],
                         help='Types of GNN models to run')
     parser.add_argument('--transformer_types', type=str, nargs='+', 
@@ -147,15 +148,15 @@ def parse_args():
                         help='Skip Random Forest model')
     
     # === TRAINING ===
-    parser.add_argument('--epochs', type=int, default=200,
+    parser.add_argument('--epochs', type=int, default=300,
                         help='Maximum number of epochs')
-    parser.add_argument('--patience', type=int, default=50,
+    parser.add_argument('--patience', type=int, default=70,
                         help='Patience for early stopping')
     parser.add_argument('--learning_rate', type=float, default=0.001,
                         help='Learning rate for neural models')
     parser.add_argument('--hidden_dim', type=int, default=64,
                         help='Hidden dimension for neural models')
-    parser.add_argument('--batch_size', type=int, default=1,
+    parser.add_argument('--batch_size', type=int, default=4,
                         help='Batch size for training')
     parser.add_argument('--n_trials', type=int, default=10,
                         help='Number of trials for hyperparameter optimization')
@@ -172,9 +173,9 @@ def parse_args():
     # === FEATURE GENERATION ===
     parser.add_argument('--cluster_count_factor', type=float, default=1.0,
                         help='Factor for cluster count')
-    parser.add_argument('--center_variance', type=float, default=1.0,
+    parser.add_argument('--center_variance', type=float, default=0.4,
                         help='Variance for center of clusters')
-    parser.add_argument('--cluster_variance', type=float, default=0.1,
+    parser.add_argument('--cluster_variance', type=float, default=0.2,
                         help='Variance for cluster sizes')
     parser.add_argument('--assignment_skewness', type=float, default=0.0,
                         help='Skewness for feature assignment')
@@ -185,7 +186,7 @@ def parse_args():
                         help='Degree center method')
 
     # Transformer-specific parameters
-    parser.add_argument('--transformer_num_heads', type=int, default=8,
+    parser.add_argument('--transformer_num_heads', type=int, default=3,
                         help='Number of attention heads for transformers')
     parser.add_argument('--transformer_max_nodes', type=int, default=200,
                         help='Maximum nodes for encoding precomputation')
@@ -203,7 +204,7 @@ def parse_args():
     parser.add_argument('--local_gnn_type', type=str, default='gcn',
                         choices=['gcn', 'sage'],
                         help='Local GNN type for GraphGPS')
-    parser.add_argument('--global_model_type', type=str, default='transformer',
+    parser.add_argument('--global_model_type', type=str, default='performer',
                         help='Global model type for GraphGPS')
     parser.add_argument('--transformer_prenorm', action='store_true', default=True,
                         help='Use pre-normalization in transformers')

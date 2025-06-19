@@ -24,9 +24,15 @@ from mmsb.graph_family import GraphFamilyGenerator, FamilyConsistencyAnalyzer
 from experiments.inductive.data import (
     prepare_inductive_data, 
     create_inductive_dataloaders,
-    analyze_graph_family_properties
+    analyze_graph_family_properties,
+    create_gpu_resident_dataloaders,
+    verify_gpu_resident_data
 )
-from experiments.inductive.training import train_and_evaluate_inductive, get_total_classes_from_dataloaders
+from experiments.inductive.training import (
+    train_and_evaluate_inductive, 
+    get_total_classes_from_dataloaders,
+    cleanup_gpu_dataloaders
+)
 from experiments.models import GNNModel, MLPModel, SklearnModel
 from experiments.inductive.self_supervised_task import (
     PreTrainingConfig, 
@@ -35,7 +41,7 @@ from experiments.inductive.self_supervised_task import (
     PreTrainedModelSaver,
     create_pretraining_dataloader
 )
-from experiments.inductive.data import GraphFamilyManager
+from experiments.inductive.data import GraphFamilyManager, create_gpu_resident_dataloaders
 from experiments.inductive.config import PreTrainingConfig, InductiveExperimentConfig
 from optuna.pruners import HyperbandPruner, MedianPruner
 from optuna.samplers import TPESampler
@@ -331,10 +337,15 @@ class InductiveExperiment:
         unseen_community_combination_score = self.calculate_unseen_community_combination_score(fold_indices)
         print(f"Unseen community combination score: {unseen_community_combination_score}")
         
-        # Create dataloaders
-        print("Creating dataloaders...")
-        dataloaders = create_inductive_dataloaders(inductive_data, 
-                                                   self.config)
+        # Create GPU-resident dataloaders for efficiency
+        print("Creating GPU-resident dataloaders...")
+        dataloaders = create_gpu_resident_dataloaders(inductive_data, 
+                                                   self.config,
+                                                   self.device)
+        
+        # Verify data is properly loaded to GPU
+        if not verify_gpu_resident_data(dataloaders, self.device):
+            raise RuntimeError("Failed to load data to GPU properly")
         
         # Print split information
         for task in self.config.tasks:
@@ -762,6 +773,10 @@ class InductiveExperiment:
                 json.dump(error_info, f, indent=2)
             
             raise
+        finally:
+            # Clean up GPU memory at the end
+            if hasattr(self, 'dataloaders'):
+                cleanup_gpu_dataloaders(self.dataloaders, self.device)
     
     def precompute_transformer_encodings(self):
         """Precompute encodings for transformer models if enabled."""

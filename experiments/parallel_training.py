@@ -92,6 +92,7 @@ class ParallelGPUTrainer:
             from experiments.inductive.training import train_and_evaluate_inductive
             
             # Train model - the existing function is thread-safe for different models
+            # Data is already on GPU, so no need for additional device transfers
             results = train_and_evaluate_inductive(
                 model=model,
                 model_name=job.model_name,
@@ -104,7 +105,7 @@ class ParallelGPUTrainer:
                 run_id=getattr(job.config, 'run_id', None),
             )
             
-            # Clean up GPU memory
+            # Clean up GPU memory - only the model, not the data (data is shared)
             with self.gpu_lock:
                 del model
                 torch.cuda.empty_cache()

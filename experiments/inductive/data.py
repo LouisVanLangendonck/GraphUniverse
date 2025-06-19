@@ -1062,11 +1062,12 @@ def create_inductive_dataloaders(
                 
                 shuffle = (split_name == 'train')
                 
+                    
                 loader = DataLoader(
                     split_data['graphs'],
                     batch_size=split_data['batch_size'],
                     shuffle=shuffle,
-                    num_workers=0  # Set to 0 to avoid multiprocessing issues
+                    num_workers=0
                 )
                 
                 fold_loaders[split_name] = loader
@@ -1315,3 +1316,109 @@ def count_trianges_graph(graph: nx.Graph) -> int:
     # Filter for triangles (cliques of size 3)
     triangles = [t for t in triangles if len(t) == 3]
     return len(triangles)
+
+def create_gpu_resident_dataloaders(
+    inductive_data: Dict[str, Dict[str, Dict[str, Any]]],
+    config,
+    device: torch.device
+) -> Dict[str, Dict[str, Any]]:
+    """
+    Create dataloaders with all data pre-loaded to GPU to avoid repeated CPU-GPU transfers.
+    
+    Args:
+        inductive_data: Prepared inductive data
+        config: Experiment configuration
+        device: Device to load data onto
+        
+    Returns:
+        Dictionary containing GPU-resident dataloaders for each task and split
+    """
+    from torch_geometric.loader import DataLoader
+    
+    print(f"🚀 Pre-loading all graph data to {device}...")
+    
+    dataloaders = {}
+    
+    for task, task_data in inductive_data.items():
+        task_loaders = {}
+        for fold_name, fold_data in task_data.items():
+            fold_loaders = {}
+            if fold_name == 'metadata' or fold_name == 'metapath_analysis':
+                continue
+            
+            for split_name, split_data in fold_data.items():
+                if split_name == 'metadata' or split_name == 'metapath_analysis':
+                    continue
+                
+                print(f"  Loading {split_name} data for {task}/{fold_name}...")
+                
+                # Move all graphs to GPU at once
+                gpu_graphs = []
+                for graph in split_data['graphs']:
+                    # Create a copy of the graph on GPU
+                    gpu_graph = graph.to(device)
+                    gpu_graphs.append(gpu_graph)
+                
+                shuffle = (split_name == 'train')
+                
+                # Create dataloader with GPU-resident data
+                loader = DataLoader(
+                    gpu_graphs,
+                    batch_size=split_data['batch_size'],
+                    shuffle=shuffle,
+                    num_workers=0  # Keep 0 since data is already on GPU
+                )
+                
+                fold_loaders[split_name] = loader
+                
+                print(f"    ✓ Loaded {len(gpu_graphs)} graphs to {device}")
+            
+            task_loaders[fold_name] = fold_loaders
+        
+        dataloaders[task] = task_loaders
+    
+    print(f"✅ All data loaded to {device}")
+    return dataloaders
+
+def verify_gpu_resident_data(dataloaders: Dict[str, Dict[str, Any]], device: torch.device) -> bool:
+    """
+    Verify that all data in dataloaders is actually on the specified device.
+    
+    Args:
+        dataloaders: GPU-resident dataloaders to verify
+        device: Expected device
+        
+    Returns:
+        True if all data is on the correct device, False otherwise
+    """
+    print(f"🔍 Verifying data is on {device}...")
+    
+    for task, task_data in dataloaders.items():
+        for fold_name, fold_data in task_data.items():
+            for split_name, dataloader in fold_data.items():
+                if split_name == 'metadata':
+                    continue
+                
+                # Check first few batches
+                batch_count = 0
+                for batch in dataloader:
+                    if batch_count >= 3:  # Only check first 3 batches
+                        break
+                    
+                    # Check main tensors
+                    if hasattr(batch, 'x') and batch.x.device != device:
+                        print(f"❌ {task}/{fold_name}/{split_name}: x tensor on {batch.x.device}, expected {device}")
+                        return False
+                    
+                    if hasattr(batch, 'edge_index') and batch.edge_index.device != device:
+                        print(f"❌ {task}/{fold_name}/{split_name}: edge_index tensor on {batch.edge_index.device}, expected {device}")
+                        return False
+                    
+                    if hasattr(batch, 'y') and batch.y.device != device:
+                        print(f"❌ {task}/{fold_name}/{split_name}: y tensor on {batch.y.device}, expected {device}")
+                        return False
+                    
+                    batch_count += 1
+    
+    print(f"✅ All data verified to be on {device}")
+    return True

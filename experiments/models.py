@@ -718,108 +718,68 @@ class PerformerAttention(nn.Module):
         super().__init__()
         self.channels = channels
         self.heads = heads
-        self.dropout = dropout
         self.num_random_features = num_random_features
         self.use_orthogonal_features = use_orthogonal_features
         self.use_softmax = use_softmax
-
-        # Projections for Q, K, V
+        
         self.q_proj = nn.Linear(channels, channels)
         self.k_proj = nn.Linear(channels, channels)
         self.v_proj = nn.Linear(channels, channels)
         self.out_proj = nn.Linear(channels, channels)
-
-        # Dropout layers
-        self.attn_dropout = nn.Dropout(dropout)
-        self.out_dropout = nn.Dropout(dropout)
-
-        # Random features for FAVOR+ attention
+        self.dropout = nn.Dropout(dropout)
+        
         self._init_random_features()
-
         self._reset_parameters()
-
+    
     def _init_random_features(self):
-        """Initialize random features for FAVOR+ attention."""
         if self.use_orthogonal_features:
-            # Use orthogonal random features
-            q = torch.randn(self.num_random_features, self.channels // self.heads)
-            q = torch.linalg.qr(q)[0]
-            self.register_buffer('random_features', q)
+            # Use orthogonal random features for better approximation
+            self.random_features = nn.Parameter(torch.randn(self.num_random_features, self.channels))
+            nn.init.orthogonal_(self.random_features)
         else:
-            # Use standard random features
-            self.register_buffer('random_features', 
-                               torch.randn(self.num_random_features, self.channels // self.heads))
-
+            self.random_features = nn.Parameter(torch.randn(self.num_random_features, self.channels))
+    
     def _reset_parameters(self):
-        """Initialize parameters using Xavier initialization."""
         nn.init.xavier_uniform_(self.q_proj.weight)
         nn.init.xavier_uniform_(self.k_proj.weight)
         nn.init.xavier_uniform_(self.v_proj.weight)
         nn.init.xavier_uniform_(self.out_proj.weight)
-        if self.q_proj.bias is not None:
-            nn.init.zeros_(self.q_proj.bias)
-        if self.k_proj.bias is not None:
-            nn.init.zeros_(self.k_proj.bias)
-        if self.v_proj.bias is not None:
-            nn.init.zeros_(self.v_proj.bias)
-        if self.out_proj.bias is not None:
-            nn.init.zeros_(self.out_proj.bias)
-
+        nn.init.zeros_(self.q_proj.bias)
+        nn.init.zeros_(self.k_proj.bias)
+        nn.init.zeros_(self.v_proj.bias)
+        nn.init.zeros_(self.out_proj.bias)
+    
     def _get_random_features(self, x: torch.Tensor) -> torch.Tensor:
-        """Project input to random features space."""
         return torch.matmul(x, self.random_features.t())
-
-    def forward(self, x: torch.Tensor, mask: Optional[torch.Tensor] = None) -> torch.Tensor:
-        """
-        Forward pass of Performer attention.
+    
+    def forward(self, query: torch.Tensor, key: torch.Tensor, value: torch.Tensor, mask: Optional[torch.Tensor] = None) -> torch.Tensor:
+        # Project inputs
+        q = self.q_proj(query)  # [batch_size, seq_len, channels]
+        k = self.k_proj(key)    # [batch_size, seq_len, channels]
+        v = self.v_proj(value)  # [batch_size, seq_len, channels]
         
-        Args:
-            x: Input tensor [batch_size, seq_len, channels]
-            mask: Optional padding mask [batch_size, seq_len]
-            
-        Returns:
-            Output tensor [batch_size, seq_len, channels]
-        """
-        batch_size, seq_len, _ = x.shape
-
-        # Project Q, K, V
-        q = self.q_proj(x)  # [batch_size, seq_len, channels]
-        k = self.k_proj(x)  # [batch_size, seq_len, channels]
-        v = self.v_proj(x)  # [batch_size, seq_len, channels]
-
-        # Reshape for multi-head attention
-        q = q.view(batch_size, seq_len, self.heads, -1).transpose(1, 2)
-        k = k.view(batch_size, seq_len, self.heads, -1).transpose(1, 2)
-        v = v.view(batch_size, seq_len, self.heads, -1).transpose(1, 2)
-
-        # Project to random features space
-        q_features = self._get_random_features(q)  # [batch_size, heads, seq_len, num_random_features]
-        k_features = self._get_random_features(k)  # [batch_size, heads, seq_len, num_random_features]
-
-        # Compute attention using random features
-        if self.use_softmax:
-            # Softmax attention
-            q_features = F.softmax(q_features, dim=-1)
-            k_features = F.softmax(k_features, dim=-1)
-            attn_weights = torch.matmul(q_features, k_features.transpose(-2, -1))
-        else:
-            # Linear attention
-            attn_weights = torch.matmul(q_features, k_features.transpose(-2, -1)) / math.sqrt(self.num_random_features)
-
-        # Apply padding mask if provided
+        # Get random features
+        q_features = self._get_random_features(q)  # [batch_size, seq_len, num_random_features]
+        k_features = self._get_random_features(k)  # [batch_size, seq_len, num_random_features]
+        
+        # Compute attention scores using random features
+        attention_scores = torch.matmul(q_features, k_features.transpose(-2, -1))  # [batch_size, seq_len, seq_len]
+        
         if mask is not None:
-            attn_weights = attn_weights.masked_fill(~mask.unsqueeze(1).unsqueeze(2), float('-inf'))
-
-        # Apply dropout
-        attn_weights = self.attn_dropout(attn_weights)
-
-        # Compute output
-        out = torch.matmul(attn_weights, v)
-        out = out.transpose(1, 2).contiguous().view(batch_size, seq_len, -1)
-        out = self.out_proj(out)
-        out = self.out_dropout(out)
-
-        return out
+            attention_scores = attention_scores.masked_fill(mask == 0, float('-inf'))
+        
+        if self.use_softmax:
+            attention_weights = F.softmax(attention_scores / math.sqrt(self.channels), dim=-1)
+        else:
+            attention_weights = attention_scores / math.sqrt(self.channels)
+        
+        attention_weights = self.dropout(attention_weights)
+        
+        # Apply attention to values
+        output = torch.matmul(attention_weights, v)  # [batch_size, seq_len, channels]
+        output = self.out_proj(output)
+        
+        return output, attention_weights
 
 
 class LaplacianPE(nn.Module):
