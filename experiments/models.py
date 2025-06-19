@@ -24,7 +24,7 @@ import math
 
 def create_model(model_type: str, **kwargs):
     """Extended model creation to include Graph Transformers."""
-    if model_type in ['graphormer', 'graphgps']:
+    if model_type == 'graphgps':
         return GraphTransformerModel(transformer_type=model_type, **kwargs)
     elif model_type in ['gcn', 'sage', 'gat', 'fagcn', 'gin']:
         return GNNModel(gnn_type=model_type, **kwargs)
@@ -779,7 +779,7 @@ class PerformerAttention(nn.Module):
         output = torch.matmul(attention_weights, v)  # [batch_size, seq_len, channels]
         output = self.out_proj(output)
         
-        return output, attention_weights
+        return output
 
 
 class LaplacianPE(nn.Module):
@@ -792,95 +792,198 @@ class LaplacianPE(nn.Module):
         return self.linear(x)
 
 
+class GPSLayer(nn.Module):
+    """Fixed GPS layer implementation."""
+    
+    def __init__(self, hidden_dim: int, num_heads: int, dropout: float,
+                 local_gnn_type: str, attn_type: str):
+        super().__init__()
+        
+        self.hidden_dim = hidden_dim
+        self.num_heads = num_heads
+        self.dropout = dropout
+        
+        # Local GNN component
+        if local_gnn_type == "gcn":
+            self.local_conv = GCNConv(hidden_dim, hidden_dim)
+        elif local_gnn_type == "sage":
+            self.local_conv = SAGEConv(hidden_dim, hidden_dim)
+        else:
+            raise ValueError(f"Unknown local GNN type: {local_gnn_type}")
+        
+        # Global attention component - FIXED
+        if attn_type == "multihead":
+            self.global_attn = nn.MultiheadAttention(
+                hidden_dim, num_heads, dropout=dropout, batch_first=True
+            )
+        elif attn_type == "performer":
+            self.global_attn = PerformerAttention(
+                channels=hidden_dim, heads=num_heads, dropout=dropout
+            )
+        elif attn_type == "bigbird":
+            self.global_attn = BigBirdAttention(
+                channels=hidden_dim, heads=num_heads, dropout=dropout
+            )
+        else:
+            raise ValueError(f"Unknown attention type: {attn_type}")
+        
+        # Normalization and feedforward
+        self.norm1 = nn.LayerNorm(hidden_dim)
+        self.norm2 = nn.LayerNorm(hidden_dim)
+        self.norm3 = nn.LayerNorm(hidden_dim)
+        
+        self.ffn = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim * 2),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim * 2, hidden_dim),
+            nn.Dropout(dropout)
+        )
+    
+    def forward(self, h: torch.Tensor, edge_index: torch.Tensor, 
+                batch: Optional[torch.Tensor] = None):
+        """FIXED: Proper GPS layer forward pass."""
+        
+        residual = h
+        
+        # 1. Local MPNN - FIXED: Proper residual connection
+        h_local = self.local_conv(h, edge_index)
+        h_local = F.dropout(h_local, p=self.dropout, training=self.training)
+        h = self.norm1(h + h_local)  # Residual connection
+        
+        # 2. Global attention - FIXED: Handle batching properly
+        h_global = self._apply_global_attention(h, batch)
+        h_global = F.dropout(h_global, p=self.dropout, training=self.training)
+        h = self.norm2(h + h_global)  # Residual connection
+        
+        # 3. Feed-forward network
+        h_ffn = self.ffn(h)
+        h = self.norm3(h + h_ffn)  # Residual connection
+        
+        return h
+    
+    def _apply_global_attention(self, h: torch.Tensor, batch: Optional[torch.Tensor]):
+        """Apply global attention with proper batching."""
+        
+        if isinstance(self.global_attn, nn.MultiheadAttention):
+            if batch is None:
+                # Single graph case
+                h_input = h.unsqueeze(0)  # Add batch dimension
+                h_attn, _ = self.global_attn(h_input, h_input, h_input)
+                return h_attn.squeeze(0)  # Remove batch dimension
+            else:
+                # Multiple graphs - use to_dense_batch for proper handling
+                h_dense, mask = to_dense_batch(h, batch)
+                batch_size, max_nodes, hidden_dim = h_dense.shape
+                
+                # Apply attention to each graph in the batch
+                h_attn = torch.zeros_like(h_dense)
+                for i in range(batch_size):
+                    graph_mask = mask[i]
+                    graph_nodes = graph_mask.sum().item()
+                    if graph_nodes > 0:
+                        graph_h = h_dense[i, :graph_nodes].unsqueeze(0)
+                        attn_out, _ = self.global_attn(graph_h, graph_h, graph_h)
+                        h_attn[i, :graph_nodes] = attn_out.squeeze(0)
+                
+                # Convert back to node-level representation
+                return h_attn[mask]
+        
+        elif isinstance(self.global_attn, PerformerAttention):
+            # Handle PerformerAttention specifically
+            if batch is None:
+                # Single graph case
+                h_input = h.unsqueeze(0)  # Add batch dimension
+                h_attn = self.global_attn(h_input, h_input, h_input)
+                return h_attn.squeeze(0)  # Remove batch dimension
+            else:
+                # Multiple graphs - use to_dense_batch for proper handling
+                h_dense, mask = to_dense_batch(h, batch)
+                batch_size, max_nodes, hidden_dim = h_dense.shape
+                
+                # Apply attention to each graph in the batch
+                h_attn = torch.zeros_like(h_dense)
+                for i in range(batch_size):
+                    graph_mask = mask[i]
+                    graph_nodes = graph_mask.sum().item()
+                    if graph_nodes > 0:
+                        graph_h = h_dense[i, :graph_nodes].unsqueeze(0)
+                        attn_out = self.global_attn(graph_h, graph_h, graph_h)
+                        h_attn[i, :graph_nodes] = attn_out.squeeze(0)
+                
+                # Convert back to node-level representation
+                return h_attn[mask]
+        
+        elif isinstance(self.global_attn, BigBirdAttention):
+            # Handle BigBirdAttention specifically (different interface)
+            if batch is None:
+                # Single graph case
+                h_input = h.unsqueeze(0)  # Add batch dimension
+                h_attn = self.global_attn(h_input)
+                return h_attn.squeeze(0)  # Remove batch dimension
+            else:
+                # Multiple graphs - use to_dense_batch for proper handling
+                h_dense, mask = to_dense_batch(h, batch)
+                batch_size, max_nodes, hidden_dim = h_dense.shape
+                
+                # Apply attention to each graph in the batch
+                h_attn = torch.zeros_like(h_dense)
+                for i in range(batch_size):
+                    graph_mask = mask[i]
+                    graph_nodes = graph_mask.sum().item()
+                    if graph_nodes > 0:
+                        graph_h = h_dense[i, :graph_nodes].unsqueeze(0)
+                        attn_out = self.global_attn(graph_h, mask=graph_mask.unsqueeze(0))
+                        h_attn[i, :graph_nodes] = attn_out.squeeze(0)
+                
+                # Convert back to node-level representation
+                return h_attn[mask]
+        
+        elif hasattr(self.global_attn, 'forward'):
+            # For other custom attention implementations
+            if batch is None:
+                return self.global_attn(h, h, h)
+            else:
+                h_dense, mask = to_dense_batch(h, batch)
+                h_attn = self.global_attn(h_dense, mask=mask)
+                return h_attn[mask]
+        
+        else:
+            raise ValueError("Unknown attention implementation")
+
 class GraphTransformerEncoder(torch.nn.Module):
     """Base Graph Transformer encoder without prediction head."""
     
-    def __init__(
-        self,
-        input_dim: int,
-        hidden_dim: int,
-        transformer_type: str = "graphgps",
-        num_layers: int = 3,
-        dropout: float = 0.1,
-        num_heads: int = 8,
-        max_nodes: int = 200,
-        max_path_length: int = 10,
-        use_edge_features: bool = False,
-        prenorm: bool = True,
-        local_gnn_type: str = "gcn",
-        global_model_type: str = "transformer",
-        precompute_encodings: bool = False,
-        cache_encodings: bool = True,
-        attn_type: str = "multihead",
-        attn_kwargs: Optional[Dict[str, Any]] = None,
-        pe_dim: int = 16,
-        pe_type: str = 'laplacian',
-        pe_norm_type: str = 'layer',
-    ):
+    def __init__(self, input_dim: int, hidden_dim: int, transformer_type: str = "graphgps", 
+                 num_layers: int = 3, dropout: float = 0.1, num_heads: int = 8,
+                 pe_dim: int = 16, pe_type: str = 'laplacian', pe_norm_type: str = 'layer',
+                 local_gnn_type: str = "gcn", attn_type: str = "multihead", **kwargs):
         super().__init__()
-        self.input_dim = input_dim
-        self.hidden_dim = hidden_dim
         self.transformer_type = transformer_type
-        self.num_layers = num_layers
-        self.dropout = dropout
-        self.num_heads = num_heads
-        self.max_nodes = max_nodes
-        self.max_path_length = max_path_length
-        self.use_edge_features = use_edge_features
-        self.prenorm = prenorm
-        self.local_gnn_type = local_gnn_type
-        self.global_model_type = global_model_type
-        self.precompute_encodings = precompute_encodings
-        self.cache_encodings = cache_encodings
-        self.attn_type = attn_type
-        self.attn_kwargs = attn_kwargs
-        self.pe_dim = pe_dim
         self.pe_type = pe_type
         self.pe_norm_type = pe_norm_type
-        self.use_precomputed_graph_norm = False
+        self.pe_dim = pe_dim
+        self.hidden_dim = hidden_dim
+        self.num_layers = num_layers
+        self.dropout = dropout
         
-        # Encoding cache
-        self._encoding_cache = {} if cache_encodings else None
-        
-        # Initialize appropriate transformer type
-        if transformer_type == "graphormer":
-            self._init_graphormer(input_dim, hidden_dim, dropout)
-        elif transformer_type == "graphgps":
-            self._init_graphgps(input_dim, hidden_dim, dropout, local_gnn_type, attn_type)
+        if transformer_type == "graphgps":
+            self._init_graphgps(input_dim, hidden_dim, dropout, local_gnn_type, attn_type, num_heads)
         else:
             raise ValueError(f"Unknown transformer type: {transformer_type}")
-    
-    def _init_graphormer(self, input_dim: int, hidden_dim: int, dropout: float):
-        """Initialize Graphormer architecture."""
-        # Input projection
-        self.input_proj = nn.Linear(input_dim, hidden_dim)
-        
-        # Positional encodings
-        self.spatial_encoder = SpatialEncoder(hidden_dim, self.max_path_length)
-        self.degree_encoder = DegreeEncoder(hidden_dim, max_degree=100)
-        
-        # Transformer layers
-        self.layers = nn.ModuleList([
-            GraphormerLayer(hidden_dim, self.num_heads, dropout)
-            for _ in range(self.num_layers)
-        ])
-        
-        # Layer norm
-        self.layer_norm = nn.LayerNorm(hidden_dim)
         
     def _init_graphgps(self, input_dim: int, hidden_dim: int, dropout: float, 
-                      local_gnn_type: str, attn_type: str):
+                      local_gnn_type: str, attn_type: str, num_heads: int):
         """Initialize GraphGPS architecture using enhanced implementation."""
         # Input projection that combines features and PE
         self.input_proj = nn.Linear(input_dim + self.pe_dim, hidden_dim)
         
         # PE normalization - configurable
+        self.use_precomputed_graph_norm = False
         if self.pe_norm_type == 'layer':
             self.pe_norm = nn.LayerNorm(self.pe_dim)
         elif self.pe_norm_type == 'batch':
             self.pe_norm = nn.BatchNorm1d(self.pe_dim)
-        elif self.pe_norm_type == 'instance':
-            self.pe_norm = nn.InstanceNorm1d(self.pe_dim)
         # For graph-normalized PEs, we don't need to normalize since it's precomputed. We just need to select other dataloader
         elif self.pe_norm_type == 'graph':
             self.use_precomputed_graph_norm = True
@@ -888,134 +991,54 @@ class GraphTransformerEncoder(torch.nn.Module):
         else:
             self.pe_norm = nn.Identity()
         
-        # Create GPS layers
+        # Create GPS layers with fixed implementation
         self.layers = nn.ModuleList()
         for _ in range(self.num_layers):
-            self.layers.append(
-                self._create_gps_layer(hidden_dim, self.num_heads, dropout, local_gnn_type)
-            )
-    
-    def _create_gps_layer(self, hidden_dim: int, num_heads: int, dropout: float, local_gnn_type: str):
-        """Create a GPS layer with local + global components."""
-        # Create local GNN layer
-        if local_gnn_type == "gcn":
-            local_conv = GCNConv(hidden_dim, hidden_dim)
-        elif local_gnn_type == "sage":
-            local_conv = SAGEConv(hidden_dim, hidden_dim)
-        else:
-            raise ValueError(f"Unknown local GNN type: {local_gnn_type}")
-        
-        # Create global attention layer based on attn_type
-        if self.attn_type == 'multihead':
-            global_attn = nn.MultiheadAttention(hidden_dim, num_heads, dropout, batch_first=True)
-        elif self.attn_type == 'performer':
-            global_attn = PerformerAttention(
-                channels=hidden_dim,
-                heads=num_heads,
+            layer = GPSLayer(
+                hidden_dim=hidden_dim,
+                num_heads=num_heads,
                 dropout=dropout,
-                **(self.attn_kwargs or {})
+                local_gnn_type=local_gnn_type,
+                attn_type=attn_type
             )
-        elif self.attn_type == 'bigbird':
-            global_attn = BigBirdAttention(
-                channels=hidden_dim,
-                heads=num_heads,
-                dropout=dropout,
-                **(self.attn_kwargs or {})
-            )
-        else:
-            raise ValueError(f"Unknown attention type: {self.attn_type}")
-        
-        # Create GPS layer components
-        return nn.ModuleDict({
-            'local_conv': local_conv,
-            'global_attn': global_attn,
-            'norm1': nn.LayerNorm(hidden_dim) if self.prenorm else nn.Identity(),
-            'norm2': nn.LayerNorm(hidden_dim) if self.prenorm else nn.Identity(),
-            'ffn': nn.Sequential(
-                nn.Linear(hidden_dim, hidden_dim * 2),
-                nn.ReLU(),
-                nn.Dropout(dropout),
-                nn.Linear(hidden_dim * 2, hidden_dim)
-            )
-        })
+            self.layers.append(layer)
     
     def forward(self, x: torch.Tensor, edge_index: torch.Tensor, batch: Optional[torch.Tensor] = None, **kwargs):
         """Forward pass through transformer encoder."""
-        if self.transformer_type == "graphormer":
-            return self._forward_graphormer(x, edge_index, batch)
-        elif self.transformer_type == "graphgps":
-            return self._forward_graphgps(x, edge_index, batch, **kwargs)
-    
-    def _forward_graphormer(self, x: torch.Tensor, edge_index: torch.Tensor, batch: Optional[torch.Tensor] = None):
-        """Forward pass for Graphormer."""
-        # Project input
-        h = self.input_proj(x)
-        
-        # Add positional encodings if needed
-        if self.precompute_encodings:
-            # Compute degree encoding
-            deg = degree(edge_index[0], num_nodes=x.size(0), dtype=torch.long)
-            degree_emb = self.degree_encoder(deg)
-            h = h + degree_emb
-            
-            # Compute spatial encoding
-            spatial_matrix = self._compute_spatial_matrix(edge_index, x.size(0))
-            spatial_emb = self.spatial_encoder(spatial_matrix)
-            h = h + spatial_emb
-        
-        # Apply transformer layers
-        for layer in self.layers:
-            h = layer(h, edge_index, batch=batch)
-        
-        h = self.layer_norm(h)
-        return h
-    
-    def _compute_spatial_matrix(self, edge_index: torch.Tensor, num_nodes: int) -> torch.Tensor:
-        """Compute spatial encoding matrix for Graphormer."""
-        try:
-            # Convert to dense adjacency matrix
-            adj = to_dense_adj(edge_index, max_num_nodes=num_nodes).squeeze(0)
-            
-            # Compute shortest path distances
-            spatial_matrix = torch.zeros(num_nodes, num_nodes, dtype=torch.long, device=edge_index.device)
-            
-            # Use Floyd-Warshall algorithm for shortest paths
-            for k in range(num_nodes):
-                for i in range(num_nodes):
-                    for j in range(num_nodes):
-                        if adj[i,k] and adj[k,j]:
-                            if spatial_matrix[i,j] == 0 or spatial_matrix[i,j] > spatial_matrix[i,k] + spatial_matrix[k,j]:
-                                spatial_matrix[i,j] = spatial_matrix[i,k] + spatial_matrix[k,j]
-            
-            return spatial_matrix
-            
-        except Exception as e:
-            # Fallback to zero matrix
-            return torch.zeros(num_nodes, num_nodes, dtype=torch.long, device=edge_index.device)
-    
-    def _forward_graphgps(self, x: torch.Tensor, edge_index: torch.Tensor, batch: Optional[torch.Tensor] = None, **kwargs):
         """Enhanced forward pass for GraphGPS."""
         # Get precomputed PE
-        if self.use_precomputed_graph_norm:
-            pe_attr_name = f"{self.pe_type}_pe_norm"
-        else:
-            pe_attr_name = f"{self.pe_type}_pe"
+        pe_attr_name = f"{self.pe_type}_pe"
+        if self.pe_norm_type == 'graph':
+            pe_attr_name += "_norm"
         
+        pe = None
         if pe_attr_name in kwargs:
             pe = kwargs[pe_attr_name]
-        else:
-            # Try to get from first graph in batch (assuming homogeneous batch)
-            pe = getattr(kwargs.get('data', None), pe_attr_name, None)
-            # Print Attribute names from kwargs
-            if pe is None:
-                raise ValueError(f"PE not found for {pe_attr_name} in kwargs")
+        elif 'data' in kwargs:
+            pe = getattr(kwargs['data'], pe_attr_name, None)
+
+        if pe is None:
+            # Fallback: compute PE on the fly
+            print(f"Warning: PE not found, computing on the fly")
+            from data import PositionalEncodingComputer
+            pe_computer = PositionalEncodingComputer(self.pe_dim, [self.pe_type])
+            pe = pe_computer.compute_laplacian_pe(edge_index, x.size(0))
         
-        # Ensure PE is on same device
+        # Ensure PE is on same device and has correct shape
         pe = pe.to(x.device)
+        if pe.size(0) != x.size(0):
+            raise ValueError(f"PE size {pe.size(0)} doesn't match node count {x.size(0)}")
+        if pe.size(1) != self.pe_dim:
+            # Pad or truncate PE to correct dimension
+            if pe.size(1) < self.pe_dim:
+                pad_size = self.pe_dim - pe.size(1)
+                pe = torch.cat([pe, torch.zeros(pe.size(0), pad_size, device=pe.device)], dim=1)
+            else:
+                pe = pe[:, :self.pe_dim]
         
         # Normalize PE
         if self.pe_norm_type == 'batch' and pe.size(0) > 1:
-            pe = self.pe_norm(pe)
+            pe = self.pe_norm(pe.unsqueeze(0)).squeeze(0)
         elif self.pe_norm_type != 'batch':
             pe = self.pe_norm(pe)
         
@@ -1025,29 +1048,7 @@ class GraphTransformerEncoder(torch.nn.Module):
         
         # Apply GPS layers
         for layer in self.layers:
-            # Local message passing
-            h_local = layer['local_conv'](h, edge_index)
-            
-            # Global attention
-            if batch is None:
-                # Single graph case
-                h_global, _ = layer['global_attn'](h.unsqueeze(0), h.unsqueeze(0), h.unsqueeze(0))
-                h_global = h_global.squeeze(0)
-            else:
-                # Batched case - process each graph separately
-                h_global = []
-                for b in range(batch.max().item() + 1):
-                    mask = (batch == b)
-                    graph_h = h[mask]
-                    graph_h_global, _ = layer['global_attn'](
-                        graph_h.unsqueeze(0), graph_h.unsqueeze(0), graph_h.unsqueeze(0)
-                    )
-                    h_global.append(graph_h_global.squeeze(0))
-                h_global = torch.cat(h_global, dim=0)
-            
-            # Combine and apply residual + norm
-            h = layer['norm1'](h + h_local + h_global)
-            h = layer['norm2'](h + layer['ffn'](h))
+            h = layer(h, edge_index, batch)
         
         return h
 
@@ -1064,18 +1065,10 @@ class GraphTransformerModel(torch.nn.Module):
         num_layers: int = 3,
         dropout: float = 0.1,
         num_heads: int = 8,
-        max_nodes: int = 200,
-        max_path_length: int = 10,
-        use_edge_features: bool = False,
-        prenorm: bool = True,
-        local_gnn_type: str = "gcn",
-        global_model_type: str = "transformer",
-        precompute_encodings: bool = True,
-        cache_encodings: bool = False,
         is_regression: bool = False,
         is_graph_level_task: bool = False,
+        local_gnn_type: str = "gcn",
         attn_type: str = "multihead",
-        attn_kwargs: Optional[Dict[str, Any]] = None,
         pe_dim: int = 16,
         pe_type: str = 'laplacian',
         pe_norm_type: str = 'layer',
@@ -1089,7 +1082,7 @@ class GraphTransformerModel(torch.nn.Module):
         self.is_regression = is_regression
         self.is_graph_level_task = is_graph_level_task
         
-        # Create encoder
+        # Create encoder with only the parameters it accepts
         self.encoder = GraphTransformerEncoder(
             input_dim=input_dim,
             hidden_dim=hidden_dim,
@@ -1097,19 +1090,11 @@ class GraphTransformerModel(torch.nn.Module):
             num_layers=num_layers,
             dropout=dropout,
             num_heads=num_heads,
-            max_nodes=max_nodes,
-            max_path_length=max_path_length,
-            use_edge_features=use_edge_features,
-            prenorm=prenorm,
-            local_gnn_type=local_gnn_type,
-            global_model_type=global_model_type,
-            precompute_encodings=precompute_encodings,
-            cache_encodings=cache_encodings,
-            attn_type=attn_type,
-            attn_kwargs=attn_kwargs,
             pe_dim=pe_dim,
             pe_type=pe_type,
             pe_norm_type=pe_norm_type,
+            local_gnn_type=local_gnn_type,
+            attn_type=attn_type,
         )
         
         # Create prediction head
@@ -1160,81 +1145,6 @@ class GraphTransformerModel(torch.nn.Module):
             out = out * self.scale_factor
             
         return out
-
-
-class SpatialEncoder(nn.Module):
-    """Spatial encoding for Graphormer."""
-    def __init__(self, hidden_dim: int, max_path_length: int):
-        super().__init__()
-        self.max_path_length = max_path_length
-        self.spatial_embedding = nn.Embedding(max_path_length, hidden_dim)
-    
-    def forward(self, spatial_matrix: torch.Tensor) -> torch.Tensor:
-        return self.spatial_embedding(spatial_matrix.clamp(0, self.max_path_length-1))
-
-
-class DegreeEncoder(nn.Module):
-    """Degree encoding for Graphormer."""
-    def __init__(self, hidden_dim: int, max_degree: int = 100):
-        super().__init__()
-        self.max_degree = max_degree
-        self.degree_embedding = nn.Embedding(max_degree, hidden_dim)
-    
-    def forward(self, degrees: torch.Tensor) -> torch.Tensor:
-        return self.degree_embedding(degrees.clamp(0, self.max_degree-1))
-
-
-class GraphormerLayer(nn.Module):
-    """Single Graphormer transformer layer."""
-    def __init__(self, hidden_dim: int, num_heads: int, dropout: float = 0.1):
-        super().__init__()
-        self.hidden_dim = hidden_dim
-        self.num_heads = num_heads
-        
-        self.self_attn = nn.MultiheadAttention(
-            hidden_dim, num_heads, dropout=dropout, batch_first=True
-        )
-        self.norm1 = nn.LayerNorm(hidden_dim)
-        self.norm2 = nn.LayerNorm(hidden_dim)
-        
-        self.ffn = nn.Sequential(
-            nn.Linear(hidden_dim, hidden_dim * 2),
-            nn.ReLU(),
-            nn.Dropout(dropout),
-            nn.Linear(hidden_dim * 2, hidden_dim),
-            nn.Dropout(dropout)
-        )
-    
-    def forward(self, h: torch.Tensor, edge_index: torch.Tensor, 
-                encodings: Optional[Dict] = None, batch: Optional[torch.Tensor] = None):
-        """Forward pass through Graphormer layer."""
-        if batch is None:
-            # Single graph case
-            h_input = h.unsqueeze(0)
-            h_attn, _ = self.self_attn(h_input, h_input, h_input)
-            h_attn = h_attn.squeeze(0)
-            h = self.norm1(h + h_attn)
-            h_ffn = self.ffn(h)
-            h = self.norm2(h + h_ffn)
-        else:
-            # Batched case - process each graph separately
-            batch_size = batch.max().item() + 1
-            outputs = []
-            
-            for b in range(batch_size):
-                mask = (batch == b)
-                graph_h = h[mask]
-                graph_h_input = graph_h.unsqueeze(0)
-                graph_h_attn, _ = self.self_attn(graph_h_input, graph_h_input, graph_h_input)
-                graph_h_attn = graph_h_attn.squeeze(0)
-                graph_h = self.norm1(graph_h + graph_h_attn)
-                graph_h_ffn = self.ffn(graph_h)
-                graph_h = self.norm2(graph_h + graph_h_ffn)
-                outputs.append(graph_h)
-            
-            h = torch.cat(outputs, dim=0)
-        
-        return h
 
 
 class MLPModel(nn.Module):

@@ -330,6 +330,10 @@ class GraphFamilyGenerator:
         self.community_labels_per_graph = []
         self.generation_metadata = []
         failed_graphs = 0
+
+        # Every time this function is called we need to reset Seed
+        self.seed = np.random.randint(0, 1000000)
+        np.random.seed(self.seed)
         
         # Progress bar setup
         if show_progress:

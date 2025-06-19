@@ -72,13 +72,13 @@ def parse_args():
     # === GRAPH FAMILY GENERATION ===
     parser.add_argument('--n_graphs', type=int, default=20,
                         help='Number of graphs to generate in family')
-    parser.add_argument('--min_n_nodes', type=int, default=60,
+    parser.add_argument('--min_n_nodes', type=int, default=70,
                         help='Minimum number of nodes per graph')
     parser.add_argument('--max_n_nodes', type=int, default=130,
                         help='Maximum number of nodes per graph')
     parser.add_argument('--min_communities', type=int, default=4,
                         help='Minimum number of communities per graph')
-    parser.add_argument('--max_communities', type=int, default=6,
+    parser.add_argument('--max_communities', type=int, default=7,
                         help='Maximum number of communities per graph')
     
     # === UNIVERSE PARAMETERS ===
@@ -88,7 +88,7 @@ def parse_args():
                         help='Feature dimension for universe')
     parser.add_argument('--universe_edge_density', type=float, default=0.07,
                         help='Base edge density for universe')
-    parser.add_argument('--universe_homophily', type=float, default=0.3,
+    parser.add_argument('--universe_homophily', type=float, default=0.5,
                         help='Homophily parameter for universe')
     parser.add_argument('--universe_randomness_factor', type=float, default=1.0,
                         help='Randomness factor for universe')
@@ -101,7 +101,7 @@ def parse_args():
                         help='Degree distribution type for DCCC-SBM')
     
     # === GRAPH FAMILY VARIATION ===
-    parser.add_argument('--homophily_range', type=float, nargs=2, default=[0.0, 0.2],
+    parser.add_argument('--homophily_range', type=float, nargs=2, default=[0.0, 0.1],
                         help='Range around universe homophily')
     parser.add_argument('--density_range', type=float, nargs=2, default=[0.0, 0.1],
                         help='Range around universe density')
@@ -113,7 +113,7 @@ def parse_args():
     # === DCCC-SBM PARAMETERS ===
     parser.add_argument('--community_imbalance_range', type=float, nargs=2, default=[0.0, 0.3],
                         help='Range for community size imbalance (DCCC-SBM)')
-    parser.add_argument('--degree_separation_range', type=float, nargs=2, default=[0.0, 1.0],
+    parser.add_argument('--degree_separation_range', type=float, nargs=2, default=[0.3, 1.0],
                         help='Range for degree distribution separation (DCCC-SBM)')
     
     # === METAPATH TASK ARGUMENTS === 
@@ -129,7 +129,7 @@ def parse_args():
                         help='Maximum allowed participation rate per community')
     
     # === MODELS ===
-    parser.add_argument('--gnn_types', type=str, nargs='+', default=['gcn', 'sage', 'gin', 'gat'],
+    parser.add_argument('--gnn_types', type=str, nargs='+', default=['gcn', 'gat'],
                         choices=['gcn', 'fagcn', 'sage', 'gat', 'gin'],
                         help='Types of GNN models to run')
     parser.add_argument('--transformer_types', type=str, nargs='+', 
@@ -160,7 +160,7 @@ def parse_args():
                         help='Learning rate for neural models')
     parser.add_argument('--hidden_dim', type=int, default=64,
                         help='Hidden dimension for neural models')
-    parser.add_argument('--batch_size', type=int, default=5,
+    parser.add_argument('--batch_size', type=int, default=4,
                         help='Batch size for training')
     parser.add_argument('--n_trials', type=int, default=10,
                         help='Number of trials for hyperparameter optimization')

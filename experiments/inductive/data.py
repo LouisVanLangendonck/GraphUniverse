@@ -80,31 +80,84 @@ class PositionalEncodingComputer:
         return normalized_pe
     
     def compute_laplacian_pe(self, edge_index: torch.Tensor, num_nodes: int) -> torch.Tensor:
-        """Compute Laplacian eigenvector PE."""
+        """Fixed Laplacian PE computation with proper handling of edge cases."""
         try:
-            # Get normalized Laplacian
-            edge_index_np = edge_index.cpu().numpy()
-            L = to_scipy_sparse_matrix(
-                *get_laplacian(edge_index, normalization='sym', num_nodes=num_nodes)
+            # Create cache key
+            cache_key = f"laplacian_{num_nodes}_{edge_index.shape[1]}"
+            # if cache_key in self._pe_cache:
+            #     return self._pe_cache[cache_key]
+            
+            # Handle disconnected/empty graphs
+            if edge_index.shape[1] == 0 or num_nodes <= 1:
+                pe = torch.zeros(num_nodes, self.max_pe_dim)
+                # self._pe_cache[cache_key] = pe
+                return pe
+            
+            # Get normalized Laplacian - FIXED: Add num_nodes parameter
+            edge_index_lap, edge_weight = get_laplacian(
+                edge_index, 
+                edge_weight=None,
+                normalization='sym', 
+                num_nodes=num_nodes
             )
             
-            # Compute smallest eigenvalues/eigenvectors
+            # Convert to scipy sparse matrix
+            L = to_scipy_sparse_matrix(edge_index_lap, edge_weight, num_nodes)
+            
+            # Compute eigenvalues/eigenvectors with better parameters
             k = min(self.max_pe_dim, num_nodes - 2)
             if k <= 0:
-                return torch.zeros(num_nodes, self.max_pe_dim)
+                pe = torch.zeros(num_nodes, self.max_pe_dim)
+                # self._pe_cache[cache_key] = pe
+                return pe
             
-            eigenvals, eigenvecs = eigsh(L, k=k, which='SM', return_eigenvectors=True)
+            # Use more robust eigensolver parameters
+            try:
+                eigenvals, eigenvecs = eigsh(
+                    L, 
+                    k=k, 
+                    which='SM',  # Smallest eigenvalues
+                    return_eigenvectors=True,
+                    tol=1e-6,
+                    maxiter=num_nodes * 10
+                )
+            except Exception as e:
+                print(f"Warning: eigsh failed for graph with {num_nodes} nodes: {e}")
+                # Fallback: use dense eigendecomposition for small graphs
+                if num_nodes < 100:
+                    L_dense = L.toarray()
+                    eigenvals, eigenvecs = np.linalg.eigh(L_dense)
+                    # Sort by eigenvalue
+                    idx = np.argsort(eigenvals)
+                    eigenvecs = eigenvecs[:, idx[:k]]
+                else:
+                    # Last resort: return zero PE
+                    pe = torch.zeros(num_nodes, self.max_pe_dim)
+                    # self._pe_cache[cache_key] = pe
+                    return pe
             
-            # Pad if needed
+            # Handle sign ambiguity by making first non-zero entry positive
+            for i in range(eigenvecs.shape[1]):
+                first_nonzero = np.argmax(np.abs(eigenvecs[:, i]))
+                if eigenvecs[first_nonzero, i] < 0:
+                    eigenvecs[:, i] *= -1
+            
+            # Pad or truncate to max_pe_dim
             if eigenvecs.shape[1] < self.max_pe_dim:
                 pad_width = self.max_pe_dim - eigenvecs.shape[1]
                 eigenvecs = np.pad(eigenvecs, ((0, 0), (0, pad_width)), mode='constant')
+            else:
+                eigenvecs = eigenvecs[:, :self.max_pe_dim]
             
-            return torch.tensor(eigenvecs[:, :self.max_pe_dim], dtype=torch.float)
+            pe = torch.tensor(eigenvecs, dtype=torch.float32)
+            # self._pe_cache[cache_key] = pe
+            return pe
             
         except Exception as e:
-            print(f"Warning: Laplacian PE computation failed: {e}")
-            return torch.zeros(num_nodes, self.max_pe_dim)
+            print(f"Warning: Laplacian PE computation failed completely: {e}")
+            pe = torch.zeros(num_nodes, self.max_pe_dim)
+            # self._pe_cache[cache_key] = pe
+            return pe
     
     def compute_random_walk_pe(self, edge_index: torch.Tensor, num_nodes: int) -> torch.Tensor:
         """Compute random walk PE (landing probabilities)."""
@@ -1273,41 +1326,41 @@ def add_positional_encodings_to_data(
     print(f"✓ Added PE to {total_graphs} graphs total")
     return inductive_data
 
-def _cache_pe_globally(inductive_data: Dict, config: InductiveExperimentConfig):
-    """Cache PE tensors globally to save memory when using multiple models."""
-    global_pe_cache = {}
+# def _cache_pe_globally(inductive_data: Dict, config: InductiveExperimentConfig):
+#     """Cache PE tensors globally to save memory when using multiple models."""
+#     global_pe_cache = {}
     
-    for task_name, task_data in inductive_data.items():
-        if task_name in ['metadata', 'metapath_analysis']:
-            continue
+#     for task_name, task_data in inductive_data.items():
+#         if task_name in ['metadata', 'metapath_analysis']:
+#             continue
             
-        for split_name, split_data in task_data.items():
-            if split_name == 'metadata':
-                continue
+#         for split_name, split_data in task_data.items():
+#             if split_name == 'metadata':
+#                 continue
                 
-            for graph_idx, graph in enumerate(split_data['graphs']):
-                cache_key = f"{task_name}_{split_name}_{graph_idx}"
+#             for graph_idx, graph in enumerate(split_data['graphs']):
+#                 cache_key = f"{task_name}_{split_name}_{graph_idx}"
                 
-                # Store PE in global cache
-                pe_data = {}
-                for pe_type in config.pe_types:
-                    pe_attr = f"{pe_type}_pe"
-                    if hasattr(graph, pe_attr):
-                        pe_tensor = getattr(graph, pe_attr)
+#                 # Store PE in global cache
+#                 pe_data = {}
+#                 for pe_type in config.pe_types:
+#                     pe_attr = f"{pe_type}_pe"
+#                     if hasattr(graph, pe_attr):
+#                         pe_tensor = getattr(graph, pe_attr)
                         
-                        # Convert to specified precision
-                        if config.pe_precision == 'float16':
-                            pe_tensor = pe_tensor.half()
+#                         # Convert to specified precision
+#                         if config.pe_precision == 'float16':
+#                             pe_tensor = pe_tensor.half()
                         
-                        pe_data[pe_attr] = pe_tensor
+#                         pe_data[pe_attr] = pe_tensor
                         
-                        # Remove from graph to save memory
-                        delattr(graph, pe_attr)
+#                         # Remove from graph to save memory
+#                         delattr(graph, pe_attr)
                 
-                global_pe_cache[cache_key] = pe_data
+#                 global_pe_cache[cache_key] = pe_data
     
-    # Store cache reference in config
-    config._global_pe_cache = global_pe_cache
+#     # Store cache reference in config
+#     config._global_pe_cache = global_pe_cache
 
 def count_trianges_graph(graph: nx.Graph) -> int:
     """Count the number of triangles in a graph."""

@@ -243,7 +243,7 @@ def train_inductive_model(
                     if graph_based_model:
                         out = model(batch.x, batch.edge_index)
                     elif transformer_based_model:
-                        out = model(batch.x, batch.edge_index, data=batch)
+                        out = model(batch.x, batch.edge_index, data=batch, batch=batch.batch)
                     else:  # MLPModel or other non-GNN model
                         out = model(batch.x)
                     
@@ -277,7 +277,7 @@ def train_inductive_model(
                         if graph_based_model:
                             out = model(batch.x, batch.edge_index)
                         elif transformer_based_model:
-                            out = model(batch.x, batch.edge_index, data=batch)
+                            out = model(batch.x, batch.edge_index, data=batch, batch=batch.batch)
                         else:
                             out = model(batch.x)
                         
@@ -546,7 +546,7 @@ def evaluate_inductive_model_gpu_resident(
             if graph_based_model:
                 out = model(batch.x, batch.edge_index)
             elif transformer_based_model:
-                out = model(batch.x, batch.edge_index, data=batch)
+                out = model(batch.x, batch.edge_index, data=batch, batch=batch.batch)
             else:  # MLPModel or other non-GNN model
                 out = model(batch.x)
             
@@ -943,22 +943,15 @@ def train_and_evaluate_inductive(
                     dropout = trial.suggest_float('dropout', 0.0, 0.3)
                     
                     # Transformer-type specific parameters
-                    if transformer_type == "graphormer":
-                        max_path_length = trial.suggest_int('max_path_length', 5, 15)
-                        precompute_encodings = trial.suggest_categorical('precompute_encodings', [True, False])
-                        local_gnn_type = "gcn"  # Default for GraphFormer
-                        prenorm = True  # Default for GraphFormer
-                    elif transformer_type == "graphgps":
-                        max_path_length = 10  # Default for GraphGPS
-                        precompute_encodings = True  # Default for GraphGPS
+                    if transformer_type == "graphgps":
+                        # Only suggest parameters that GraphTransformerModel actually accepts
                         local_gnn_type = trial.suggest_categorical('local_gnn_type', ['gcn', 'sage'])
-                        prenorm = trial.suggest_categorical('prenorm', [True, False])
                         pe_type = trial.suggest_categorical('pe_type', ['laplacian', 'random_walk', 'shortest_path'])
                         pe_norm_type = trial.suggest_categorical('pe_norm_type', ['layer', 'graph', None])
-                        attn_type = trial.suggest_categorical('attn_type', ['performer'])
+                        attn_type = trial.suggest_categorical('attn_type', ['performer', 'multihead'])
                         
                     
-                    # Create transformer model with all parameters
+                    # Create transformer model with only accepted parameters for GraphGPS
                     trial_model = GraphTransformerModel(
                         input_dim=input_dim,
                         hidden_dim=hidden_dim,
@@ -966,16 +959,14 @@ def train_and_evaluate_inductive(
                         transformer_type=transformer_type,
                         num_layers=num_layers,
                         dropout=dropout,
-                        is_regression=is_regression,
                         num_heads=num_heads,
-                        max_path_length=max_path_length,
-                        precompute_encodings=precompute_encodings,
-                        cache_encodings=config.transformer_cache_encodings,
+                        is_regression=is_regression,
+                        is_graph_level_task=config.is_graph_level_tasks.get(task, task == 'triangle_count'),
                         local_gnn_type=local_gnn_type,
-                        prenorm=prenorm,
+                        attn_type=attn_type,
+                        pe_dim=config.max_pe_dim,
                         pe_type=pe_type,
                         pe_norm_type=pe_norm_type,
-                        attn_type=attn_type
                     ).to(device)
                     
                     # Train model with reduced epochs for speed
@@ -1004,7 +995,7 @@ def train_and_evaluate_inductive(
                         trial_model.train()
                         for batch in fold_dataloader['train']:
                             optimizer.zero_grad()
-                            out = trial_model(batch.x, batch.edge_index, data=batch)
+                            out = trial_model(batch.x, batch.edge_index, data=batch, batch=batch.batch)
                             loss = criterion(out, batch.y)
                             loss.backward()
                             optimizer.step()
@@ -1016,7 +1007,7 @@ def train_and_evaluate_inductive(
                         
                         with torch.no_grad():
                             for batch in fold_dataloader['val']:
-                                out = trial_model(batch.x, batch.edge_index, data=batch)
+                                out = trial_model(batch.x, batch.edge_index, data=batch, batch=batch.batch)
                                 
                                 if is_regression:
                                     val_predictions.append(out.detach())
@@ -1086,28 +1077,24 @@ def train_and_evaluate_inductive(
                     num_heads = best_params['num_heads']
                     hidden_dim = base_dim * num_heads
                     
-                    model = GraphTransformerModel(
-                        input_dim=input_dim,
-                        hidden_dim=hidden_dim,
-                        output_dim=output_dim,
-                        transformer_type=transformer_type,
-                        num_layers=best_params.get('num_layers', config.num_layers),
-                        dropout=best_params.get('dropout', 0.1),
-                        is_regression=is_regression,
-                        num_heads=num_heads,
-                        max_path_length=best_params.get('max_path_length', 10),
-                        precompute_encodings=True,
-                        cache_encodings=config.transformer_cache_encodings,
-                        local_gnn_type=best_params['local_gnn_type'],
-                        prenorm=best_params['prenorm'],
-                        pe_type=best_params['pe_type'],
-                        pe_norm_type=best_params['pe_norm_type'],
-                        attn_type=best_params['attn_type']
-                    ).to(device)
-                    
-                    # Restore cache if available
-                    # if hasattr(config, 'transformer_caches') and transformer_type in config.transformer_caches:
-                    #     model._encoding_cache = config.transformer_caches[transformer_type]
+                    if transformer_type == "graphgps":
+                        # GraphGPS parameters - only use accepted parameters
+                        model = GraphTransformerModel(
+                            input_dim=input_dim,
+                            hidden_dim=hidden_dim,
+                            output_dim=output_dim,
+                            transformer_type=transformer_type,
+                            num_layers=best_params.get('num_layers', config.num_layers),
+                            dropout=best_params.get('dropout', 0.1),
+                            num_heads=num_heads,
+                            is_regression=is_regression,
+                            is_graph_level_task=config.is_graph_level_tasks.get(task, task == 'triangle_count'),
+                            local_gnn_type=best_params['local_gnn_type'],
+                            attn_type=best_params['attn_type'],
+                            pe_dim=config.max_pe_dim,
+                            pe_type=best_params['pe_type'],
+                            pe_norm_type=best_params['pe_norm_type'],
+                        ).to(device)
                     
                     # Update config with optimized parameters
                     config.learning_rate = best_params.get('lr', config.learning_rate)
