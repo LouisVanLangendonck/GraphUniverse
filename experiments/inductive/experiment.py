@@ -376,6 +376,12 @@ class InductiveExperiment:
         # Use parallel training if configured
         if self.config.use_parallel_training:
             from experiments.parallel_training import run_experiments_parallel
+            
+            if self.config.cross_task_parallelization:
+                print("🔄 Using CROSS-TASK parallelization (all tasks and models in parallel)")
+            else:
+                print("🔄 Using PER-TASK parallelization (models within each task in parallel)")
+            
             return run_experiments_parallel(self)
         
         # Original sequential training implementation
@@ -395,7 +401,7 @@ class InductiveExperiment:
             sample_batch = next(iter(task_dataloaders[first_fold_name]['train']))
             input_dim = sample_batch.x.shape[1]
             
-            is_regression = task in ['k_hop_community_counts', 'triangle_count']
+            is_regression = task.startswith('k_hop_community_counts') or task == 'triangle_count'
             is_graph_level_task = task == 'triangle_count'
             
             # Determine output dimension
@@ -733,6 +739,9 @@ class InductiveExperiment:
             # Run experiments
             results = self.run_experiments()
             
+            # Store results in instance variable for saving and reporting
+            self.results = results
+            
             # Save results
             self.save_results()
             
@@ -882,7 +891,7 @@ class InductiveExperiment:
             lines.append(f"TASK: {task.upper()}")
             lines.append("-" * 40)
             
-            is_regression = self.config.is_regression.get(task, False)
+            is_regression = task.startswith('k_hop_community_counts') or task == 'triangle_count'
             primary_metric = 'mae' if is_regression else 'f1_macro'
             
             best_score = 0.0

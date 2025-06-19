@@ -31,6 +31,10 @@ def parse_args():
                         help='Force CPU usage even if CUDA is available')
     parser.add_argument('--use_parallel_training', action='store_true', default=False,
                         help='Use parallel training')
+    parser.add_argument('--max_parallel_gpu_jobs', type=int, default=None,
+                        help='Maximum number of parallel GPU jobs to use')
+    parser.add_argument('--cross_task_parallelization', action='store_true', default=False,
+                        help='Enable parallelization across tasks (not just within tasks)')
 
     # === PRETRAINED MODELS ===
     parser.add_argument('--use_pretrained', action='store_true',
@@ -55,7 +59,7 @@ def parse_args():
                         help='Dont do any other experiments. Only fine-tune pre-trained models and from scratch version of it and hyperparameter optimization of that model type.')    
         
     # === TASKS ===
-    parser.add_argument('--tasks', type=str, nargs='+', default=['community', 'k_hop_community_counts_k2'],
+    parser.add_argument('--tasks', type=str, nargs='+', default=['community', 'k_hop_community_counts_k2', 'k_hop_community_counts_k3'],
                         choices=['community', 'k_hop_community_counts_k1', 'k_hop_community_counts_k2', 'k_hop_community_counts_k3', 'triangle_count'],
                         help='Learning tasks to run')
     parser.add_argument('--khop_k', type=int, default=2,
@@ -68,9 +72,9 @@ def parse_args():
     # === GRAPH FAMILY GENERATION ===
     parser.add_argument('--n_graphs', type=int, default=20,
                         help='Number of graphs to generate in family')
-    parser.add_argument('--min_n_nodes', type=int, default=80,
+    parser.add_argument('--min_n_nodes', type=int, default=60,
                         help='Minimum number of nodes per graph')
-    parser.add_argument('--max_n_nodes', type=int, default=120,
+    parser.add_argument('--max_n_nodes', type=int, default=130,
                         help='Maximum number of nodes per graph')
     parser.add_argument('--min_communities', type=int, default=4,
                         help='Minimum number of communities per graph')
@@ -84,7 +88,7 @@ def parse_args():
                         help='Feature dimension for universe')
     parser.add_argument('--universe_edge_density', type=float, default=0.07,
                         help='Base edge density for universe')
-    parser.add_argument('--universe_homophily', type=float, default=0.5,
+    parser.add_argument('--universe_homophily', type=float, default=0.3,
                         help='Homophily parameter for universe')
     parser.add_argument('--universe_randomness_factor', type=float, default=1.0,
                         help='Randomness factor for universe')
@@ -156,7 +160,7 @@ def parse_args():
                         help='Learning rate for neural models')
     parser.add_argument('--hidden_dim', type=int, default=64,
                         help='Hidden dimension for neural models')
-    parser.add_argument('--batch_size', type=int, default=4,
+    parser.add_argument('--batch_size', type=int, default=5,
                         help='Batch size for training')
     parser.add_argument('--n_trials', type=int, default=10,
                         help='Number of trials for hyperparameter optimization')
@@ -221,6 +225,8 @@ def create_config_from_args(args) -> InductiveExperimentConfig:
         device_id=args.device_id,
         force_cpu=args.force_cpu,
         use_parallel_training=args.use_parallel_training,
+        max_parallel_gpu_jobs=args.max_parallel_gpu_jobs,
+        cross_task_parallelization=args.cross_task_parallelization,
         
         # === SSL FINE-TUNING SETUP ===
         use_pretrained=args.use_pretrained,
@@ -352,6 +358,12 @@ def main():
     print(f"  Models: {', '.join(models)}")
     print(f"  Collect signals: {config.collect_signal_metrics}")
     print(f"  Random seed: {config.seed}")
+    
+    if config.use_parallel_training:
+        parallelization_mode = "Cross-task" if config.cross_task_parallelization else "Per-task"
+        print(f"  Parallel training: {parallelization_mode}")
+        if config.max_parallel_gpu_jobs:
+            print(f"  Max parallel jobs: {config.max_parallel_gpu_jobs}")
     
     try:
         # Run experiment

@@ -20,6 +20,7 @@ class InductiveExperimentConfig:
     force_cpu: bool = False
     use_parallel_training: bool = True
     max_parallel_gpu_jobs: Optional[int] = None 
+    cross_task_parallelization: bool = False
     
     # Performance optimization settings
     use_mixed_precision: bool = False

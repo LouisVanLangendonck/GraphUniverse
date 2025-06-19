@@ -1,5 +1,26 @@
 """
 Parallel GPU training implementation for multiple models.
+
+This module supports two parallelization modes:
+
+1. PER-TASK PARALLELIZATION (default):
+   - Processes tasks sequentially
+   - Within each task, runs all models in parallel
+   - Example: Task1 (GCN, SAGE, GAT in parallel) -> Task2 (GCN, SAGE, GAT in parallel)
+   - Good for memory-constrained scenarios
+
+2. CROSS-TASK PARALLELIZATION (--cross_task_parallelization):
+   - Runs ALL models across ALL tasks in parallel
+   - Example: Task1-GCN, Task1-SAGE, Task2-GCN, Task2-SAGE all in parallel
+   - Maximum parallelization but requires more GPU memory
+   - Use with --cross_task_parallelization flag
+
+Usage:
+  # Per-task parallelization (default)
+  python run_inductive_experiments.py --use_parallel_training
+  
+  # Cross-task parallelization
+  python run_inductive_experiments.py --use_parallel_training --cross_task_parallelization
 """
 
 import torch
@@ -26,8 +47,9 @@ class ModelTrainingJob:
 class ParallelGPUTrainer:
     """Manages parallel training of multiple models on same GPU."""
     
-    def __init__(self, device: torch.device, max_parallel_jobs: int = None):
+    def __init__(self, device: torch.device, max_parallel_jobs: int = None, cross_task_mode: bool = False):
         self.device = device
+        self.cross_task_mode = cross_task_mode
         self.max_parallel_jobs = max_parallel_jobs or self._estimate_max_jobs()
         self.active_jobs = {}
         self.results = {}
@@ -49,9 +71,17 @@ class ParallelGPUTrainer:
             # Conservative estimate: 200MB per model for small GNNs
             estimated_memory_per_model = 200 * 1024 * 1024  # 200MB per model
             
+            # For cross-task parallelization, we might need more memory per model
+            # because different tasks might have different data sizes
+            # Increase estimate by 50% for cross-task scenarios
+            if hasattr(self, 'cross_task_mode') and self.cross_task_mode:
+                estimated_memory_per_model = int(estimated_memory_per_model * 1.5)
+                print(f"🔧 Cross-task mode detected - increased memory estimate per model")
+            
             # Leave 20% buffer for system operations
-            max_jobs = min(4, max(1, int(available_memory * 0.8 / estimated_memory_per_model)))
+            max_jobs = min(20, max(1, int(available_memory * 0.8 / estimated_memory_per_model)))
             print(f"🔧 Estimated max parallel jobs: {max_jobs} (GPU memory: {total_memory/1e9:.1f}GB)")
+            print(f"🔧 Memory per model: {estimated_memory_per_model/1e6:.0f}MB")
             return max_jobs
             
         except Exception as e:
@@ -118,6 +148,7 @@ class ParallelGPUTrainer:
             return {
                 'job_id': job.job_id,
                 'model_name': job.model_name,
+                'task': job.task,
                 'results': results,
                 'success': True,
                 'memory_before': memory_before,
@@ -140,6 +171,7 @@ class ParallelGPUTrainer:
             return {
                 'job_id': job.job_id,
                 'model_name': job.model_name,
+                'task': job.task,
                 'error': str(e),
                 'success': False
             }
@@ -192,106 +224,146 @@ class ParallelGPUTrainer:
         }
 
 def create_model_jobs(task_dataloaders: dict, config: Any, task: str, device: torch.device) -> List[ModelTrainingJob]:
-    """Create model training jobs for all configured models."""
-    jobs = []
+    """Create model training jobs for all configured models (legacy function for backward compatibility)."""
+    # This is now a wrapper around the new function
+    all_dataloaders = {task: task_dataloaders}
+    return create_all_model_jobs_across_tasks(all_dataloaders, config, device)
+
+def create_all_model_jobs_across_tasks(
+    all_dataloaders: Dict[str, Dict[str, Any]], 
+    config: Any, 
+    device: torch.device
+) -> List[ModelTrainingJob]:
+    """Create model training jobs for ALL tasks and ALL models at once."""
+    all_jobs = []
     
-    # Get dimensions from sample batch
-    first_fold_name = list(task_dataloaders.keys())[0]
-    sample_batch = next(iter(task_dataloaders[first_fold_name]['train']))
-    input_dim = sample_batch.x.shape[1]
-    
-    is_regression = task in ['k_hop_community_counts', 'triangle_count']
-    is_graph_level_task = task == 'triangle_count'
-    
-    # Determine output dimension
-    if is_regression:
-        output_dim = sample_batch.y.shape[1] if len(sample_batch.y.shape) > 1 else 1
-    else:
-        from experiments.inductive.training import get_total_classes_from_dataloaders
-        output_dim = get_total_classes_from_dataloaders(task_dataloaders)
-    
-    # Create GNN model jobs
-    if config.run_gnn:
-        for gnn_type in config.gnn_types:
-            from experiments.models import GNNModel
+    for task in config.tasks:
+        if task not in all_dataloaders:
+            print(f"Warning: Task {task} not found in dataloaders")
+            continue
             
-            def create_gnn_model(gnn_type=gnn_type, **kwargs):
-                return GNNModel(
+        task_dataloaders = all_dataloaders[task]
+        
+        # Get dimensions from sample batch
+        first_fold_name = list(task_dataloaders.keys())[0]
+        sample_batch = next(iter(task_dataloaders[first_fold_name]['train']))
+        input_dim = sample_batch.x.shape[1]
+        
+        is_regression = task.startswith('k_hop_community_counts') or task == 'triangle_count'
+        is_graph_level_task = task == 'triangle_count'
+        
+        # Determine output dimension
+        if is_regression:
+            output_dim = sample_batch.y.shape[1] if len(sample_batch.y.shape) > 1 else 1
+        else:
+            from experiments.inductive.training import get_total_classes_from_dataloaders
+            output_dim = get_total_classes_from_dataloaders(task_dataloaders)
+        
+        # Create GNN model jobs
+        if config.run_gnn:
+            for gnn_type in config.gnn_types:
+                from experiments.models import GNNModel
+                
+                def create_gnn_model(gnn_type=gnn_type, **kwargs):
+                    return GNNModel(
+                        input_dim=input_dim,
+                        hidden_dim=config.hidden_dim,
+                        output_dim=output_dim,
+                        num_layers=config.num_layers,
+                        dropout=config.dropout,
+                        gnn_type=gnn_type,
+                        is_regression=is_regression,
+                        is_graph_level_task=is_graph_level_task,
+                        **kwargs
+                    )
+                
+                all_jobs.append(ModelTrainingJob(
+                    model_name=gnn_type,
+                    model_creator=create_gnn_model,
+                    model_kwargs={},
+                    dataloaders=task_dataloaders,
+                    config=config,
+                    task=task,
+                    job_id=f"{task}_{gnn_type}"
+                ))
+        
+        # Create transformer model jobs
+        if config.run_transformers:
+            for transformer_type in config.transformer_types:
+                from experiments.models import GraphTransformerModel
+                
+                def create_transformer_model(transformer_type=transformer_type, **kwargs):
+                    return GraphTransformerModel(
+                        input_dim=input_dim,
+                        hidden_dim=config.hidden_dim,
+                        output_dim=output_dim,
+                        transformer_type=transformer_type,
+                        num_layers=config.num_layers,
+                        dropout=config.dropout,
+                        is_regression=is_regression,
+                        is_graph_level_task=is_graph_level_task,
+                        **kwargs
+                    )
+                
+                all_jobs.append(ModelTrainingJob(
+                    model_name=transformer_type,
+                    model_creator=create_transformer_model,
+                    model_kwargs={},
+                    dataloaders=task_dataloaders,
+                    config=config,
+                    task=task,
+                    job_id=f"{task}_{transformer_type}"
+                ))
+        
+        # Create MLP model jobs
+        if config.run_mlp:
+            from experiments.models import MLPModel
+            
+            def create_mlp_model(**kwargs):
+                return MLPModel(
                     input_dim=input_dim,
                     hidden_dim=config.hidden_dim,
                     output_dim=output_dim,
                     num_layers=config.num_layers,
                     dropout=config.dropout,
-                    gnn_type=gnn_type,
                     is_regression=is_regression,
-                    is_graph_level_task=is_graph_level_task,
-                    **kwargs
+                    is_graph_level_task=is_graph_level_task
                 )
             
-            jobs.append(ModelTrainingJob(
-                model_name=gnn_type,
-                model_creator=create_gnn_model,
+            all_jobs.append(ModelTrainingJob(
+                model_name='mlp',
+                model_creator=create_mlp_model,
                 model_kwargs={},
                 dataloaders=task_dataloaders,
                 config=config,
                 task=task,
-                job_id=f"{task}_{gnn_type}"
+                job_id=f"{task}_mlp"
             ))
-    
-    # Create transformer model jobs
-    if config.run_transformers:
-        for transformer_type in config.transformer_types:
-            from experiments.models import GraphTransformerModel
+        
+        # Create Random Forest model jobs
+        if config.run_rf:
+            from experiments.models import SklearnModel
             
-            def create_transformer_model(transformer_type=transformer_type, **kwargs):
-                return GraphTransformerModel(
+            def create_rf_model(**kwargs):
+                return SklearnModel(
                     input_dim=input_dim,
-                    hidden_dim=config.hidden_dim,
                     output_dim=output_dim,
-                    transformer_type=transformer_type,
-                    num_layers=config.num_layers,
-                    dropout=config.dropout,
+                    model_type="rf",
                     is_regression=is_regression,
-                    is_graph_level_task=is_graph_level_task,
-                    **kwargs
+                    is_graph_level_task=is_graph_level_task
                 )
             
-            jobs.append(ModelTrainingJob(
-                model_name=transformer_type,
-                model_creator=create_transformer_model,
+            all_jobs.append(ModelTrainingJob(
+                model_name='rf',
+                model_creator=create_rf_model,
                 model_kwargs={},
                 dataloaders=task_dataloaders,
                 config=config,
                 task=task,
-                job_id=f"{task}_{transformer_type}"
+                job_id=f"{task}_rf"
             ))
     
-    # MLP and RF models - these are fast, might not need parallelization
-    if config.run_mlp:
-        from experiments.models import MLPModel
-        
-        def create_mlp_model(**kwargs):
-            return MLPModel(
-                input_dim=input_dim,
-                hidden_dim=config.hidden_dim,
-                output_dim=output_dim,
-                num_layers=config.num_layers,
-                dropout=config.dropout,
-                is_regression=is_regression,
-                is_graph_level_task=is_graph_level_task
-            )
-        
-        jobs.append(ModelTrainingJob(
-            model_name='mlp',
-            model_creator=create_mlp_model,
-            model_kwargs={},
-            dataloaders=task_dataloaders,
-            config=config,
-            task=task,
-            job_id=f"{task}_mlp"
-        ))
-    
-    return jobs
+    return all_jobs
 
 # Modified experiment run_experiments method
 def run_experiments_parallel(experiment_instance) -> Dict[str, Any]:
@@ -306,41 +378,127 @@ def run_experiments_parallel(experiment_instance) -> Dict[str, Any]:
     all_results = {}
     
     # Initialize parallel trainer
-    parallel_trainer = ParallelGPUTrainer(experiment_instance.device)
+    parallel_trainer = ParallelGPUTrainer(
+        experiment_instance.device, 
+        max_parallel_jobs=getattr(experiment_instance.config, 'max_parallel_gpu_jobs', None),
+        cross_task_mode=experiment_instance.config.cross_task_parallelization
+    )
     
-    # Process each task
-    for task in experiment_instance.config.tasks:
-        print(f"\n{'='*40}")
-        print(f"TASK: {task.upper()}")
-        print(f"{'='*40}")
+    # Check if we should use cross-task parallelization
+    if experiment_instance.config.cross_task_parallelization:
+        # CROSS-TASK PARALLELIZATION: Create ALL jobs across ALL tasks at once
+        print("🔄 CROSS-TASK PARALLELIZATION MODE")
+        print("   All tasks and models will train simultaneously!")
+        print("   This maximizes GPU utilization but requires more memory.")
         
-        task_dataloaders = experiment_instance.dataloaders[task]
+        all_jobs = create_all_model_jobs_across_tasks(
+            experiment_instance.dataloaders, 
+            experiment_instance.config, 
+            experiment_instance.device
+        )
         
-        # Create training jobs for this task
-        jobs = create_model_jobs(task_dataloaders, experiment_instance.config, task, experiment_instance.device)
+        if not all_jobs:
+            print("No models configured for any task")
+            return all_results
         
-        if not jobs:
-            print(f"No models configured for task {task}")
-            continue
-            
-        print(f"Created {len(jobs)} training jobs for task {task}")
+        # Show job breakdown
+        print(f"\n📊 JOB BREAKDOWN:")
+        task_model_counts = {}
+        for job in all_jobs:
+            task = job.task
+            model = job.model_name
+            if task not in task_model_counts:
+                task_model_counts[task] = {}
+            if model not in task_model_counts[task]:
+                task_model_counts[task][model] = 0
+            task_model_counts[task][model] += 1
         
-        # Train models in parallel
-        parallel_results = parallel_trainer.train_models_parallel(jobs)
+        for task, models in task_model_counts.items():
+            print(f"   {task}: {', '.join(models.keys())}")
         
-        # Convert results to expected format
-        task_results = {}
+        print(f"\n🔄 Created {len(all_jobs)} total training jobs across all tasks")
+        print(f"📈 Max parallel jobs: {parallel_trainer.max_parallel_jobs}")
+        print(f"⚡ Expected speedup: ~{len(all_jobs) / parallel_trainer.max_parallel_jobs:.1f}x")
+        
+        # Train ALL models across ALL tasks in parallel
+        parallel_results = parallel_trainer.train_models_parallel(all_jobs)
+        
+        # Organize results back by task
+        print(f"\n📋 ORGANIZING RESULTS BY TASK:")
         for job_id, job_result in parallel_results['results'].items():
             if job_result['success']:
+                task = job_result['task']
                 model_name = job_result['model_name']
-                task_results[model_name] = job_result['results']
+                
+                if task not in all_results:
+                    all_results[task] = {}
+                
+                all_results[task][model_name] = job_result['results']
+                print(f"   ✅ {task}_{model_name}: Success")
             else:
+                task = job_result['task']
                 model_name = job_result['model_name']
-                task_results[model_name] = {
+                
+                if task not in all_results:
+                    all_results[task] = {}
+                
+                all_results[task][model_name] = {
                     'error': job_result['error'],
                     'test_metrics': {}
                 }
+                print(f"   ❌ {task}_{model_name}: Failed - {job_result['error']}")
         
-        all_results[task] = task_results
+        # Print final summary
+        successful_jobs = sum(1 for r in parallel_results['results'].values() if r['success'])
+        total_jobs = len(parallel_results['results'])
+        print(f"\n🏁 CROSS-TASK PARALLELIZATION COMPLETED:")
+        print(f"   Total jobs: {total_jobs}")
+        print(f"   Successful: {successful_jobs}")
+        print(f"   Failed: {total_jobs - successful_jobs}")
+        print(f"   Success rate: {successful_jobs/total_jobs:.1%}")
+        print(f"   Total time: {parallel_results['total_time']:.2f}s")
+    
+    else:
+        # PER-TASK PARALLELIZATION: Process each task separately (original behavior)
+        print("🔄 PER-TASK PARALLELIZATION MODE")
+        print("   Tasks will be processed sequentially.")
+        print("   Models within each task will train in parallel.")
+        
+        for task in experiment_instance.config.tasks:
+            print(f"\n{'='*40}")
+            print(f"TASK: {task.upper()}")
+            print(f"{'='*40}")
+            
+            task_dataloaders = experiment_instance.dataloaders[task]
+            
+            # Create training jobs for this task
+            jobs = create_model_jobs(task_dataloaders, experiment_instance.config, task, experiment_instance.device)
+            
+            if not jobs:
+                print(f"No models configured for task {task}")
+                continue
+                
+            print(f"Created {len(jobs)} training jobs for task {task}")
+            print(f"Models: {', '.join([job.model_name for job in jobs])}")
+            
+            # Train models in parallel for this task
+            parallel_results = parallel_trainer.train_models_parallel(jobs)
+            
+            # Convert results to expected format
+            task_results = {}
+            for job_id, job_result in parallel_results['results'].items():
+                if job_result['success']:
+                    model_name = job_result['model_name']
+                    task_results[model_name] = job_result['results']
+                    print(f"   ✅ {model_name}: Success")
+                else:
+                    model_name = job_result['model_name']
+                    task_results[model_name] = {
+                        'error': job_result['error'],
+                        'test_metrics': {}
+                    }
+                    print(f"   ❌ {model_name}: Failed - {job_result['error']}")
+            
+            all_results[task] = task_results
     
     return all_results

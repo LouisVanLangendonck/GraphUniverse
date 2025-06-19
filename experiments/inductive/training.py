@@ -19,7 +19,7 @@ import copy
 import random
 
 from experiments.models import GNNModel, MLPModel, SklearnModel, GraphTransformerModel
-from experiments.transductive.metrics import compute_metrics
+from experiments.transductive.metrics import compute_metrics_gpu, compute_metrics
 from experiments.inductive.config import InductiveExperimentConfig
 
 # Set up logging
@@ -292,20 +292,21 @@ def train_inductive_model(
                         
                         val_targets.append(batch.y.detach())
                 
-                # Calculate metrics - only move to CPU at the very end
-                train_pred = torch.cat(train_predictions, dim=0).cpu().numpy()
-                train_true = torch.cat(train_targets, dim=0).cpu().numpy()
-                val_pred = torch.cat(val_predictions, dim=0).cpu().numpy()
-                val_true = torch.cat(val_targets, dim=0).cpu().numpy()
+                # Calculate metrics - use GPU-based computation to avoid CPU transfer bottleneck
+                train_pred = torch.cat(train_predictions, dim=0)
+                train_true = torch.cat(train_targets, dim=0)
+                val_pred = torch.cat(val_predictions, dim=0)
+                val_true = torch.cat(val_targets, dim=0)
+                
+                # Use GPU-based metrics computation
+                train_metrics = compute_metrics_gpu(train_true, train_pred, is_regression)
+                val_metrics = compute_metrics_gpu(val_true, val_pred, is_regression)
                 
                 # Clear prediction lists
                 train_predictions.clear()
                 train_targets.clear()
                 val_predictions.clear()
                 val_targets.clear()
-                
-                train_metrics = compute_metrics(train_true, train_pred, is_regression)
-                val_metrics = compute_metrics(val_true, val_pred, is_regression)
                 
                 # Get primary metrics
                 if is_regression:
@@ -557,12 +558,12 @@ def evaluate_inductive_model_gpu_resident(
             
             all_targets.append(batch.y.detach())
     
-    # Concatenate all predictions and move to CPU only at the end
-    predictions = torch.cat(all_predictions, dim=0).cpu().numpy()
-    targets = torch.cat(all_targets, dim=0).cpu().numpy()
+    # Concatenate all predictions and compute metrics on GPU
+    predictions = torch.cat(all_predictions, dim=0)
+    targets = torch.cat(all_targets, dim=0)
     
-    # Compute metrics
-    metrics = compute_metrics(targets, predictions, is_regression)
+    # Use GPU-based metrics computation
+    metrics = compute_metrics_gpu(targets, predictions, is_regression)
     
     return metrics
 
@@ -683,9 +684,9 @@ def optimize_finetuning_hyperparameters(
                     val_targets.append(batch.y.detach())
             
             # Calculate validation metric
-            val_pred = torch.cat(val_predictions, dim=0).cpu().numpy()
-            val_true = torch.cat(val_targets, dim=0).cpu().numpy()
-            val_metrics = compute_metrics(val_true, val_pred, is_regression)
+            val_pred = torch.cat(val_predictions, dim=0)
+            val_true = torch.cat(val_targets, dim=0)
+            val_metrics = compute_metrics_gpu(val_true, val_pred, is_regression)
             
             if is_regression:
                 if config.regression_loss == 'mae':
@@ -1025,9 +1026,9 @@ def train_and_evaluate_inductive(
                                 val_targets.append(batch.y.detach())
                         
                         # Calculate validation metric
-                        val_pred = torch.cat(val_predictions, dim=0).cpu().numpy()
-                        val_true = torch.cat(val_targets, dim=0).cpu().numpy()
-                        val_metrics = compute_metrics(val_true, val_pred, is_regression)
+                        val_pred = torch.cat(val_predictions, dim=0)
+                        val_true = torch.cat(val_targets, dim=0)
+                        val_metrics = compute_metrics_gpu(val_true, val_pred, is_regression)
 
                         if is_regression:
                             if config.regression_loss == 'mae':
@@ -1062,7 +1063,7 @@ def train_and_evaluate_inductive(
                     # Return metric for optimization
                     if is_regression:
                         if config.regression_loss in ['mae', 'mse']:
-                            final_metric = -best_val_metric  # Negative because we minimize MAE/MSE
+                            final_metric = -best_val_metric  # Negative because we minimize MAE
                         else:
                             final_metric = best_val_metric  # Positive because we maximize R²
                     else:
@@ -1094,8 +1095,8 @@ def train_and_evaluate_inductive(
                         dropout=best_params.get('dropout', 0.1),
                         is_regression=is_regression,
                         num_heads=num_heads,
-                        max_path_length=best_params['max_path_length'],
-                        precompute_encodings=best_params['precompute_encodings'],
+                        max_path_length=best_params.get('max_path_length', 10),
+                        precompute_encodings=True,
                         cache_encodings=config.transformer_cache_encodings,
                         local_gnn_type=best_params['local_gnn_type'],
                         prenorm=best_params['prenorm'],
@@ -1253,9 +1254,9 @@ def train_and_evaluate_inductive(
                                 val_targets.append(batch.y.detach())
                         
                         # Calculate validation metric
-                        val_pred = torch.cat(val_predictions, dim=0).cpu().numpy()
-                        val_true = torch.cat(val_targets, dim=0).cpu().numpy()
-                        val_metrics = compute_metrics(val_true, val_pred, is_regression)
+                        val_pred = torch.cat(val_predictions, dim=0)
+                        val_true = torch.cat(val_targets, dim=0)
+                        val_metrics = compute_metrics_gpu(val_true, val_pred, is_regression)
                         
                         if is_regression:
                             if config.regression_loss == 'mae':
@@ -1433,9 +1434,9 @@ def train_and_evaluate_inductive(
                                 val_targets.append(batch.y.detach())
                         
                         # Calculate validation metric
-                        val_pred = torch.cat(val_predictions, dim=0).cpu().numpy()
-                        val_true = torch.cat(val_targets, dim=0).cpu().numpy()
-                        val_metrics = compute_metrics(val_true, val_pred, is_regression)
+                        val_pred = torch.cat(val_predictions, dim=0)
+                        val_true = torch.cat(val_targets, dim=0)
+                        val_metrics = compute_metrics_gpu(val_true, val_pred, is_regression)
                         
                         if is_regression:
                             if config.regression_loss == 'mae':

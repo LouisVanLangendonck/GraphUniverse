@@ -11,6 +11,7 @@ from sklearn.metrics import (
     precision_recall_fscore_support, roc_auc_score
 )
 from typing import Dict, List, Optional, Union, Any
+import time
 
 def compute_metrics(
     y_true: Union[np.ndarray, torch.Tensor],
@@ -630,3 +631,224 @@ def compare_transductive_models(
             comparison['best_score'] = ranked_models[0][1]
     
     return comparison
+
+
+def compute_metrics_gpu(
+    y_true: torch.Tensor,
+    y_pred: torch.Tensor,
+    is_regression: bool = False
+) -> Dict[str, float]:
+    """
+    Compute metrics directly on GPU without transferring to CPU.
+    This eliminates the bottleneck of CPU transfers during training.
+    
+    Args:
+        y_true: True labels (on GPU)
+        y_pred: Predicted labels or values (on GPU)
+        is_regression: Whether this is a regression task
+        
+    Returns:
+        Dictionary of metric names and values
+    """
+    metrics = {}
+    
+    if is_regression:
+        # Regression metrics - all computed on GPU
+        mse = torch.nn.functional.mse_loss(y_pred, y_true)
+        mae = torch.nn.functional.l1_loss(y_pred, y_true)
+        
+        metrics['mse'] = mse.item()
+        metrics['rmse'] = torch.sqrt(mse).item()
+        metrics['mae'] = mae.item()
+        
+        # Calculate relative error on GPU
+        numerator = torch.sum(torch.abs(y_pred - y_true))
+        denominator = torch.sum(torch.abs(y_true)) + 1e-8
+        metrics['relative_error'] = (numerator / denominator).item()
+        
+        # R² calculation on GPU
+        try:
+            # R² = 1 - (SS_res / SS_tot)
+            ss_res = torch.sum((y_true - y_pred) ** 2)
+            ss_tot = torch.sum((y_true - torch.mean(y_true)) ** 2)
+            r2 = 1 - (ss_res / (ss_tot + 1e-8))
+            metrics['r2'] = r2.item() if not torch.isnan(r2) else 0.0
+        except Exception:
+            metrics['r2'] = 0.0
+        
+        # For multilabel regression, compute metrics per label
+        if len(y_true.shape) > 1 and y_true.shape[1] > 1:
+            per_label_metrics = {}
+            for i in range(y_true.shape[1]):
+                label_mse = torch.nn.functional.mse_loss(y_pred[:, i], y_true[:, i])
+                label_mae = torch.nn.functional.l1_loss(y_pred[:, i], y_true[:, i])
+                
+                per_label_metrics[f'mse_label_{i}'] = label_mse.item()
+                per_label_metrics[f'rmse_label_{i}'] = torch.sqrt(label_mse).item()
+                per_label_metrics[f'mae_label_{i}'] = label_mae.item()
+                
+                # Calculate relative error per label
+                label_numerator = torch.sum(torch.abs(y_pred[:, i] - y_true[:, i]))
+                label_denominator = torch.sum(torch.abs(y_true[:, i])) + 1e-8
+                per_label_metrics[f'relative_error_label_{i}'] = (label_numerator / label_denominator).item()
+                
+                # R² per label
+                try:
+                    label_ss_res = torch.sum((y_true[:, i] - y_pred[:, i]) ** 2)
+                    label_ss_tot = torch.sum((y_true[:, i] - torch.mean(y_true[:, i])) ** 2)
+                    label_r2 = 1 - (label_ss_res / (label_ss_tot + 1e-8))
+                    per_label_metrics[f'r2_label_{i}'] = label_r2.item() if not torch.isnan(label_r2) else 0.0
+                except Exception:
+                    per_label_metrics[f'r2_label_{i}'] = 0.0
+                    
+            metrics.update(per_label_metrics)
+    else:
+        # Classification metrics - computed on GPU where possible
+        # Handle case where predictions might be probabilities
+        if len(y_pred.shape) > 1 and y_pred.shape[1] > 1:
+            # Store probabilities for later use
+            y_score = y_pred
+            y_pred_classes = torch.argmax(y_pred, dim=1)
+        else:
+            y_score = None
+            y_pred_classes = y_pred
+        
+        # Ensure both tensors are 1D
+        y_true = y_true.flatten()
+        y_pred_classes = y_pred_classes.flatten()
+        
+        # Basic accuracy on GPU
+        correct = torch.sum(y_true == y_pred_classes)
+        total = y_true.numel()
+        metrics['accuracy'] = (correct / total).item()
+        
+        # Get unique labels for proper metric calculation
+        unique_labels = torch.unique(torch.cat([y_true, y_pred_classes]))
+        
+        if len(unique_labels) <= 1:
+            # Single class case - set all metrics based on perfect/imperfect prediction
+            perfect_prediction = torch.all(y_true == y_pred_classes).item()
+            default_score = 1.0 if perfect_prediction else 0.0
+            
+            metrics.update({
+                'precision_macro': default_score,
+                'precision_weighted': default_score,
+                'recall_macro': default_score,
+                'recall_weighted': default_score,
+                'f1_macro': default_score,
+                'f1_weighted': default_score,
+                'roc_auc': default_score
+            })
+        else:
+            # Multi-class case - compute some metrics on GPU, others need CPU
+            # For now, we'll compute the most important ones on GPU and fall back to CPU for complex ones
+            
+            # F1 score approximation on GPU (macro average)
+            f1_scores = []
+            for label in unique_labels:
+                tp = torch.sum((y_true == label) & (y_pred_classes == label))
+                fp = torch.sum((y_true != label) & (y_pred_classes == label))
+                fn = torch.sum((y_true == label) & (y_pred_classes != label))
+                
+                precision = tp / (tp + fp + 1e-8)
+                recall = tp / (tp + fn + 1e-8)
+                f1 = 2 * (precision * recall) / (precision + recall + 1e-8)
+                f1_scores.append(f1)
+            
+            metrics['f1_macro'] = torch.mean(torch.stack(f1_scores)).item()
+            
+            # For other metrics that are more complex, we'll still use CPU but only when needed
+            # This is a trade-off between speed and completeness
+            try:
+                # Move to CPU only for complex metrics
+                y_true_cpu = y_true.cpu().numpy()
+                y_pred_cpu = y_pred_classes.cpu().numpy()
+                
+                # Macro averages
+                metrics['precision_macro'] = precision_score(y_true_cpu, y_pred_cpu, average='macro', zero_division=0)
+                metrics['recall_macro'] = recall_score(y_true_cpu, y_pred_cpu, average='macro', zero_division=0)
+                
+                # Weighted averages
+                metrics['precision_weighted'] = precision_score(y_true_cpu, y_pred_cpu, average='weighted', zero_division=0)
+                metrics['recall_weighted'] = recall_score(y_true_cpu, y_pred_cpu, average='weighted', zero_division=0)
+                metrics['f1_weighted'] = f1_score(y_true_cpu, y_pred_cpu, average='weighted', zero_division=0)
+                
+            except Exception as e:
+                # Fallback if metric calculation fails
+                print(f"Warning: Metric calculation failed: {e}")
+                metrics.update({
+                    'precision_macro': 0.0,
+                    'precision_weighted': 0.0,
+                    'recall_macro': 0.0,
+                    'recall_weighted': 0.0,
+                    'f1_weighted': 0.0
+                })
+            
+            # ROC-AUC if probabilities are available
+            if y_score is not None:
+                try:
+                    # ROC-AUC needs CPU for sklearn
+                    y_score_cpu = y_score.cpu().numpy()
+                    y_true_cpu = y_true.cpu().numpy()
+                    
+                    if y_score_cpu.shape[1] == 2:  # Binary case
+                        metrics['roc_auc'] = roc_auc_score(y_true_cpu, y_score_cpu[:, 1])
+                    else:  # Multi-class case
+                        metrics['roc_auc'] = roc_auc_score(y_true_cpu, y_score_cpu, multi_class='ovr')
+                except Exception:
+                    metrics['roc_auc'] = 0.0
+            else:
+                metrics['roc_auc'] = 0.0
+    
+    return metrics
+
+
+def compare_metrics_performance(
+    y_true: torch.Tensor,
+    y_pred: torch.Tensor,
+    is_regression: bool = False,
+    num_runs: int = 10
+) -> Dict[str, float]:
+    """
+    Compare performance between CPU and GPU metrics computation.
+    
+    Args:
+        y_true: True labels (on GPU)
+        y_pred: Predicted labels or values (on GPU)
+        is_regression: Whether this is a regression task
+        num_runs: Number of runs for timing comparison
+        
+    Returns:
+        Dictionary with timing results
+    """
+    # Warm up GPU
+    for _ in range(3):
+        _ = compute_metrics_gpu(y_true, y_pred, is_regression)
+    
+    # Time GPU computation
+    gpu_times = []
+    for _ in range(num_runs):
+        start_time = time.time()
+        _ = compute_metrics_gpu(y_true, y_pred, is_regression)
+        gpu_times.append(time.time() - start_time)
+    
+    # Time CPU computation
+    cpu_times = []
+    for _ in range(num_runs):
+        start_time = time.time()
+        y_true_cpu = y_true.cpu().numpy()
+        y_pred_cpu = y_pred.cpu().numpy()
+        _ = compute_metrics(y_true_cpu, y_pred_cpu, is_regression)
+        cpu_times.append(time.time() - start_time)
+    
+    avg_gpu_time = np.mean(gpu_times)
+    avg_cpu_time = np.mean(cpu_times)
+    speedup = avg_cpu_time / avg_gpu_time if avg_gpu_time > 0 else float('inf')
+    
+    return {
+        'gpu_avg_time_ms': avg_gpu_time * 1000,
+        'cpu_avg_time_ms': avg_cpu_time * 1000,
+        'speedup': speedup,
+        'gpu_std_ms': np.std(gpu_times) * 1000,
+        'cpu_std_ms': np.std(cpu_times) * 1000
+    }
