@@ -148,6 +148,11 @@ class InductiveExperimentConfig:
     # Special parameter for FAGCN
     eps: float = 0.2
 
+    # === NEURAL SHEAF DIFFUSION ===
+    run_neural_sheaf: bool = False
+    sheaf_type: str = 'diag'
+    sheaf_d: int = 1
+
     # === GRAPH TRANSFORMER CONFIGURATION ===
     transformer_types: List[str] = field(default_factory=lambda: ['graphormer', 'graphgps'])
     run_transformers: bool = False

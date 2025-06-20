@@ -33,7 +33,7 @@ from experiments.inductive.training import (
     get_total_classes_from_dataloaders,
     cleanup_gpu_dataloaders
 )
-from experiments.models import GNNModel, MLPModel, SklearnModel
+from experiments.models import GNNModel, MLPModel, SklearnModel, SheafDiffusionModel
 from experiments.inductive.self_supervised_task import (
     PreTrainingConfig, 
     SelfSupervisedTask, 
@@ -473,6 +473,37 @@ class InductiveExperiment:
                     
                     task_results[transformer_type] = results
             
+            # Train sheaf diffusion models
+            if self.config.run_neural_sheaf:
+                from experiments.models import SheafDiffusionModel
+                
+                model = SheafDiffusionModel(
+                    input_dim=input_dim,
+                    hidden_dim=self.config.hidden_dim,
+                    output_dim=output_dim,
+                    sheaf_type=self.config.sheaf_type,
+                    d=self.config.sheaf_d,
+                    num_layers=self.config.num_layers,
+                    dropout=self.config.dropout,
+                    is_regression=is_regression,
+                    is_graph_level_task=is_graph_level_task
+                )
+                
+                from experiments.inductive.training import train_and_evaluate_inductive
+                results = train_and_evaluate_inductive(
+                    model=model,
+                    model_name='sheaf_diffusion',
+                    dataloaders=task_dataloaders,
+                    config=self.config,
+                    task=task,
+                    device=self.device,
+                    optimize_hyperparams=self.config.optimize_hyperparams,
+                    experiment_name=getattr(self.config, 'experiment_name', None),
+                    run_id=getattr(self.config, 'run_id', None)
+                )
+                
+                task_results['sheaf_diffusion'] = results
+
             # Train MLP model
             if self.config.run_mlp:
                 from experiments.models import MLPModel

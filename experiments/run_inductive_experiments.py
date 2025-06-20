@@ -138,6 +138,8 @@ def parse_args():
                         help='Types of Graph Transformer models to run')
     parser.add_argument('--run_transformers', action='store_true',
                         help='Run Graph Transformer models')
+    parser.add_argument('--run_neural_sheaf', action='store_true',
+                        help='Run Neural Sheaf Diffusion models')
     parser.add_argument('--no_transformers', action='store_false', dest='run_transformers',
                         help='Skip Graph Transformer models')
     parser.add_argument('--run_mlp', action='store_true', default=True,
@@ -308,6 +310,9 @@ def create_config_from_args(args) -> InductiveExperimentConfig:
         local_gnn_type=args.local_gnn_type,
         global_model_type=args.global_model_type,
         transformer_prenorm=getattr(args, 'transformer_prenorm', True),
+
+        # === NEURAL SHEAF DIFFUSION ===
+        run_neural_sheaf=args.run_neural_sheaf,
         
         # === TRAINING ===
         epochs=args.epochs,
