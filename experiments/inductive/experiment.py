@@ -33,7 +33,7 @@ from experiments.inductive.training import (
     get_total_classes_from_dataloaders,
     cleanup_gpu_dataloaders
 )
-from experiments.models import GNNModel, MLPModel, SklearnModel, SheafDiffusionModel
+from experiments.models import GNNModel, MLPModel, SklearnModel
 from experiments.inductive.self_supervised_task import (
     PreTrainingConfig, 
     SelfSupervisedTask, 
@@ -475,9 +475,9 @@ class InductiveExperiment:
             
             # Train sheaf diffusion models
             if self.config.run_neural_sheaf:
-                from experiments.models import SheafDiffusionModel
+                from experiments.neural_sheaf_diffusion.inductive_sheaf_wrapper import InductiveSheafDiffusionModel
                 
-                model = SheafDiffusionModel(
+                model = InductiveSheafDiffusionModel(
                     input_dim=input_dim,
                     hidden_dim=self.config.hidden_dim,
                     output_dim=output_dim,
@@ -486,7 +486,22 @@ class InductiveExperiment:
                     num_layers=self.config.num_layers,
                     dropout=self.config.dropout,
                     is_regression=is_regression,
-                    is_graph_level_task=is_graph_level_task
+                    is_graph_level_task=False,
+                    device=self.device,
+                    normalised=True,
+                    deg_normalised=False,
+                    linear=False,
+                    left_weights=True,
+                    right_weights=True,
+                    sparse_learner=False,
+                    use_act=True,
+                    sheaf_act="tanh",
+                    second_linear=False,
+                    orth='cayley',
+                    edge_weights=False,
+                    max_t=1.0,
+                    add_lp=False,
+                    add_hp=False
                 )
                 
                 from experiments.inductive.training import train_and_evaluate_inductive

@@ -59,7 +59,7 @@ def parse_args():
                         help='Dont do any other experiments. Only fine-tune pre-trained models and from scratch version of it and hyperparameter optimization of that model type.')    
         
     # === TASKS ===
-    parser.add_argument('--tasks', type=str, nargs='+', default=['community', 'k_hop_community_counts_k2', 'k_hop_community_counts_k3'],
+    parser.add_argument('--tasks', type=str, nargs='+', default=['k_hop_community_counts_k2'],
                         choices=['community', 'k_hop_community_counts_k1', 'k_hop_community_counts_k2', 'k_hop_community_counts_k3', 'triangle_count'],
                         help='Learning tasks to run')
     parser.add_argument('--khop_k', type=int, default=2,
@@ -129,7 +129,7 @@ def parse_args():
                         help='Maximum allowed participation rate per community')
     
     # === MODELS ===
-    parser.add_argument('--gnn_types', type=str, nargs='+', default=['gcn', 'gat'],
+    parser.add_argument('--gnn_types', type=str, nargs='+', default=['gcn'],
                         choices=['gcn', 'fagcn', 'sage', 'gat', 'gin'],
                         help='Types of GNN models to run')
     parser.add_argument('--transformer_types', type=str, nargs='+', 
@@ -162,9 +162,9 @@ def parse_args():
                         help='Learning rate for neural models')
     parser.add_argument('--hidden_dim', type=int, default=64,
                         help='Hidden dimension for neural models')
-    parser.add_argument('--batch_size', type=int, default=4,
+    parser.add_argument('--batch_size', type=int, default=1,
                         help='Batch size for training')
-    parser.add_argument('--n_trials', type=int, default=10,
+    parser.add_argument('--n_trials', type=int, default=5,
                         help='Number of trials for hyperparameter optimization')
 
 

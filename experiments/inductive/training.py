@@ -18,7 +18,8 @@ from torch_geometric.data import Batch
 import copy
 import random
 
-from experiments.models import GNNModel, MLPModel, SklearnModel, GraphTransformerModel, SheafDiffusionModel
+from experiments.models import GNNModel, MLPModel, SklearnModel, GraphTransformerModel
+from experiments.neural_sheaf_diffusion.inductive_sheaf_wrapper import InductiveSheafDiffusionModel
 from experiments.transductive.metrics import compute_metrics_gpu, compute_metrics
 from experiments.inductive.config import InductiveExperimentConfig
 
@@ -121,7 +122,7 @@ def get_total_classes_from_dataloaders(dataloaders: Dict[str, DataLoader]) -> in
     return int(output_dim)
 
 def train_inductive_model(
-    model: Union[GNNModel, MLPModel, SklearnModel, GraphTransformerModel, SheafDiffusionModel],
+    model: Union[GNNModel, MLPModel, SklearnModel, GraphTransformerModel, InductiveSheafDiffusionModel],
     model_name: str,
     dataloaders: Dict[str, Dict[str, DataLoader]],
     config: InductiveExperimentConfig,
@@ -220,6 +221,14 @@ def train_inductive_model(
             patience_counter = 0
             best_model_state = None
 
+            # Check if all data is on device
+            for batch in train_loader:
+                if batch.x.device != device:
+                    all_data_on_device = False
+                    break
+                else:
+                    all_data_on_device = True
+
             # PyTorch models - data is already on GPU
             model = model.to(device)
 
@@ -227,16 +236,17 @@ def train_inductive_model(
             optimizer = None
             if sheaf_based_model:
                 # For sheaf models, we need to do a dummy forward pass first to initialize parameters
-                print("Initializing sheaf model parameters...")
-                with torch.no_grad():
-                    # Get first batch to initialize the model
-                    first_batch = next(iter(train_loader))
-                    # Ensure data is on the same device as the model
-                    first_batch = first_batch.to(device)
-                    if hasattr(first_batch, 'batch') and first_batch.batch is not None:
-                        _ = model(first_batch.x, first_batch.edge_index, first_batch.batch)
-                    else:
-                        _ = model(first_batch.x, first_batch.edge_index)
+                # print("Initializing sheaf model parameters...")
+                # with torch.no_grad():
+                #     # Get first batch to initialize the model
+                #     first_batch = next(iter(train_loader))
+                #     # Ensure data is on the same device as the model
+                #     if not all_data_on_device:
+                #         first_batch = first_batch.to(device)
+                #     if hasattr(first_batch, 'batch') and first_batch.batch is not None:
+                #         _ = model(first_batch.x, first_batch.edge_index, first_batch.batch)
+                #     else:
+                #         _ = model(first_batch.x, first_batch.edge_index)
                 
                 # Now create optimizer after parameters are initialized
                 param_count = sum(p.numel() for p in model.parameters())
@@ -270,12 +280,10 @@ def train_inductive_model(
                     optimizer.zero_grad()
                     
                     # Forward pass - check if model requires edge_index
-                    if graph_based_model:
+                    if graph_based_model or sheaf_based_model:
                         out = model(batch.x, batch.edge_index)
                     elif transformer_based_model:
                         out = model(batch.x, batch.edge_index, data=batch, batch=batch.batch)
-                    elif sheaf_based_model:
-                        out = model(batch.x, batch.edge_index, batch.batch)
                     else:  # MLPModel or other non-GNN model
                         out = model(batch.x)
                     
@@ -306,12 +314,10 @@ def train_inductive_model(
                     for batch in val_loader:
                         # Data is already on GPU - no need for .to(device)
                         
-                        if graph_based_model:
+                        if graph_based_model or sheaf_based_model:
                             out = model(batch.x, batch.edge_index)
                         elif transformer_based_model:
                             out = model(batch.x, batch.edge_index, data=batch, batch=batch.batch)
-                        elif sheaf_based_model:
-                            out = model(batch.x, batch.edge_index, batch.batch)
                         else:
                             out = model(batch.x)
                         
@@ -420,7 +426,7 @@ def train_inductive_model(
                 print("Loaded best model weights")
             
             # Final evaluation on test set
-            test_metrics = evaluate_inductive_model_gpu_resident(model, graph_based_model, transformer_based_model, test_loader, is_regression, device, finetuning)
+            test_metrics = evaluate_inductive_model_gpu_resident(model, graph_based_model, transformer_based_model, sheaf_based_model, test_loader, is_regression, device, finetuning)
 
             fold_train_time[fold_name] = train_time
             fold_best_val_metrics[fold_name] = best_val_metric
@@ -550,6 +556,7 @@ def evaluate_inductive_model_gpu_resident(
     model: Union[GNNModel, MLPModel],
     graph_based_model: bool,
     transformer_based_model: bool,
+    sheaf_based_model: bool,
     test_loader: DataLoader,
     is_regression: bool,
     device: torch.device,
@@ -577,7 +584,7 @@ def evaluate_inductive_model_gpu_resident(
             # Data is already on GPU - no need for .to(device)
             
             # Forward pass - check if model requires edge_index and extra batch info (for PE)
-            if graph_based_model:
+            if graph_based_model or sheaf_based_model:
                 out = model(batch.x, batch.edge_index)
             elif transformer_based_model:
                 out = model(batch.x, batch.edge_index, data=batch, batch=batch.batch)
@@ -902,7 +909,7 @@ def get_hyperparameter_space(trial, model_type: str, is_regression: bool) -> Dic
     return params
 
 def train_and_evaluate_inductive(
-    model: Union[GNNModel, MLPModel, SklearnModel, GraphTransformerModel, SheafDiffusionModel],  # Updated type hint
+    model: Union[GNNModel, MLPModel, SklearnModel, GraphTransformerModel, InductiveSheafDiffusionModel],  # Updated type hint
     model_name: str,
     dataloaders: Dict[str, Dict[str, DataLoader]],
     config: InductiveExperimentConfig,
@@ -938,6 +945,13 @@ def train_and_evaluate_inductive(
                 first_fold_name = list(dataloaders.keys())[0]
                 sample_batch = next(iter(dataloaders[first_fold_name]['train']))
                 input_dim = sample_batch.x.shape[1]
+
+                if sample_batch.x.device != device:
+                    print("Batches are not on device")
+                    all_data_on_device = False
+                else:
+                    print("All batches are already on device")
+                    all_data_on_device = True
                 
                 if is_regression:
                     output_dim = sample_batch.y.shape[1] if len(sample_batch.y.shape) > 1 else 1
@@ -1003,21 +1017,6 @@ def train_and_evaluate_inductive(
                         pe_norm_type=pe_norm_type,
                     ).to(device)
                     
-                    # Initialize sheaf model parameters with a dummy forward pass
-                    with torch.no_grad():
-                        first_batch = next(iter(dataloaders[opt_fold]['train']))
-                        # Ensure data is on the same device as the model
-                        first_batch = first_batch.to(device)
-                        if hasattr(first_batch, 'batch') and first_batch.batch is not None:
-                            _ = trial_model(first_batch.x, first_batch.edge_index, first_batch.batch)
-                        else:
-                            _ = trial_model(first_batch.x, first_batch.edge_index)
-                    
-                    # Now create optimizer after parameters are initialized
-                    param_count = sum(p.numel() for p in trial_model.parameters())
-                    if param_count == 0:
-                        return float('-inf')  # Return worst possible score if no parameters
-                    
                     optimizer = torch.optim.Adam(trial_model.parameters(), lr=lr, weight_decay=weight_decay)
                     
                     # Set up loss function
@@ -1038,10 +1037,13 @@ def train_and_evaluate_inductive(
 
                     # Train and evaluate on the optimization fold
                     fold_dataloader = dataloaders[opt_fold]
+
                     for epoch in range(max_epochs):
                         # Training
                         trial_model.train()
                         for batch in fold_dataloader['train']:
+                            if not all_data_on_device:
+                                batch = batch.to(device)
                             optimizer.zero_grad()
                             out = trial_model(batch.x, batch.edge_index, data=batch, batch=batch.batch)
                             loss = criterion(out, batch.y)
@@ -1167,6 +1169,13 @@ def train_and_evaluate_inductive(
                 sample_batch = next(iter(dataloaders[first_fold_name]['train']))
                 input_dim = sample_batch.x.shape[1]
 
+                if sample_batch.x.device != device:
+                    print("Batches are not on device")
+                    all_data_on_device = False
+                else:
+                    print("All batches are already on device")
+                    all_data_on_device = True
+
                 if is_regression:
                     output_dim = sample_batch.y.shape[1] if len(sample_batch.y.shape) > 1 else 1
                 else:
@@ -1188,38 +1197,61 @@ def train_and_evaluate_inductive(
 
                     # Sheaf Diffusion-specific hyperparameters
                     hidden_dim = config.hidden_dim
-                    num_layers = config.num_layers
+                    if task.startswith('k_hop_community_counts'):
+                        num_layers = trial.suggest_int('num_layers', config.khop_community_counts_k + 1, config.khop_community_counts_k + 2)
+                    else:
+                        num_layers = trial.suggest_int('num_layers', config.num_layers - 1, config.num_layers + 1)
                     dropout = trial.suggest_float('dropout', 0.1, 0.5)
-                    d = trial.suggest_int('d', 1, 4)
+                    d = trial.suggest_int('d', 2, 3)
+                    # Make sure hidden_dim is divisible by d
+                    if hidden_dim % d != 0:
+                        hidden_dim = hidden_dim // d * d
+                        trial.suggest_int('hidden_dim', hidden_dim, hidden_dim)
+                        print(f"Warning: hidden_dim is not divisible by d, setting hidden_dim to {hidden_dim}")
                     sheaf_type = trial.suggest_categorical('sheaf_type', ['diag', 'bundle', 'general'])
 
                     # Create Sheaf Diffusion model with all parameters
-                    trial_model = SheafDiffusionModel(
+                    trial_model = InductiveSheafDiffusionModel(
                         input_dim=input_dim,
                         hidden_dim=hidden_dim,
                         output_dim=output_dim,
                         sheaf_type=sheaf_type,
+                        d=d,
                         num_layers=num_layers,
                         dropout=dropout,
-                        d=d,
+                        input_dropout=0.1,
                         is_regression=is_regression,
-                        is_graph_level_task=config.is_graph_level_tasks.get(task, task == 'triangle_count')
+                        is_graph_level_task=False,
+                        device=device
                     ).to(device)
+
+                    # trial_model = SheafDiffusionModel(
+                    #     input_dim=input_dim,
+                    #     hidden_dim=hidden_dim,
+                    #     output_dim=output_dim,
+                    #     sheaf_type=sheaf_type,
+                    #     num_layers=num_layers,
+                    #     dropout=dropout,
+                    #     d=d,
+                    #     is_regression=is_regression,
+                    #     is_graph_level_task=config.is_graph_level_tasks.get(task, task == 'triangle_count')
+                    # ).to(device)
                     
                     # Initialize sheaf model parameters with a dummy forward pass
-                    with torch.no_grad():
-                        first_batch = next(iter(dataloaders[first_fold_name]['train']))
-                        # Ensure data is on the same device as the model
-                        first_batch = first_batch.to(device)
-                        if hasattr(first_batch, 'batch') and first_batch.batch is not None:
-                            _ = trial_model(first_batch.x, first_batch.edge_index, first_batch.batch)
-                        else:
-                            _ = trial_model(first_batch.x, first_batch.edge_index)
+                    # with torch.no_grad():
+                    #     first_batch = next(iter(dataloaders[first_fold_name]['train']))
+                    #     # Ensure data is on the same device as the model
+                    #     if not all_data_on_device:
+                    #         first_batch = first_batch.to(device)
+                    #     if hasattr(first_batch, 'batch') and first_batch.batch is not None:
+                    #         _ = trial_model(first_batch.x, first_batch.edge_index, first_batch.batch)
+                    #     else:
+                    #         _ = trial_model(first_batch.x, first_batch.edge_index)
                     
                     # Now create optimizer after parameters are initialized
-                    param_count = sum(p.numel() for p in trial_model.parameters())
-                    if param_count == 0:
-                        return float('-inf')  # Return worst possible score if no parameters
+                    # param_count = sum(p.numel() for p in trial_model.parameters())
+                    # if param_count == 0:
+                    #     return float('-inf')  # Return worst possible score if no parameters
                     
                     optimizer = torch.optim.Adam(trial_model.parameters(), lr=lr, weight_decay=weight_decay)
                     
@@ -1244,9 +1276,10 @@ def train_and_evaluate_inductive(
                         # Training
                         trial_model.train()
                         for batch in fold_dataloader['train']:
-                            batch = batch.to(device)
+                            if not all_data_on_device:  
+                                batch = batch.to(device)
                             optimizer.zero_grad()
-                            out = trial_model(batch.x, batch.edge_index, batch.batch)
+                            out = trial_model(batch.x, batch.edge_index)
                             loss = criterion(out, batch.y)
                             loss.backward()
                             optimizer.step()
@@ -1258,8 +1291,9 @@ def train_and_evaluate_inductive(
                         
                         with torch.no_grad():
                             for batch in fold_dataloader['val']:
-                                batch = batch.to(device)
-                                out = trial_model(batch.x, batch.edge_index, batch.batch)
+                                if not all_data_on_device:
+                                    batch = batch.to(device)
+                                out = trial_model(batch.x, batch.edge_index)
                                 
                                 if is_regression:
                                     val_predictions.append(out.detach())
@@ -1322,31 +1356,32 @@ def train_and_evaluate_inductive(
                         print(f"   {key}: {value}")
 
                     # Recreate model with optimized parameters
-                    model = SheafDiffusionModel(
+                    model = InductiveSheafDiffusionModel(
                         input_dim=input_dim,
-                        hidden_dim=hidden_dim,
+                        hidden_dim=best_params.get('hidden_dim', config.hidden_dim),
                         output_dim=output_dim,
                         sheaf_type=best_params['sheaf_type'],
                         num_layers=best_params['num_layers'],
                         dropout=best_params['dropout'],
                         d=best_params['d'],
                         is_regression=is_regression,
-                        is_graph_level_task=config.is_graph_level_tasks.get(task, task == 'triangle_count')
-                    ).to(device)
+                        is_graph_level_task=config.is_graph_level_tasks.get(task, task == 'triangle_count'),
+                        device=device
+                    )
                     
-                    # Initialize the sheaf model parameters
-                    print("Initializing optimized sheaf model parameters...")
-                    with torch.no_grad():
-                        first_batch = next(iter(dataloaders[first_fold_name]['train']))
-                        # Ensure data is on the same device as the model
-                        first_batch = first_batch.to(device)
-                        if hasattr(first_batch, 'batch') and first_batch.batch is not None:
-                            _ = model(first_batch.x, first_batch.edge_index, first_batch.batch)
-                        else:
-                            _ = model(first_batch.x, first_batch.edge_index)
+                    # # Initialize the sheaf model parameters
+                    # print("Initializing optimized sheaf model parameters...")
+                    # with torch.no_grad():
+                    #     first_batch = next(iter(dataloaders[first_fold_name]['train']))
+                    #     # Ensure data is on the same device as the model
+                    #     first_batch = first_batch.to(device)
+                    #     if hasattr(first_batch, 'batch') and first_batch.batch is not None:
+                    #         _ = model(first_batch.x, first_batch.edge_index, first_batch.batch)
+                    #     else:
+                    #         _ = model(first_batch.x, first_batch.edge_index)
                     
-                    param_count = sum(p.numel() for p in model.parameters())
-                    print(f"Optimized sheaf model initialized with {param_count} parameters")
+                    # param_count = sum(p.numel() for p in model.parameters())
+                    # print(f"Optimized sheaf model initialized with {param_count} parameters")
                     
                     # Update config with optimized parameters
                     config.learning_rate = best_params.get('lr', config.learning_rate)
@@ -1467,11 +1502,22 @@ def train_and_evaluate_inductive(
                     patience_counter = 0
 
                     fold_dataloader = dataloaders[first_fold_name]
+
+                    # Check for one batch if already on device (which means all are on device already)
+                    for batch in fold_dataloader['train']:
+                        if batch.x.device == device:
+                            all_data_on_device = True
+                            break
+                        else:
+                            all_data_on_device = False
+                            break
+
                     for epoch in range(max_epochs):
                         # Training
                         trial_model.train()
                         for batch in fold_dataloader['train']:
-                            batch = batch.to(device)
+                            if not all_data_on_device:
+                                batch = batch.to(device)
                             optimizer.zero_grad()
                             out = trial_model(batch.x, batch.edge_index)
                             loss = criterion(out, batch.y)
@@ -1485,7 +1531,8 @@ def train_and_evaluate_inductive(
                         
                         with torch.no_grad():
                             for batch in fold_dataloader['val']:
-                                batch = batch.to(device)
+                                if not all_data_on_device:
+                                    batch = batch.to(device)
                                 out = trial_model(batch.x, batch.edge_index)
                                 
                                 if is_regression:
@@ -1593,6 +1640,13 @@ def train_and_evaluate_inductive(
                 first_fold_name = list(dataloaders.keys())[0]
                 sample_batch = next(iter(dataloaders[first_fold_name]['train']))
                 input_dim = sample_batch.x.shape[1]
+
+                if sample_batch.x.device != device:
+                    print("Batches are not on device")
+                    all_data_on_device = False
+                else:
+                    print("All batches are already on device")
+                    all_data_on_device = True
                 
                 if is_regression:
                     output_dim = sample_batch.y.shape[1] if len(sample_batch.y.shape) > 1 else 1
@@ -1628,21 +1682,6 @@ def train_and_evaluate_inductive(
                         is_regression=is_regression
                     ).to(device)
                     
-                    # Initialize sheaf model parameters with a dummy forward pass
-                    with torch.no_grad():
-                        first_batch = next(iter(dataloaders[first_fold_name]['train']))
-                        # Ensure data is on the same device as the model
-                        first_batch = first_batch.to(device)
-                        if hasattr(first_batch, 'batch') and first_batch.batch is not None:
-                            _ = trial_model(first_batch.x, first_batch.edge_index, first_batch.batch)
-                        else:
-                            _ = trial_model(first_batch.x, first_batch.edge_index)
-                    
-                    # Now create optimizer after parameters are initialized
-                    param_count = sum(p.numel() for p in trial_model.parameters())
-                    if param_count == 0:
-                        return float('-inf')  # Return worst possible score if no parameters
-                    
                     optimizer = torch.optim.Adam(trial_model.parameters(), lr=lr, weight_decay=weight_decay)
                     
                     # Set up loss function
@@ -1662,13 +1701,15 @@ def train_and_evaluate_inductive(
                     patience_counter = 0
                     
                     fold_dataloader = dataloaders[first_fold_name]
+
                     for epoch in range(max_epochs):
                         # Training
                         trial_model.train()
                         for batch in fold_dataloader['train']:
-                            batch = batch.to(device)
+                            if not all_data_on_device:
+                                batch = batch.to(device)
                             optimizer.zero_grad()
-                            out = trial_model(batch.x, batch.edge_index, batch.batch)
+                            out = trial_model(batch.x)
                             loss = criterion(out, batch.y)
                             loss.backward()
                             optimizer.step()
@@ -1680,8 +1721,9 @@ def train_and_evaluate_inductive(
                         
                         with torch.no_grad():
                             for batch in fold_dataloader['val']:
-                                batch = batch.to(device)
-                                out = trial_model(batch.x, batch.edge_index, batch.batch)
+                                if not all_data_on_device:
+                                    batch = batch.to(device)
+                                out = trial_model(batch.x)
                                 
                                 if is_regression:
                                     val_predictions.append(out.detach())

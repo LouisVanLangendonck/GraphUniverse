@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import torch
-
+import time
 from torch import nn
 from torch_scatter import scatter_add
 from torch_geometric.utils import degree
@@ -38,11 +38,18 @@ class LaplacianBuilder(nn.Module):
         self.augmented = augmented
 
         # Preprocess the sparse indices required to compute the Sheaf Laplacian.
+        start_time = time.time()
         self.full_left_right_idx, _ = lap.compute_left_right_map_index(edge_index, full_matrix=True)
+        # print("TIME DEBUG: Time taken for compute_left_right_map_index: ", time.time() - start_time)
+        start_time = time.time()
         self.left_right_idx, self.vertex_tril_idx = lap.compute_left_right_map_index(edge_index)
+        # print("TIME DEBUG: Time taken for compute_left_right_map_index: ", time.time() - start_time)
         if self.add_lp or self.add_hp:
+            # print("TIME DEBUG: Time taken for compute_fixed_diag_laplacian_indices: ", time.time() - start_time)
+            start_time = time.time()
             self.fixed_diag_indices, self.fixed_tril_indices = lap.compute_fixed_diag_laplacian_indices(
                 size, self.vertex_tril_idx, self.d, self.final_d)
+            # print("TIME DEBUG: Time taken for compute_fixed_diag_laplacian_indices: ", time.time() - start_time)
         self.deg = degree(self.edge_index[0], num_nodes=self.size)
 
     def get_fixed_maps(self, size, dtype):
@@ -176,15 +183,23 @@ class NormConnectionLaplacianBuilder(LaplacianBuilder):
     """Learns a a Sheaf Laplacian with diagonal restriction maps"""
 
     def __init__(self, size, edge_index, d, add_hp=False, add_lp=False, orth_map=None, augmented=True):
+        start_time = time.time()
         super(NormConnectionLaplacianBuilder, self).__init__(
             size, edge_index, d, add_hp=add_hp, add_lp=add_lp, normalised=True, augmented=augmented)
+        # print("TIME DEBUG: Time taken for NormConnectionLaplacianBuilder init: ", time.time() - start_time)
+        start_time = time.time()
         self.orth_transform = Orthogonal(d=self.d, orthogonal_map=orth_map)
         self.orth_map = orth_map
+        # print("TIME DEBUG: Time taken for Orthogonal init: ", time.time() - start_time)
 
+        start_time = time.time()
         _, self.tril_indices = lap.compute_learnable_laplacian_indices(
             size, self.vertex_tril_idx, self.d, self.final_d)
+        # print("TIME DEBUG: Time taken for compute_learnable_laplacian_indices: ", time.time() - start_time)
+        start_time = time.time()
         self.diag_indices, _ = lap.compute_learnable_diag_laplacian_indices(
             size, self.vertex_tril_idx, self.d, self.final_d)
+        # print("TIME DEBUG: Time taken for compute_learnable_diag_laplacian_indices: ", time.time() - start_time)
 
     def create_with_new_edge_index(self, edge_index):
         assert edge_index.max() <= self.size

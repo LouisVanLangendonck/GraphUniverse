@@ -3,10 +3,8 @@
 
 import itertools
 import math
-
 import torch
 import torch_sparse
-
 from torch_geometric.utils import degree
 
 
@@ -310,38 +308,67 @@ def append_diag_maps_to_existent_laplacian(size, learnable_d, L, edge_index, val
 
 
 def compute_left_right_map_index(edge_index, full_matrix=False):
-    """Computes indices for lower triangular matrix or full matrix"""
-    edge_to_idx = dict()
-    for e in range(edge_index.size(1)):
-        source = edge_index[0, e].item()
-        target = edge_index[1, e].item()
-        edge_to_idx[(source, target)] = e
-
-    left_index, right_index = [], []
-    row, col = [], []
-    for e in range(edge_index.size(1)):
-        source = edge_index[0, e].item()
-        target = edge_index[1, e].item()
-        if source < target or full_matrix:
-            left_index.append(e)
-            right_index.append(edge_to_idx[(target, source)])
-
-            row.append(source)
-            col.append(target)
-
-    left_index = torch.tensor(left_index, dtype=torch.long, device=edge_index.device)
-    right_index = torch.tensor(right_index, dtype=torch.long, device=edge_index.device)
-    left_right_index = torch.vstack([left_index, right_index])
-
-    row = torch.tensor(row, dtype=torch.long, device=edge_index.device)
-    col = torch.tensor(col, dtype=torch.long, device=edge_index.device)
-    new_edge_index = torch.vstack([row, col])
-
+    """Computes indices for lower triangular matrix or full matrix - ULTRA FAST VERSION"""
+    # Extract source and target nodes
+    source, target = edge_index[0], edge_index[1]
+    
     if full_matrix:
-        assert len(left_index) == edge_index.size(1)
+        # For full matrix, use all edges
+        mask = torch.ones(edge_index.size(1), dtype=torch.bool, device=edge_index.device)
     else:
-        assert len(left_index) == edge_index.size(1) // 2
-
+        # For lower triangular, only use edges where source < target
+        mask = source < target
+    
+    # Get the indices where mask is True
+    selected_indices = torch.where(mask)[0]
+    
+    if len(selected_indices) == 0:
+        # Handle edge case where no edges match criteria
+        empty_tensor = torch.empty((2, 0), dtype=torch.long, device=edge_index.device)
+        return empty_tensor, empty_tensor
+    
+    # Get the selected edges
+    selected_source = source[selected_indices]
+    selected_target = target[selected_indices]
+    
+    # Create the new edge index
+    new_edge_index = torch.stack([selected_source, selected_target])
+    
+    # Create a mapping from edge pairs to their indices
+    # This is the key optimization - we create a hash-like mapping using tensor operations
+    edge_pairs = torch.stack([source, target], dim=1)
+    
+    # For each selected edge, we need to find its reverse edge
+    # Create reverse pairs for selected edges
+    reverse_pairs = torch.stack([selected_target, selected_source], dim=1)
+    
+    # Use broadcasting to find all matches at once
+    # This creates a matrix where entry [i,j] is True if reverse_pairs[i] == edge_pairs[j]
+    # Shape: (num_selected_edges, num_total_edges)
+    matches = torch.all(
+        reverse_pairs.unsqueeze(1) == edge_pairs.unsqueeze(0), 
+        dim=2
+    )
+    
+    # Convert boolean to float for argmax to work on CUDA
+    matches_float = matches.float()
+    
+    # For each selected edge, find the index of its reverse edge
+    # argmax will find the first True value in each row
+    right_index = torch.argmax(matches_float, dim=1)
+    
+    # Verify that we actually found matches (all rows should have at least one True)
+    assert torch.all(torch.any(matches, dim=1)), "Some reverse edges not found in original edge list"
+    
+    left_index = selected_indices
+    left_right_index = torch.stack([left_index, right_index])
+    
+    # Verify the expected sizes
+    if full_matrix:
+        assert len(selected_indices) == edge_index.size(1)
+    else:
+        assert len(selected_indices) == edge_index.size(1) // 2
+    
     return left_right_index, new_edge_index
 
 
@@ -388,7 +415,7 @@ def compute_fixed_diag_laplacian_indices(size, edge_index, learned_d, total_d):
     assert torch.all(edge_index[0] < edge_index[1])
     row, col = edge_index
     device = edge_index.device
-    row_template = torch.arange(learned_d, total_d, device=device).view(1, -1)
+    row_template = torch.arange(learned_d, total_d, device=device).view(1, -1) # Size: (1, total_d - learned_d)
     col_template = row_template.clone()
 
     non_diag_row_indices = (row_template + total_d*row.unsqueeze(1)).reshape(1, -1)
