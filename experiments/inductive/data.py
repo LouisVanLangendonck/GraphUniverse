@@ -900,7 +900,34 @@ def prepare_inductive_data(
         
         inductive_data[task] = task_data
     
-    return inductive_data, fold_indices
+    # After all splits are created for each task, create sheaf-specific splits with batch size 1
+    sheaf_inductive_data = {}
+    for task, task_data in inductive_data.items():
+        sheaf_task_data = {}
+        for fold_name, fold_data in task_data.items():
+            if fold_name == 'metadata' or fold_name == 'metapath_analysis':
+                sheaf_task_data[fold_name] = copy.deepcopy(fold_data)
+                continue
+                
+            sheaf_fold_data = {}
+            for split_name, split_data in fold_data.items():
+                if split_name == 'metadata' or split_name == 'metapath_analysis':
+                    sheaf_fold_data[split_name] = copy.deepcopy(split_data)
+                    continue
+                    
+                # Deep copy graphs and attach cache
+                sheaf_graphs = [precompute_sheaf_laplacian(copy.deepcopy(g)) for g in split_data['graphs']]
+                sheaf_fold_data[split_name] = {
+                    'graphs': sheaf_graphs,
+                    'n_graphs': len(sheaf_graphs),
+                    'batch_size': 1,  # Always batch size 1 for sheaf
+                    'indices': split_data['indices']
+                }
+            sheaf_task_data[fold_name] = sheaf_fold_data
+        sheaf_inductive_data[task] = sheaf_task_data
+    
+    # Return normal splits, sheaf-specific splits, and fold indices
+    return inductive_data, sheaf_inductive_data, fold_indices
 
 def compute_khop_community_counts_universe_indexed(
     graph: nx.Graph,
@@ -1085,7 +1112,7 @@ def validate_khop_consistency(family_graphs: List, universe_K: int) -> Dict[str,
     return validation_results
 
 def create_inductive_dataloaders(
-    inductive_data: Dict[str, Dict[str, Dict[str, Any]]],
+    inductive_data: Dict[str, Dict[str, Any]],
     config
 ) -> Dict[str, Dict[str, Any]]:
     """
@@ -1475,3 +1502,71 @@ def verify_gpu_resident_data(dataloaders: Dict[str, Dict[str, Any]], device: tor
     
     print(f"✅ All data verified to be on {device}")
     return True
+
+# --- Sheaf Laplacian Precomputation ---
+def precompute_sheaf_laplacian(graph):
+    """
+    Precompute and cache hyperparameter-independent indices for sheaf diffusion models.
+    Only computes the expensive index operations that are independent of hyperparameters.
+    """
+    from experiments.neural_sheaf_diffusion.lib import laplace as lap
+    from torch_geometric.utils import degree
+    
+    size = graph.x.size(0)
+    edge_index = graph.edge_index
+    
+    # Precompute the expensive index operations that are independent of hyperparameters
+    start_time = time.time()
+    full_left_right_idx, _ = lap.compute_left_right_map_index(edge_index, full_matrix=True)
+    left_right_idx, vertex_tril_idx = lap.compute_left_right_map_index(edge_index)
+    end_time = time.time()
+    # print(f"TIME DEBUG: Index precomputation for {size} nodes: {end_time - start_time:.4f}s")
+    
+    # Compute degree (also independent of hyperparameters)
+    deg = degree(edge_index[0], num_nodes=size)
+    
+    # Store only the hyperparameter-independent components
+    graph.sheaf_indices_cache = {
+        'size': size,
+        'edge_index': edge_index,
+        'full_left_right_idx': full_left_right_idx,
+        'left_right_idx': left_right_idx,
+        'vertex_tril_idx': vertex_tril_idx,
+        'deg': deg,
+        'edges': edge_index.size(1) // 2
+    }
+    
+    return graph
+
+# --- Sheaf-specific dataloader creation ---
+def create_sheaf_dataloaders(sheaf_inductive_data, config):
+    """
+    Create dataloaders for sheaf splits (batch size 1 everywhere).
+    Usage: sheaf_dataloaders = create_sheaf_dataloaders(sheaf_inductive_data, config)
+    """
+    from torch_geometric.loader import DataLoader
+    dataloaders = {}
+    for task, task_data in sheaf_inductive_data.items():
+        task_loaders = {}
+        for fold_name, fold_data in task_data.items():
+            fold_loaders = {}
+            if fold_name == 'metadata' or fold_name == 'metapath_analysis':
+                continue
+            for split_name, split_data in fold_data.items():
+                if split_name == 'metadata' or split_name == 'metapath_analysis':
+                    continue
+                loader = DataLoader(
+                    split_data['graphs'],
+                    batch_size=1,  # Always batch size 1
+                    shuffle=(split_name == 'train'),
+                    num_workers=0
+                )
+                fold_loaders[split_name] = loader
+            task_loaders[fold_name] = fold_loaders
+        dataloaders[task] = task_loaders
+    return dataloaders
+
+# --- Usage in experiment runner ---
+# When running the sheaf model, use the sheaf_inductive_data and create_sheaf_dataloaders.
+# For other models, use the normal splits and dataloaders.
+# This ensures identical splits but with sheaf-specific precomputation and batch size 1.

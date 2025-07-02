@@ -324,8 +324,8 @@ class GNNEncoder(torch.nn.Module):
             h = conv(h, edge_index)
             if self.norm_type != "none":
                 h = self.norms[i](h)
-            h = F.relu(h)
-            h = F.dropout(h, p=self.dropout, training=self.training)
+            h = F.elu(h)
+            # h = F.dropout(h, p=self.dropout, training=self.training)
         return h
     
     def _forward_gin(self, x: torch.Tensor, edge_index: torch.Tensor) -> torch.Tensor:
@@ -335,8 +335,8 @@ class GNNEncoder(torch.nn.Module):
             h = conv(h, edge_index)
             if self.norm_type == "batch":
                 h = self.norms[i](h)
-            h = F.relu(h)
-            h = F.dropout(h, p=self.dropout, training=self.training)
+            h = F.elu(h)
+            # h = F.dropout(h, p=self.dropout, training=self.training)
         return h
     
     def _forward_standard_gnn(self, x: torch.Tensor, edge_index: torch.Tensor) -> torch.Tensor:
@@ -346,8 +346,8 @@ class GNNEncoder(torch.nn.Module):
             h = conv(h, edge_index)
             if self.norm_type != "none":
                 h = self.norms[i](h)
-            h = F.relu(h)
-            h = F.dropout(h, p=self.dropout, training=self.training)
+            h = F.elu(h)
+            # h = F.dropout(h, p=self.dropout, training=self.training)
         return h
 
 
@@ -395,18 +395,18 @@ class GNNModel(torch.nn.Module):
         if is_graph_level_task:
             # Graph-level prediction head
             self.readout = torch.nn.Sequential(
-                torch.nn.Linear(hidden_dim, hidden_dim),
-                torch.nn.ReLU(),
-                torch.nn.Dropout(dropout),
-                torch.nn.Linear(hidden_dim, output_dim)
+                torch.nn.Linear(hidden_dim, output_dim),
+                # torch.nn.ReLU(),
+                # torch.nn.Dropout(dropout),
+                # torch.nn.Linear(hidden_dim, output_dim)
             )
         else:
             # Node-level prediction head
             self.readout = torch.nn.Sequential(
-                torch.nn.Linear(hidden_dim, hidden_dim),
-                torch.nn.ReLU(),
-                torch.nn.Dropout(dropout),
-                torch.nn.Linear(hidden_dim, output_dim)
+                torch.nn.Linear(hidden_dim, output_dim),
+                # torch.nn.ReLU(),
+                # torch.nn.Dropout(dropout),
+                # torch.nn.Linear(hidden_dim, output_dim)
             )
         
         # Only add sigmoid for classification tasks
@@ -1111,18 +1111,18 @@ class GraphTransformerModel(torch.nn.Module):
         if is_graph_level_task:
             # Graph-level prediction head
             self.readout = torch.nn.Sequential(
-                torch.nn.Linear(hidden_dim, hidden_dim),
-                torch.nn.ReLU(),
-                torch.nn.Dropout(dropout),
-                torch.nn.Linear(hidden_dim, output_dim)
+                torch.nn.Linear(hidden_dim, output_dim),
+                # torch.nn.ReLU(),
+                # torch.nn.Dropout(dropout),
+                # torch.nn.Linear(hidden_dim, output_dim)
             )
         else:
             # Node-level prediction head
             self.readout = torch.nn.Sequential(
-                torch.nn.Linear(hidden_dim, hidden_dim),
-                torch.nn.ReLU(),
-                torch.nn.Dropout(dropout),
-                torch.nn.Linear(hidden_dim, output_dim)
+                torch.nn.Linear(hidden_dim, output_dim),
+                # torch.nn.ReLU(),
+                # torch.nn.Dropout(dropout),
+                # torch.nn.Linear(hidden_dim, output_dim)
             )
         
         # Only add sigmoid for classification tasks

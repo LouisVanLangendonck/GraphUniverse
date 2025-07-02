@@ -280,10 +280,12 @@ def train_inductive_model(
                     optimizer.zero_grad()
                     
                     # Forward pass - check if model requires edge_index
-                    if graph_based_model or sheaf_based_model:
+                    if graph_based_model:
                         out = model(batch.x, batch.edge_index)
                     elif transformer_based_model:
                         out = model(batch.x, batch.edge_index, data=batch, batch=batch.batch)
+                    elif sheaf_based_model:
+                        out = model(batch.x, batch.edge_index, graph=batch)
                     else:  # MLPModel or other non-GNN model
                         out = model(batch.x)
                     
@@ -314,10 +316,12 @@ def train_inductive_model(
                     for batch in val_loader:
                         # Data is already on GPU - no need for .to(device)
                         
-                        if graph_based_model or sheaf_based_model:
+                        if graph_based_model:
                             out = model(batch.x, batch.edge_index)
                         elif transformer_based_model:
                             out = model(batch.x, batch.edge_index, data=batch, batch=batch.batch)
+                        elif sheaf_based_model:
+                            out = model(batch.x, batch.edge_index, graph=batch)
                         else:
                             out = model(batch.x)
                         
@@ -584,10 +588,12 @@ def evaluate_inductive_model_gpu_resident(
             # Data is already on GPU - no need for .to(device)
             
             # Forward pass - check if model requires edge_index and extra batch info (for PE)
-            if graph_based_model or sheaf_based_model:
+            if graph_based_model:
                 out = model(batch.x, batch.edge_index)
             elif transformer_based_model:
                 out = model(batch.x, batch.edge_index, data=batch, batch=batch.batch)
+            elif sheaf_based_model:
+                out = model(batch.x, batch.edge_index, graph=batch)
             else:  # MLPModel or other non-GNN model
                 out = model(batch.x)
             
@@ -1277,9 +1283,10 @@ def train_and_evaluate_inductive(
                         trial_model.train()
                         for batch in fold_dataloader['train']:
                             if not all_data_on_device:  
+                                print("Warning: Not all data is on device. Moving batch to device...")
                                 batch = batch.to(device)
                             optimizer.zero_grad()
-                            out = trial_model(batch.x, batch.edge_index)
+                            out = trial_model(batch.x, batch.edge_index, graph=batch)
                             loss = criterion(out, batch.y)
                             loss.backward()
                             optimizer.step()
@@ -1293,7 +1300,7 @@ def train_and_evaluate_inductive(
                             for batch in fold_dataloader['val']:
                                 if not all_data_on_device:
                                     batch = batch.to(device)
-                                out = trial_model(batch.x, batch.edge_index)
+                                out = trial_model(batch.x, batch.edge_index, graph=batch)
                                 
                                 if is_regression:
                                     val_predictions.append(out.detach())

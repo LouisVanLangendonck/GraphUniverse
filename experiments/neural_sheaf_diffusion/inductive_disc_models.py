@@ -59,11 +59,18 @@ class InductiveDiscreteDiagSheafDiffusion(SheafDiffusion):
         # Get actual number of nodes dynamically
         actual_num_nodes = x.size(0)
         
+        # Check if we have precomputed indices (from graph object passed via kwargs)
+        precomputed_indices = None
+        if hasattr(self, '_current_graph') and self._current_graph is not None:
+            if hasattr(self._current_graph, 'sheaf_indices_cache'):
+                precomputed_indices = self._current_graph.sheaf_indices_cache
+        
         # Create laplacian builder for this specific graph
         laplacian_builder = DiagLaplacianBuilder(actual_num_nodes, edge_index, d=self.d,
                                                 normalised=self.normalised,
                                                 deg_normalised=self.deg_normalised,
-                                                add_hp=self.add_hp, add_lp=self.add_lp)
+                                                add_hp=self.add_hp, add_lp=self.add_lp,
+                                                precomputed_indices=precomputed_indices)
         
         x = F.dropout(x, p=self.input_dropout, training=self.training)
         x = self.lin1(x)
@@ -181,15 +188,17 @@ class InductiveDiscreteBundleSheafDiffusion(SheafDiffusion):
         # Get actual number of nodes dynamically
         actual_num_nodes = x.size(0)
         
+        # Check if we have precomputed indices (from graph object passed via kwargs)
+        precomputed_indices = None
+        if hasattr(self, '_current_graph') and self._current_graph is not None:
+            if hasattr(self._current_graph, 'sheaf_indices_cache'):
+                precomputed_indices = self._current_graph.sheaf_indices_cache
+        
         # Create laplacian builder for this specific graph
-        start_time = time.time()
         laplacian_builder = NormConnectionLaplacianBuilder(
             actual_num_nodes, edge_index, d=self.d, add_hp=self.add_hp,
-            add_lp=self.add_lp, orth_map=self.orth_trans)
-        end_time = time.time()
-        # print(f"TIME DEBUG: Time taken for laplacian builder: {end_time - start_time} seconds")
+            add_lp=self.add_lp, orth_map=self.orth_trans, precomputed_indices=precomputed_indices)
         
-        start_time = time.time()
         x = F.dropout(x, p=self.input_dropout, training=self.training)
         x = self.lin1(x)
         if self.use_act:
@@ -208,76 +217,36 @@ class InductiveDiscreteBundleSheafDiffusion(SheafDiffusion):
             if layer == 0 or self.nonlinear:
                 x_maps = F.dropout(x, p=self.dropout if layer > 0 else 0., training=self.training)
                 x_maps = x_maps.reshape(actual_num_nodes, -1) # Reshape using actual number of nodes (so back to the original shape)
-                start_time = time.time()
                 maps = self.sheaf_learners[layer](x_maps, edge_index)
-                end_time = time.time()
-                # print(f"TIME DEBUG: Time taken for sheaf learner: {end_time - start_time} seconds") # SLOW!: 0.11 seconds
                 
-                start_time = time.time()
                 if self.use_edge_weights:
                     # Update edge_index for weight learner
                     self.weight_learners[layer].update_edge_index(edge_index)
                     edge_weights = self.weight_learners[layer](x_maps, edge_index)
                 else:
                     edge_weights = None
-                end_time = time.time()
-                # print(f"TIME DEBUG: Time taken for edge weights: {end_time - start_time} seconds")
                 
-                start_time = time.time()
                 L, trans_maps = laplacian_builder(maps, edge_weights)
-                end_time = time.time()
-                # print(f"TIME DEBUG: Time taken for laplacian builder: {end_time - start_time} seconds") # SLOW!: 0.12 seconds
-                
-                start_time = time.time()
                 self.sheaf_learners[layer].set_L(trans_maps)
-                end_time = time.time()
-                # print(f"TIME DEBUG: Time taken for setting L: {end_time - start_time} seconds")
-
-
 
             x = F.dropout(x, p=self.dropout, training=self.training)
 
             # Pass actual_num_nodes to left_right_linear
-            start_time = time.time()
             x = self.left_right_linear(x, self.lin_left_weights[layer], self.lin_right_weights[layer], actual_num_nodes)
-            end_time = time.time()
-            # print(f"TIME DEBUG: Time taken for left_right_linear: {end_time - start_time} seconds")
 
             # Use the adjacency matrix rather than the diagonal
-            start_time = time.time()
             x = torch_sparse.spmm(L[0], L[1], x.size(0), x.size(0), x)
-            end_time = time.time()
-            # print(f"TIME DEBUG: Time taken for spmm: {end_time - start_time} seconds")
 
-            start_time = time.time()
             if self.use_act:
                 x = F.elu(x)
-            end_time = time.time()
-            # print(f"TIME DEBUG: Time taken for elu: {end_time - start_time} seconds")
 
             # Use actual number of nodes for epsilon tiling
-            start_time = time.time()
             x0 = (1 + torch.tanh(self.epsilons[layer]).tile(actual_num_nodes, 1)) * x0 - x
-            end_time = time.time()
-            # print(f"TIME DEBUG: Time taken for epsilon tiling: {end_time - start_time} seconds")
             x = x0
 
         # Reshape using actual number of nodes
-        start_time = time.time()
         x = x.reshape(actual_num_nodes, -1)
-        end_time = time.time()
-        # print(f"TIME DEBUG: Time taken for reshape: {end_time - start_time} seconds")
-
-        start_time = time.time()
         x = self.lin2(x)
-        end_time = time.time()
-        # print(f"TIME DEBUG: Time taken for lin2: {end_time - start_time} seconds")
-
-        # start_time = time.time()
-        # x = F.log_softmax(x, dim=1)
-        # end_time = time.time()
-        # # print(f"TIME DEBUG: Time taken for log_softmax: {end_time - start_time} seconds")
-
         return x
         
         # return F.log_softmax(x, dim=1)
@@ -337,10 +306,16 @@ class InductiveDiscreteGeneralSheafDiffusion(SheafDiffusion):
         # Get actual number of nodes dynamically
         actual_num_nodes = x.size(0)
         
+        # Check if we have precomputed indices (from graph object passed via kwargs)
+        precomputed_indices = None
+        if hasattr(self, '_current_graph') and self._current_graph is not None:
+            if hasattr(self._current_graph, 'sheaf_indices_cache'):
+                precomputed_indices = self._current_graph.sheaf_indices_cache
+        
         # Create laplacian builder for this specific graph
         laplacian_builder = GeneralLaplacianBuilder(
             actual_num_nodes, edge_index, d=self.d, add_lp=self.add_lp, add_hp=self.add_hp,
-            normalised=self.normalised, deg_normalised=self.deg_normalised)
+            normalised=self.normalised, deg_normalised=self.deg_normalised, precomputed_indices=precomputed_indices)
         
         x = F.dropout(x, p=self.input_dropout, training=self.training)
         x = self.lin1(x)

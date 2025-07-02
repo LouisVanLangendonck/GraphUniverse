@@ -328,7 +328,7 @@ class InductiveExperiment:
             raise ValueError("Must generate graph family before preparing data")
         
         # Prepare inductive data
-        inductive_data, fold_indices = prepare_inductive_data(self.family_graphs, 
+        inductive_data, sheaf_inductive_data, fold_indices = prepare_inductive_data(self.family_graphs, 
                                                 self.config,
                                                 family_graphs_training_indices=self.family_graphs_training_indices,
                                                 family_graphs_val_test_indices=self.family_graphs_val_test_indices,
@@ -337,15 +337,33 @@ class InductiveExperiment:
         unseen_community_combination_score = self.calculate_unseen_community_combination_score(fold_indices)
         print(f"Unseen community combination score: {unseen_community_combination_score}")
         
+        # Store sheaf data for potential use
+        self.sheaf_inductive_data = sheaf_inductive_data
+        
         # Create GPU-resident dataloaders for efficiency
         print("Creating GPU-resident dataloaders...")
         dataloaders = create_gpu_resident_dataloaders(inductive_data, 
                                                    self.config,
                                                    self.device)
         
+        # Create sheaf-specific dataloaders (batch size 1, with precomputed cache)
+        print("Creating sheaf-specific dataloaders...")
+        from experiments.inductive.data import create_sheaf_dataloaders
+        sheaf_dataloaders = create_sheaf_dataloaders(sheaf_inductive_data, self.config)
+        
+        # Make sheaf dataloaders GPU-resident as well
+        print("Making sheaf dataloaders GPU-resident...")
+        sheaf_dataloaders = create_gpu_resident_dataloaders(sheaf_inductive_data, 
+                                                          self.config,
+                                                          self.device)
+        
         # Verify data is properly loaded to GPU
         if not verify_gpu_resident_data(dataloaders, self.device):
-            raise RuntimeError("Failed to load data to GPU properly")
+            raise RuntimeError("Failed to load normal data to GPU properly")
+        
+        # Verify sheaf data is properly loaded to GPU
+        if not verify_gpu_resident_data(sheaf_dataloaders, self.device):
+            raise RuntimeError("Failed to load sheaf data to GPU properly")
         
         # Print split information
         for task in self.config.tasks:
@@ -362,6 +380,7 @@ class InductiveExperiment:
                     print(f"    {split_name}: {n_graphs} graphs, batch size {batch_size}")
         
         self.dataloaders = dataloaders
+        self.sheaf_dataloaders = sheaf_dataloaders
         return dataloaders, unseen_community_combination_score
     
     def run_experiments(self) -> Dict[str, Any]:
@@ -394,6 +413,7 @@ class InductiveExperiment:
             print(f"{'='*40}")
             
             task_dataloaders = self.dataloaders[task]
+            task_sheaf_dataloaders = self.sheaf_dataloaders[task]
             task_results = {}
             
             # Get dimensions from sample batch
@@ -508,7 +528,7 @@ class InductiveExperiment:
                 results = train_and_evaluate_inductive(
                     model=model,
                     model_name='sheaf_diffusion',
-                    dataloaders=task_dataloaders,
+                    dataloaders=task_sheaf_dataloaders,
                     config=self.config,
                     task=task,
                     device=self.device,

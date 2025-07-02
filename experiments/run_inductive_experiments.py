@@ -88,7 +88,7 @@ def parse_args():
                         help='Feature dimension for universe')
     parser.add_argument('--universe_edge_density', type=float, default=0.07,
                         help='Base edge density for universe')
-    parser.add_argument('--universe_homophily', type=float, default=0.5,
+    parser.add_argument('--universe_homophily', type=float, default=0.25,
                         help='Homophily parameter for universe')
     parser.add_argument('--universe_randomness_factor', type=float, default=1.0,
                         help='Randomness factor for universe')

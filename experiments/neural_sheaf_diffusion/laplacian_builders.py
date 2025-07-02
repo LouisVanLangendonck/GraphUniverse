@@ -17,7 +17,7 @@ from experiments.neural_sheaf_diffusion.lib import laplace as lap
 class LaplacianBuilder(nn.Module):
 
     def __init__(self, size, edge_index, d, normalised=False, deg_normalised=False, add_hp=False, add_lp=False,
-                 augmented=True):
+                 augmented=True, precomputed_indices=None):
         super(LaplacianBuilder, self).__init__()
         assert not (normalised and deg_normalised)
 
@@ -37,20 +37,34 @@ class LaplacianBuilder(nn.Module):
         self.add_lp = add_lp
         self.augmented = augmented
 
-        # Preprocess the sparse indices required to compute the Sheaf Laplacian.
-        start_time = time.time()
-        self.full_left_right_idx, _ = lap.compute_left_right_map_index(edge_index, full_matrix=True)
-        # print("TIME DEBUG: Time taken for compute_left_right_map_index: ", time.time() - start_time)
-        start_time = time.time()
-        self.left_right_idx, self.vertex_tril_idx = lap.compute_left_right_map_index(edge_index)
-        # print("TIME DEBUG: Time taken for compute_left_right_map_index: ", time.time() - start_time)
+        # Use precomputed indices if available, otherwise compute them
+        if precomputed_indices is not None:
+            self.full_left_right_idx = precomputed_indices['full_left_right_idx']
+            self.left_right_idx = precomputed_indices['left_right_idx']
+            self.vertex_tril_idx = precomputed_indices['vertex_tril_idx']
+            self.deg = precomputed_indices['deg']
+        else:
+            # Preprocess the sparse indices required to compute the Sheaf Laplacian.
+            start_time = time.time()
+            self.full_left_right_idx, _ = lap.compute_left_right_map_index(edge_index, full_matrix=True)
+            # print("TIME DEBUG: Time taken for compute_left_right_map_index: ", time.time() - start_time)
+            start_time = time.time()
+            self.left_right_idx, self.vertex_tril_idx = lap.compute_left_right_map_index(edge_index)
+            # print("TIME DEBUG: Time taken for compute_left_right_map_index: ", time.time() - start_time)
+            if self.add_lp or self.add_hp:
+                # print("TIME DEBUG: Time taken for compute_fixed_diag_laplacian_indices: ", time.time() - start_time)
+                start_time = time.time()
+                self.fixed_diag_indices, self.fixed_tril_indices = lap.compute_fixed_diag_laplacian_indices(
+                    size, self.vertex_tril_idx, self.d, self.final_d)
+                # print("TIME DEBUG: Time taken for compute_fixed_diag_laplacian_indices: ", time.time() - start_time)
+            self.deg = degree(self.edge_index[0], num_nodes=self.size)
+        
+        # Always compute fixed indices if needed (these depend on hyperparameters)
         if self.add_lp or self.add_hp:
-            # print("TIME DEBUG: Time taken for compute_fixed_diag_laplacian_indices: ", time.time() - start_time)
             start_time = time.time()
             self.fixed_diag_indices, self.fixed_tril_indices = lap.compute_fixed_diag_laplacian_indices(
                 size, self.vertex_tril_idx, self.d, self.final_d)
             # print("TIME DEBUG: Time taken for compute_fixed_diag_laplacian_indices: ", time.time() - start_time)
-        self.deg = degree(self.edge_index[0], num_nodes=self.size)
 
     def get_fixed_maps(self, size, dtype):
         assert self.add_lp or self.add_hp
@@ -114,7 +128,7 @@ class LaplacianBuilder(nn.Module):
         new_builder = self.__class__(
             self.size, edge_index, self.d,
             normalised=self.normalised, deg_normalised=self.deg_normalised, add_hp=self.add_hp, add_lp=self.add_lp,
-            augmented=self.augmented)
+            augmented=self.augmented, precomputed_indices=None)  # No precomputed indices for new edge index
         new_builder.train(self.training)
         return new_builder
 
@@ -123,9 +137,9 @@ class DiagLaplacianBuilder(LaplacianBuilder):
     """Learns a a Sheaf Laplacian with diagonal restriction maps"""
 
     def __init__(self, size, edge_index, d, normalised=False, deg_normalised=False, add_hp=False, add_lp=False,
-                 augmented=True):
+                 augmented=True, precomputed_indices=None):
         super(DiagLaplacianBuilder, self).__init__(
-            size, edge_index, d, normalised, deg_normalised, add_hp, add_lp, augmented)
+            size, edge_index, d, normalised, deg_normalised, add_hp, add_lp, augmented, precomputed_indices)
 
         self.diag_indices, self.tril_indices = lap.compute_learnable_diag_laplacian_indices(
             size, self.vertex_tril_idx, self.d, self.final_d)
@@ -182,10 +196,10 @@ class DiagLaplacianBuilder(LaplacianBuilder):
 class NormConnectionLaplacianBuilder(LaplacianBuilder):
     """Learns a a Sheaf Laplacian with diagonal restriction maps"""
 
-    def __init__(self, size, edge_index, d, add_hp=False, add_lp=False, orth_map=None, augmented=True):
+    def __init__(self, size, edge_index, d, add_hp=False, add_lp=False, orth_map=None, augmented=True, precomputed_indices=None):
         start_time = time.time()
         super(NormConnectionLaplacianBuilder, self).__init__(
-            size, edge_index, d, add_hp=add_hp, add_lp=add_lp, normalised=True, augmented=augmented)
+            size, edge_index, d, add_hp=add_hp, add_lp=add_lp, normalised=True, augmented=augmented, precomputed_indices=precomputed_indices)
         # print("TIME DEBUG: Time taken for NormConnectionLaplacianBuilder init: ", time.time() - start_time)
         start_time = time.time()
         self.orth_transform = Orthogonal(d=self.d, orthogonal_map=orth_map)
@@ -205,7 +219,7 @@ class NormConnectionLaplacianBuilder(LaplacianBuilder):
         assert edge_index.max() <= self.size
         new_builder = self.__class__(
             self.size, edge_index, self.d, add_hp=self.add_hp, add_lp=self.add_lp, augmented=self.augmented,
-            orth_map=self.orth_map)
+            orth_map=self.orth_map, precomputed_indices=None)  # No precomputed indices for new edge index
         new_builder.train(self.training)
         return new_builder
 
@@ -282,10 +296,10 @@ class GeneralLaplacianBuilder(LaplacianBuilder):
     """Learns a multi-dimensional Sheaf Laplacian from data."""
 
     def __init__(self, size, edge_index, d, normalised=False, deg_normalised=False,
-                 add_hp=False, add_lp=False, augmented=True):
+                 add_hp=False, add_lp=False, augmented=True, precomputed_indices=None):
         super(GeneralLaplacianBuilder, self).__init__(size, edge_index, d,
                                                       normalised=normalised, deg_normalised=deg_normalised,
-                                                      add_hp=add_hp, add_lp=add_lp, augmented=augmented)
+                                                      add_hp=add_hp, add_lp=add_lp, augmented=augmented, precomputed_indices=precomputed_indices)
 
         # Preprocess the sparse indices required to compute the Sheaf Laplacian.
         self.diag_indices, self.tril_indices = lap.compute_learnable_laplacian_indices(
