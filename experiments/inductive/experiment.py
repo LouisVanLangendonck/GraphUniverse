@@ -33,7 +33,7 @@ from experiments.inductive.training import (
     get_total_classes_from_dataloaders,
     cleanup_gpu_dataloaders
 )
-from experiments.models import GNNModel, MLPModel, SklearnModel
+from experiments.models import GNNModel, MLPModel, SklearnModel, SheafDiffusionModel
 from experiments.inductive.self_supervised_task import (
     PreTrainingConfig, 
     SelfSupervisedTask, 
@@ -413,7 +413,7 @@ class InductiveExperiment:
             print(f"{'='*40}")
             
             task_dataloaders = self.dataloaders[task]
-            task_sheaf_dataloaders = self.sheaf_dataloaders[task]
+            # task_sheaf_dataloaders = self.sheaf_dataloaders[task]
             task_results = {}
             
             # Get dimensions from sample batch
@@ -495,40 +495,51 @@ class InductiveExperiment:
             
             # Train sheaf diffusion models
             if self.config.run_neural_sheaf:
-                from experiments.neural_sheaf_diffusion.inductive_sheaf_wrapper import InductiveSheafDiffusionModel
-                
-                model = InductiveSheafDiffusionModel(
+                # from experiments.neural_sheaf_diffusion.inductive_sheaf_wrapper import SheafDiffusionModel
+                from experiments.models import SheafDiffusionModel
+
+                model = SheafDiffusionModel(
                     input_dim=input_dim,
                     hidden_dim=self.config.hidden_dim,
                     output_dim=output_dim,
-                    sheaf_type=self.config.sheaf_type,
+                    sheaf_type='diagonal',
                     d=self.config.sheaf_d,
                     num_layers=self.config.num_layers,
                     dropout=self.config.dropout,
                     is_regression=is_regression,
-                    is_graph_level_task=False,
-                    device=self.device,
-                    normalised=True,
-                    deg_normalised=False,
-                    linear=False,
-                    left_weights=True,
-                    right_weights=True,
-                    sparse_learner=False,
-                    use_act=True,
-                    sheaf_act="tanh",
-                    second_linear=False,
-                    orth='cayley',
-                    edge_weights=False,
-                    max_t=1.0,
-                    add_lp=False,
-                    add_hp=False
-                )
+                    is_graph_level_task=is_graph_level_task)
+                # model = SheafDiffusionModel(
+                #     input_dim=input_dim,
+                #     hidden_dim=self.config.hidden_dim,
+                #     output_dim=output_dim,
+                #     sheaf_type=self.config.sheaf_type,
+                #     d=self.config.sheaf_d,
+                #     num_layers=self.config.num_layers,
+                #     dropout=self.config.dropout,
+                #     is_regression=is_regression,
+                #     is_graph_level_task=False,
+                #     device=self.device,
+                #     normalised=True,
+                #     deg_normalised=False,
+                #     linear=False,
+                #     left_weights=True,
+                #     right_weights=True,
+                #     sparse_learner=False,
+                #     use_act=True,
+                #     sheaf_act="tanh",
+                #     second_linear=False,
+                #     orth='cayley',
+                #     edge_weights=False,
+                #     max_t=1.0,
+                #     add_lp=False,
+                #     add_hp=False
+                # )
                 
                 from experiments.inductive.training import train_and_evaluate_inductive
                 results = train_and_evaluate_inductive(
                     model=model,
                     model_name='sheaf_diffusion',
-                    dataloaders=task_sheaf_dataloaders,
+                    dataloaders=task_dataloaders,
                     config=self.config,
                     task=task,
                     device=self.device,

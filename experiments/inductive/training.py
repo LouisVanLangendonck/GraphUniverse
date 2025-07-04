@@ -18,7 +18,7 @@ from torch_geometric.data import Batch
 import copy
 import random
 
-from experiments.models import GNNModel, MLPModel, SklearnModel, GraphTransformerModel
+from experiments.models import GNNModel, MLPModel, SklearnModel, GraphTransformerModel, SheafDiffusionModel
 from experiments.neural_sheaf_diffusion.inductive_sheaf_wrapper import InductiveSheafDiffusionModel
 from experiments.transductive.metrics import compute_metrics_gpu, compute_metrics
 from experiments.inductive.config import InductiveExperimentConfig
@@ -122,7 +122,7 @@ def get_total_classes_from_dataloaders(dataloaders: Dict[str, DataLoader]) -> in
     return int(output_dim)
 
 def train_inductive_model(
-    model: Union[GNNModel, MLPModel, SklearnModel, GraphTransformerModel, InductiveSheafDiffusionModel],
+    model: Union[GNNModel, MLPModel, SklearnModel, GraphTransformerModel, SheafDiffusionModel],
     model_name: str,
     dataloaders: Dict[str, Dict[str, DataLoader]],
     config: InductiveExperimentConfig,
@@ -280,12 +280,12 @@ def train_inductive_model(
                     optimizer.zero_grad()
                     
                     # Forward pass - check if model requires edge_index
-                    if graph_based_model:
+                    if graph_based_model or sheaf_based_model:
                         out = model(batch.x, batch.edge_index)
                     elif transformer_based_model:
                         out = model(batch.x, batch.edge_index, data=batch, batch=batch.batch)
-                    elif sheaf_based_model:
-                        out = model(batch.x, batch.edge_index, graph=batch)
+                    # elif sheaf_based_model:
+                    #     out = model(batch.x, batch.edge_index, graph=batch)
                     else:  # MLPModel or other non-GNN model
                         out = model(batch.x)
                     
@@ -316,12 +316,12 @@ def train_inductive_model(
                     for batch in val_loader:
                         # Data is already on GPU - no need for .to(device)
                         
-                        if graph_based_model:
+                        if graph_based_model or sheaf_based_model:
                             out = model(batch.x, batch.edge_index)
                         elif transformer_based_model:
                             out = model(batch.x, batch.edge_index, data=batch, batch=batch.batch)
-                        elif sheaf_based_model:
-                            out = model(batch.x, batch.edge_index, graph=batch)
+                        # elif sheaf_based_model:
+                        #     out = model(batch.x, batch.edge_index, graph=batch)
                         else:
                             out = model(batch.x)
                         
@@ -588,12 +588,12 @@ def evaluate_inductive_model_gpu_resident(
             # Data is already on GPU - no need for .to(device)
             
             # Forward pass - check if model requires edge_index and extra batch info (for PE)
-            if graph_based_model:
+            if graph_based_model or sheaf_based_model:
                 out = model(batch.x, batch.edge_index)
             elif transformer_based_model:
                 out = model(batch.x, batch.edge_index, data=batch, batch=batch.batch)
-            elif sheaf_based_model:
-                out = model(batch.x, batch.edge_index, graph=batch)
+            # elif sheaf_based_model:
+            #     out = model(batch.x, batch.edge_index, graph=batch)
             else:  # MLPModel or other non-GNN model
                 out = model(batch.x)
             
@@ -915,7 +915,7 @@ def get_hyperparameter_space(trial, model_type: str, is_regression: bool) -> Dic
     return params
 
 def train_and_evaluate_inductive(
-    model: Union[GNNModel, MLPModel, SklearnModel, GraphTransformerModel, InductiveSheafDiffusionModel],  # Updated type hint
+    model: Union[GNNModel, MLPModel, SklearnModel, GraphTransformerModel, SheafDiffusionModel],  # Updated type hint
     model_name: str,
     dataloaders: Dict[str, Dict[str, DataLoader]],
     config: InductiveExperimentConfig,
@@ -1214,24 +1214,36 @@ def train_and_evaluate_inductive(
                         hidden_dim = hidden_dim // d * d
                         trial.suggest_int('hidden_dim', hidden_dim, hidden_dim)
                         print(f"Warning: hidden_dim is not divisible by d, setting hidden_dim to {hidden_dim}")
-                    sheaf_type = trial.suggest_categorical('sheaf_type', ['diag', 'bundle', 'general'])
+                    # sheaf_type = trial.suggest_categorical('sheaf_type', ['diag', 'bundle', 'general'])
+                    sheaf_type = trial.suggest_categorical('sheaf_type', ['diagonal', 'orthogonal', 'general']) #['orthogonal', 'diagonal', 'general'])
 
                     # Create Sheaf Diffusion model with all parameters
-                    trial_model = InductiveSheafDiffusionModel(
+                    # trial_model = InductiveSheafDiffusionModel(
+                    #     input_dim=input_dim,
+                    #     hidden_dim=hidden_dim,
+                    #     output_dim=output_dim,
+                    #     sheaf_type=sheaf_type,
+                    #     d=d,
+                    #     num_layers=num_layers,
+                    #     dropout=dropout,
+                    #     input_dropout=0.1,
+                    #     is_regression=is_regression,
+                    #     is_graph_level_task=False,
+                    #     device=device
+                    # ).to(device)
+                
+
+                    trial_model = SheafDiffusionModel(
                         input_dim=input_dim,
                         hidden_dim=hidden_dim,
                         output_dim=output_dim,
                         sheaf_type=sheaf_type,
-                        d=d,
                         num_layers=num_layers,
                         dropout=dropout,
-                        input_dropout=0.1,
+                        d=d,
                         is_regression=is_regression,
-                        is_graph_level_task=False,
-                        device=device
-                    ).to(device)
-
-                    # trial_model = SheafDiffusionModel(
+                        is_graph_level_task=config.is_graph_level_tasks.get(task, task == 'triangle_count')
+                        ).to(device)
                     #     input_dim=input_dim,
                     #     hidden_dim=hidden_dim,
                     #     output_dim=output_dim,
@@ -1286,7 +1298,7 @@ def train_and_evaluate_inductive(
                                 print("Warning: Not all data is on device. Moving batch to device...")
                                 batch = batch.to(device)
                             optimizer.zero_grad()
-                            out = trial_model(batch.x, batch.edge_index, graph=batch)
+                            out = trial_model(batch.x, batch.edge_index) #, graph=batch)
                             loss = criterion(out, batch.y)
                             loss.backward()
                             optimizer.step()
@@ -1300,7 +1312,7 @@ def train_and_evaluate_inductive(
                             for batch in fold_dataloader['val']:
                                 if not all_data_on_device:
                                     batch = batch.to(device)
-                                out = trial_model(batch.x, batch.edge_index, graph=batch)
+                                out = trial_model(batch.x, batch.edge_index) #, graph=batch)
                                 
                                 if is_regression:
                                     val_predictions.append(out.detach())
@@ -1363,7 +1375,20 @@ def train_and_evaluate_inductive(
                         print(f"   {key}: {value}")
 
                     # Recreate model with optimized parameters
-                    model = InductiveSheafDiffusionModel(
+                    # model = InductiveSheafDiffusionModel(
+                    #     input_dim=input_dim,
+                    #     hidden_dim=best_params.get('hidden_dim', config.hidden_dim),
+                    #     output_dim=output_dim,
+                    #     sheaf_type=best_params['sheaf_type'],
+                    #     num_layers=best_params['num_layers'],
+                    #     dropout=best_params['dropout'],
+                    #     d=best_params['d'],
+                    #     is_regression=is_regression,
+                    #     is_graph_level_task=config.is_graph_level_tasks.get(task, task == 'triangle_count'),
+                    #     device=device
+                    # )
+
+                    model = SheafDiffusionModel(
                         input_dim=input_dim,
                         hidden_dim=best_params.get('hidden_dim', config.hidden_dim),
                         output_dim=output_dim,
@@ -1372,9 +1397,8 @@ def train_and_evaluate_inductive(
                         dropout=best_params['dropout'],
                         d=best_params['d'],
                         is_regression=is_regression,
-                        is_graph_level_task=config.is_graph_level_tasks.get(task, task == 'triangle_count'),
-                        device=device
-                    )
+                        is_graph_level_task=config.is_graph_level_tasks.get(task, task == 'triangle_count')
+                        ).to(device)
                     
                     # # Initialize the sheaf model parameters
                     # print("Initializing optimized sheaf model parameters...")

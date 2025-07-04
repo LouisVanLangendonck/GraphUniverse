@@ -59,14 +59,14 @@ def parse_args():
                         help='Dont do any other experiments. Only fine-tune pre-trained models and from scratch version of it and hyperparameter optimization of that model type.')    
         
     # === TASKS ===
-    parser.add_argument('--tasks', type=str, nargs='+', default=['k_hop_community_counts_k2'],
+    parser.add_argument('--tasks', type=str, nargs='+', default=['community', 'k_hop_community_counts_k1', 'k_hop_community_counts_k2'],
                         choices=['community', 'k_hop_community_counts_k1', 'k_hop_community_counts_k2', 'k_hop_community_counts_k3', 'triangle_count'],
                         help='Learning tasks to run')
     parser.add_argument('--khop_k', type=int, default=2,
                         help='k value for k-hop community counting task')
     
     # === DATA SPLITS ===
-    parser.add_argument('--no_unseen_community_combinations_for_eval', action='store_true', default=False,
+    parser.add_argument('--no_unseen_community_combinations_for_eval', action='store_true', default=True,
                         help='Do not allow unseen community combinations for evaluation')
 
     # === GRAPH FAMILY GENERATION ===
@@ -86,9 +86,9 @@ def parse_args():
                         help='Number of communities in universe')
     parser.add_argument('--universe_feature_dim', type=int, default=32,
                         help='Feature dimension for universe')
-    parser.add_argument('--universe_edge_density', type=float, default=0.07,
+    parser.add_argument('--universe_edge_density', type=float, default=0.15,
                         help='Base edge density for universe')
-    parser.add_argument('--universe_homophily', type=float, default=0.25,
+    parser.add_argument('--universe_homophily', type=float, default=0.2,
                         help='Homophily parameter for universe')
     parser.add_argument('--universe_randomness_factor', type=float, default=1.0,
                         help='Randomness factor for universe')
@@ -162,9 +162,9 @@ def parse_args():
                         help='Learning rate for neural models')
     parser.add_argument('--hidden_dim', type=int, default=64,
                         help='Hidden dimension for neural models')
-    parser.add_argument('--batch_size', type=int, default=1,
+    parser.add_argument('--batch_size', type=int, default=5,
                         help='Batch size for training')
-    parser.add_argument('--n_trials', type=int, default=5,
+    parser.add_argument('--n_trials', type=int, default=10,
                         help='Number of trials for hyperparameter optimization')
 
 
@@ -179,9 +179,9 @@ def parse_args():
     # === FEATURE GENERATION ===
     parser.add_argument('--cluster_count_factor', type=float, default=1.0,
                         help='Factor for cluster count')
-    parser.add_argument('--center_variance', type=float, default=0.4,
+    parser.add_argument('--center_variance', type=float, default=0.5,
                         help='Variance for center of clusters')
-    parser.add_argument('--cluster_variance', type=float, default=0.2,
+    parser.add_argument('--cluster_variance', type=float, default=0.15,
                         help='Variance for cluster sizes')
     parser.add_argument('--assignment_skewness', type=float, default=0.0,
                         help='Skewness for feature assignment')
