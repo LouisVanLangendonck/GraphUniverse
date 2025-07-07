@@ -276,7 +276,7 @@ class CleanMultiExperimentRunner:
         }
         
         # Calculate summary statistics
-        for key in ['node_counts', 'edge_counts', 'community_counts']:
+        for key in ['node_counts', 'edge_counts', 'community_counts', 'homophily_levels', 'clustering_coefficients', 'densities', 'avg_degrees']:
             values = properties[key]
             if values:
                 properties[f'{key}_mean'] = float(np.mean(values))

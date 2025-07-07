@@ -13,6 +13,552 @@ import matplotlib.pyplot as plt
 from scipy.stats import rankdata
 
 st.set_page_config(page_title="GraphWorld Benchmarking Visualization", layout="wide")
+import numpy as np
+import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+from scipy import stats
+from scipy.optimize import curve_fit
+import streamlit as st
+from sklearn.linear_model import LinearRegression
+from sklearn.preprocessing import StandardScaler
+import warnings
+warnings.filterwarnings('ignore')
+
+def propagate_uncertainty_linear_regression(x, y_mean, y_std, x_pred=None):
+    """
+    Fit linear regression with proper uncertainty propagation using bootstrap + analytical methods.
+    
+    Returns fitted line with confidence bands and statistical measures.
+    """
+    n_bootstrap = 1000  # Bootstrap samples
+    n_points = len(x)
+    
+    if x_pred is None:
+        x_pred = np.linspace(x.min(), x.max(), 100)
+    
+    # Remove NaN values
+    valid_mask = ~(np.isnan(x) | np.isnan(y_mean) | np.isnan(y_std))
+    x_clean = x[valid_mask]
+    y_mean_clean = y_mean[valid_mask]
+    y_std_clean = y_std[valid_mask]
+    
+    if len(x_clean) < 3:
+        # Not enough data points
+        return None
+    
+    # Method 1: Bootstrap resampling of data points with uncertainty
+    bootstrap_slopes = []
+    bootstrap_intercepts = []
+    bootstrap_predictions = []
+    correlations = []
+    r_squared_values = []
+    
+    for _ in range(n_bootstrap):
+        # Bootstrap resample indices
+        boot_indices = np.random.choice(len(x_clean), size=len(x_clean), replace=True)
+        x_boot = x_clean[boot_indices]
+        y_mean_boot = y_mean_clean[boot_indices]
+        y_std_boot = y_std_clean[boot_indices]
+        
+        # Sample from uncertainty for each bootstrapped point
+        y_boot = np.random.normal(y_mean_boot, y_std_boot)
+        
+        # Fit regression
+        try:
+            reg = LinearRegression().fit(x_boot.reshape(-1, 1), y_boot)
+            slope = reg.coef_[0]
+            intercept = reg.intercept_
+            
+            # Calculate R²
+            y_pred_boot = reg.predict(x_boot.reshape(-1, 1))
+            ss_res = np.sum((y_boot - y_pred_boot) ** 2)
+            ss_tot = np.sum((y_boot - np.mean(y_boot)) ** 2)
+            r_squared = 1 - (ss_res / ss_tot) if ss_tot != 0 else 0
+            
+            # Calculate correlation
+            corr, _ = stats.pearsonr(x_boot, y_boot)
+            
+            if not (np.isnan(slope) or np.isnan(intercept) or np.isnan(r_squared) or np.isnan(corr)):
+                bootstrap_slopes.append(slope)
+                bootstrap_intercepts.append(intercept)
+                r_squared_values.append(r_squared)
+                correlations.append(corr)
+                
+                # Predictions for this bootstrap sample
+                pred_boot = reg.predict(x_pred.reshape(-1, 1))
+                bootstrap_predictions.append(pred_boot)
+        except:
+            continue
+    
+    if len(bootstrap_slopes) < 50:  # Need sufficient bootstrap samples
+        return None
+    
+    bootstrap_slopes = np.array(bootstrap_slopes)
+    bootstrap_intercepts = np.array(bootstrap_intercepts)
+    bootstrap_predictions = np.array(bootstrap_predictions)
+    correlations = np.array(correlations)
+    r_squared_values = np.array(r_squared_values)
+    
+    # Method 2: Analytical uncertainty propagation for comparison
+    # Fit main regression with mean values
+    main_reg = LinearRegression().fit(x_clean.reshape(-1, 1), y_mean_clean)
+    mean_slope = main_reg.coef_[0]
+    mean_intercept = main_reg.intercept_
+    
+    # Calculate residuals and effective uncertainty
+    y_pred_main = main_reg.predict(x_clean.reshape(-1, 1))
+    residuals = y_mean_clean - y_pred_main
+    
+    # Combine measurement uncertainty with model uncertainty
+    total_variance = y_std_clean**2 + np.var(residuals)
+    effective_std = np.sqrt(np.mean(total_variance))
+    
+    # Analytical confidence intervals for predictions
+    n = len(x_clean)
+    x_mean = np.mean(x_clean)
+    sxx = np.sum((x_clean - x_mean)**2)
+    
+    # Standard error of prediction at each x_pred point
+    se_pred = effective_std * np.sqrt(1 + 1/n + (x_pred - x_mean)**2 / sxx)
+    
+    # Use bootstrap results as primary, analytical as fallback
+    mean_line_boot = np.mean(bootstrap_predictions, axis=0)
+    pred_lower_boot = np.percentile(bootstrap_predictions, 2.5, axis=0)
+    pred_upper_boot = np.percentile(bootstrap_predictions, 97.5, axis=0)
+    
+    # Ensure bands are not too narrow by enforcing minimum width
+    pred_std_boot = np.std(bootstrap_predictions, axis=0)
+    min_band_width = 2 * effective_std  # Minimum reasonable width
+    
+    current_width = pred_upper_boot - pred_lower_boot
+    too_narrow_mask = current_width < min_band_width
+    
+    if np.any(too_narrow_mask):
+        # Expand narrow regions using analytical approach
+        analytical_line = mean_slope * x_pred + mean_intercept
+        analytical_lower = analytical_line - 1.96 * se_pred
+        analytical_upper = analytical_line + 1.96 * se_pred
+        
+        pred_lower_boot[too_narrow_mask] = analytical_lower[too_narrow_mask]
+        pred_upper_boot[too_narrow_mask] = analytical_upper[too_narrow_mask]
+    
+    # Statistical tests using bootstrap distributions
+    slope_mean = np.mean(bootstrap_slopes)
+    slope_std = np.std(bootstrap_slopes)
+    
+    # IMPROVED: Bootstrap-based p-value for slope ≠ 0
+    # Count how many bootstrap slopes have opposite sign from mean
+    # This is a more robust test that accounts for full uncertainty structure
+    if slope_mean > 0:
+        slope_p_value = 2 * np.mean(bootstrap_slopes <= 0)  # Two-tailed test
+    else:
+        slope_p_value = 2 * np.mean(bootstrap_slopes >= 0)  # Two-tailed test
+    
+    # Ensure p-value is not exactly 0 (add small epsilon for numerical stability)
+    slope_p_value = max(slope_p_value, 1 / len(bootstrap_slopes))
+    
+    # Calculate t-statistic for comparison (but use bootstrap p-value as primary)
+    slope_t_stat = slope_mean / (slope_std / np.sqrt(len(bootstrap_slopes))) if slope_std > 0 else 0
+    slope_p_value_classical = 2 * (1 - stats.t.cdf(abs(slope_t_stat), len(bootstrap_slopes) - 1))
+    
+    # Correlation statistics
+    mean_correlation = np.mean(correlations)
+    corr_ci_lower = np.percentile(correlations, 2.5)
+    corr_ci_upper = np.percentile(correlations, 97.5)
+    
+    # IMPROVED: Bootstrap-based p-value for correlation ≠ 0
+    # More robust than classical t-test as it accounts for uncertainty structure
+    if mean_correlation > 0:
+        corr_p_value = 2 * np.mean(correlations <= 0)  # Two-tailed test
+    else:
+        corr_p_value = 2 * np.mean(correlations >= 0)  # Two-tailed test
+    
+    # Ensure p-value is not exactly 0
+    corr_p_value = max(corr_p_value, 1 / len(correlations))
+    
+    # Calculate classical t-statistic for comparison
+    corr_t_stat = mean_correlation * np.sqrt((n - 2) / (1 - mean_correlation**2)) if abs(mean_correlation) < 0.99 else 0
+    corr_p_value_classical = 2 * (1 - stats.t.cdf(abs(corr_t_stat), n - 2))
+    
+    return {
+        'x_pred': x_pred,
+        'mean_line': mean_line_boot,
+        'pred_lower': pred_lower_boot,
+        'pred_upper': pred_upper_boot,
+        'slope': {
+            'mean': slope_mean,
+            'std': slope_std,
+            't_stat': slope_t_stat,
+            'p_value': slope_p_value,  # Bootstrap-based p-value
+            'p_value_classical': slope_p_value_classical  # Classical t-test p-value
+        },
+        'correlation': {
+            'mean': mean_correlation,
+            'ci_lower': corr_ci_lower,
+            'ci_upper': corr_ci_upper,
+            't_stat': corr_t_stat,
+            'p_value': corr_p_value,  # Bootstrap-based p-value
+            'p_value_classical': corr_p_value_classical  # Classical t-test p-value
+        },
+        'r_squared': {
+            'mean': np.mean(r_squared_values),
+            'std': np.std(r_squared_values)
+        },
+        'effective_uncertainty': effective_std,
+        'n_bootstrap_samples': len(bootstrap_slopes),
+        'test_interpretation': {
+            'slope_test': 'H₀: slope = 0 (no relationship) vs H₁: slope ≠ 0 (relationship exists)',
+            'correlation_test': 'H₀: correlation = 0 (no linear relationship) vs H₁: correlation ≠ 0 (linear relationship exists)',
+            'rejection_criterion': 'p < 0.05 means reject H₀ (relationship IS significant)'
+        }
+    }
+
+def create_enhanced_statistical_plot(df, x_param, task, metric, models_to_analyze):
+    """
+    Create enhanced statistical plots with uncertainty-aware trend analysis.
+    """
+    # Filter out runs with NaN values for any of the selected models
+    relevant_columns = [x_param]
+    for model in models_to_analyze:
+        model_col_mean = f'{task}-{model}-{metric}_mean'
+        model_col_std = f'{task}-{model}-{metric}_std'
+        if model_col_mean in df.columns and model_col_std in df.columns:
+            relevant_columns.extend([model_col_mean, model_col_std])
+    
+    df_clean = df[relevant_columns].dropna()
+    
+    if len(df_clean) == 0:
+        st.error("❌ No complete data found for the selected models and metric!")
+        return None, None
+    
+    # Prepare x data
+    x_data = df_clean[x_param].values
+    
+    # Calculate statistics for all graph-based models combined
+    all_graph_y_means = []
+    all_graph_y_stds = []
+    all_graph_x = []
+    
+    for model in models_to_analyze:
+        model_col_mean = f'{task}-{model}-{metric}_mean'
+        model_col_std = f'{task}-{model}-{metric}_std'
+        if model_col_mean in df_clean.columns and model_col_std in df_clean.columns:
+            all_graph_y_means.extend(df_clean[model_col_mean].values)
+            all_graph_y_stds.extend(df_clean[model_col_std].values)
+            all_graph_x.extend(x_data)
+    
+    all_graph_y_means = np.array(all_graph_y_means)
+    all_graph_y_stds = np.array(all_graph_y_stds)
+    all_graph_x = np.array(all_graph_x)
+    
+    # Global analysis (all graph-based models)
+    global_stats = propagate_uncertainty_linear_regression(all_graph_x, all_graph_y_means, all_graph_y_stds)
+    
+    # Individual model analyses
+    individual_stats = {}
+    for model in models_to_analyze:
+        model_col_mean = f'{task}-{model}-{metric}_mean'
+        model_col_std = f'{task}-{model}-{metric}_std'
+        if model_col_mean in df_clean.columns and model_col_std in df_clean.columns:
+            y_means = df_clean[model_col_mean].values
+            y_stds = df_clean[model_col_std].values
+            individual_stats[model] = propagate_uncertainty_linear_regression(x_data, y_means, y_stds)
+    
+    # Create subplot figure
+    n_models = len(individual_stats)
+    n_cols = min(3, n_models)  # Max 3 columns
+    n_rows = (n_models + n_cols - 1) // n_cols + 1  # +1 for global plot
+    
+    subplot_titles = ['All Graph-Based Models (Global)'] + [f'{model.upper()}' for model in individual_stats.keys()]
+    
+    fig = make_subplots(
+        rows=n_rows,
+        cols=n_cols,
+        subplot_titles=subplot_titles,
+        vertical_spacing=0.12,
+        horizontal_spacing=0.1
+    )
+    
+    # Color palette - use hex colors to avoid conversion issues
+    colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf']
+    
+    # Global plot (first subplot)
+    # Scatter points for all models
+    for i, model in enumerate(models_to_analyze):
+        model_col_mean = f'{task}-{model}-{metric}_mean'
+        model_col_std = f'{task}-{model}-{metric}_std'
+        if model_col_mean in df_clean.columns and model_col_std in df_clean.columns:
+            fig.add_trace(go.Scatter(
+                x=x_data,
+                y=df_clean[model_col_mean],
+                error_y=dict(type='data', array=df_clean[model_col_std], visible=True),
+                mode='markers',
+                name=f'{model.upper()}',
+                marker=dict(color=colors[i % len(colors)], size=6, opacity=0.7),
+                showlegend=True,
+                legendgroup='models'
+            ), row=1, col=1)
+    
+    # Global trend line with confidence band
+    fig.add_trace(go.Scatter(
+        x=global_stats['x_pred'],
+        y=global_stats['pred_upper'],
+        mode='lines',
+        line=dict(width=0),
+        showlegend=False,
+        hoverinfo='skip'
+    ), row=1, col=1)
+    
+    fig.add_trace(go.Scatter(
+        x=global_stats['x_pred'],
+        y=global_stats['pred_lower'],
+        mode='lines',
+        fill='tonexty',
+        fillcolor='rgba(128,128,128,0.2)',
+        line=dict(width=0),
+        name='95% CI (Global)',
+        showlegend=True,
+        legendgroup='global'
+    ), row=1, col=1)
+    
+    fig.add_trace(go.Scatter(
+        x=global_stats['x_pred'],
+        y=global_stats['mean_line'],
+        mode='lines',
+        line=dict(color='black', width=3),
+        name='Global Trend',
+        showlegend=True,
+        legendgroup='global'
+    ), row=1, col=1)
+    
+    # Individual model plots
+    for i, (model, stats) in enumerate(individual_stats.items()):
+        row = (i // n_cols) + 2  # +2 because global plot takes first row
+        col = (i % n_cols) + 1
+        
+        model_col_mean = f'{task}-{model}-{metric}_mean'
+        model_col_std = f'{task}-{model}-{metric}_std'
+        
+        # Scatter points
+        fig.add_trace(go.Scatter(
+            x=x_data,
+            y=df_clean[model_col_mean],
+            error_y=dict(type='data', array=df_clean[model_col_std], visible=True),
+            mode='markers',
+            name=f'{model.upper()} Data',
+            marker=dict(color=colors[i % len(colors)], size=8, opacity=0.8),
+            showlegend=False
+        ), row=row, col=col)
+        
+        # Confidence band
+        fig.add_trace(go.Scatter(
+            x=stats['x_pred'],
+            y=stats['pred_upper'],
+            mode='lines',
+            line=dict(width=0),
+            showlegend=False,
+            hoverinfo='skip'
+        ), row=row, col=col)
+        
+        # Convert hex color to RGB for rgba
+        hex_color = colors[i % len(colors)]
+        rgb_values = tuple(int(hex_color[j:j+2], 16) for j in (1, 3, 5))  # Skip # and get R,G,B
+        rgba_color = f'rgba({rgb_values[0]},{rgb_values[1]},{rgb_values[2]},0.2)'
+        
+        fig.add_trace(go.Scatter(
+            x=stats['x_pred'],
+            y=stats['pred_lower'],
+            mode='lines',
+            fill='tonexty',
+            fillcolor=rgba_color,
+            line=dict(width=0),
+            showlegend=False
+        ), row=row, col=col)
+        
+        # Trend line
+        fig.add_trace(go.Scatter(
+            x=stats['x_pred'],
+            y=stats['mean_line'],
+            mode='lines',
+            line=dict(color=colors[i % len(colors)], width=3),
+            showlegend=False
+        ), row=row, col=col)
+    
+    # Update layout
+    fig.update_layout(
+        title=f"Statistical Analysis: {metric.upper()} vs {x_param}<br>"
+              f"<sub>Global: r={global_stats['correlation']['mean']:.3f} "
+              f"[{global_stats['correlation']['ci_lower']:.3f}, {global_stats['correlation']['ci_upper']:.3f}], "
+              f"p={global_stats['correlation']['p_value']:.3f}</sub>",
+        title_x=0.5,
+        height=400 * n_rows,
+        showlegend=True,
+        legend=dict(x=1.02, y=1, xanchor='left')
+    )
+    
+    # Update axes labels
+    for i in range(n_rows):
+        for j in range(n_cols):
+            if i == n_rows - 1:  # Bottom row
+                fig.update_xaxes(title_text=x_param, row=i+1, col=j+1)
+            if j == 0:  # Left column
+                fig.update_yaxes(title_text=metric.upper(), row=i+1, col=j+1)
+    
+    return fig, {'global': global_stats, 'individual': individual_stats}
+
+
+def create_statistical_summary_table(stats_results):
+    """Create a summary table of statistical results."""
+    summary_data = []
+    
+    # Global results
+    global_stats = stats_results['global']
+    summary_data.append({
+        'Model': 'All Graph-Based (Global)',
+        'Correlation (r)': f"{global_stats['correlation']['mean']:.3f}",
+        'Correlation 95% CI': f"[{global_stats['correlation']['ci_lower']:.3f}, {global_stats['correlation']['ci_upper']:.3f}]",
+        'Correlation p-value (Bootstrap)': f"{global_stats['correlation']['p_value']:.3f}",
+        'Correlation p-value (Classical)': f"{global_stats['correlation'].get('p_value_classical', 'N/A'):.3f}" if global_stats['correlation'].get('p_value_classical') is not None else 'N/A',
+        'Slope': f"{global_stats['slope']['mean']:.3f} ± {global_stats['slope']['std']:.3f}",
+        'Slope p-value (Bootstrap)': f"{global_stats['slope']['p_value']:.3f}",
+        'Slope p-value (Classical)': f"{global_stats['slope'].get('p_value_classical', 'N/A'):.3f}" if global_stats['slope'].get('p_value_classical') is not None else 'N/A',
+        'R² (mean ± std)': f"{global_stats['r_squared']['mean']:.3f} ± {global_stats['r_squared']['std']:.3f}",
+        'Bootstrap Samples': global_stats.get('n_bootstrap_samples', 'N/A'),
+        'Significance (Bootstrap)': '***' if global_stats['correlation']['p_value'] < 0.001 else 
+                                   '**' if global_stats['correlation']['p_value'] < 0.01 else 
+                                   '*' if global_stats['correlation']['p_value'] < 0.05 else 'ns'
+    })
+    
+    # Individual model results
+    for model, stats in stats_results['individual'].items():
+        if stats is not None:  # Check if analysis succeeded
+            summary_data.append({
+                'Model': model.upper(),
+                'Correlation (r)': f"{stats['correlation']['mean']:.3f}",
+                'Correlation 95% CI': f"[{stats['correlation']['ci_lower']:.3f}, {stats['correlation']['ci_upper']:.3f}]",
+                'Correlation p-value (Bootstrap)': f"{stats['correlation']['p_value']:.3f}",
+                'Correlation p-value (Classical)': f"{stats['correlation'].get('p_value_classical', 'N/A'):.3f}" if stats['correlation'].get('p_value_classical') is not None else 'N/A',
+                'Slope': f"{stats['slope']['mean']:.3f} ± {stats['slope']['std']:.3f}",
+                'Slope p-value (Bootstrap)': f"{stats['slope']['p_value']:.3f}",
+                'Slope p-value (Classical)': f"{stats['slope'].get('p_value_classical', 'N/A'):.3f}" if stats['slope'].get('p_value_classical') is not None else 'N/A',
+                'R² (mean ± std)': f"{stats['r_squared']['mean']:.3f} ± {stats['r_squared']['std']:.3f}",
+                'Bootstrap Samples': stats.get('n_bootstrap_samples', 'N/A'),
+                'Significance (Bootstrap)': '***' if stats['correlation']['p_value'] < 0.001 else 
+                                           '**' if stats['correlation']['p_value'] < 0.01 else 
+                                           '*' if stats['correlation']['p_value'] < 0.05 else 'ns'
+            })
+    
+    return pd.DataFrame(summary_data)
+
+# Integration into your existing dashboard
+def enhanced_basic_plots_tab(df, available_tasks_metrics, param_columns):
+    """Enhanced version of your basic plots tab with statistical analysis."""
+    st.header("Enhanced Statistical Analysis with Uncertainty")
+    
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        x_param = st.selectbox("X-axis Parameter:", param_columns, key="enhanced_x")
+        
+    with col2:
+        selected_task = st.selectbox("Task:", list(available_tasks_metrics.keys()), key="enhanced_task")
+        
+    with col3:
+        if selected_task in available_tasks_metrics:
+            y_metric = st.selectbox("Y-axis Metric:", available_tasks_metrics[selected_task], key="enhanced_y")
+        else:
+            st.error("No metrics available for selected task")
+            return
+    
+    with col4:
+        # Get all models for this task and filter out MLP
+        all_models = get_models_for_task(df, selected_task)
+        graph_models = [model for model in all_models if 'mlp' not in model.lower()]
+        
+        if not graph_models:
+            st.error("No graph-based models found!")
+            return
+            
+        selected_models = st.multiselect(
+            "Graph-Based Models:", 
+            graph_models, 
+            default=graph_models,  # Select all by default
+            key="enhanced_models"
+        )
+    
+    if selected_models and len(selected_models) >= 1:
+        # Add button to start analysis
+        if st.button("🚀 Start Enhanced Statistical Analysis", type="primary"):
+            with st.spinner("Performing statistical analysis with uncertainty propagation..."):
+                fig, stats_results = create_enhanced_statistical_plot(
+                    df, x_param, selected_task, y_metric, selected_models
+                )
+            
+            if fig is not None:
+                st.plotly_chart(fig, use_container_width=True)
+                
+                # Statistical summary
+                st.subheader("📊 Statistical Summary")
+                summary_df = create_statistical_summary_table(stats_results)
+                st.dataframe(summary_df, use_container_width=True)
+                
+                # Interpretation guide
+                st.subheader("📖 Interpretation Guide")
+                st.write("""
+                - **Correlation (r)**: Strength and direction of linear relationship (-1 to 1)
+                - **95% CI**: Confidence interval for the correlation coefficient
+                - **p-value**: Probability that the observed correlation occurred by chance
+                - **Significance**: *** p<0.001, ** p<0.01, * p<0.05, ns = not significant
+                - **Slope**: Rate of change in performance per unit change in parameter
+                - **R²**: Proportion of variance explained by the linear relationship
+                - **Shaded area**: 95% confidence band around the fitted line
+                """)
+                
+                # Download results
+                csv = summary_df.to_csv(index=False)
+                st.download_button(
+                    label="📥 Download Statistical Results",
+                    data=csv,
+                    file_name=f"statistical_analysis_{selected_task}_{y_metric}_{x_param}.csv",
+                    mime="text/csv"
+                )
+            else:
+                st.error("Could not create statistical analysis plot.")
+        else:
+            st.info("👆 Click the button above to start the enhanced statistical analysis")
+    else:
+        st.warning("Please select at least one graph-based model for analysis.")
+
+# Helper function you'll need to import
+def get_models_for_task(df, task):
+    """Get all model names for a specific task."""
+    models = set()
+    
+    # Find all columns that match this task
+    for col in df.columns:
+        if col.startswith(f'{task}-') and not col.endswith('train_time'):
+            # Remove the task prefix
+            remaining = col[len(task)+1:]  # +1 for the hyphen
+            
+            # Split the remaining part
+            parts = remaining.split('-')
+            
+            # Handle label-specific metrics (e.g., gcn-mse-label-0)
+            if 'label' in parts:
+                label_idx = parts.index('label')
+                # Model is everything before the metric (which is before 'label')
+                model_parts = parts[:label_idx-1]
+            else:
+                # Regular format: model-metric
+                model_parts = parts[:-1]  # Everything except the last part (metric)
+            
+            if model_parts:
+                model = '-'.join(model_parts) if len(model_parts) > 1 else model_parts[0]
+                models.add(model)
+    
+    return sorted(list(models))
 
 @st.cache_data
 def load_experiment_data(file_path):
@@ -574,33 +1120,47 @@ def main():
         st.error("experiments/multi_results/ directory not found")
         return
     
+    # Get available parameters
+    param_columns = [col for col in df.columns if col.startswith(('sweep_', 'random_', 'family_', 'consistency_', 'signal_'))]
+    
     # Main content tabs
     tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs(["📈 Basic Plots", "🏆 Model Rankings", "🏆 Multi-Task Rankings", "📊 Summary Stats", "🔍 Data Explorer", "🎯 Hyperparameter Analysis", "🗺️ Parameter Manifolds"])
     
     with tab1:
-        st.header("Basic 2D Plotting")
+        st.header("📈 Enhanced Statistical Analysis")
         
-        col1, col2, col3, col4 = st.columns(4)
+        # Add toggle for enhanced vs basic view
+        analysis_mode = st.radio(
+            "Analysis Mode:",
+            ["Basic Plotting", "Statistical Analysis with Uncertainty"],
+            index=1,  # Default to enhanced
+            horizontal=True
+        )
         
-        # Get available parameters
-        param_columns = [col for col in df.columns if col.startswith(('sweep_', 'random_', 'family_', 'consistency_', 'signal_'))]
-        
-        with col1:
-            x_param = st.selectbox("X-axis Parameter:", param_columns, key="basic_x")
+        if analysis_mode == "Statistical Analysis with Uncertainty":
+            # Enhanced statistical analysis
+            enhanced_basic_plots_tab(df, available_tasks_metrics, param_columns)
             
-        with col2:
-            selected_task = st.selectbox("Task:", list(available_tasks_metrics.keys()), key="basic_task")
+        else:
+            # Original basic plotting code
+            col1, col2, col3, col4 = st.columns(4)
             
-        with col3:
-            if selected_task in available_tasks_metrics:
-                y_metric = st.selectbox("Y-axis Metric:", available_tasks_metrics[selected_task], key="basic_y")
-            else:
-                st.error("No metrics available for selected task")
-                return
-        with col4:
-            model_names = get_models_for_task(df, selected_task)
-            selected_models = st.multiselect("Models to Plot:", model_names, default=model_names[:3], key="basic_models")
-        
+            with col1:
+                x_param = st.selectbox("X-axis Parameter:", param_columns, key="basic_x")
+                
+            with col2:
+                selected_task = st.selectbox("Task:", list(available_tasks_metrics.keys()), key="basic_task")
+                
+            with col3:
+                if selected_task in available_tasks_metrics:
+                    y_metric = st.selectbox("Y-axis Metric:", available_tasks_metrics[selected_task], key="basic_y")
+                else:
+                    st.error("No metrics available for selected task")
+                    return
+            with col4:
+                model_names = get_models_for_task(df, selected_task)
+                selected_models = st.multiselect("Models to Plot:", model_names, default=model_names[:3], key="basic_models")
+            
         if selected_models:
             # Filter out runs with NaN values for the selected models
             relevant_columns = []
