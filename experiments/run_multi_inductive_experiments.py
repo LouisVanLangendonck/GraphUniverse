@@ -185,10 +185,10 @@ def create_custom_experiment(args) -> CleanMultiExperimentConfig:
         local_gnn_type=args.local_gnn_type,
         global_model_type=args.global_model_type,
         transformer_prenorm=getattr(args, 'transformer_prenorm', True),
-        max_pe_dim=16,
+        max_pe_dim=8,
         precompute_pe=True,
         pe_type='laplacian',
-        pe_norm_type='graph',
+        pe_norm_type=None,
         
         # Training
         epochs=args.epochs,

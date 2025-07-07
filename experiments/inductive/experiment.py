@@ -18,6 +18,7 @@ from torch.nn import init
 from torch.nn.init import xavier_uniform_, kaiming_uniform_, normal_
 import torch.nn as nn
 import copy
+import pickle
 
 from mmsb.model import GraphUniverse
 from mmsb.graph_family import GraphFamilyGenerator, FamilyConsistencyAnalyzer
@@ -338,7 +339,8 @@ class InductiveExperiment:
         unseen_community_combination_score = self.calculate_unseen_community_combination_score(fold_indices)
         print(f"Unseen community combination score: {unseen_community_combination_score}")
         
-        # Store sheaf data for potential use
+        # Store data dictionaries to save later
+        self.inductive_data = inductive_data
         self.sheaf_inductive_data = sheaf_inductive_data
         
         # Create GPU-resident dataloaders for efficiency
@@ -823,6 +825,12 @@ class InductiveExperiment:
             
             # Store results in instance variable for saving and reporting
             self.results = results
+
+            # Save self.inductive_data and self.sheaf_inductive_data to file as pickle
+            with open(os.path.join(self.output_dir, "inductive_data.pkl"), 'wb') as f:
+                pickle.dump(self.inductive_data, f)
+            with open(os.path.join(self.output_dir, "sheaf_inductive_data.pkl"), 'wb') as f:
+                pickle.dump(self.sheaf_inductive_data, f)
             
             # Save results
             self.save_results()
