@@ -403,8 +403,8 @@ class GNNModel(torch.nn.Module):
         )
         
         # Only add sigmoid for classification tasks
-        if not is_regression:
-            self.readout.add_module("sigmoid", torch.nn.Sigmoid())
+        # if not is_regression:
+        #     self.readout.add_module("sigmoid", torch.nn.Sigmoid())
         # else:
         #     # Add scaling factor for regression tasks
         #     self.scale_factor = torch.nn.Parameter(torch.ones(output_dim))
@@ -1115,11 +1115,11 @@ class GraphTransformerModel(torch.nn.Module):
             )
         
         # Only add sigmoid for classification tasks
-        if not is_regression:
-            self.readout.add_module("sigmoid", torch.nn.Sigmoid())
-        else:
-            # Add scaling factor for regression tasks
-            self.scale_factor = torch.nn.Parameter(torch.ones(output_dim))
+        # if not is_regression:
+        #     self.readout.add_module("sigmoid", torch.nn.Sigmoid())
+        # else:
+        #     # Add scaling factor for regression tasks
+        #     self.scale_factor = torch.nn.Parameter(torch.ones(output_dim))
     
     def forward(self, x: torch.Tensor, edge_index: torch.Tensor, batch: Optional[torch.Tensor] = None, **kwargs) -> torch.Tensor:
         """Forward pass through full model."""
@@ -1948,8 +1948,8 @@ class SheafDiffusionModel(torch.nn.Module):
             )
         
         # Only add sigmoid for classification tasks
-        if not is_regression:
-            self.readout.add_module("sigmoid", torch.nn.Sigmoid())
+        # if not is_regression:
+        #     self.readout.add_module("sigmoid", torch.nn.Sigmoid())
         # else:
         #     # Add scaling factor for regression tasks
         #     self.scale_factor = torch.nn.Parameter(torch.ones(output_dim))

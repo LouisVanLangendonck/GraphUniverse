@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Test script for sheaf Laplacian precomputation functionality.
-Tests the new precomputation and caching system for sheaf diffusion models.
+Test script for continuous sheaf Laplacian precomputation functionality.
+Tests the precomputation and caching system for continuous sheaf diffusion models.
 """
 
 import os
@@ -18,7 +18,7 @@ from torch_geometric.data import DataLoader, Data
 # Add the experiments directory to the path
 sys.path.append(os.path.join(os.path.dirname(__file__), 'experiments'))
 
-from experiments.neural_sheaf_diffusion.inductive_sheaf_wrapper import InductiveSheafDiffusionModel
+from experiments.neural_sheaf_diffusion.inductive_sheaf_wrapper import InductiveContSheafDiffusionModel
 from experiments.inductive.data import (
     prepare_inductive_data, 
     create_inductive_dataloaders
@@ -178,7 +178,7 @@ def test_data_preparation():
     
     # Test data preparation
     start_time = time.time()
-    inductive_data, sheaf_inductive_data = prepare_inductive_data(graphs, config)
+    inductive_data, sheaf_inductive_data, _ = prepare_inductive_data(graphs, config)
     prep_time = time.time() - start_time
     
     # Create sheaf-specific data
@@ -256,7 +256,7 @@ def test_dataloader_creation():
     graphs = load_graphs()
     config = create_test_config()
     
-    inductive_data, sheaf_inductive_data = prepare_inductive_data(graphs, config)
+    inductive_data, sheaf_inductive_data, _ = prepare_inductive_data(graphs, config)
     
     print("Creating normal dataloaders...")
     start_time = time.time()
@@ -300,17 +300,17 @@ def test_dataloader_creation():
     return True
 
 
-def test_model_with_precomputation():
-    """Test the sheaf model with precomputed data."""
+def test_continuous_model_with_precomputation():
+    """Test the continuous sheaf model with precomputed data."""
     print("\n" + "="*60)
-    print("TESTING MODEL WITH PRECOMPUTATION")
+    print("TESTING CONTINUOUS MODEL WITH PRECOMPUTATION")
     print("="*60)
     
     # Load graphs and prepare data
     graphs = load_graphs()
     config = create_test_config()
     
-    inductive_data, sheaf_inductive_data = prepare_inductive_data(graphs, config)
+    inductive_data, sheaf_inductive_data, _ = prepare_inductive_data(graphs, config)
     normal_dataloaders = create_inductive_dataloaders(inductive_data, config)
     sheaf_dataloaders = create_sheaf_dataloaders(sheaf_inductive_data, config)
     
@@ -323,8 +323,8 @@ def test_model_with_precomputation():
     
     print(f"Model config: input_dim={input_dim}, hidden_dim={hidden_dim}, output_dim={output_dim}")
     
-    # Create sheaf model
-    model = InductiveSheafDiffusionModel(
+    # Create continuous sheaf model
+    model = InductiveContSheafDiffusionModel(
         input_dim=input_dim,
         hidden_dim=hidden_dim,
         output_dim=output_dim,
@@ -372,21 +372,21 @@ def test_model_with_precomputation():
         print(f"ERROR: Unexpected output shape {out.shape}")
         return False
     
-    print("✓ Model forward pass test passed")
+    print("✓ Continuous model forward pass test passed")
     return True
 
 
-def test_training_comparison():
-    """Compare training speed with and without precomputation."""
+def test_continuous_training_comparison():
+    """Compare training speed with and without precomputation for continuous models."""
     print("\n" + "="*60)
-    print("TRAINING SPEED COMPARISON")
+    print("CONTINUOUS TRAINING SPEED COMPARISON")
     print("="*60)
     
     # Load graphs and prepare data
     graphs = load_graphs()
     config = create_test_config()
     
-    inductive_data, sheaf_inductive_data = prepare_inductive_data(graphs, config)
+    inductive_data, sheaf_inductive_data, _ = prepare_inductive_data(graphs, config)
     normal_dataloaders = create_inductive_dataloaders(inductive_data, config)
     sheaf_dataloaders = create_sheaf_dataloaders(sheaf_inductive_data, config)
     
@@ -402,7 +402,7 @@ def test_training_comparison():
     # Test 1: Training with normal dataloaders (no precomputation)
     print("\nTesting training with normal dataloaders (no precomputation)...")
     
-    model1 = InductiveSheafDiffusionModel(
+    model1 = InductiveContSheafDiffusionModel(
         input_dim=input_dim,
         hidden_dim=hidden_dim,
         output_dim=output_dim,
@@ -413,7 +413,7 @@ def test_training_comparison():
         input_dropout=0.1,
         is_regression=False,
         is_graph_level_task=False,
-        device='gpu',
+        device='cpu',
         normalised=config.sheaf_normalised,
         deg_normalised=config.sheaf_deg_normalised,
         linear=False,
@@ -433,17 +433,17 @@ def test_training_comparison():
     optimizer1 = optim.Adam(model1.parameters(), lr=0.01)
     train_loader1 = normal_dataloaders['community']['fold_0']['train']
     criterion = torch.nn.CrossEntropyLoss()
-    epochs = 10
+    epochs = 5  # Fewer epochs for faster testing
     
     model1.train()
     start_time = time.time()
     
-    for epoch in range(epochs):  # Just 10 epochs for testing
+    for epoch in range(epochs):
         total_loss, total_accuracy = 0, 0
         for batch in train_loader1:
             optimizer1.zero_grad()
             out = model1(batch.x, batch.edge_index)
-            # Multiclass classification loss multi-class classification loss
+            # Multiclass classification loss
             loss = criterion(out, batch.y)
             loss.backward()
             optimizer1.step()
@@ -463,7 +463,7 @@ def test_training_comparison():
     # Test 2: Training with sheaf dataloaders (with precomputation)
     print("\nTesting training with sheaf dataloaders (with precomputation)...")
     
-    model2 = InductiveSheafDiffusionModel(
+    model2 = InductiveContSheafDiffusionModel(
         input_dim=input_dim,
         hidden_dim=hidden_dim,
         output_dim=output_dim,
@@ -474,7 +474,7 @@ def test_training_comparison():
         input_dropout=0.1,
         is_regression=False,
         is_graph_level_task=False,
-        device='gpu',
+        device='cpu',
         normalised=config.sheaf_normalised,
         deg_normalised=config.sheaf_deg_normalised,
         linear=False,
@@ -498,7 +498,7 @@ def test_training_comparison():
     model2.train()
     start_time = time.time()
     
-    for epoch in range(epochs): 
+    for epoch in range(epochs):
         total_loss, total_accuracy = 0, 0
         for batch in train_loader2:
             optimizer2.zero_grad()
@@ -529,9 +529,129 @@ def test_training_comparison():
     print(f"  Speedup: {speedup:.2f}x")
     
     if speedup > 1.0:
-        print("✓ Precomputation provides speedup")
+        print("✓ Precomputation provides speedup for continuous models")
     else:
         print("⚠ Precomputation does not provide speedup (this might be expected for small graphs)")
+    
+    return True
+
+
+def test_continuous_vs_discrete_comparison():
+    """Compare continuous vs discrete model performance with precomputation."""
+    print("\n" + "="*60)
+    print("CONTINUOUS VS DISCRETE COMPARISON")
+    print("="*60)
+    
+    # Load graphs and prepare data
+    graphs = load_graphs()
+    config = create_test_config()
+    
+    inductive_data, sheaf_inductive_data, _ = prepare_inductive_data(graphs, config)
+    sheaf_dataloaders = create_sheaf_dataloaders(sheaf_inductive_data, config)
+    
+    # Get model parameters
+    first_graph = inductive_data['community']['fold_0']['train']['graphs'][0]
+    input_dim = first_graph.x.size(1)
+    hidden_dim = 32
+    output_dim = inductive_data['community']['metadata']['output_dim']
+    
+    print(f"Comparing continuous vs discrete models...")
+    
+    # Import discrete model
+    from experiments.neural_sheaf_diffusion.inductive_sheaf_wrapper import InductiveSheafDiffusionModel
+    
+    # Test discrete model
+    print("\nTesting discrete model...")
+    discrete_model = InductiveSheafDiffusionModel(
+        input_dim=input_dim,
+        hidden_dim=hidden_dim,
+        output_dim=output_dim,
+        sheaf_type=config.sheaf_type,
+        d=config.sheaf_d,
+        num_layers=2,
+        dropout=0.1,
+        input_dropout=0.1,
+        is_regression=False,
+        is_graph_level_task=False,
+        device='cpu',
+        normalised=config.sheaf_normalised,
+        deg_normalised=config.sheaf_deg_normalised,
+        linear=False,
+        left_weights=True,
+        right_weights=True,
+        sparse_learner=False,
+        use_act=True,
+        sheaf_act="tanh",
+        second_linear=False,
+        orth=config.sheaf_orth,
+        edge_weights=False,
+        max_t=1.0,
+        add_lp=config.sheaf_add_lp,
+        add_hp=config.sheaf_add_hp
+    )
+    
+    # Test continuous model
+    print("Testing continuous model...")
+    continuous_model = InductiveContSheafDiffusionModel(
+        input_dim=input_dim,
+        hidden_dim=hidden_dim,
+        output_dim=output_dim,
+        sheaf_type=config.sheaf_type,
+        d=config.sheaf_d,
+        num_layers=2,
+        dropout=0.1,
+        input_dropout=0.1,
+        is_regression=False,
+        is_graph_level_task=False,
+        device='cpu',
+        normalised=config.sheaf_normalised,
+        deg_normalised=config.sheaf_deg_normalised,
+        linear=False,
+        left_weights=True,
+        right_weights=True,
+        sparse_learner=False,
+        use_act=True,
+        sheaf_act="tanh",
+        second_linear=False,
+        orth=config.sheaf_orth,
+        edge_weights=False,
+        max_t=1.0,
+        add_lp=config.sheaf_add_lp,
+        add_hp=config.sheaf_add_hp
+    )
+    
+    # Test forward pass times
+    test_graph = sheaf_inductive_data['community']['fold_0']['train']['graphs'][0]
+    
+    # Discrete model forward pass
+    discrete_model.eval()
+    with torch.no_grad():
+        start_time = time.time()
+        discrete_out = discrete_model(test_graph.x, test_graph.edge_index, graph=test_graph)
+        discrete_time = time.time() - start_time
+    
+    # Continuous model forward pass
+    continuous_model.eval()
+    with torch.no_grad():
+        start_time = time.time()
+        continuous_out = continuous_model(test_graph.x, test_graph.edge_index, graph=test_graph)
+        continuous_time = time.time() - start_time
+    
+    print(f"Discrete model forward pass: {discrete_time:.4f}s")
+    print(f"Continuous model forward pass: {continuous_time:.4f}s")
+    print(f"Discrete output shape: {discrete_out.shape}")
+    print(f"Continuous output shape: {continuous_out.shape}")
+    
+    # Compare outputs
+    if discrete_out.shape != continuous_out.shape:
+        print("ERROR: Output shapes differ between discrete and continuous models")
+        return False
+    
+    print("✓ Both models produce outputs with same shape")
+    
+    # Compare speeds
+    speedup = discrete_time / continuous_time if continuous_time > 0 else float('inf')
+    print(f"Speed comparison: Discrete is {speedup:.2f}x faster than Continuous")
     
     return True
 
@@ -539,7 +659,7 @@ def test_training_comparison():
 def main():
     """Main test function."""
     print("=" * 80)
-    print("SHEAF LAPLACIAN PRECOMPUTATION TEST SUITE")
+    print("CONTINUOUS SHEAF LAPLACIAN PRECOMPUTATION TEST SUITE")
     print("=" * 80)
     
     # Set random seed
@@ -550,8 +670,9 @@ def main():
         ("Precomputation Function", test_precomputation_function),
         ("Data Preparation", test_data_preparation),
         ("Dataloader Creation", test_dataloader_creation),
-        ("Model with Precomputation", test_model_with_precomputation),
-        ("Training Speed Comparison", test_training_comparison),
+        ("Continuous Model with Precomputation", test_continuous_model_with_precomputation),
+        ("Continuous Training Speed Comparison", test_continuous_training_comparison),
+        ("Continuous vs Discrete Comparison", test_continuous_vs_discrete_comparison),
     ]
     
     results = {}
@@ -586,7 +707,7 @@ def main():
     print(f"\nOverall: {passed}/{total} tests passed")
     
     if passed == total:
-        print("🎉 All tests passed! Sheaf precomputation functionality is working correctly.")
+        print("🎉 All tests passed! Continuous sheaf precomputation functionality is working correctly.")
     else:
         print("⚠ Some tests failed. Please check the implementation.")
     

@@ -1215,7 +1215,7 @@ def train_and_evaluate_inductive(
                         trial.suggest_int('hidden_dim', hidden_dim, hidden_dim)
                         print(f"Warning: hidden_dim is not divisible by d, setting hidden_dim to {hidden_dim}")
                     # sheaf_type = trial.suggest_categorical('sheaf_type', ['diag', 'bundle', 'general'])
-                    sheaf_type = trial.suggest_categorical('sheaf_type', ['diagonal', 'orthogonal', 'general']) #['orthogonal', 'diagonal', 'general'])
+                    sheaf_type = trial.suggest_categorical('sheaf_type', ['diagonal', 'orthogonal']) # Not general because it's too UNSTABLE!
 
                     # Create Sheaf Diffusion model with all parameters
                     # trial_model = InductiveSheafDiffusionModel(

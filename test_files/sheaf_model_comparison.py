@@ -31,7 +31,7 @@ sys.path.append(os.path.join(os.path.dirname(__file__), 'experiments'))
 from test_sheaf_message import NeuralSheafDiffusion, GCN, GraphSAGE
 
 # Import the precomputed sheaf model
-from experiments.neural_sheaf_diffusion.inductive_sheaf_wrapper import InductiveSheafDiffusionModel
+from experiments.neural_sheaf_diffusion.inductive_sheaf_wrapper import InductiveSheafDiffusionModel, InductiveContSheafDiffusionModel, InductiveBuNNWrapper
 from experiments.inductive.data import (
     prepare_inductive_data, 
     create_inductive_dataloaders,
@@ -826,6 +826,22 @@ class ModelComparison:
                     'dropout': 0.3
                 }
             },
+            # {
+            #     'name': 'Message-Passing Sheaf (General)',
+            #     'type': 'message_passing',
+            #     'model_class': NeuralSheafDiffusionRegression,
+            #     'params': {
+            #         'input_dim': input_dim,
+            #         'hidden_channels': hidden_channels,
+            #         'output_dim': output_dim,
+            #         'd': 3,
+            #         'num_layers': 3,
+            #         'restriction_map_type': 'general',
+            #         'orthogonal_method': 'euler',
+            #         'activation': "elu",
+            #         'dropout': 0.3
+            #     }
+            # },
             {
                 'name': 'GCN',
                 'type': 'message_passing',
@@ -851,11 +867,192 @@ class ModelComparison:
                     'aggr': 'mean'
                 }
             },
+            {
+                'name': 'BuNN (32 bundles)',
+                'type': 'precomputed',
+                'model_class': InductiveBuNNWrapper,
+                'params': {
+                    'input_dim': input_dim,
+                    'hidden_dim': hidden_channels,
+                    'output_dim': output_dim,
+                    'd': 2,
+                    'num_bundles': 32,
+                    'num_layers': 3,
+                    'bundle_method': 'rotation',
+                    'heat_method': 'taylor',
+                    'max_degree': 10,
+                    'diffusion_times': None,
+                    'dropout': 0.3,
+                    'input_dropout': 0.1,
+                    'is_regression': True,
+                    'is_graph_level_task': False,
+                    'graph_pooling': 'mean',
+                    'activation': 'relu',
+                    'device': self.device
+                }
+            },
+            {
+                'name': 'BuNN (16 bundles)',
+                'type': 'precomputed',
+                'model_class': InductiveBuNNWrapper,
+                'params': {
+                    'input_dim': input_dim,
+                    'hidden_dim': hidden_channels,
+                    'output_dim': output_dim,
+                    'd': 2,
+                    'num_bundles': 16,
+                    'num_layers': 3,
+                    'bundle_method': 'rotation',
+                    'heat_method': 'taylor',
+                    'max_degree': 10,
+                    'diffusion_times': None,
+                    'dropout': 0.3,
+                    'input_dropout': 0.1,
+                    'is_regression': True,
+                    'is_graph_level_task': False,
+                    'graph_pooling': 'mean',
+                    'activation': 'relu',
+                    'device': self.device
+                }
+            },
             # Precomputed models
             {
                 'name': 'Precomputed Sheaf (Orthogonal)',
                 'type': 'precomputed',
                 'model_class': InductiveSheafDiffusionModel,
+                'params': {
+                    'input_dim': input_dim,
+                    'hidden_dim': hidden_channels,
+                    'output_dim': output_dim,
+                    'sheaf_type': 'bundle',
+                    'd': 3,
+                    'num_layers': 3,
+                    'dropout': 0.3,
+                    'input_dropout': 0.1,
+                    'is_regression': True,
+                    'is_graph_level_task': False,
+                    'device': self.device,
+                    'normalised': True,
+                    'deg_normalised': False,
+                    'linear': False,
+                    'left_weights': True,
+                    'right_weights': True,
+                    'sparse_learner': False,
+                    'use_act': True,
+                    'sheaf_act': "tanh",
+                    'second_linear': False,
+                    'orth': 'cayley',
+                    'edge_weights': False,
+                    'max_t': 1.0,
+                    'add_lp': False,
+                    'add_hp': False
+                }
+            },
+            # Precomputed Continuous models
+            {
+                'name': 'Precomputed Continuous Sheaf (Diagonal) - Half Epochs',
+                'type': 'precomputed_continuous',
+                'model_class': InductiveContSheafDiffusionModel,
+                'epochs': epochs // 2,  # Half epochs as requested
+                'params': {
+                    'input_dim': input_dim,
+                    'hidden_dim': hidden_channels,
+                    'output_dim': output_dim,
+                    'sheaf_type': 'diag',
+                    'd': 3,
+                    'num_layers': 3,
+                    'dropout': 0.3,
+                    'input_dropout': 0.1,
+                    'is_regression': True,
+                    'is_graph_level_task': False,
+                    'device': self.device,
+                    'normalised': True,
+                    'deg_normalised': False,
+                    'linear': False,
+                    'left_weights': True,
+                    'right_weights': True,
+                    'sparse_learner': False,
+                    'use_act': True,
+                    'sheaf_act': "tanh",
+                    'second_linear': False,
+                    'orth': 'cayley',
+                    'edge_weights': False,
+                    'max_t': 1.0,
+                    'add_lp': False,
+                    'add_hp': False
+                }
+            },
+            {
+                'name': 'Precomputed Continuous Sheaf (Diagonal) - Full Epochs',
+                'type': 'precomputed_continuous',
+                'model_class': InductiveContSheafDiffusionModel,
+                'epochs': epochs,  # Full epochs
+                'params': {
+                    'input_dim': input_dim,
+                    'hidden_dim': hidden_channels,
+                    'output_dim': output_dim,
+                    'sheaf_type': 'diag',
+                    'd': 3,
+                    'num_layers': 3,
+                    'dropout': 0.3,
+                    'input_dropout': 0.1,
+                    'is_regression': True,
+                    'is_graph_level_task': False,
+                    'device': self.device,
+                    'normalised': True,
+                    'deg_normalised': False,
+                    'linear': False,
+                    'left_weights': True,
+                    'right_weights': True,
+                    'sparse_learner': False,
+                    'use_act': True,
+                    'sheaf_act': "tanh",
+                    'second_linear': False,
+                    'orth': 'cayley',
+                    'edge_weights': False,
+                    'max_t': 1.0,
+                    'add_lp': False,
+                    'add_hp': False
+                }
+            },
+            {
+                'name': 'Precomputed Continuous Sheaf (Orthogonal) - Half Epochs',
+                'type': 'precomputed_continuous',
+                'model_class': InductiveContSheafDiffusionModel,
+                'epochs': epochs // 2,  # Half epochs as requested
+                'params': {
+                    'input_dim': input_dim,
+                    'hidden_dim': hidden_channels,
+                    'output_dim': output_dim,
+                    'sheaf_type': 'bundle',
+                    'd': 3,
+                    'num_layers': 3,
+                    'dropout': 0.3,
+                    'input_dropout': 0.1,
+                    'is_regression': True,
+                    'is_graph_level_task': False,
+                    'device': self.device,
+                    'normalised': True,
+                    'deg_normalised': False,
+                    'linear': False,
+                    'left_weights': True,
+                    'right_weights': True,
+                    'sparse_learner': False,
+                    'use_act': True,
+                    'sheaf_act': "tanh",
+                    'second_linear': False,
+                    'orth': 'cayley',
+                    'edge_weights': False,
+                    'max_t': 1.0,
+                    'add_lp': False,
+                    'add_hp': False
+                }
+            },
+            {
+                'name': 'Precomputed Continuous Sheaf (Orthogonal) - Full Epochs',
+                'type': 'precomputed_continuous',
+                'model_class': InductiveContSheafDiffusionModel,
+                'epochs': epochs,  # Full epochs
                 'params': {
                     'input_dim': input_dim,
                     'hidden_dim': hidden_channels,
@@ -910,18 +1107,25 @@ class ModelComparison:
                 # Create model
                 model = model_config['model_class'](**model_config['params'])
                 
+                # Get custom epochs for continuous models, otherwise use default
+                custom_epochs = model_config.get('epochs', epochs)
+                
                 # Train model
                 if model_config['type'] == 'message_passing':
                     result = self.train_message_passing_model(
-                        model, precomputed_data, model_config['name'], epochs=epochs
+                        model, precomputed_data, model_config['name'], epochs=custom_epochs
                     )
                 elif model_config['type'] == 'mlp':
                     result = self.train_mlp_model(
-                        model, precomputed_data, model_config['name'], epochs=epochs
+                        model, precomputed_data, model_config['name'], epochs=custom_epochs
+                    )
+                elif model_config['type'] == 'precomputed_continuous':
+                    result = self.train_precomputed_model(
+                        model, precomputed_data, model_config['name'], epochs=custom_epochs
                     )
                 else:  # precomputed
                     result = self.train_precomputed_model(
-                        model, precomputed_data, model_config['name'], epochs=epochs
+                        model, precomputed_data, model_config['name'], epochs=custom_epochs
                     )
                 
                 results[model_config['name']] = result
@@ -1051,11 +1255,13 @@ class ModelComparison:
         
         message_passing_models = [name for name in results.keys() if 'Message-Passing' in name or 'GCN' in name or 'GraphSAGE' in name]
         precomputed_models = [name for name in results.keys() if 'Precomputed' in name]
+        bunn_models = [name for name in results.keys() if 'BuNN' in name]
         mlp_models = [name for name in results.keys() if 'MLP' in name]
         
         if message_passing_models and precomputed_models:
             mp_results = {name: results[name] for name in message_passing_models if 'error' not in results[name]}
             pc_results = {name: results[name] for name in precomputed_models if 'error' not in results[name]}
+            bunn_results = {name: results[name] for name in bunn_models if 'error' not in results[name]}
             mlp_results = {name: results[name] for name in mlp_models if 'error' not in results[name]}
             
             if mp_results:
@@ -1067,6 +1273,11 @@ class ModelComparison:
                 pc_avg_test = np.mean([r['test_mse'] for r in pc_results.values()])
                 pc_avg_time = np.mean([r['total_training_time'] for r in pc_results.values()])
                 print(f"Precomputed Models (avg): Test MSE={pc_avg_test:.4f}, Time={pc_avg_time:.1f}s")
+            
+            if bunn_results:
+                bunn_avg_test = np.mean([r['test_mse'] for r in bunn_results.values()])
+                bunn_avg_time = np.mean([r['total_training_time'] for r in bunn_results.values()])
+                print(f"BuNN Models (avg): Test MSE={bunn_avg_test:.4f}, Time={bunn_avg_time:.1f}s")
             
             if mlp_results:
                 mlp_avg_test = np.mean([r['test_mse'] for r in mlp_results.values()])
@@ -1104,6 +1315,26 @@ class ModelComparison:
                 else:
                     slowdown = pc_avg_time / mp_avg_time
                     print(f"Precomputation is {slowdown:.2f}x slower on average")
+
+            if bunn_results and mlp_results:
+                bunn_avg_test = np.mean([r['test_mse'] for r in bunn_results.values()])
+                mlp_avg_test = np.mean([r['test_mse'] for r in mlp_results.values()])
+                if mlp_avg_test < bunn_avg_test:
+                    improvement = (bunn_avg_test - mlp_avg_test) / bunn_avg_test * 100
+                    print(f"BuNN models improve over MLP baseline by {improvement:.1f}%")
+                else:
+                    degradation = (mlp_avg_test - bunn_avg_test) / mlp_avg_test * 100
+                    print(f"MLP baseline outperforms BuNN models by {degradation:.1f}%")
+
+            if bunn_results and pc_results:
+                bunn_avg_time = np.mean([r['total_training_time'] for r in bunn_results.values()])
+                pc_avg_time = np.mean([r['total_training_time'] for r in pc_results.values()])
+                if pc_avg_time < bunn_avg_time:
+                    speedup = bunn_avg_time / pc_avg_time
+                    print(f"Precomputed models are {speedup:.2f}x faster than BuNN models on average")
+                else:
+                    slowdown = pc_avg_time / bunn_avg_time
+                    print(f"BuNN models are {slowdown:.2f}x faster than precomputed models on average")
     
     def create_visualizations(self, results):
         """Create visualizations of the results."""

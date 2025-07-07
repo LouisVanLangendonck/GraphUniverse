@@ -59,7 +59,7 @@ def parse_args():
                         help='Dont do any other experiments. Only fine-tune pre-trained models and from scratch version of it and hyperparameter optimization of that model type.')    
         
     # === TASKS ===
-    parser.add_argument('--tasks', type=str, nargs='+', default=['community', 'k_hop_community_counts_k1', 'k_hop_community_counts_k2'],
+    parser.add_argument('--tasks', type=str, nargs='+', default=['k_hop_community_counts_k3'],
                         choices=['community', 'k_hop_community_counts_k1', 'k_hop_community_counts_k2', 'k_hop_community_counts_k3', 'triangle_count'],
                         help='Learning tasks to run')
     parser.add_argument('--khop_k', type=int, default=2,
@@ -86,9 +86,9 @@ def parse_args():
                         help='Number of communities in universe')
     parser.add_argument('--universe_feature_dim', type=int, default=32,
                         help='Feature dimension for universe')
-    parser.add_argument('--universe_edge_density', type=float, default=0.15,
+    parser.add_argument('--universe_edge_density', type=float, default=0.2,
                         help='Base edge density for universe')
-    parser.add_argument('--universe_homophily', type=float, default=0.2,
+    parser.add_argument('--universe_homophily', type=float, default=0.4,
                         help='Homophily parameter for universe')
     parser.add_argument('--universe_randomness_factor', type=float, default=1.0,
                         help='Randomness factor for universe')

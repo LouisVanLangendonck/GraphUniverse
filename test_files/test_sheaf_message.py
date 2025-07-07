@@ -18,7 +18,6 @@ from sklearn.metrics import accuracy_score
 import time
 from collections import defaultdict
 
-
 class OrthogonalMaps(nn.Module):
     """
     Creates orthogonal restriction maps using different parameterizations.
@@ -330,10 +329,13 @@ class NeuralSheafDiffusionLayer(MessagePassing):
         
         # Time matrix multiplications (most expensive part)
         start_time = time.time()
-        F_ve_x_i = torch.einsum('eij,ejf->eif', F_ve, x_i_norm)
-        F_ue_x_j = torch.einsum('eij,ejf->eif', F_ue, x_j_norm)
+        F_ve_x_i = torch.bmm(F_ve, x_i_norm)
+        F_ue_x_j = torch.bmm(F_ue, x_j_norm)
+        # F_ve_x_i = torch.einsum('eij,ejf->eif', F_ve, x_i_norm)
+        # F_ue_x_j = torch.einsum('eij,ejf->eif', F_ue, x_j_norm)
         diff = F_ve_x_i - F_ue_x_j
-        message = torch.einsum('eji,ejf->eif', F_ve, diff)
+        # message = torch.einsum('eji,ejf->eif', F_ve, diff)
+        message = torch.bmm(F_ve.transpose(-1, -2), diff)
         self.timing_stats['message_matrix_ops'] += time.time() - start_time
         self.timing_counts['message_matrix_ops'] += 1
         
@@ -345,43 +347,103 @@ class NeuralSheafDiffusionLayer(MessagePassing):
         
         return result
     
+    # def _params_to_restriction_map(self, params: torch.Tensor) -> torch.Tensor:
+    #     """
+    #     Convert parameters to restriction maps based on the specified type.
+        
+    #     Args:
+    #         params: Parameters [num_edges, restriction_out_dim]
+            
+    #     Returns:
+    #         Restriction maps [num_edges, d, d]
+    #     """
+    #     num_edges = params.size(0)
+        
+    #     if self.restriction_map_type == "orthogonal":
+    #         # Use orthogonal parameterization
+    #         start_time = time.time()
+    #         result = self.orthogonal_maps(params)
+    #         self.timing_stats['orthogonal_maps'] += time.time() - start_time
+    #         self.timing_counts['orthogonal_maps'] += 1
+    #         return result
+            
+    #     elif self.restriction_map_type == "diagonal":
+    #         # Create diagonal matrices
+    #         start_time = time.time()
+    #         maps = torch.zeros(num_edges, self.d, self.d, device=params.device)
+    #         diag_elements = torch.sigmoid(params) - 0.5
+    #         maps.diagonal(dim1=-2, dim2=-1).copy_(diag_elements)
+    #         self.timing_stats['diagonal_maps'] += time.time() - start_time
+    #         self.timing_counts['diagonal_maps'] += 1
+    #         return maps
+            
+    #     elif self.restriction_map_type == "general":
+    #         # Reshape to full matrices
+    #         start_time = time.time()
+    #         result = params.view(num_edges, self.d, self.d)
+    #         self.timing_stats['general_maps'] += time.time() - start_time
+    #         self.timing_counts['general_maps'] += 1
+    #         return result
+    
     def _params_to_restriction_map(self, params: torch.Tensor) -> torch.Tensor:
         """
-        Convert parameters to restriction maps based on the specified type.
+        Optimized version of _params_to_restriction_map with better performance.
         
         Args:
             params: Parameters [num_edges, restriction_out_dim]
+            restriction_map_type: Type of restriction map
+            d: Stalk dimension
             
         Returns:
             Restriction maps [num_edges, d, d]
         """
-        num_edges = params.size(0)
-        
-        if self.restriction_map_type == "orthogonal":
-            # Use orthogonal parameterization
-            start_time = time.time()
-            result = self.orthogonal_maps(params)
-            self.timing_stats['orthogonal_maps'] += time.time() - start_time
-            self.timing_counts['orthogonal_maps'] += 1
-            return result
-            
-        elif self.restriction_map_type == "diagonal":
-            # Create diagonal matrices
-            start_time = time.time()
-            maps = torch.zeros(num_edges, self.d, self.d, device=params.device)
+        if self.restriction_map_type == "diagonal":
+            # Use torch.diag_embed - much faster than manual indexing
             diag_elements = torch.sigmoid(params) - 0.5
-            maps.diagonal(dim1=-2, dim2=-1).copy_(diag_elements)
-            self.timing_stats['diagonal_maps'] += time.time() - start_time
-            self.timing_counts['diagonal_maps'] += 1
-            return maps
+            return torch.diag_embed(diag_elements)
+        
+        elif self.restriction_map_type == "orthogonal":
+            # Use Euler angles for fast orthogonal matrices
+            if self.d == 2:
+                angles = params[..., 0] * 2 * math.pi
+                cos_a = torch.cos(angles)
+                sin_a = torch.sin(angles)
+                
+                row1 = torch.stack([cos_a, -sin_a], dim=-1)
+                row2 = torch.stack([sin_a, cos_a], dim=-1)
+                return torch.stack([row1, row2], dim=-2)
             
+            elif self.d == 3:
+                alpha = params[..., 0] * 2 * math.pi
+                beta = params[..., 1] * 2 * math.pi
+                gamma = params[..., 2] * 2 * math.pi
+                
+                sin_a, cos_a = torch.sin(alpha), torch.cos(alpha)
+                sin_b, cos_b = torch.sin(beta), torch.cos(beta)
+                sin_g, cos_g = torch.sin(gamma), torch.cos(gamma)
+                
+                r00 = cos_a * cos_b
+                r01 = cos_a * sin_b * sin_g - sin_a * cos_g
+                r02 = cos_a * sin_b * cos_g + sin_a * sin_g
+                r10 = sin_a * cos_b
+                r11 = sin_a * sin_b * sin_g + cos_a * cos_g
+                r12 = sin_a * sin_b * cos_g - cos_a * sin_g
+                r20 = -sin_b
+                r21 = cos_b * sin_g
+                r22 = cos_b * cos_g
+                
+                row0 = torch.stack([r00, r01, r02], dim=-1)
+                row1 = torch.stack([r10, r11, r12], dim=-1)
+                row2 = torch.stack([r20, r21, r22], dim=-1)
+                return torch.stack([row0, row1, row2], dim=-2)
+        
         elif self.restriction_map_type == "general":
-            # Reshape to full matrices
-            start_time = time.time()
-            result = params.view(num_edges, self.d, self.d)
-            self.timing_stats['general_maps'] += time.time() - start_time
-            self.timing_counts['general_maps'] += 1
-            return result
+            # Just reshape - this is already optimal
+            num_edges = params.size(0)
+            return params.view(num_edges, self.d, self.d)
+        
+        else:
+            raise ValueError(f"Unknown restriction map type: {self.restriction_map_type}")
     
     def aggregate(
         self, 
@@ -479,7 +541,7 @@ class NeuralSheafDiffusion(nn.Module):
         x = self.output_projection(x)  # [num_nodes, output_dim]
         
         # Return sigmoid activation
-        return torch.sigmoid(x)
+        return x
     
     def get_timing_stats(self):
         """Get timing statistics from all sheaf layers."""
@@ -542,8 +604,7 @@ class GCN(nn.Module):
         # Final projection
         x = self.output_projection(x)
         
-        return torch.sigmoid(x)
-
+        return x
 
 class GraphSAGE(nn.Module):
     """
@@ -599,8 +660,7 @@ class GraphSAGE(nn.Module):
         # Final projection
         x = self.output_projection(x)
         
-        return torch.sigmoid(x)
-
+        return x
 
 
 def graphsample_to_pyg(graph_sample):
