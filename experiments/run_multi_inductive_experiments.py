@@ -46,23 +46,23 @@ def parse_args():
                         help='Directory containing intermediate results to continue from')
     
     # Task configuration
-    parser.add_argument('--tasks', type=str, nargs='+', 
+    parser.add_argument('--tasks', type=str, nargs='+',     
                         default=['community', 'k_hop_community_counts_k1', 'k_hop_community_counts_k2', 'k_hop_community_counts_k3'],
                         choices=['community', 'k_hop_community_counts_k1', 'k_hop_community_counts_k2', 'k_hop_community_counts_k3'],
                         help='Learning tasks to run')
     
     # Base experiment settings
     parser.add_argument('--n_graphs', type=int, default=20,
-                        help='Number of graphs per family')
-    parser.add_argument('--min_n_nodes', type=int, default=80,
+                        help='Number of graphs per family (will be swept over: 10, 30, 50)')
+    parser.add_argument('--min_n_nodes', type=int, default=70,
                         help='Minimum nodes per graph')
-    parser.add_argument('--max_n_nodes', type=int, default=120,
+    parser.add_argument('--max_n_nodes', type=int, default=130,
                         help='Maximum nodes per graph')
     parser.add_argument('--universe_K', type=int, default=10,
                         help='Number of communities in universe')
-    parser.add_argument('--min_communities', type=int, default=4,
+    parser.add_argument('--min_communities', type=int, default=3,
                         help='Minimum number of communities')
-    parser.add_argument('--max_communities', type=int, default=6,
+    parser.add_argument('--max_communities', type=int, default=7,
                         help='Maximum number of communities')
     
     # Method selection
@@ -73,19 +73,19 @@ def parse_args():
                         help='Degree distribution for DCCC-SBM')
     
     # Training settings
-    parser.add_argument('--epochs', type=int, default=300,
+    parser.add_argument('--epochs', type=int, default=400,
                         help='Training epochs')
     parser.add_argument('--patience', type=int, default=50,
                         help='Early stopping patience')
-    parser.add_argument('--batch_size', type=int, default=1,
+    parser.add_argument('--batch_size', type=int, default=5,
                         help='Batch size for training (per graph)')
-    parser.add_argument('--k_fold', type=int, default=5,
+    parser.add_argument('--k_fold', type=int, default=3,
                         help='Number of folds for cross-validation')
 
     # Hyperparameter optimization settings
     parser.add_argument('--optimize_hyperparams', action='store_true',
                         help='Enable hyperparameter optimization')
-    parser.add_argument('--n_trials', type=int, default=15,
+    parser.add_argument('--n_trials', type=int, default=10,
                         help='Number of hyperparameter optimization trials')
     parser.add_argument('--optimization_timeout', type=int, default=600,
                         help='Timeout in seconds for hyperparameter optimization')
@@ -98,7 +98,7 @@ def parse_args():
     
     # Model selection
     parser.add_argument('--gnn_types', type=str, nargs='+', 
-                        default=['gat', 'gcn', 'sage', 'gin'],
+                        default=['gat', 'gcn', 'sage'], #, 'gin'],
                         choices=['fagcn', 'gat', 'gcn', 'sage', 'gin'],
                         help='Types of GNN models to run')
     parser.add_argument('--no_gnn', action='store_false', dest='run_gnn',
@@ -135,6 +135,19 @@ def parse_args():
                         help='Global model type for GraphGPS')
     parser.add_argument('--transformer_prenorm', action='store_true', default=True,
                         help='Use pre-normalization in transformers')
+    
+    # Neural Sheaf configuration
+    parser.add_argument('--run_neural_sheaf', action='store_true',
+                        help='Run Neural Sheaf Diffusion models')
+    parser.add_argument('--sheaf_type', type=str, default='diagonal',
+                        choices=['diagonal', 'bundle', 'general'],
+                        help='Type of sheaf to use')
+    parser.add_argument('--sheaf_d', type=int, default=2,
+                        help='Sheaf dimension')
+    
+    # Evaluation settings
+    parser.add_argument('--allow_unseen_community_combinations_for_eval', action='store_true',
+                        help='Allow unseen community combinations in evaluation')
     
     # Random seed
     parser.add_argument('--seed', type=int, default=42,
@@ -204,6 +217,13 @@ def create_custom_experiment(args) -> CleanMultiExperimentConfig:
         # Analysis
         collect_signal_metrics=True,
         require_consistency_check=True,
+
+        run_neural_sheaf=args.run_neural_sheaf,
+        sheaf_type=args.sheaf_type,
+        sheaf_d=args.sheaf_d,
+        
+        # Evaluation settings
+        allow_unseen_community_combinations_for_eval=args.allow_unseen_community_combinations_for_eval,
         
         # Seed
         seed=args.seed
@@ -219,7 +239,7 @@ def create_custom_experiment(args) -> CleanMultiExperimentConfig:
         else:
             raise ValueError(f"Invalid task: {task}")
     
-    # Define a simple sweep: homophily vs edge density
+    # Define a simple sweep: homophily vs edge density vs number of graphs
     sweep_parameters = {
         'universe_homophily': ParameterRange(
             min_val=0.0,
@@ -231,6 +251,12 @@ def create_custom_experiment(args) -> CleanMultiExperimentConfig:
             min_val=0.05,
             max_val=0.15,
             step=0.1,
+            is_sweep=True
+        ),
+        'n_graphs': ParameterRange(
+            min_val=10,
+            max_val=30,
+            step=20,
             is_sweep=True
         )
     }
@@ -268,14 +294,14 @@ def create_custom_experiment(args) -> CleanMultiExperimentConfig:
             is_sweep=False
         ),
         'cluster_variance': ParameterRange(
-            min_val=0.05,
+            min_val=0.1,
             max_val=0.5,
             distribution="uniform",
             is_sweep=False
         ),
         'center_variance': ParameterRange(
             min_val=0.1,
-            max_val=1.0,
+            max_val=0.5,
             distribution="uniform",
             is_sweep=False
         ),
@@ -296,7 +322,7 @@ def create_custom_experiment(args) -> CleanMultiExperimentConfig:
             max_val=1.0,
             distribution="uniform",
             is_sweep=False
-        )
+        ),
     }
     
     # Add DCCC-specific random parameters if needed
@@ -304,7 +330,7 @@ def create_custom_experiment(args) -> CleanMultiExperimentConfig:
         random_parameters.update({
             'community_imbalance_range_width': ParameterRange(
                 min_val=0.0,
-                max_val=0.1,
+                max_val=0.2,
                 distribution="uniform",
                 is_sweep=False
             ),
@@ -323,7 +349,8 @@ def create_custom_experiment(args) -> CleanMultiExperimentConfig:
         n_repetitions=args.n_repetitions,
         experiment_name=args.experiment_name,
         output_dir=args.output_dir,
-        continue_on_failure=True
+        continue_on_failure=True,
+        run_neural_sheaf=args.run_neural_sheaf
     )
 
 

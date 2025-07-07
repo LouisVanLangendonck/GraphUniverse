@@ -509,7 +509,7 @@ class InductiveExperiment:
                     input_dim=input_dim,
                     hidden_dim=self.config.hidden_dim,
                     output_dim=output_dim,
-                    sheaf_type='diagonal',
+                    sheaf_type=self.config.sheaf_type,
                     d=self.config.sheaf_d,
                     num_layers=self.config.num_layers,
                     dropout=self.config.dropout,
@@ -848,6 +848,7 @@ class InductiveExperiment:
             
             return {
                 'output_dir': self.output_dir,
+                'family_graphs': self.family_graphs,
                 'family_consistency': family_consistency,
                 'graph_signals': graph_signals,
                 'results': results,

@@ -267,24 +267,31 @@ class CleanMultiExperimentRunner:
         if not family_graphs:
             return {}
         
-        # Calculate basic statistics
-        properties = {
-            'n_graphs': len(family_graphs),
-            'node_counts': [g.n_nodes for g in family_graphs],
-            'edge_counts': [g.graph.number_of_edges() for g in family_graphs],
-            'community_counts': [len(np.unique(g.community_labels)) for g in family_graphs]
-        }
-        
-        # Calculate summary statistics
-        for key in ['node_counts', 'edge_counts', 'community_counts', 'homophily_levels', 'clustering_coefficients', 'densities', 'avg_degrees']:
-            values = properties[key]
-            if values:
-                properties[f'{key}_mean'] = float(np.mean(values))
-                properties[f'{key}_std'] = float(np.std(values))
-                properties[f'{key}_min'] = float(np.min(values))
-                properties[f'{key}_max'] = float(np.max(values))
-        
-        return properties
+        # Use the same analysis function as individual experiments
+        try:
+            from experiments.inductive.data import analyze_graph_family_properties
+            properties = analyze_graph_family_properties(family_graphs)
+            return self._make_json_serializable(properties)
+        except Exception as e:
+            print(f"Warning: Failed to analyze family properties: {e}")
+            # Fallback to basic properties
+            properties = {
+                'n_graphs': len(family_graphs),
+                'node_counts': [g.n_nodes for g in family_graphs],
+                'edge_counts': [g.graph.number_of_edges() for g in family_graphs],
+                'community_counts': [len(np.unique(g.community_labels)) for g in family_graphs]
+            }
+            
+            # Calculate summary statistics only for properties that exist
+            for key in ['node_counts', 'edge_counts', 'community_counts']:
+                if key in properties and properties[key]:
+                    values = properties[key]
+                    properties[f'{key}_mean'] = float(np.mean(values))
+                    properties[f'{key}_std'] = float(np.std(values))
+                    properties[f'{key}_min'] = float(np.min(values))
+                    properties[f'{key}_max'] = float(np.max(values))
+            
+            return properties
     
     def _extract_model_results(self, experiment_results: Dict[str, Any]) -> Dict[str, Any]:
         """Extract model results from experiment results."""
@@ -622,6 +629,16 @@ class CleanMultiExperimentRunner:
                 avg_consistency = df['consistency_overall'].mean()
                 lines.append(f"Average Family Consistency: {avg_consistency:.3f}")
                 lines.append("")
+            
+            # Family properties summary
+            family_prop_cols = [col for col in df.columns if col.startswith('family_') and '_mean' in col]
+            if family_prop_cols:
+                lines.append("Average Family Properties:")
+                for col in family_prop_cols:
+                    prop_name = col.replace('family_', '').replace('_mean', '').replace('_', ' ').title()
+                    avg_prop = df[col].mean()
+                    lines.append(f"  {prop_name}: {avg_prop:.3f}")
+                lines.append("")
         
         lines.append(f"Results saved to: {self.output_dir}")
         
@@ -663,7 +680,8 @@ class CleanMultiExperimentRunner:
                     'run_gnn': True,
                     'run_mlp': False,
                     'run_rf': False,
-                    'run_transformers': False
+                    'run_transformers': False,
+                    'run_neural_sheaf': False
                 })
         
         # Add transformer models if enabled
@@ -675,8 +693,19 @@ class CleanMultiExperimentRunner:
                     'run_mlp': False,
                     'run_rf': False,
                     'run_transformers': True,
+                    'run_neural_sheaf': False,
                     **self.config.transformer_params
                 })
+        
+        # Add neural sheaf models if enabled
+        if self.config.run_neural_sheaf:
+            model_configs.append({
+                'run_gnn': False,
+                'run_mlp': False,
+                'run_rf': False,
+                'run_transformers': False,
+                'run_neural_sheaf': True
+            })
         
         # Add MLP model if enabled
         if self.config.base_config.run_mlp:
@@ -684,7 +713,8 @@ class CleanMultiExperimentRunner:
                 'run_gnn': False,
                 'run_mlp': True,
                 'run_rf': False,
-                'run_transformers': False
+                'run_transformers': False,
+                'run_neural_sheaf': False
             })
         
         # Add Random Forest model if enabled
@@ -693,7 +723,8 @@ class CleanMultiExperimentRunner:
                 'run_gnn': False,
                 'run_mlp': False,
                 'run_rf': True,
-                'run_transformers': False
+                'run_transformers': False,
+                'run_neural_sheaf': False
             })
         
         return model_configs

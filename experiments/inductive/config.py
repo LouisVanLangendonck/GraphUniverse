@@ -154,8 +154,8 @@ class InductiveExperimentConfig:
 
     # === NEURAL SHEAF DIFFUSION ===
     run_neural_sheaf: bool = False
-    sheaf_type: str = "orthogonal" # "orthogonal", "diagonal", "general"
-    sheaf_d: int = 1
+    sheaf_type: str = "diagonal" # "diagonal", "bundle", "general"
+    sheaf_d: int = 2
 
     # === GRAPH TRANSFORMER CONFIGURATION ===
     transformer_types: List[str] = field(default_factory=lambda: ['graphgps'])

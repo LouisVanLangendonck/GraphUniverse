@@ -131,7 +131,10 @@ class CleanMultiExperimentConfig:
         # Transformer Models
         transformer_models: List[str] = None,  # List of transformer models to run
         run_transformers: bool = False,  # Whether to run transformer models
-        transformer_params: Dict[str, Any] = None  # Additional transformer parameters
+        transformer_params: Dict[str, Any] = None,  # Additional transformer parameters
+        
+        # Neural Sheaf Models
+        run_neural_sheaf: bool = False  # Whether to run neural sheaf models
     ):
         """Initialize multi-experiment configuration."""
         self.output_dir = output_dir
@@ -160,6 +163,7 @@ class CleanMultiExperimentConfig:
             'global_model_type': 'transformer',
             'transformer_prenorm': True
         }
+        self.run_neural_sheaf = run_neural_sheaf
         
         # Ensure all sweep parameters have is_sweep=True
         for param_name, param_range in self.sweep_parameters.items():
@@ -301,7 +305,8 @@ class CleanMultiExperimentConfig:
             'gnn_models': self.gnn_models,
             'transformer_models': self.transformer_models,
             'run_transformers': self.run_transformers,
-            'transformer_params': self.transformer_params
+            'transformer_params': self.transformer_params,
+            'run_neural_sheaf': self.run_neural_sheaf
         }
         
         with open(filepath, 'w') as f:
@@ -338,8 +343,70 @@ class CleanMultiExperimentConfig:
             gnn_models=config_dict['gnn_models'],
             transformer_models=config_dict['transformer_models'],
             run_transformers=config_dict['run_transformers'],
-            transformer_params=config_dict['transformer_params']
+            transformer_params=config_dict['transformer_params'],
+            run_neural_sheaf=config_dict['run_neural_sheaf']
         )
+    
+    def get_model_configurations(self) -> List[Dict[str, Any]]:
+        """Get all model configurations to run."""
+        model_configs = []
+        
+        # Add GNN models if enabled
+        if self.base_config.run_gnn:
+            for gnn_type in self.gnn_models:
+                model_configs.append({
+                    'gnn_types': [gnn_type],
+                    'run_gnn': True,
+                    'run_mlp': False,
+                    'run_rf': False,
+                    'run_transformers': False,
+                    'run_neural_sheaf': False
+                })
+        
+        # Add transformer models if enabled
+        if self.run_transformers:
+            for transformer_type in self.transformer_models:
+                model_configs.append({
+                    'transformer_types': [transformer_type],
+                    'run_gnn': False,
+                    'run_mlp': False,
+                    'run_rf': False,
+                    'run_transformers': True,
+                    'run_neural_sheaf': False,
+                    **self.transformer_params
+                })
+        
+        # Add neural sheaf models if enabled
+        if self.run_neural_sheaf:
+            model_configs.append({
+                'run_gnn': False,
+                'run_mlp': False,
+                'run_rf': False,
+                'run_transformers': False,
+                'run_neural_sheaf': True
+            })
+        
+        # Add MLP model if enabled
+        if self.base_config.run_mlp:
+            model_configs.append({
+                'run_gnn': False,
+                'run_mlp': True,
+                'run_rf': False,
+                'run_transformers': False,
+                'run_neural_sheaf': False
+            })
+        
+        # Add Random Forest model if enabled
+        if self.base_config.run_rf:
+            model_configs.append({
+                'run_gnn': False,
+                'run_mlp': False,
+                'run_rf': True,
+                'run_transformers': False,
+                'run_neural_sheaf': False
+            })
+        
+        return model_configs
 
 @dataclass
 class SSLMultiExperimentConfig:
@@ -501,31 +568,48 @@ class SSLMultiExperimentConfig:
                     model_config.update(dict(zip(param_names, combo)))
                     model_configs.append(model_config)
         
-        # Add transformer models
+        # Add transformer models if enabled
         if self.run_transformers:
             for transformer_type in self.transformer_models:
-                for combo in combinations:
-                    model_config = {
-                    'transformer_type': transformer_type,
-                    'pretraining_task': self.base_config.pretraining_task,
-                    'hidden_dim': self.base_config.hidden_dim,
-                    'num_layers': self.base_config.num_layers,
+                model_configs.append({
+                    'transformer_types': [transformer_type],
+                    'run_gnn': False,
+                    'run_mlp': False,
+                    'run_rf': False,
                     'run_transformers': True,
-                    'model_type': 'transformer',
-                    'negative_sampling_ratio': self.base_config.negative_sampling_ratio,
-                    'link_pred_loss': self.base_config.link_pred_loss,
-                    'dgi_corruption_type': self.base_config.dgi_corruption_type,
-                    'dgi_noise_std': self.base_config.dgi_noise_std,
-                    'dgi_perturb_rate': self.base_config.dgi_perturb_rate,
-                    'dgi_corruption_rate': self.base_config.dgi_corruption_rate,
-                    'graphmae_mask_rate': self.base_config.graphmae_mask_rate,
-                    'graphmae_replace_rate': self.base_config.graphmae_replace_rate,
-                    'graphmae_gamma': self.base_config.graphmae_gamma,
-                    'graphmae_decoder_type': self.base_config.graphmae_decoder_type,
-                    'graphmae_decoder_gnn_type': self.base_config.graphmae_decoder_gnn_type,
-                    }
-                    model_config.update(dict(zip(param_names, combo)))
-                    model_configs.append(model_config)
+                    'run_neural_sheaf': False,
+                    **self.transformer_params
+                })
+        
+        # Add neural sheaf models if enabled
+        if self.run_neural_sheaf:
+            model_configs.append({
+                'run_gnn': False,
+                'run_mlp': False,
+                'run_rf': False,
+                'run_transformers': False,
+                'run_neural_sheaf': True
+            })
+        
+        # Add MLP model if enabled
+        if self.base_config.run_mlp:
+            model_configs.append({
+                'run_gnn': False,
+                'run_mlp': True,
+                'run_rf': False,
+                'run_transformers': False,
+                'run_neural_sheaf': False
+            })
+        
+        # Add Random Forest model if enabled
+        if self.base_config.run_rf:
+            model_configs.append({
+                'run_gnn': False,
+                'run_mlp': False,
+                'run_rf': True,
+                'run_transformers': False,
+                'run_neural_sheaf': False
+            })
         
         return model_configs
     
