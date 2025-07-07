@@ -32,7 +32,8 @@ class InductiveSheafDiffusionModel(Module):
         sparse_learner=False, use_act=True, sheaf_act="tanh",
         second_linear=False, orth="cayley",
         edge_weights=False, max_t=1.0,
-        add_lp=False, add_hp=False, **kwargs
+        add_lp=False, add_hp=False, 
+        pe_type=None, pe_dim=16, **kwargs
     ):
         super().__init__()
 
@@ -45,6 +46,15 @@ class InductiveSheafDiffusionModel(Module):
         self.is_regression = is_regression
         self.is_graph_level_task = is_graph_level_task
         self.device = device
+        
+        # PE configuration
+        self.pe_type = pe_type
+        self.pe_dim = pe_dim
+        
+        # Adjust input dimension if PE is used
+        self.actual_input_dim = input_dim
+        if pe_type is not None:
+            self.actual_input_dim = input_dim + pe_dim
 
         if sheaf_type == "diag":
             assert d >= 1
@@ -62,7 +72,7 @@ class InductiveSheafDiffusionModel(Module):
             'd': d,
             'layers': num_layers,
             'hidden_channels': hidden_dim // d,
-            'input_dim': input_dim,
+            'input_dim': self.actual_input_dim,  # Use adjusted input dimension
             'output_dim': hidden_dim,
             'device': device,
             'normalised': normalised,
@@ -112,12 +122,52 @@ class InductiveSheafDiffusionModel(Module):
         #     # Add scaling factor for regression tasks
         #     self.scale_factor = torch.nn.Parameter(torch.ones(output_dim))
 
-    def _forward_single_graph(self, x, edge_index, graph=None):
+    def _get_pe_from_data(self, data, **kwargs):
+        """Extract positional encoding from data or kwargs."""
+        if self.pe_type is None:
+            return None
+            
+        # Try to get PE from kwargs first
+        pe_attr_name = f"{self.pe_type}_pe"
+        if pe_attr_name in kwargs:
+            return kwargs[pe_attr_name]
+        
+        # Try to get PE from data object
+        if hasattr(data, pe_attr_name):
+            return getattr(data, pe_attr_name)
+        
+        # Try to get PE from kwargs with 'data' key
+        if 'data' in kwargs and hasattr(kwargs['data'], pe_attr_name):
+            return getattr(kwargs['data'], pe_attr_name)
+        
+        print(f"Warning: PE type '{self.pe_type}' not found in data")
+        return None
+
+    def _forward_single_graph(self, x, edge_index, graph=None, **kwargs):
         # Set the current graph for the sheaf model to access precomputed indices
         if graph is not None and hasattr(graph, 'sheaf_indices_cache'):
             self.sheaf_model._current_graph = graph
         else:
             self.sheaf_model._current_graph = None
+        
+        # Get PE and concatenate with input features if specified
+        if self.pe_type is not None:
+            pe = self._get_pe_from_data(graph, **kwargs)
+            if pe is not None:
+                # Ensure PE is on the same device and has correct shape
+                pe = pe.to(x.device)
+                if pe.size(0) != x.size(0):
+                    raise ValueError(f"PE size {pe.size(0)} doesn't match node count {x.size(0)}")
+                if pe.size(1) != self.pe_dim:
+                    # Pad or truncate PE to correct dimension
+                    if pe.size(1) < self.pe_dim:
+                        pad_size = self.pe_dim - pe.size(1)
+                        pe = torch.cat([pe, torch.zeros(pe.size(0), pad_size, device=pe.device)], dim=1)
+                    else:
+                        pe = pe[:, :self.pe_dim]
+                
+                # Concatenate input features with PE
+                x = torch.cat([x, pe], dim=-1)
             
         # Direct forward pass with precomputed indices handled internally
         return self.sheaf_model(x, edge_index)
@@ -126,7 +176,9 @@ class InductiveSheafDiffusionModel(Module):
         # batch_graphs: list of graph objects for each item in the batch (for sheaf cache)
         if batch is None:
             graph = kwargs.get('graph', None)
-            h = self._forward_single_graph(x, edge_index, graph=graph)
+            # Remove graph from kwargs to avoid conflict with _forward_single_graph parameter
+            kwargs_without_graph = {k: v for k, v in kwargs.items() if k != 'graph'}
+            h = self._forward_single_graph(x, edge_index, graph=graph, **kwargs_without_graph)
         else:
             raise NotImplementedError("Batch processing not implemented for sheaf models")
             # log_probs = self._process_batched_graphs(x, edge_index, batch, batch_graphs=batch_graphs)
@@ -154,8 +206,8 @@ class InductiveSheafDiffusionModel(Module):
         return out
 
     def get_sheaf_model(self):
-        return self.sheaf_model 
-    
+        return self.sheaf_model
+
 class InductiveContSheafDiffusionModel(Module):
     def __init__(
         self,
@@ -168,7 +220,8 @@ class InductiveContSheafDiffusionModel(Module):
         sparse_learner=False, use_act=True, sheaf_act="tanh",
         second_linear=False, orth="cayley",
         edge_weights=False, max_t=1.0,
-        add_lp=False, add_hp=False, **kwargs
+        add_lp=False, add_hp=False, 
+        pe_type=None, pe_dim=16, **kwargs
     ):
         super().__init__()
 
@@ -181,6 +234,15 @@ class InductiveContSheafDiffusionModel(Module):
         self.is_regression = is_regression
         self.is_graph_level_task = is_graph_level_task
         self.device = device
+        
+        # PE configuration
+        self.pe_type = pe_type
+        self.pe_dim = pe_dim
+        
+        # Adjust input dimension if PE is used
+        self.actual_input_dim = input_dim
+        if pe_type is not None:
+            self.actual_input_dim = input_dim + pe_dim
 
         if sheaf_type == "diag":
             assert d >= 1
@@ -198,7 +260,7 @@ class InductiveContSheafDiffusionModel(Module):
             'd': d,
             'layers': num_layers,
             'hidden_channels': hidden_dim // d,
-            'input_dim': input_dim,
+            'input_dim': self.actual_input_dim,  # Use adjusted input dimension
             'output_dim': hidden_dim,
             'device': device,
             'normalised': normalised,
@@ -255,12 +317,52 @@ class InductiveContSheafDiffusionModel(Module):
         #     # Add scaling factor for regression tasks
         #     self.scale_factor = torch.nn.Parameter(torch.ones(output_dim))
 
-    def _forward_single_graph(self, x, edge_index, graph=None):
+    def _get_pe_from_data(self, data, **kwargs):
+        """Extract positional encoding from data or kwargs."""
+        if self.pe_type is None:
+            return None
+            
+        # Try to get PE from kwargs first
+        pe_attr_name = f"{self.pe_type}_pe"
+        if pe_attr_name in kwargs:
+            return kwargs[pe_attr_name]
+        
+        # Try to get PE from data object
+        if hasattr(data, pe_attr_name):
+            return getattr(data, pe_attr_name)
+        
+        # Try to get PE from kwargs with 'data' key
+        if 'data' in kwargs and hasattr(kwargs['data'], pe_attr_name):
+            return getattr(kwargs['data'], pe_attr_name)
+        
+        print(f"Warning: PE type '{self.pe_type}' not found in data")
+        return None
+
+    def _forward_single_graph(self, x, edge_index, graph=None, **kwargs):
         # Set the current graph for the sheaf model to access precomputed indices
         if graph is not None and hasattr(graph, 'sheaf_indices_cache'):
             self.sheaf_model._current_graph = graph
         else:
             self.sheaf_model._current_graph = None
+        
+        # Get PE and concatenate with input features if specified
+        if self.pe_type is not None:
+            pe = self._get_pe_from_data(graph, **kwargs)
+            if pe is not None:
+                # Ensure PE is on the same device and has correct shape
+                pe = pe.to(x.device)
+                if pe.size(0) != x.size(0):
+                    raise ValueError(f"PE size {pe.size(0)} doesn't match node count {x.size(0)}")
+                if pe.size(1) != self.pe_dim:
+                    # Pad or truncate PE to correct dimension
+                    if pe.size(1) < self.pe_dim:
+                        pad_size = self.pe_dim - pe.size(1)
+                        pe = torch.cat([pe, torch.zeros(pe.size(0), pad_size, device=pe.device)], dim=1)
+                    else:
+                        pe = pe[:, :self.pe_dim]
+                
+                # Concatenate input features with PE
+                x = torch.cat([x, pe], dim=-1)
             
         # Direct forward pass with precomputed indices handled internally
         return self.sheaf_model(x, edge_index)
@@ -269,7 +371,9 @@ class InductiveContSheafDiffusionModel(Module):
         # batch_graphs: list of graph objects for each item in the batch (for sheaf cache)
         if batch is None:
             graph = kwargs.get('graph', None)
-            h = self._forward_single_graph(x, edge_index, graph=graph)
+            # Remove graph from kwargs to avoid conflict with _forward_single_graph parameter
+            kwargs_without_graph = {k: v for k, v in kwargs.items() if k != 'graph'}
+            h = self._forward_single_graph(x, edge_index, graph=graph, **kwargs_without_graph)
         else:
             raise NotImplementedError("Batch processing not implemented for sheaf models")
             # log_probs = self._process_batched_graphs(x, edge_index, batch, batch_graphs=batch_graphs)

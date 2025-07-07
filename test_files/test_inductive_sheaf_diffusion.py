@@ -22,6 +22,46 @@ import time
 sys.path.append(os.path.join(os.path.dirname(__file__), 'experiments'))
 
 from experiments.neural_sheaf_diffusion.inductive_sheaf_wrapper import InductiveSheafDiffusionModel
+from experiments.inductive.data import (
+    prepare_inductive_data, 
+    create_inductive_dataloaders,
+    precompute_sheaf_laplacian, 
+    create_sheaf_dataloaders
+)
+
+
+def create_test_config():
+    """Create a test configuration for the experiment."""
+    class TestConfig:
+        def __init__(self):
+            # Basic settings
+            self.seed = 42
+            self.k_fold = 1  # Single fold for testing
+            self.batch_size = 4
+            self.train_graph_ratio = 0.6
+            self.val_graph_ratio = 0.2
+            
+            # Tasks - Use community prediction task
+            self.tasks = ["community_prediction"]
+            self.is_regression = {"community_prediction": False}
+            self.is_graph_level_tasks = {"community_prediction": False}
+            
+            # Sheaf settings
+            self.sheaf_d = 3
+            self.sheaf_type = "bundle"
+            self.sheaf_normalised = True
+            self.sheaf_deg_normalised = False
+            self.sheaf_add_hp = False
+            self.sheaf_add_lp = False
+            self.sheaf_orth = "cayley"
+
+            self.run_transformers = False
+            self.precompute_pe = False
+            
+            # Allow unseen community combinations for simpler testing
+            self.allow_unseen_community_combinations_for_eval = True
+    
+    return TestConfig()
 
 
 class SimpleGCN(nn.Module):
@@ -101,7 +141,7 @@ def graphsample_to_pyg(graph_sample):
 
 
 def load_graphs():
-    """Load graphs from graphs.pkl file and convert to PyG format."""
+    """Load original GraphSample objects from graphs.pkl file."""
     print("Loading graphs from graphs.pkl...")
     
     with open('graphs.pkl', 'rb') as f:
@@ -112,35 +152,78 @@ def load_graphs():
     
     print(f"Loaded {len(graphs)} graphs")
     
-    # Convert all graphs to PyG format
-    pyg_graphs = []
-    for i, graph_sample in enumerate(graphs):
-        pyg_data = graphsample_to_pyg(graph_sample)
-        pyg_graphs.append(pyg_data)
-        if i < 5:  # Print info for first 5 graphs
-            print(f"Graph {i}: {pyg_data.x.size(0)} nodes, {pyg_data.x.size(1)} features, {len(torch.unique(pyg_data.y))} classes")
+    # Print info for first 5 graphs
+    for i, graph_sample in enumerate(graphs[:5]):
+        graph = graph_sample.graph
+        n_nodes = graph.number_of_nodes()
+        n_edges = graph.number_of_edges()
+        n_communities = len(set(graph_sample.community_labels)) if hasattr(graph_sample, 'community_labels') else 0
+        print(f"Graph {i}: {n_nodes} nodes, {n_edges} edges, {n_communities} communities")
     
-    return pyg_graphs
+    return graphs
 
 
-def prepare_inductive_data(graphs, num_train=5, num_val=5, num_test=5, seed=42):
-    """Prepare data for inductive learning with separate train/val/test graphs."""
+def prepare_inductive_data(graph_samples, num_train=5, num_val=5, num_test=5, seed=42):
+    """Prepare data for inductive learning using the same approach as the comparison script."""
     print(f"Preparing inductive data: {num_train} train, {num_val} val, {num_test} test graphs")
     
-    if len(graphs) < num_train + num_val + num_test:
-        raise ValueError(f"Not enough graphs. Need {num_train + num_val + num_test}, have {len(graphs)}")
+    if len(graph_samples) < num_train + num_val + num_test:
+        raise ValueError(f"Not enough graphs. Need {num_train + num_val + num_test}, have {len(graph_samples)}")
+    
+    # Create config
+    config = create_test_config()
+    
+    # Use the same data preparation as the comparison script
+    print("Preparing data for precomputed models...")
+    start_time = time.time()
+    inductive_data, sheaf_inductive_data, fold_indices = prepare_inductive_data(graph_samples, config)
+    prep_time = time.time() - start_time
+    print(f"Data preparation completed in {prep_time:.2f}s")
+    
+    # Create dataloaders for precomputed models
+    print("Creating dataloaders for precomputed models...")
+    start_time = time.time()
+    normal_dataloaders = create_inductive_dataloaders(inductive_data, config)
+    sheaf_dataloaders = create_sheaf_dataloaders(sheaf_inductive_data, config)
+    dataloader_time = time.time() - start_time
+    print(f"Dataloader creation completed in {dataloader_time:.2f}s")
+    
+    # For message-passing models: convert to PyG and create simple splits
+    print("Preparing data for message-passing models...")
+    pyg_graphs = [graphsample_to_pyg(g) for g in graph_samples]
+    
+    # Create simple train/val/test split for message-passing models
+    n_graphs = len(pyg_graphs)
+    n_train = int(n_graphs * 0.6)
+    n_val = int(n_graphs * 0.2)
+    n_test = n_graphs - n_train - n_val
     
     # Set random seed for reproducible splits
     np.random.seed(seed)
-    indices = np.random.permutation(len(graphs))
+    indices = np.random.permutation(n_graphs)
     
-    train_indices = indices[:num_train]
-    val_indices = indices[num_train:num_train + num_val]
-    test_indices = indices[num_train + num_val:num_train + num_val + num_test]
+    train_indices = indices[:n_train]
+    val_indices = indices[n_train:n_train + n_val]
+    test_indices = indices[n_train + n_val:]
     
-    train_graphs = [graphs[i] for i in train_indices]
-    val_graphs = [graphs[i] for i in val_indices]
-    test_graphs = [graphs[i] for i in test_indices]
+    train_graphs = [pyg_graphs[i] for i in train_indices]
+    val_graphs = [pyg_graphs[i] for i in val_indices]
+    test_graphs = [pyg_graphs[i] for i in test_indices]
+    
+    message_passing_data = {
+        'train_graphs': train_graphs,
+        'val_graphs': val_graphs,
+        'test_graphs': test_graphs,
+        'task': 'community_prediction'
+    }
+    
+    precomputed_data = {
+        'inductive_data': inductive_data,
+        'sheaf_inductive_data': sheaf_inductive_data,
+        'normal_dataloaders': normal_dataloaders,
+        'sheaf_dataloaders': sheaf_dataloaders,
+        'config': config
+    }
     
     print(f"Train graphs: {len(train_graphs)}")
     print(f"Val graphs: {len(val_graphs)}")
@@ -148,7 +231,7 @@ def prepare_inductive_data(graphs, num_train=5, num_val=5, num_test=5, seed=42):
     
     # Get number of classes from all graphs
     all_classes = set()
-    for graph in graphs:
+    for graph in pyg_graphs:
         all_classes.update(graph.y.numpy())
     num_classes = len(all_classes)
     
@@ -158,7 +241,9 @@ def prepare_inductive_data(graphs, num_train=5, num_val=5, num_test=5, seed=42):
         'train_graphs': train_graphs,
         'val_graphs': val_graphs,
         'test_graphs': test_graphs,
-        'num_classes': num_classes
+        'num_classes': num_classes,
+        'precomputed_data': precomputed_data,
+        'message_passing_data': message_passing_data
     }
 
 
@@ -168,10 +253,10 @@ def train_inductive_sheaf_model(model, data, device, epochs=10, lr=0.01, weight_
     
     model = model.to(device)
     
-    # Create dataloaders
-    train_loader = DataLoader(data['train_graphs'], batch_size=1, shuffle=True)
-    val_loader = DataLoader(data['val_graphs'], batch_size=1, shuffle=False)
-    test_loader = DataLoader(data['test_graphs'], batch_size=1, shuffle=False)
+    # Use precomputed dataloaders
+    train_loader = data['precomputed_data']['sheaf_dataloaders']['community_prediction']['fold_0']['train']
+    val_loader = data['precomputed_data']['sheaf_dataloaders']['community_prediction']['fold_0']['val']
+    test_loader = data['precomputed_data']['sheaf_dataloaders']['community_prediction']['fold_0']['test']
     
     # Check if parameters were initialized
     param_count = sum(p.numel() for p in model.parameters())
@@ -197,24 +282,13 @@ def train_inductive_sheaf_model(model, data, device, epochs=10, lr=0.01, weight_
             batch = batch.to(device)
             optimizer.zero_grad()
             
-            # Forward pass
-            start_time = time.time()
-            out = model(batch.x, batch.edge_index)
-            end_time = time.time()
-            # print(f"TIME DEBUG: Time taken for forward pass: {end_time - start_time} seconds")
-            start_time = time.time()
+            # Forward pass - use precomputed data
+            out = model(batch.x, batch.edge_index, graph=batch)
             loss = F.nll_loss(out, batch.y)
-            end_time = time.time()
-            # print(f"TIME DEBUG: Time taken for loss: {end_time - start_time} seconds")
             
             # Backward pass
-            # print(f"TIME DEBUG: Time taken for backward pass: {end_time - start_time} seconds")
             loss.backward()
-            end_time = time.time()
-            # print(f"TIME DEBUG: Time taken for backward pass: {end_time - start_time} seconds")
             optimizer.step()
-
-            # input("Press Y to continue")
             
             # Calculate accuracy
             pred = out.argmax(dim=1)
@@ -230,7 +304,7 @@ def train_inductive_sheaf_model(model, data, device, epochs=10, lr=0.01, weight_
         with torch.no_grad():
             for batch in val_loader:
                 batch = batch.to(device)
-                out = model(batch.x, batch.edge_index)
+                out = model(batch.x, batch.edge_index, graph=batch)
                 pred = out.argmax(dim=1)
                 total_val_correct += (pred == batch.y).sum().item()
                 total_val_nodes += batch.y.size(0)
@@ -259,7 +333,7 @@ def train_inductive_sheaf_model(model, data, device, epochs=10, lr=0.01, weight_
     with torch.no_grad():
         for batch in test_loader:
             batch = batch.to(device)
-            out = model(batch.x, batch.edge_index)
+            out = model(batch.x, batch.edge_index, graph=batch)
             pred = out.argmax(dim=1)
             total_test_correct += (pred == batch.y).sum().item()
             total_test_nodes += batch.y.size(0)
@@ -284,10 +358,10 @@ def train_gcn_model(model, data, device, epochs=10, lr=0.01, weight_decay=5e-4):
     
     model = model.to(device)
     
-    # Create dataloaders
-    train_loader = DataLoader(data['train_graphs'], batch_size=5, shuffle=True)
-    val_loader = DataLoader(data['val_graphs'], batch_size=5, shuffle=False)
-    test_loader = DataLoader(data['test_graphs'], batch_size=5, shuffle=False)
+    # Use normal dataloaders for GCN
+    train_loader = data['precomputed_data']['normal_dataloaders']['community_prediction']['fold_0']['train']
+    val_loader = data['precomputed_data']['normal_dataloaders']['community_prediction']['fold_0']['val']
+    test_loader = data['precomputed_data']['normal_dataloaders']['community_prediction']['fold_0']['test']
     
     # Check if parameters were initialized
     param_count = sum(p.numel() for p in model.parameters())
@@ -398,14 +472,14 @@ def main():
     np.random.seed(42)
     
     try:
-        # Load graphs from pickle
-        graphs = load_graphs()
+        # Load original GraphSample objects
+        graph_samples = load_graphs()
         
-        # Prepare inductive data
-        data = prepare_inductive_data(graphs, num_train=5, num_val=5, num_test=5)
+        # Prepare inductive data using the same approach as comparison script
+        data = prepare_inductive_data(graph_samples, num_train=5, num_val=5, num_test=5)
         
-        # Get model parameters from first graph
-        first_graph = data['train_graphs'][0]
+        # Get model parameters from precomputed data
+        first_graph = data['precomputed_data']['inductive_data']['community_prediction']['fold_0']['train']['graphs'][0]
         input_dim = first_graph.x.size(1)
         hidden_dim = 64
         output_dim = data['num_classes']
@@ -455,50 +529,50 @@ def main():
             print(f"Testing {config['name']}")
             print("="*50)
             
-            # try:
+            try:
                 # Create model
-            model = InductiveSheafDiffusionModel(
-                input_dim=input_dim,
-                hidden_dim=hidden_dim,
-                output_dim=output_dim,
-                sheaf_type=config['sheaf_type'],
-                d=config['d'],
-                num_layers=2,
-                dropout=0.1,
-                input_dropout=0.1,
-                is_regression=False,
-                is_graph_level_task=False,
-                device=device,
-                normalised=True,
-                deg_normalised=False,
-                linear=False,
-                left_weights=True,
-                right_weights=True,
-                sparse_learner=False,
-                use_act=True,
-                sheaf_act="tanh",
-                second_linear=False,
-                orth=config['orth'],
-                edge_weights=False,
-                max_t=1.0,
-                add_lp=False,
-                add_hp=False
-            )
-            
-            # Train model
-            start_time = time.time()
-            result = train_inductive_sheaf_model(model, data, device, epochs=10)
-            training_time = time.time() - start_time
-            
-            result['training_time'] = training_time
-            result['config'] = config
-            results[config['name']] = result
-            
-            print(f"Training completed in {training_time:.2f} seconds")
+                model = InductiveSheafDiffusionModel(
+                    input_dim=input_dim,
+                    hidden_dim=hidden_dim,
+                    output_dim=output_dim,
+                    sheaf_type=config['sheaf_type'],
+                    d=config['d'],
+                    num_layers=2,
+                    dropout=0.1,
+                    input_dropout=0.1,
+                    is_regression=False,
+                    is_graph_level_task=False,
+                    device=device,
+                    normalised=True,
+                    deg_normalised=False,
+                    linear=False,
+                    left_weights=True,
+                    right_weights=True,
+                    sparse_learner=False,
+                    use_act=True,
+                    sheaf_act="tanh",
+                    second_linear=False,
+                    orth=config['orth'],
+                    edge_weights=False,
+                    max_t=1.0,
+                    add_lp=False,
+                    add_hp=False
+                )
                 
-            # except Exception as e:
-            #     print(f"Error with {config['name']}: {e}")
-            #     results[config['name']] = {'error': str(e)}
+                # Train model
+                start_time = time.time()
+                result = train_inductive_sheaf_model(model, data, device, epochs=10)
+                training_time = time.time() - start_time
+                
+                result['training_time'] = training_time
+                result['config'] = config
+                results[config['name']] = result
+                
+                print(f"Training completed in {training_time:.2f} seconds")
+                
+            except Exception as e:
+                print(f"Error with {config['name']}: {e}")
+                results[config['name']] = {'error': str(e)}
         
         # Print summary
         print(f"\n" + "="*60)

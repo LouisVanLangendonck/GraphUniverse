@@ -332,7 +332,8 @@ class InductiveExperiment:
                                                 self.config,
                                                 family_graphs_training_indices=self.family_graphs_training_indices,
                                                 family_graphs_val_test_indices=self.family_graphs_val_test_indices,
-                                                family_graph_community_labels_list=self.communities_per_graph)
+                                                family_graph_community_labels_list=self.communities_per_graph,
+                                                )
         
         unseen_community_combination_score = self.calculate_unseen_community_combination_score(fold_indices)
         print(f"Unseen community combination score: {unseen_community_combination_score}")
@@ -466,6 +467,10 @@ class InductiveExperiment:
             if self.config.run_transformers:
                 for transformer_type in self.config.transformer_types:
                     from experiments.models import GraphTransformerModel
+                    
+                    # Set embedding dimension such that it is divisible by the number of heads
+                    # if self.config.num_heads > 0:
+                    #     input_dim = input_dim // self.config.num_heads * self.config.num_heads
                     
                     model = GraphTransformerModel(
                         input_dim=input_dim,

@@ -110,6 +110,8 @@ class InductiveExperimentConfig:
         'k_hop_community_counts_k1': True, 
         'k_hop_community_counts_k2': True, 
         'k_hop_community_counts_k3': True, 
+        'k_hop_community_counts_k4': True, 
+        'k_hop_community_counts_k5': True, 
         'triangle_count': True
     })
     is_graph_level_tasks: Dict[str, bool] = field(default_factory=lambda: {
@@ -117,6 +119,8 @@ class InductiveExperimentConfig:
         'k_hop_community_counts_k1': False, 
         'k_hop_community_counts_k2': False, 
         'k_hop_community_counts_k3': False, 
+        'k_hop_community_counts_k4': False, 
+        'k_hop_community_counts_k5': False, 
         'triangle_count': True
     })
     khop_community_counts_k: int = 2
@@ -150,11 +154,11 @@ class InductiveExperimentConfig:
 
     # === NEURAL SHEAF DIFFUSION ===
     run_neural_sheaf: bool = False
-    sheaf_type: str = 'diag'
+    sheaf_type: str = "orthogonal" # "orthogonal", "diagonal", "general"
     sheaf_d: int = 1
 
     # === GRAPH TRANSFORMER CONFIGURATION ===
-    transformer_types: List[str] = field(default_factory=lambda: ['graphormer', 'graphgps'])
+    transformer_types: List[str] = field(default_factory=lambda: ['graphgps'])
     run_transformers: bool = False
     
     # Transformer-specific parameters
@@ -168,10 +172,10 @@ class InductiveExperimentConfig:
     local_gnn_type: str = "gcn"
     global_model_type: str = "transformer"
     transformer_prenorm: bool = True
-    pe_type: List[str] = 'laplacian' # Choose from 'laplacian', 'random_walk', 'shortest_path'
-    max_pe_dim: int = 16
+    pe_type: List[str] = 'laplacian' # Choose from None, 'laplacian', 'degree', 'rwse'
+    max_pe_dim: int = 8
     precompute_pe: bool = True
-    pe_norm_type: str = 'graph' # 'layer', 'batch', 'instance', 'graph', None
+    pe_norm_type: str = None # 'layer', 'batch', 'instance', 'graph', None
     
     # === HYPERPARAMETER OPTIMIZATION ===
     optimize_hyperparams: bool = False

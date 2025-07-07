@@ -46,7 +46,6 @@ def create_model(model_type: str, **kwargs):
     else:
         raise ValueError(f"Unknown model type: {model_type}")
 
-
 class FALayer(MessagePassing):
     """Frequency Adaptive Layer for FAGCN."""
     
@@ -82,7 +81,6 @@ class FALayer(MessagePassing):
     
     def update(self, aggr_out):
         return aggr_out
-
 
 class GINConv(MessagePassing):
     """
@@ -163,7 +161,6 @@ class GINConv(MessagePassing):
         """Message function - return neighbor features."""
         return x_j
     
-
 class GNNEncoder(torch.nn.Module):
     """Base GNN encoder without prediction head."""
     
@@ -352,7 +349,6 @@ class GNNEncoder(torch.nn.Module):
             h = F.dropout(h, p=self.dropout, training=self.training)
         return h
 
-
 class GNNModel(torch.nn.Module):
     """Full GNN model with prediction head."""
     
@@ -371,13 +367,24 @@ class GNNModel(torch.nn.Module):
         agg_type: str = "mean",
         heads: int = 1,
         concat_heads: bool = True,
-        eps: float = 0.3
+        eps: float = 0.3,
+        pe_type: str = None,
+        pe_dim: int = 16
     ):
         super().__init__()
         
+        # PE configuration
+        self.pe_type = pe_type
+        self.pe_dim = pe_dim
+        
+        # Adjust input dimension if PE is used
+        self.actual_input_dim = input_dim
+        if pe_type is not None:
+            self.actual_input_dim = input_dim + pe_dim
+        
         # Create encoder
         self.encoder = GNNEncoder(
-            input_dim=input_dim,
+            input_dim=self.actual_input_dim,  # Use adjusted input dimension
             hidden_dim=hidden_dim,
             gnn_type=gnn_type,
             num_layers=num_layers,
@@ -409,8 +416,45 @@ class GNNModel(torch.nn.Module):
         #     # Add scaling factor for regression tasks
         #     self.scale_factor = torch.nn.Parameter(torch.ones(output_dim))
     
-    def forward(self, x: torch.Tensor, edge_index: torch.Tensor, batch: Optional[torch.Tensor] = None) -> torch.Tensor:
+    def _get_pe_from_data(self, data):
+        """Extract positional encoding from data object."""
+        if self.pe_type is None:
+            return None
+            
+        pe_attr_name = f"{self.pe_type}_pe"
+        if hasattr(data, pe_attr_name):
+            return getattr(data, pe_attr_name)
+        
+        print(f"Warning: PE type '{self.pe_type}' not found in data")
+        return None
+    
+    def forward(self, x: torch.Tensor, edge_index: torch.Tensor, batch: Optional[torch.Tensor] = None, **kwargs) -> torch.Tensor:
         """Forward pass through full model."""
+        # Get PE and concatenate with input features if specified
+        if self.pe_type is not None:
+            # Get PE from the graph object
+            graph = kwargs.get('graph', None)
+            if graph is None:
+                # Try to get from batch if graph not passed
+                graph = kwargs.get('batch', None)
+            pe = self._get_pe_from_data(graph)
+
+            if pe is not None:
+                # Ensure PE is on the same device and has correct shape
+                pe = pe.to(x.device)
+                if pe.size(0) != x.size(0):
+                    raise ValueError(f"PE size {pe.size(0)} doesn't match node count {x.size(0)}")
+                if pe.size(1) != self.pe_dim:
+                    # Pad or truncate PE to correct dimension
+                    if pe.size(1) < self.pe_dim:
+                        pad_size = self.pe_dim - pe.size(1)
+                        pe = torch.cat([pe, torch.zeros(pe.size(0), pad_size, device=pe.device)], dim=1)
+                    else:
+                        pe = pe[:, :self.pe_dim]
+                
+                # Concatenate input features with PE
+                x = torch.cat([x, pe], dim=-1)
+        
         # Get node embeddings from encoder
         h = self.encoder(x, edge_index)
         
@@ -435,7 +479,6 @@ class GNNModel(torch.nn.Module):
         #     out = out * self.scale_factor
             
         return out
-
 
 class GPSConv(torch.nn.Module):
     """
@@ -572,7 +615,6 @@ class GPSConv(torch.nn.Module):
 
         return out
 
-
 class BigBirdAttention(nn.Module):
     """
     BigBird attention mechanism implementation.
@@ -698,7 +740,6 @@ class BigBirdAttention(nn.Module):
 
         return out
 
-
 class PerformerAttention(nn.Module):
     """
     Performer attention mechanism implementation.
@@ -779,7 +820,6 @@ class PerformerAttention(nn.Module):
         
         return output
 
-
 class LaplacianPE(nn.Module):
     """Laplacian positional encoding."""
     def __init__(self, channels: int, pe_dim: int):
@@ -788,7 +828,6 @@ class LaplacianPE(nn.Module):
         
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.linear(x)
-
 
 class GPSLayer(nn.Module):
     """Fixed GPS layer implementation."""
@@ -949,7 +988,6 @@ class GPSLayer(nn.Module):
         else:
             raise ValueError("Unknown attention implementation")
 
-
 class GraphTransformerEncoder(torch.nn.Module):
     """Base Graph Transformer encoder without prediction head."""
     
@@ -974,19 +1012,26 @@ class GraphTransformerEncoder(torch.nn.Module):
     def _init_graphgps(self, input_dim: int, hidden_dim: int, dropout: float, 
                       local_gnn_type: str, attn_type: str, num_heads: int):
         """Initialize GraphGPS architecture using enhanced implementation."""
-        # Input projection that combines features and PE
-        self.input_proj = nn.Linear(input_dim + self.pe_dim, hidden_dim)
+        # Input projection that combines features and PE (if PE is used)
+        if self.pe_type is not None:
+            self.input_proj = nn.Linear(input_dim + self.pe_dim, hidden_dim)
+        else:
+            # No PE case - just project input features
+            self.input_proj = nn.Linear(input_dim, hidden_dim)
         
-        # PE normalization - configurable
-        self.use_precomputed_graph_norm = False
-        if self.pe_norm_type == 'layer':
-            self.pe_norm = nn.LayerNorm(self.pe_dim)
-        elif self.pe_norm_type == 'batch':
-            self.pe_norm = nn.BatchNorm1d(self.pe_dim)
-        # For graph-normalized PEs, we don't need to normalize since it's precomputed. We just need to select other dataloader
-        elif self.pe_norm_type == 'graph':
-            self.use_precomputed_graph_norm = True
-            self.pe_norm = nn.Identity()
+        # PE normalization - configurable (only if PE is used)
+        if self.pe_type is not None:
+            self.use_precomputed_graph_norm = False
+            if self.pe_norm_type == 'layer':
+                self.pe_norm = nn.LayerNorm(self.pe_dim)
+            elif self.pe_norm_type == 'batch':
+                self.pe_norm = nn.BatchNorm1d(self.pe_dim)
+            # For graph-normalized PEs, we don't need to normalize since it's precomputed. We just need to select other dataloader
+            elif self.pe_norm_type == 'graph':
+                self.use_precomputed_graph_norm = True
+                self.pe_norm = nn.Identity()
+            else:
+                self.pe_norm = nn.Identity()
         else:
             self.pe_norm = nn.Identity()
         
@@ -1005,44 +1050,69 @@ class GraphTransformerEncoder(torch.nn.Module):
     def forward(self, x: torch.Tensor, edge_index: torch.Tensor, batch: Optional[torch.Tensor] = None, **kwargs):
         """Forward pass through transformer encoder."""
         """Enhanced forward pass for GraphGPS."""
-        # Get precomputed PE
-        pe_attr_name = f"{self.pe_type}_pe"
-        if self.pe_norm_type == 'graph':
-            pe_attr_name += "_norm"
         
-        pe = None
-        if pe_attr_name in kwargs:
-            pe = kwargs[pe_attr_name]
-        elif 'data' in kwargs:
-            pe = getattr(kwargs['data'], pe_attr_name, None)
+        if self.pe_type is not None:
+            # Get precomputed PE - use same logic as other models
+            pe_attr_name = f"{self.pe_type}_pe"
+            if self.pe_norm_type == 'graph':
+                pe_attr_name += "_norm"
+            
+            # Get PE from the graph object (same as GNN, Sheaf, MLP models)
+            graph = kwargs.get('graph', None)
+            if graph is None:
+                # Try to get from batch if graph not passed
+                graph = kwargs.get('batch', None)
+            
+            pe = None
+            if graph is not None and hasattr(graph, pe_attr_name):
+                pe = getattr(graph, pe_attr_name)
+            
+            # Fallback: check kwargs directly (for backward compatibility)
+            if pe is None and pe_attr_name in kwargs:
+                pe = kwargs[pe_attr_name]
+            elif pe is None and 'data' in kwargs:
+                pe = getattr(kwargs['data'], pe_attr_name, None)
 
-        if pe is None:
-            # Fallback: compute PE on the fly
-            print(f"Warning: PE not found, computing on the fly")
-            from data import PositionalEncodingComputer
-            pe_computer = PositionalEncodingComputer(self.pe_dim, [self.pe_type])
-            pe = pe_computer.compute_laplacian_pe(edge_index, x.size(0))
-        
-        # Ensure PE is on same device and has correct shape
-        pe = pe.to(x.device)
-        if pe.size(0) != x.size(0):
-            raise ValueError(f"PE size {pe.size(0)} doesn't match node count {x.size(0)}")
-        if pe.size(1) != self.pe_dim:
-            # Pad or truncate PE to correct dimension
-            if pe.size(1) < self.pe_dim:
-                pad_size = self.pe_dim - pe.size(1)
-                pe = torch.cat([pe, torch.zeros(pe.size(0), pad_size, device=pe.device)], dim=1)
+            if pe is None:
+                # Only compute PE on the fly if pe_type is actually specified
+                if self.pe_type is not None:
+                    print(f"Warning: PE not found, computing on the fly")
+                    from data import PositionalEncodingComputer
+                    pe_computer = PositionalEncodingComputer(self.pe_dim, [self.pe_type])
+                    pe = pe_computer.compute_laplacian_pe(edge_index, x.size(0))
+                else:
+                    # No PE specified, skip PE computation
+                    pe = None
+            
+            # Only process PE if it was found or computed
+            if pe is not None:
+                # Ensure PE is on same device and has correct shape
+                pe = pe.to(x.device)
+                if pe.size(0) != x.size(0):
+                    raise ValueError(f"PE size {pe.size(0)} doesn't match node count {x.size(0)}")
+                if pe.size(1) != self.pe_dim:
+                    # Pad or truncate PE to correct dimension
+                    if pe.size(1) < self.pe_dim:
+                        pad_size = self.pe_dim - pe.size(1)
+                        pe = torch.cat([pe, torch.zeros(pe.size(0), pad_size, device=pe.device)], dim=1)
+                    else:
+                        pe = pe[:, :self.pe_dim]
+                
+                # Normalize PE
+                if self.pe_norm_type == 'batch' and pe.size(0) > 1:
+                    pe = self.pe_norm(pe.unsqueeze(0)).squeeze(0)
+                elif self.pe_norm_type != 'batch':
+                    pe = self.pe_norm(pe)
+                
+                # Combine input features with PE
+                h = torch.cat([x, pe], dim=-1)
             else:
-                pe = pe[:, :self.pe_dim]
+                # No PE specified or found, just use input features
+                h = x
+        else:
+            # No PE case - just use input features
+            h = x
         
-        # Normalize PE
-        if self.pe_norm_type == 'batch' and pe.size(0) > 1:
-            pe = self.pe_norm(pe.unsqueeze(0)).squeeze(0)
-        elif self.pe_norm_type != 'batch':
-            pe = self.pe_norm(pe)
-        
-        # Combine input features with PE
-        h = torch.cat([x, pe], dim=-1)
         h = self.input_proj(h)
         
         # Apply GPS layers
@@ -1050,7 +1120,6 @@ class GraphTransformerEncoder(torch.nn.Module):
             h = layer(h, edge_index, batch)
         
         return h
-
 
 class GraphTransformerModel(torch.nn.Module):
     """Full Graph Transformer model with prediction head."""
@@ -1070,7 +1139,7 @@ class GraphTransformerModel(torch.nn.Module):
         attn_type: str = "multihead",
         pe_dim: int = 16,
         pe_type: str = 'laplacian',
-        pe_norm_type: str = 'layer',
+        pe_norm_type: str = None,
     ):
         super().__init__()
         
@@ -1078,12 +1147,18 @@ class GraphTransformerModel(torch.nn.Module):
         self.transformer_type = transformer_type
         self.pe_type = pe_type
         self.pe_norm_type = pe_norm_type
+        self.pe_dim = pe_dim  # Add this line to store pe_dim
         self.is_regression = is_regression
         self.is_graph_level_task = is_graph_level_task
         
+        # Adjust input dimension if PE is used
+        self.actual_input_dim = input_dim
+        if pe_type is not None:
+            self.actual_input_dim = input_dim + pe_dim
+        
         # Create encoder with only the parameters it accepts
         self.encoder = GraphTransformerEncoder(
-            input_dim=input_dim,
+            input_dim=self.actual_input_dim,  # Use adjusted input dimension
             hidden_dim=hidden_dim,
             transformer_type=transformer_type,
             num_layers=num_layers,
@@ -1121,8 +1196,45 @@ class GraphTransformerModel(torch.nn.Module):
         #     # Add scaling factor for regression tasks
         #     self.scale_factor = torch.nn.Parameter(torch.ones(output_dim))
     
+    def _get_pe_from_data(self, data):
+        """Extract positional encoding from data object."""
+        if self.pe_type is None:
+            return None
+            
+        pe_attr_name = f"{self.pe_type}_pe"
+        if hasattr(data, pe_attr_name):
+            return getattr(data, pe_attr_name)
+        
+        print(f"Warning: PE type '{self.pe_type}' not found in data")
+        return None
+    
     def forward(self, x: torch.Tensor, edge_index: torch.Tensor, batch: Optional[torch.Tensor] = None, **kwargs) -> torch.Tensor:
         """Forward pass through full model."""
+        # Get PE and concatenate with input features if specified
+        if self.pe_type is not None:
+            # Get PE from the graph object
+            graph = kwargs.get('graph', None)
+            if graph is None:
+                # Try to get from batch if graph not passed
+                graph = kwargs.get('batch', None)
+            
+            pe = self._get_pe_from_data(graph)
+            if pe is not None:
+                # Ensure PE is on the same device and has correct shape
+                pe = pe.to(x.device)
+                if pe.size(0) != x.size(0):
+                    raise ValueError(f"PE size {pe.size(0)} doesn't match node count {x.size(0)}")
+                if pe.size(1) != self.pe_dim:
+                    # Pad or truncate PE to correct dimension
+                    if pe.size(1) < self.pe_dim:
+                        pad_size = self.pe_dim - pe.size(1)
+                        pe = torch.cat([pe, torch.zeros(pe.size(0), pad_size, device=pe.device)], dim=1)
+                    else:
+                        pe = pe[:, :self.pe_dim]
+                
+                # Concatenate input features with PE
+                x = torch.cat([x, pe], dim=-1)
+        
         # Get node embeddings from encoder
         h = self.encoder(x, edge_index, batch, **kwargs)
         
@@ -1140,23 +1252,31 @@ class GraphTransformerModel(torch.nn.Module):
         out = self.readout(h)
         
         # Apply scaling factor for regression tasks
-        if self.is_regression:
-            out = out * self.scale_factor
+        # if self.is_regression:
+        #     out = out * self.scale_factor
             
         return out
-
 
 class MLPModel(nn.Module):
     """MLP model for graph-level tasks."""
     
-    def __init__(self, input_dim: int, hidden_dim: int, output_dim: int, num_layers: int, dropout: float, is_regression: bool = True, is_graph_level_task = False):
+    def __init__(self, input_dim: int, hidden_dim: int, output_dim: int, num_layers: int, dropout: float, is_regression: bool = True, is_graph_level_task = False, pe_type: str = None, pe_dim: int = 16):
         super(MLPModel, self).__init__()
         self.is_regression = is_regression
         self.is_graph_level_task = is_graph_level_task
         
+        # PE configuration
+        self.pe_type = pe_type
+        self.pe_dim = pe_dim
+        
+        # Adjust input dimension if PE is used
+        self.actual_input_dim = input_dim
+        if pe_type is not None:
+            self.actual_input_dim = input_dim + pe_dim
+        
         # Build MLP layers
         layers = []
-        in_dim = input_dim
+        in_dim = self.actual_input_dim  # Use adjusted input dimension
         for _ in range(num_layers):
             layers.extend([
                 nn.Linear(in_dim, hidden_dim),
@@ -1170,7 +1290,44 @@ class MLPModel(nn.Module):
         
         self.mlp = nn.Sequential(*layers)
     
-    def forward(self, x, batch=None):
+    def _get_pe_from_data(self, data):
+        """Extract positional encoding from data object."""
+        if self.pe_type is None:
+            return None
+            
+        pe_attr_name = f"{self.pe_type}_pe"
+        if hasattr(data, pe_attr_name):
+            return getattr(data, pe_attr_name)
+        
+        print(f"Warning: PE type '{self.pe_type}' not found in data")
+        return None
+    
+    def forward(self, x, batch=None, **kwargs):
+        # Get PE and concatenate with input features if specified
+        if self.pe_type is not None:
+            # Get PE from the graph object
+            graph = kwargs.get('graph', None)
+            if graph is None:
+                # Try to get from batch if graph not passed
+                graph = kwargs.get('batch', None)
+            
+            pe = self._get_pe_from_data(graph)
+            if pe is not None:
+                # Ensure PE is on the same device and has correct shape
+                pe = pe.to(x.device)
+                if pe.size(0) != x.size(0):
+                    raise ValueError(f"PE size {pe.size(0)} doesn't match node count {x.size(0)}")
+                if pe.size(1) != self.pe_dim:
+                    # Pad or truncate PE to correct dimension
+                    if pe.size(1) < self.pe_dim:
+                        pad_size = self.pe_dim - pe.size(1)
+                        pe = torch.cat([pe, torch.zeros(pe.size(0), pad_size, device=pe.device)], dim=1)
+                    else:
+                        pe = pe[:, :self.pe_dim]
+                
+                # Concatenate input features with PE
+                x = torch.cat([x, pe], dim=-1)
+        
         if self.is_graph_level_task:
             # For graph-level tasks, we need to aggregate node features
             if batch is not None:
@@ -1185,7 +1342,6 @@ class MLPModel(nn.Module):
             out = out.squeeze(-1)  # Remove last dimension if it's 1
             
         return out
-
 
 class SklearnModel:
     """Wrapper for scikit-learn models."""
@@ -1269,7 +1425,6 @@ class SklearnModel:
         self.model.set_params(**params)
         return self
 
-
 class FineTuningModel(torch.nn.Module):
     """
     Model for fine-tuning pre-trained graph encoders.
@@ -1352,7 +1507,6 @@ class FineTuningModel(torch.nn.Module):
         
         return out
 
-
 def precompute_family_encodings(family_graphs: List, model: GraphTransformerModel) -> None:
     """
     Precompute encodings for a family of graphs to improve training efficiency.
@@ -1422,8 +1576,6 @@ def precompute_family_encodings(family_graphs: List, model: GraphTransformerMode
         print(f"Precomputation completed. Cache size: {len(encoder._encoding_cache)} entries")
     elif encoder.transformer_type == "graphgps":
         print(f"Precomputation completed. PE cache size: {len(encoder._pe_cache)} entries")
-
-
 
 class OrthogonalMaps(nn.Module):
     """
@@ -1739,7 +1891,7 @@ class NeuralSheafDiffusionLayer(MessagePassing):
         F_ve_x_i = torch.einsum('eij,ejf->eif', F_ve, x_i_norm)
         F_ue_x_j = torch.einsum('eij,ejf->eif', F_ue, x_j_norm)
         diff = F_ve_x_i - F_ue_x_j
-        message = torch.einsum('eji,ejf->eif', F_ve, diff)
+        message = torch.einsum('eji,ejf->eif', F_ue, diff)
         self.timing_stats['message_matrix_ops'] += time.time() - start_time
         self.timing_counts['message_matrix_ops'] += 1
         
@@ -1904,7 +2056,9 @@ class SheafDiffusionModel(torch.nn.Module):
         activation: str = "elu",
         dropout: float = 0.0,
         is_regression: bool = False,
-        is_graph_level_task: bool = False
+        is_graph_level_task: bool = False,
+        pe_type: str = None,
+        pe_dim: int = 16
     ):
         super().__init__()
         
@@ -1914,9 +2068,18 @@ class SheafDiffusionModel(torch.nn.Module):
         self.is_regression = is_regression
         self.is_graph_level_task = is_graph_level_task
         
+        # PE configuration
+        self.pe_type = pe_type
+        self.pe_dim = pe_dim
+        
+        # Adjust input dimension if PE is used
+        self.actual_input_dim = input_dim
+        if pe_type is not None:
+            self.actual_input_dim = input_dim + pe_dim
+        
         # Create encoder
         self.encoder = NeuralSheafDiffusionEncoder(
-            input_dim=input_dim,
+            input_dim=self.actual_input_dim,  # Use adjusted input dimension
             hidden_dim=hidden_dim,
             d=d,
             num_layers=num_layers,
@@ -1954,8 +2117,45 @@ class SheafDiffusionModel(torch.nn.Module):
         #     # Add scaling factor for regression tasks
         #     self.scale_factor = torch.nn.Parameter(torch.ones(output_dim))
     
-    def forward(self, x: torch.Tensor, edge_index: torch.Tensor, batch: Optional[torch.Tensor] = None) -> torch.Tensor:
+    def _get_pe_from_data(self, data):
+        """Extract positional encoding from data object."""
+        if self.pe_type is None:
+            return None
+            
+        pe_attr_name = f"{self.pe_type}_pe"
+        if hasattr(data, pe_attr_name):
+            return getattr(data, pe_attr_name)
+        
+        print(f"Warning: PE type '{self.pe_type}' not found in data")
+        return None
+    
+    def forward(self, x: torch.Tensor, edge_index: torch.Tensor, batch: Optional[torch.Tensor] = None, **kwargs) -> torch.Tensor:
         """Forward pass through full model."""
+        # Get PE and concatenate with input features if specified
+        if self.pe_type is not None:
+            # Get PE from the graph object
+            graph = kwargs.get('graph', None)
+            if graph is None:
+                # Try to get from batch if graph not passed
+                graph = kwargs.get('batch', None)
+            
+            pe = self._get_pe_from_data(graph)
+            if pe is not None:
+                # Ensure PE is on the same device and has correct shape
+                pe = pe.to(x.device)
+                if pe.size(0) != x.size(0):
+                    raise ValueError(f"PE size {pe.size(0)} doesn't match node count {x.size(0)}")
+                if pe.size(1) != self.pe_dim:
+                    # Pad or truncate PE to correct dimension
+                    if pe.size(1) < self.pe_dim:
+                        pad_size = self.pe_dim - pe.size(1)
+                        pe = torch.cat([pe, torch.zeros(pe.size(0), pad_size, device=pe.device)], dim=1)
+                    else:
+                        pe = pe[:, :self.pe_dim]
+                
+                # Concatenate input features with PE
+                x = torch.cat([x, pe], dim=-1)
+        
         # Get node embeddings from encoder
         h = self.encoder(x, edge_index)  # [num_nodes, d * hidden_dim]
         

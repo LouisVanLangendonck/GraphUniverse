@@ -280,14 +280,14 @@ def train_inductive_model(
                     optimizer.zero_grad()
                     
                     # Forward pass - check if model requires edge_index
-                    if graph_based_model or sheaf_based_model:
-                        out = model(batch.x, batch.edge_index)
-                    elif transformer_based_model:
-                        out = model(batch.x, batch.edge_index, data=batch, batch=batch.batch)
+                    if graph_based_model or sheaf_based_model or transformer_based_model:
+                        out = model(batch.x, batch.edge_index, graph=batch)
+                    # elif transformer_based_model:
+                    #     out = model(batch.x, batch.edge_index, data=batch, batch=batch.batch)
                     # elif sheaf_based_model:
                     #     out = model(batch.x, batch.edge_index, graph=batch)
                     else:  # MLPModel or other non-GNN model
-                        out = model(batch.x)
+                        out = model(batch.x, graph=batch)
                     
                     # Compute loss
                     loss = criterion(out, batch.y)
@@ -316,14 +316,14 @@ def train_inductive_model(
                     for batch in val_loader:
                         # Data is already on GPU - no need for .to(device)
                         
-                        if graph_based_model or sheaf_based_model:
-                            out = model(batch.x, batch.edge_index)
-                        elif transformer_based_model:
-                            out = model(batch.x, batch.edge_index, data=batch, batch=batch.batch)
+                        if graph_based_model or sheaf_based_model or transformer_based_model:
+                            out = model(batch.x, batch.edge_index, graph=batch)
+                        # elif transformer_based_model:
+                        #     out = model(batch.x, batch.edge_index, data=batch, batch=batch.batch)
                         # elif sheaf_based_model:
                         #     out = model(batch.x, batch.edge_index, graph=batch)
                         else:
-                            out = model(batch.x)
+                            out = model(batch.x, graph=batch)
                         
                         loss = criterion(out, batch.y)
                         val_loss += loss.item()
@@ -588,14 +588,14 @@ def evaluate_inductive_model_gpu_resident(
             # Data is already on GPU - no need for .to(device)
             
             # Forward pass - check if model requires edge_index and extra batch info (for PE)
-            if graph_based_model or sheaf_based_model:
-                out = model(batch.x, batch.edge_index)
-            elif transformer_based_model:
-                out = model(batch.x, batch.edge_index, data=batch, batch=batch.batch)
+            if graph_based_model or sheaf_based_model or transformer_based_model:
+                out = model(batch.x, batch.edge_index, graph=batch)
+            # elif transformer_based_model:
+            #     out = model(batch.x, batch.edge_index, data=batch, batch=batch.batch)
             # elif sheaf_based_model:
             #     out = model(batch.x, batch.edge_index, graph=batch)
             else:  # MLPModel or other non-GNN model
-                out = model(batch.x)
+                out = model(batch.x, graph=batch)
             
             # Store predictions - keep on GPU for now
             if is_regression:
@@ -1000,8 +1000,8 @@ def train_and_evaluate_inductive(
                     if transformer_type == "graphgps":
                         # Only suggest parameters that GraphTransformerModel actually accepts
                         local_gnn_type = trial.suggest_categorical('local_gnn_type', ['gcn', 'sage'])
-                        pe_type = trial.suggest_categorical('pe_type', ['laplacian', 'random_walk', 'shortest_path'])
-                        pe_norm_type = trial.suggest_categorical('pe_norm_type', ['layer', 'graph', None])
+                        pe_type = trial.suggest_categorical('pe_type', [None, 'laplacian', 'degree', 'rwse'])
+                        pe_norm_type = None
                         attn_type = trial.suggest_categorical('attn_type', ['performer', 'multihead'])
                         
                     
@@ -1051,7 +1051,7 @@ def train_and_evaluate_inductive(
                             if not all_data_on_device:
                                 batch = batch.to(device)
                             optimizer.zero_grad()
-                            out = trial_model(batch.x, batch.edge_index, data=batch, batch=batch.batch)
+                            out = trial_model(batch.x, batch.edge_index, graph=batch)
                             loss = criterion(out, batch.y)
                             loss.backward()
                             optimizer.step()
@@ -1063,7 +1063,7 @@ def train_and_evaluate_inductive(
                         
                         with torch.no_grad():
                             for batch in fold_dataloader['val']:
-                                out = trial_model(batch.x, batch.edge_index, data=batch, batch=batch.batch)
+                                out = trial_model(batch.x, batch.edge_index, graph=batch)
                                 
                                 if is_regression:
                                     val_predictions.append(out.detach())
@@ -1148,7 +1148,7 @@ def train_and_evaluate_inductive(
                             attn_type=best_params['attn_type'],
                             pe_dim=config.max_pe_dim,
                             pe_type=best_params['pe_type'],
-                            pe_norm_type=best_params['pe_norm_type'],
+                            pe_norm_type=None,
                         ).to(device)
                     
                     # Update config with optimized parameters
@@ -1156,13 +1156,9 @@ def train_and_evaluate_inductive(
                     config.weight_decay = best_params.get('weight_decay', config.weight_decay)
                     config.num_layers = best_params.get('num_layers', config.num_layers)
                     config.dropout = best_params.get('dropout', config.dropout)
-                    config.hidden_dim = best_params.get('hidden_dim', config.hidden_dim)
-                    config.num_heads = best_params.get('num_heads', config.num_heads)
-                    config.local_gnn_type = best_params.get('local_gnn_type', config.local_gnn_type)
-                    config.attn_type = best_params.get('attn_type', config.attn_type)
-                    config.pe_dim = best_params.get('pe_dim', config.pe_dim)
+                    # config.hidden_dim = best_params.get('hidden_dim', config.hidden_dim)
+                    config.max_pe_dim = best_params.get('pe_dim', config.max_pe_dim)
                     config.pe_type = best_params.get('pe_type', config.pe_type)
-                    config.pe_norm_type = best_params.get('pe_norm_type', config.pe_norm_type)
         
         if model_name == 'sheaf_diffusion':
             print(f"🔄 Training Sheaf Diffusion")
@@ -1215,7 +1211,8 @@ def train_and_evaluate_inductive(
                         trial.suggest_int('hidden_dim', hidden_dim, hidden_dim)
                         print(f"Warning: hidden_dim is not divisible by d, setting hidden_dim to {hidden_dim}")
                     # sheaf_type = trial.suggest_categorical('sheaf_type', ['diag', 'bundle', 'general'])
-                    sheaf_type = trial.suggest_categorical('sheaf_type', ['diagonal', 'orthogonal']) # Not general because it's too UNSTABLE!
+                    sheaf_type = trial.suggest_categorical('sheaf_type', ['diagonal', 'orthogonal', 'general']) 
+                    pe_type = trial.suggest_categorical('pe_type', [None, 'laplacian', 'degree', 'rwse'])
 
                     # Create Sheaf Diffusion model with all parameters
                     # trial_model = InductiveSheafDiffusionModel(
@@ -1242,7 +1239,9 @@ def train_and_evaluate_inductive(
                         dropout=dropout,
                         d=d,
                         is_regression=is_regression,
-                        is_graph_level_task=config.is_graph_level_tasks.get(task, task == 'triangle_count')
+                        is_graph_level_task=config.is_graph_level_tasks.get(task, task == 'triangle_count'),
+                        pe_type=pe_type,
+                        pe_dim=config.max_pe_dim,
                         ).to(device)
                     #     input_dim=input_dim,
                     #     hidden_dim=hidden_dim,
@@ -1298,7 +1297,7 @@ def train_and_evaluate_inductive(
                                 print("Warning: Not all data is on device. Moving batch to device...")
                                 batch = batch.to(device)
                             optimizer.zero_grad()
-                            out = trial_model(batch.x, batch.edge_index) #, graph=batch)
+                            out = trial_model(batch.x, batch.edge_index, graph=batch)
                             loss = criterion(out, batch.y)
                             loss.backward()
                             optimizer.step()
@@ -1312,7 +1311,7 @@ def train_and_evaluate_inductive(
                             for batch in fold_dataloader['val']:
                                 if not all_data_on_device:
                                     batch = batch.to(device)
-                                out = trial_model(batch.x, batch.edge_index) #, graph=batch)
+                                out = trial_model(batch.x, batch.edge_index, graph=batch)
                                 
                                 if is_regression:
                                     val_predictions.append(out.detach())
@@ -1397,7 +1396,9 @@ def train_and_evaluate_inductive(
                         dropout=best_params['dropout'],
                         d=best_params['d'],
                         is_regression=is_regression,
-                        is_graph_level_task=config.is_graph_level_tasks.get(task, task == 'triangle_count')
+                        is_graph_level_task=config.is_graph_level_tasks.get(task, task == 'triangle_count'),
+                        pe_type=best_params['pe_type'],
+                        pe_dim=config.max_pe_dim,
                         ).to(device)
                     
                     # # Initialize the sheaf model parameters
@@ -1419,7 +1420,9 @@ def train_and_evaluate_inductive(
                     config.weight_decay = best_params.get('weight_decay', config.weight_decay)
                     config.num_layers = best_params.get('num_layers', config.num_layers)
                     config.dropout = best_params.get('dropout', config.dropout)
-                    config.hidden_dim = best_params.get('hidden_dim', config.hidden_dim)
+                    # config.hidden_dim = best_params.get('hidden_dim', config.hidden_dim)
+                    config.pe_type = best_params.get('pe_type', config.pe_type)
+                    config.max_pe_dim = best_params.get('pe_dim', config.max_pe_dim)
         
         # Handle GNN models
         elif model_name in ['gat', 'fagcn', 'gin', 'gcn', 'sage']:
@@ -1467,6 +1470,7 @@ def train_and_evaluate_inductive(
                         num_layers = config.num_layers
 
                     dropout = trial.suggest_float('dropout', 0.1, 0.5)
+                    pe_type = trial.suggest_categorical('pe_type', [None, 'laplacian', 'degree', 'rwse'])
                     
                     # Initialize default values
                     heads = 1
@@ -1510,7 +1514,9 @@ def train_and_evaluate_inductive(
                         concat_heads=concat_heads,
                         eps=eps,
                         is_regression=is_regression,
-                        is_graph_level_task=task == 'triangle_count'
+                        is_graph_level_task=task == 'triangle_count',
+                        pe_type=pe_type,
+                        pe_dim=config.max_pe_dim,
                     ).to(device)
                     
                     # Train model with reduced epochs for speed
@@ -1550,7 +1556,7 @@ def train_and_evaluate_inductive(
                             if not all_data_on_device:
                                 batch = batch.to(device)
                             optimizer.zero_grad()
-                            out = trial_model(batch.x, batch.edge_index)
+                            out = trial_model(batch.x, batch.edge_index, graph=batch)
                             loss = criterion(out, batch.y)
                             loss.backward()
                             optimizer.step()
@@ -1564,7 +1570,7 @@ def train_and_evaluate_inductive(
                             for batch in fold_dataloader['val']:
                                 if not all_data_on_device:
                                     batch = batch.to(device)
-                                out = trial_model(batch.x, batch.edge_index)
+                                out = trial_model(batch.x, batch.edge_index, graph=batch)
                                 
                                 if is_regression:
                                     val_predictions.append(out.detach())
@@ -1651,14 +1657,18 @@ def train_and_evaluate_inductive(
                         concat_heads=best_params.get('concat_heads', True),
                         eps=best_params.get('eps', 0.3),
                         is_regression=is_regression,
-                        is_graph_level_task=task == 'triangle_count'
+                        is_graph_level_task=task == 'triangle_count',
+                        pe_type=best_params.get('pe_type', config.pe_type),
+                        pe_dim=config.max_pe_dim,
                     ).to(device)
                     
                     # Update config with optimized parameters
                     config.learning_rate = best_params.get('lr', config.learning_rate)
                     config.weight_decay = best_params.get('weight_decay', config.weight_decay)
                     config.num_layers = best_params.get('num_layers', config.num_layers)
-        
+                    config.pe_type = best_params.get('pe_type', config.pe_type)
+                    config.max_pe_dim = best_params.get('pe_dim', config.max_pe_dim)
+                    
         # Handle MLP models
         elif isinstance(model, MLPModel):
             print(f"🔄 Training MLP")
@@ -1702,6 +1712,8 @@ def train_and_evaluate_inductive(
                     hidden_dim = trial.suggest_int('hidden_dim', 32, 256)
                     num_layers = trial.suggest_int('num_layers', 1, 4)
                     dropout = trial.suggest_float('dropout', 0.1, 0.7)
+                    pe_type = trial.suggest_categorical('pe_type', [None, 'laplacian', 'degree', 'rwse'])
+                    pe_dim = config.max_pe_dim
                     
                     # Create MLP model with all parameters
                     trial_model = MLPModel(
@@ -1710,7 +1722,10 @@ def train_and_evaluate_inductive(
                         output_dim=output_dim,
                         num_layers=num_layers,
                         dropout=dropout,
-                        is_regression=is_regression
+                        is_regression=is_regression,
+                        is_graph_level_task=task == 'triangle_count',
+                        pe_type=pe_type,
+                        pe_dim=pe_dim,
                     ).to(device)
                     
                     optimizer = torch.optim.Adam(trial_model.parameters(), lr=lr, weight_decay=weight_decay)
@@ -1740,7 +1755,7 @@ def train_and_evaluate_inductive(
                             if not all_data_on_device:
                                 batch = batch.to(device)
                             optimizer.zero_grad()
-                            out = trial_model(batch.x)
+                            out = trial_model(batch.x, graph=batch)
                             loss = criterion(out, batch.y)
                             loss.backward()
                             optimizer.step()
@@ -1754,7 +1769,7 @@ def train_and_evaluate_inductive(
                             for batch in fold_dataloader['val']:
                                 if not all_data_on_device:
                                     batch = batch.to(device)
-                                out = trial_model(batch.x)
+                                out = trial_model(batch.x, graph=batch)
                                 
                                 if is_regression:
                                     val_predictions.append(out.detach())
@@ -1825,13 +1840,18 @@ def train_and_evaluate_inductive(
                         output_dim=output_dim,
                         num_layers=best_params.get('num_layers', 2),
                         dropout=best_params.get('dropout', 0.5),
-                        is_regression=is_regression
+                        is_regression=is_regression,
+                        is_graph_level_task=task == 'triangle_count',
+                        pe_type=best_params.get('pe_type', config.pe_type),
+                        pe_dim=config.max_pe_dim,
                     ).to(device)
                     
                     # Update config with optimized parameters
                     config.learning_rate = best_params.get('lr', config.learning_rate)
                     config.weight_decay = best_params.get('weight_decay', config.weight_decay)
-        
+                    config.pe_type = best_params.get('pe_type', config.pe_type)
+                    config.max_pe_dim = best_params.get('pe_dim', config.max_pe_dim)
+                    
         # Handle sklearn models
         elif isinstance(model, SklearnModel):
             print(f"🔄 Training sklearn model: {model.model_type}")
