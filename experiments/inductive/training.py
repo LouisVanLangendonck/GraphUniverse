@@ -414,7 +414,8 @@ def train_inductive_model(
                 
                 if improved:
                     best_val_metric = val_metric
-                    best_model_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
+                    # Use deepcopy to preserve all model state, not just parameters
+                    best_model = copy.deepcopy(model)
                     patience_counter = 0
                 else:
                     patience_counter += 1
@@ -424,10 +425,12 @@ def train_inductive_model(
             
             train_time = time.time() - start_time
         
-            # Load best model
-            if best_model_state is not None:
-                model.load_state_dict(best_model_state)
-                print("Loaded best model weights")
+            # Use best model for evaluation
+            if 'best_model' in locals():
+                model = best_model
+                print("Using best model (deepcopy) for evaluation")
+            else:
+                print("No improvement found, using final model")
             
             # Final evaluation on test set
             test_metrics = evaluate_inductive_model_gpu_resident(model, graph_based_model, transformer_based_model, sheaf_based_model, test_loader, is_regression, device, finetuning)
@@ -931,6 +934,9 @@ def train_and_evaluate_inductive(
     is_regression = config.is_regression.get(task, False)
     print(f"🔄 Task: {task}, is_regression: {is_regression}")
 
+    is_graph_level_task = task == 'triangle_count'
+    
+
     if finetuning:
         print(f"Finetuning model. No hyperparameter optimization.")
     else:
@@ -1037,7 +1043,7 @@ def train_and_evaluate_inductive(
                         criterion = torch.nn.CrossEntropyLoss()
                     
                     # Quick training loop
-                    max_epochs = min(50, config.epochs // 4)  # Reduced epochs for hyperopt
+                    max_epochs = config.trial_epochs
                     best_val_metric = float('inf') if is_regression else 0.0
                     patience_counter = 0
 
@@ -1284,7 +1290,7 @@ def train_and_evaluate_inductive(
                         criterion = torch.nn.CrossEntropyLoss()
 
                     # Quick training loop
-                    max_epochs = min(50, config.epochs // 4)  # Reduced epochs for hyperopt
+                    max_epochs = config.trial_epochs
                     best_val_metric = float('inf') if is_regression else 0.0
                     patience_counter = 0
                     
@@ -1396,7 +1402,7 @@ def train_and_evaluate_inductive(
                         dropout=best_params['dropout'],
                         d=best_params['d'],
                         is_regression=is_regression,
-                        is_graph_level_task=config.is_graph_level_tasks.get(task, task == 'triangle_count'),
+                        is_graph_level_task=task == 'triangle_count',
                         pe_type=best_params['pe_type'],
                         pe_dim=config.max_pe_dim,
                         ).to(device)
@@ -1442,6 +1448,7 @@ def train_and_evaluate_inductive(
                 
                 if is_regression:
                     output_dim = sample_batch.y.shape[1] if len(sample_batch.y.shape) > 1 else 1
+                    print(f"Output dim: {output_dim}")
                 else:
                     output_dim = get_total_classes_from_dataloaders(dataloaders)
                 
@@ -1514,7 +1521,7 @@ def train_and_evaluate_inductive(
                         concat_heads=concat_heads,
                         eps=eps,
                         is_regression=is_regression,
-                        is_graph_level_task=task == 'triangle_count',
+                        is_graph_level_task=is_graph_level_task,
                         pe_type=pe_type,
                         pe_dim=config.max_pe_dim,
                     ).to(device)
@@ -1534,7 +1541,7 @@ def train_and_evaluate_inductive(
                         criterion = torch.nn.CrossEntropyLoss()
                     
                     # Quick training loop
-                    max_epochs = min(50, config.epochs // 4)  # Reduced epochs for hyperopt
+                    max_epochs = config.trial_epochs
                     best_val_metric = float('inf') if is_regression else 0.0
                     patience_counter = 0
 
@@ -1742,7 +1749,7 @@ def train_and_evaluate_inductive(
                         criterion = torch.nn.CrossEntropyLoss()
                     
                     # Quick training loop
-                    max_epochs = min(50, config.epochs // 4)  # Reduced epochs for hyperopt
+                    max_epochs = config.trial_epochs
                     best_val_metric = float('inf') if is_regression else 0.0
                     patience_counter = 0
                     

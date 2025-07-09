@@ -645,7 +645,7 @@ def prepare_inductive_data(
             
             elif task == "triangle_count":
                 # Triangle counting (via networkx then to tensor)
-                pyg_data.y = torch.tensor(count_trianges_graph(graph_sample.graph), dtype=torch.long)
+                pyg_data.y = torch.tensor(count_triangles_graph(graph_sample.graph), dtype=torch.float)
                 
             elif task.startswith("k_hop_community_counts_k"):
                 # Extract k value from task name
@@ -1037,6 +1037,45 @@ def validate_khop_consistency(family_graphs: List, universe_K: int) -> Dict[str,
     
     return validation_results
 
+# # --- Custom Collate Functions ---
+# def triangle_count_collate_fn(batch):
+#     """
+#     Custom collate function for triangle count tasks.
+#     Sums the y values (triangle counts) in each batch.
+#     """
+#     from torch_geometric.data import Batch
+    
+#     # Create the batch using PyG's default collate
+#     batched_data = Batch.from_data_list(batch)
+    
+#     # Sum the triangle counts (y values) for the batch
+#     if hasattr(batched_data, 'y') and batched_data.y is not None:
+#         # Sum all triangle counts in the batch
+#         batched_data.y = batched_data.y.sum().unsqueeze(0)  # Keep as tensor with shape [1]
+    
+#     return batched_data
+
+def ensure_batch_attribute_collate_fn(batch):
+    """
+    Custom collate function that ensures the batch attribute is properly set.
+    This function explicitly creates the batch attribute for each node.
+    """
+    from torch_geometric.data import Batch
+    
+    # Create the batch using PyG's default collate
+    batched_data = Batch.from_data_list(batch)
+    
+    # The batch attribute should already be set by Batch.from_data_list()
+    # But we can verify it exists and has the correct shape
+    if not hasattr(batched_data, 'batch') or batched_data.batch is None:
+        # Manually create batch attribute if it doesn't exist
+        batch_attr = []
+        for i, data in enumerate(batch):
+            batch_attr.extend([i] * data.x.size(0))
+        batched_data.batch = torch.tensor(batch_attr, dtype=torch.long)
+    
+    return batched_data
+
 def create_inductive_dataloaders(
     inductive_data: Dict[str, Dict[str, Any]],
     config
@@ -1062,19 +1101,36 @@ def create_inductive_dataloaders(
             if fold_name == 'metadata' or fold_name == 'metapath_analysis':
                 continue
             
+            # Determine batch size for this task
+            # No need to enforce consistent batch size for triangle_count; use split batch size
+            
             for split_name, split_data in fold_data.items():
                 if split_name == 'metadata' or split_name == 'metapath_analysis':
                     continue
                 
                 shuffle = (split_name == 'train')
                 
-                    
-                loader = DataLoader(
-                    split_data['graphs'],
-                    batch_size=split_data['batch_size'],
-                    shuffle=shuffle,
-                    num_workers=0
-                )
+                batch_size = split_data['batch_size']
+                
+                # Use custom collate function for triangle count tasks
+                
+                if task == "triangle_count":
+                    collate_fn = ensure_batch_attribute_collate_fn
+                
+                    loader = DataLoader(
+                        split_data['graphs'],
+                        batch_size=batch_size,
+                        shuffle=shuffle,
+                        num_workers=0,
+                        collate_fn=collate_fn
+                    )
+                else:
+                    loader = DataLoader(
+                        split_data['graphs'],
+                        batch_size=batch_size,
+                        shuffle=shuffle,
+                        num_workers=0,
+                    )
                 
                 fold_loaders[split_name] = loader
                 
@@ -1275,13 +1331,13 @@ def add_positional_encodings_to_data(
     print(f"✓ Added PE to {total_graphs} graphs total")
     return inductive_data
 
-def count_trianges_graph(graph: nx.Graph) -> int:
+def count_triangles_graph(graph: nx.Graph) -> int:
     """Count the number of triangles in a graph."""
-    # Get all triangles using networkx's find_cliques
-    triangles = list(nx.find_cliques(graph))
-    # Filter for triangles (cliques of size 3)
-    triangles = [t for t in triangles if len(t) == 3]
-    return len(triangles)
+    # Use networkx's triangles function which is more reliable
+    triangle_counts = nx.triangles(graph)
+    # Sum all triangle counts and divide by 3 (each triangle is counted 3 times)
+    total_triangles = sum(triangle_counts.values()) // 3
+    return total_triangles
 
 def create_gpu_resident_dataloaders(
     inductive_data: Dict[str, Dict[str, Dict[str, Any]]],
@@ -1312,6 +1368,9 @@ def create_gpu_resident_dataloaders(
             if fold_name == 'metadata' or fold_name == 'metapath_analysis':
                 continue
             
+            # Determine batch size for this task
+            # No need to enforce consistent batch size for triangle_count; use split batch size
+            
             for split_name, split_data in fold_data.items():
                 if split_name == 'metadata' or split_name == 'metapath_analysis':
                     continue
@@ -1327,13 +1386,31 @@ def create_gpu_resident_dataloaders(
                 
                 shuffle = (split_name == 'train')
                 
-                # Create dataloader with GPU-resident data
-                loader = DataLoader(
-                    gpu_graphs,
-                    batch_size=split_data['batch_size'],
-                    shuffle=shuffle,
-                    num_workers=0  # Keep 0 since data is already on GPU
-                )
+                # Use consistent batch size for triangle count tasks
+                batch_size = split_data['batch_size']
+                
+                # Use custom collate function for triangle count tasks
+                # Use the batch attribute ensuring collate function for all tasks
+                
+                if task == "triangle_count":
+                    collate_fn = ensure_batch_attribute_collate_fn
+                
+                    # Create dataloader with GPU-resident data
+                    loader = DataLoader(
+                        gpu_graphs,
+                        batch_size=batch_size,
+                        shuffle=shuffle,
+                        num_workers=0,  # Keep 0 since data is already on GPU
+                        collate_fn=collate_fn
+                    )
+                else:
+                    # Create dataloader with GPU-resident data
+                    loader = DataLoader(
+                        gpu_graphs,
+                        batch_size=batch_size,
+                        shuffle=shuffle,
+                        num_workers=0,  # Keep 0 since data is already on GPU
+                    )
                 
                 fold_loaders[split_name] = loader
                 
@@ -1441,11 +1518,16 @@ def create_sheaf_dataloaders(sheaf_inductive_data, config):
             for split_name, split_data in fold_data.items():
                 if split_name == 'metadata' or split_name == 'metapath_analysis':
                     continue
+                
+                # Use custom collate function for triangle count tasks
+                collate_fn = triangle_count_collate_fn if task == "triangle_count" else None
+                
                 loader = DataLoader(
                     split_data['graphs'],
                     batch_size=1,  # Always batch size 1
                     shuffle=(split_name == 'train'),
-                    num_workers=0
+                    num_workers=0,
+                    collate_fn=collate_fn
                 )
                 fold_loaders[split_name] = loader
             task_loaders[fold_name] = fold_loaders

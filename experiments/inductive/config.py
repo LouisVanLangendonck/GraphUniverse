@@ -180,6 +180,7 @@ class InductiveExperimentConfig:
     # === HYPERPARAMETER OPTIMIZATION ===
     optimize_hyperparams: bool = False
     n_trials: int = 20
+    trial_epochs: int = 30
     optimization_timeout: int = 600
     
     # === ANALYSIS ===

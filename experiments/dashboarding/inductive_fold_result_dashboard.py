@@ -560,6 +560,351 @@ def get_models_for_task(df, task):
     
     return sorted(list(models))
 
+def create_hyperparameter_manifold(df, param1, param2, hyperparam, data, models_with_hyperparam, shared_categorical_mapping=None):
+    """Create a manifold plot showing hyperparameter values across parameter space."""
+    # Collect hyperparameter data for this model
+    hyperparam_data = []
+    param1_values = []
+    param2_values = []
+    
+    for result in data['all_results']:
+        # Get sweep parameters
+        p1_val = result['sweep_parameters'].get(param1.replace('sweep_', ''))
+        p2_val = result['sweep_parameters'].get(param2.replace('sweep_', ''))
+        
+        if p1_val is None:
+            p1_val = result['random_parameters'].get(param1.replace('random_', ''))
+        if p2_val is None:
+            p2_val = result['random_parameters'].get(param2.replace('random_', ''))
+        
+        if p1_val is None or p2_val is None:
+            continue
+        
+        # Check if any model in this run has the hyperparameter
+        hyperparam_found = False
+        hyperparam_value = None
+        
+        for task_name, task_results in result['model_results'].items():
+            for model_name, model_data in task_results.items():
+                if (task_name, model_name) in models_with_hyperparam:
+                    if model_data.get('success') and model_data.get('optimal_hyperparams'):
+                        if hyperparam in model_data['optimal_hyperparams']:
+                            hyperparam_value = model_data['optimal_hyperparams'][hyperparam]
+                            hyperparam_found = True
+                            break
+            if hyperparam_found:
+                break
+        
+        if hyperparam_found and hyperparam_value is not None:
+            hyperparam_data.append(hyperparam_value)
+            param1_values.append(p1_val)
+            param2_values.append(p2_val)
+    
+    if not hyperparam_data:
+        return None, None, None, None
+    
+    # Convert to numpy arrays
+    hyperparam_data = np.array(hyperparam_data)
+    param1_values = np.array(param1_values)
+    param2_values = np.array(param2_values)
+    
+    # Check if hyperparameter is numerical or categorical
+    is_numerical = all(isinstance(x, (int, float)) and not isinstance(x, bool) for x in hyperparam_data)
+    
+    fig = go.Figure()
+    
+    if is_numerical:
+        # Numerical hyperparameter - create interpolated surface
+        try:
+            # Create grid for interpolation
+            x_min, x_max = param1_values.min(), param1_values.max()
+            y_min, y_max = param2_values.min(), param2_values.max()
+            
+            x_range = x_max - x_min
+            y_range = y_max - y_min
+            
+            if x_range > 0 and y_range > 0:
+                # Add padding
+                x_padding = x_range * 0.1
+                y_padding = y_range * 0.1
+                
+                xi = np.linspace(x_min - x_padding, x_max + x_padding, 40)
+                yi = np.linspace(y_min - y_padding, y_max + y_padding, 40)
+                xi_grid, yi_grid = np.meshgrid(xi, yi)
+                
+                # Interpolate
+                zi = None
+                for method in ['linear', 'nearest', 'cubic']:
+                    try:
+                        zi = griddata((param1_values, param2_values), hyperparam_data, 
+                                    (xi_grid, yi_grid), method=method, fill_value=np.nan)
+                        if not np.all(np.isnan(zi)):
+                            break
+                    except:
+                        continue
+                
+                # Add contour/surface
+                if zi is not None and not np.all(np.isnan(zi)):
+                    fig.add_trace(go.Contour(
+                        x=xi,
+                        y=yi,
+                        z=zi,
+                        colorscale='Viridis',
+                        showscale=True,
+                        colorbar=dict(title=hyperparam, titleside='right'),
+                        contours=dict(showlabels=True, labelfont=dict(size=8, color='white')),
+                        name='Surface',
+                        showlegend=False
+                    ))
+        except Exception as e:
+            # Fallback to scatter if interpolation fails
+            pass
+        
+        # Add scatter points
+        fig.add_trace(go.Scatter(
+            x=param1_values,
+            y=param2_values,
+            mode='markers',
+            marker=dict(
+                size=10,
+                color=hyperparam_data,
+                colorscale='Viridis',
+                line=dict(width=2, color='white'),
+                showscale=False,  # Contour already has colorbar
+            ),
+            name='Data Points',
+            text=[f'{param1}: {x:.3f}<br>{param2}: {y:.3f}<br>{hyperparam}: {z:.3f}' 
+                  for x, y, z in zip(param1_values, param2_values, hyperparam_data)],
+            hovertemplate='%{text}<extra></extra>',
+            showlegend=False
+        ))
+        
+        return fig, True, None, hyperparam_data
+        
+    else:
+        # Categorical hyperparameter - create colored regions
+        unique_values = list(set(hyperparam_data))
+        
+        # Use shared categorical mapping if provided, otherwise create new one
+        if shared_categorical_mapping is not None:
+            color_mapping = shared_categorical_mapping
+        else:
+            colors = px.colors.qualitative.Set3[:len(unique_values)]
+            if len(unique_values) > len(colors):
+                colors = colors * (len(unique_values) // len(colors) + 1)
+            color_mapping = dict(zip(unique_values, colors[:len(unique_values)]))
+        
+        # Group points by hyperparameter value
+        for value in unique_values:
+            mask = hyperparam_data == value
+            if np.any(mask):
+                x_vals = param1_values[mask]
+                y_vals = param2_values[mask]
+                
+                # Create Voronoi-like regions by plotting filled circles around each point
+                fig.add_trace(go.Scatter(
+                    x=x_vals,
+                    y=y_vals,
+                    mode='markers',
+                    marker=dict(
+                        size=30,  # Large markers to create filled regions
+                        color=color_mapping[value],
+                        opacity=0.7,
+                        line=dict(width=2, color='white')
+                    ),
+                    name=f'{hyperparam}={value}',
+                    text=[f'{param1}: {x:.3f}<br>{param2}: {y:.3f}<br>{hyperparam}: {value}' 
+                          for x, y in zip(x_vals, y_vals)],
+                    hovertemplate='%{text}<extra></extra>',
+                    showlegend=True
+                ))
+        
+        return fig, False, color_mapping, unique_values
+
+def hyperparameter_manifolds_tab(df, available_tasks_metrics, param_columns, data):
+    """New tab for hyperparameter manifolds."""
+    st.header("🔧 Hyperparameter Manifolds")
+    st.write("📊 Visualize how hyperparameters vary across parameter space")
+    
+    # Get all models that have hyperparameter optimization results
+    models_with_hyperopt = []
+    all_hyperparams = set()
+    
+    for result in data['all_results']:
+        for task_name, task_results in result['model_results'].items():
+            for model_name, model_data in task_results.items():
+                if model_data.get('success') and model_data.get('optimal_hyperparams'):
+                    models_with_hyperopt.append((task_name, model_name))
+                    all_hyperparams.update(model_data['optimal_hyperparams'].keys())
+    
+    if not models_with_hyperopt:
+        st.warning("❌ No hyperparameter optimization results found in the data.")
+        return
+    
+    # Parameter selection
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        param1 = st.selectbox("Parameter 1 (X-axis):", param_columns, key="hyperparam_manifold_x")
+    with col2:
+        param2 = st.selectbox("Parameter 2 (Y-axis):", param_columns, key="hyperparam_manifold_y", 
+                            index=min(1, len(param_columns)-1))
+    with col3:
+        selected_hyperparam = st.selectbox("Hyperparameter:", sorted(list(all_hyperparams)), key="selected_hyperparam")
+    
+    if param1 != param2:
+        # Show which models have this hyperparameter
+        models_with_selected_hyperparam = []
+        for result in data['all_results']:
+            for task_name, task_results in result['model_results'].items():
+                for model_name, model_data in task_results.items():
+                    if model_data.get('success') and model_data.get('optimal_hyperparams'):
+                        if selected_hyperparam in model_data['optimal_hyperparams']:
+                            if (task_name, model_name) not in models_with_selected_hyperparam:
+                                models_with_selected_hyperparam.append((task_name, model_name))
+        
+        if not models_with_selected_hyperparam:
+            st.warning(f"❌ No models found with hyperparameter '{selected_hyperparam}'")
+            return
+        
+        st.info(f"🎯 **Models with '{selected_hyperparam}':** {', '.join([f'{task}-{model}' for task, model in models_with_selected_hyperparam])}")
+        
+        # Analysis button
+        if st.button("🚀 Generate Hyperparameter Manifolds", type="primary"):
+            with st.spinner("Creating hyperparameter manifolds..."):
+                
+                # First pass: determine if hyperparameter is categorical and get all unique values
+                all_hyperparam_values = []
+                for result in data['all_results']:
+                    for task_name, task_results in result['model_results'].items():
+                        for model_name, model_data in task_results.items():
+                            if (task_name, model_name) in models_with_selected_hyperparam:
+                                if model_data.get('success') and model_data.get('optimal_hyperparams'):
+                                    if selected_hyperparam in model_data['optimal_hyperparams']:
+                                        all_hyperparam_values.append(model_data['optimal_hyperparams'][selected_hyperparam])
+                
+                is_numerical = all(isinstance(x, (int, float)) and not isinstance(x, bool) for x in all_hyperparam_values)
+                
+                # For categorical hyperparameters, create shared color mapping
+                shared_categorical_mapping = None
+                if not is_numerical:
+                    unique_values = list(set(all_hyperparam_values))
+                    colors = px.colors.qualitative.Set3[:len(unique_values)]
+                    if len(unique_values) > len(colors):
+                        colors = colors * (len(unique_values) // len(colors) + 1)
+                    shared_categorical_mapping = dict(zip(unique_values, colors[:len(unique_values)]))
+                
+                # Group models by task for better organization
+                models_by_task = {}
+                for task, model in models_with_selected_hyperparam:
+                    if task not in models_by_task:
+                        models_by_task[task] = []
+                    models_by_task[task].append(model)
+                
+                # Create manifold plots for each model
+                all_figs = []
+                all_titles = []
+                
+                for task in models_by_task:
+                    for model in models_by_task[task]:
+                        # Filter models to just this one
+                        current_models = [(task, model)]
+                        
+                        fig, is_num, color_map, values = create_hyperparameter_manifold(
+                            df, param1, param2, selected_hyperparam, data, 
+                            current_models, shared_categorical_mapping
+                        )
+                        
+                        if fig is not None:
+                            all_figs.append(fig)
+                            all_titles.append(f"{task.upper()}-{model.upper()}")
+                
+                if not all_figs:
+                    st.error("❌ Could not create any manifold plots. No data found.")
+                    return
+                
+                # Create subplot grid
+                n_plots = len(all_figs)
+                n_cols = int(np.ceil(np.sqrt(n_plots)))
+                n_rows = int(np.ceil(n_plots / n_cols))
+                
+                # Create subplots
+                subplot_fig = make_subplots(
+                    rows=n_rows,
+                    cols=n_cols,
+                    subplot_titles=all_titles,
+                    vertical_spacing=0.15,
+                    horizontal_spacing=0.1,
+                    shared_xaxes=True,
+                    shared_yaxes=True
+                )
+                
+                # Add traces from individual plots
+                legend_added = set()  # Track which legend entries we've added
+                
+                for i, fig in enumerate(all_figs):
+                    row = (i // n_cols) + 1
+                    col = (i % n_cols) + 1
+                    
+                    for trace in fig.data:
+                        # For categorical plots, only show legend once per category
+                        if not is_numerical and trace.name in legend_added:
+                            trace.showlegend = False
+                        elif not is_numerical:
+                            legend_added.add(trace.name)
+                        else:
+                            trace.showlegend = False  # No legend for numerical plots
+                        
+                        # Update colorbar position for numerical plots
+                        if hasattr(trace, 'colorbar') and trace.colorbar:
+                            trace.colorbar.x = 1.02
+                            trace.colorbar.len = 0.8
+                        
+                        subplot_fig.add_trace(trace, row=row, col=col)
+                
+                # Update layout
+                subplot_fig.update_layout(
+                    title=f"Hyperparameter '{selected_hyperparam}' Manifolds",
+                    title_x=0.5,
+                    height=400 * n_rows,
+                    showlegend=not is_numerical,  # Only show legend for categorical
+                    legend=dict(
+                        x=1.02,
+                        y=1,
+                        xanchor='left'
+                    ) if not is_numerical else {}
+                )
+                
+                # Add shared axis titles
+                middle_col = (n_cols + 1) // 2
+                subplot_fig.update_xaxes(title_text=param1, row=n_rows, col=middle_col)
+                
+                middle_row = (n_rows + 1) // 2
+                subplot_fig.update_yaxes(title_text=param2, row=middle_row, col=1)
+                
+                # Display the plot
+                st.plotly_chart(subplot_fig, use_container_width=True)
+                
+                # Show interpretation
+                if is_numerical:
+                    st.success(f"✅ Numerical hyperparameter '{selected_hyperparam}' visualized with interpolated surfaces and color gradients.")
+                    st.info("💡 **Interpretation:** Warmer colors indicate higher values, cooler colors indicate lower values. Contour lines show iso-value curves.")
+                else:
+                    st.success(f"✅ Categorical hyperparameter '{selected_hyperparam}' visualized with color-coded regions.")
+                    st.info("💡 **Interpretation:** Each color represents a different hyperparameter value. Check the legend for the mapping.")
+                    
+                    # Show color mapping table
+                    if shared_categorical_mapping:
+                        st.subheader("🎨 Color Mapping")
+                        mapping_df = pd.DataFrame([
+                            {"Hyperparameter Value": value, "Color": color}
+                            for value, color in shared_categorical_mapping.items()
+                        ])
+                        st.dataframe(mapping_df, use_container_width=True)
+                
+    else:
+        st.warning("⚠️ Please select different parameters for X and Y axes.")
+
 @st.cache_data
 def load_experiment_data(file_path):
     """Load and parse the experiment results JSON file."""
@@ -698,26 +1043,30 @@ def create_2d_parameter_manifold(df, param1, param2, model, task='community', me
             z_col = f'{task}-{model}-rank'
             z_values = distance_df[z_col].values
             title = f'{model.upper()}'
-            colorbar_title = 'Performance Distance from Average'
+            colorbar_title = 'Performance Distance from Median'
             
             # For metrics where lower is better (like MAE, MSE), flip the sign
             # so that positive distance = better performance (above average)
-            if not is_higher_better_metric(metric):
-                z_values = -z_values  # Flip sign for lower-is-better metrics
-            
-            colorscale = 'RdBu'  # Red = good (positive), Blue = bad (negative)
+            # if not is_higher_better_metric(metric):
+            #     # Reverse the colorscale for lower-is-better metrics
+            #     colorscale = 'RdBu_r'
+            #     # z_values = -z_values  # Flip sign for lower-is-better metrics
+            # else:
+            colorscale = 'RdBu_r'  # Red = good (positive), Blue = bad (negative)
+
+
         elif distance_type == 'ranking':
             z_col = f'{task}-{model}-rank'
             z_values = distance_df[z_col].values  # These are the actual rankings
             title = f'{model.upper()}'
             colorbar_title = 'Average Ranking'
-            colorscale = 'RdYlBu'  # Lower rank (better) = red, higher rank (worse) = blue
+            colorscale = 'RdBu_r'  # Lower rank (better) = red, higher rank (worse) = blue
         else:  # result values
             z_col = f'{task}-{model}-rank'
             z_values = distance_df[z_col].values  # These are the actual metric values
             title = f'{model.upper()}'
             colorbar_title = metric.capitalize()
-            colorscale = 'RdBu'  # Red = good, Blue = bad
+            colorscale = 'RdBu_r'  # Red = good, Blue = bad
             
             # For lower-is-better metrics, flip the values for visualization
             # if not is_higher_better_metric(metric):
@@ -918,24 +1267,24 @@ def calculate_model_rankings(df, task='community', metric='accuracy'):
     # Calculate average rankings
     avg_rankings = ranking_df.mean()
     
-    # Calculate distance from average for each run - but for PERFORMANCE, not ranking
-    # We want to show how much better/worse each model performed compared to average
+    # Calculate distance from median for each run - but for PERFORMANCE, not ranking
+    # We want to show how much better/worse each model performed compared to median
     performance_distance_df = pd.DataFrame(index=df_clean.index)
-    avg_performance_per_run = df_clean.mean(axis=1)  # Average performance across models for each run
+    median_performance_per_run = df_clean.median(axis=1)  # Median performance across models for each run
     
     for i, model_name in enumerate(model_names):
         original_col = model_columns[i]
         model_performance = df_clean[original_col]
         
-        # Calculate distance from run average
-        distance = model_performance - avg_performance_per_run
+        # Calculate distance from run median
+        distance = model_performance - median_performance_per_run
         
         # For lower-is-better metrics, we need to flip the interpretation
         # A positive distance means the model performed worse than average (higher value)
         # A negative distance means the model performed better than average (lower value)
         # But we want positive to mean "better than average" for visualization
-        if not higher_better:
-            distance = -distance  # Flip for lower-is-better metrics
+        # if not higher_better:
+        #     distance = -distance  # Flip for lower-is-better metrics
         
         performance_distance_df[f'{task}-{model_name}-rank'] = distance
     
@@ -1124,7 +1473,7 @@ def main():
     param_columns = [col for col in df.columns if col.startswith(('sweep_', 'random_', 'family_', 'consistency_', 'signal_'))]
     
     # Main content tabs
-    tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs(["📈 Basic Plots", "🏆 Model Rankings", "🏆 Multi-Task Rankings", "📊 Summary Stats", "🔍 Data Explorer", "🎯 Hyperparameter Analysis", "🗺️ Parameter Manifolds"])
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs(["📈 Basic Plots", "🏆 Model Rankings", "🏆 Multi-Task Rankings", "📊 Summary Stats", "🔍 Data Explorer", "🎯 Hyperparameter Analysis", "🗺️ Parameter Manifolds", "🔧 Hyperparameter Manifolds"])
     
     with tab1:
         st.header("📈 Enhanced Statistical Analysis")
@@ -1730,7 +2079,7 @@ def main():
                                 index=min(1, len(param_columns)-1))
         with col3:
             viz_type = st.selectbox("Visualization Type:", 
-                                ["Performance Distance from Average", "Average Ranking", "Result Values"], 
+                                ["Performance Distance from Median", "Average Ranking", "Result Values"], 
                                 key="viz_type")
             manifold_task = st.selectbox("Task:", list(available_tasks_metrics.keys()), key="manifold_task")
             
@@ -1751,7 +2100,7 @@ def main():
                 df_clean = df.loc[clean_indices]
                 
                 # Calculate the appropriate distance data
-                if viz_type == "Performance Distance from Average":
+                if viz_type == "Performance Distance from Median":
                     distance_data = (performance_distance_df, 'performance')
                 elif viz_type == "Average Ranking":
                     distance_data = (ranking_df, 'ranking')
@@ -1766,11 +2115,11 @@ def main():
                 # Calculate shared colorscale range across all models
                 all_z_values = []
                 for model in model_names:
-                    if viz_type == "Performance Distance from Average":
+                    if viz_type == "Performance Distance from Median":
                         z_col = f'{manifold_task}-{model}-rank'
                         z_values = performance_distance_df[z_col].values
-                        if not is_higher_better_metric(manifold_metric):
-                            z_values = -z_values  # Apply the same flip as in the plotting function
+                        # if not is_higher_better_metric(manifold_metric):
+                        #     z_values = -z_values  # Apply the same flip as in the plotting function
                     elif viz_type == "Average Ranking":
                         z_col = f'{manifold_task}-{model}-rank'
                         z_values = ranking_df[z_col].values
@@ -1784,7 +2133,18 @@ def main():
                         #     z_values = -z_values
                     all_z_values.extend(z_values)
                 
-                shared_colorscale_range = (max(all_z_values), min(all_z_values))
+
+                if viz_type == "Performance Distance from Median":
+                    max_abs_z_values = max(np.abs(all_z_values))
+                    if not is_higher_better_metric(manifold_metric):
+                        shared_colorscale_range = (max_abs_z_values, -max_abs_z_values)
+                    else:
+                        shared_colorscale_range = (-max_abs_z_values, max_abs_z_values)
+                else:
+                    if not is_higher_better_metric(manifold_metric):
+                        shared_colorscale_range = (max(all_z_values), min(all_z_values))
+                    else:
+                        shared_colorscale_range = (min(all_z_values), max(all_z_values))
                 
                 # Create subplot grid
                 n_models = len(model_names)
@@ -1867,11 +2227,11 @@ def main():
                 
                 # Show metric direction info
                 higher_better = is_higher_better_metric(manifold_metric)
-                if viz_type == "Performance Distance from Average":
+                if viz_type == "Performance Distance from Median":
                     if higher_better:
-                        st.info(f"ℹ️ For {manifold_metric}: Red = above average (better), Blue = below average (worse)")
+                        st.info(f"ℹ️ For {manifold_metric}: Red = above median (better), Blue = below median (worse)")
                     else:
-                        st.info(f"ℹ️ For {manifold_metric}: Red = below average (better), Blue = above average (worse)")
+                        st.info(f"ℹ️ For {manifold_metric}: Red = below median (better), Blue = above median (worse)")
                 elif viz_type == "Average Ranking":
                     st.info("ℹ️ Rankings: Red = better rank (lower number), Blue = worse rank (higher number)")
                 else:  # Result Values
@@ -1883,6 +2243,9 @@ def main():
                 st.plotly_chart(fig, use_container_width=True)
         else:
             st.warning("Please select different parameters for X and Y axes.")
+
+    with tab8:
+        hyperparameter_manifolds_tab(df, available_tasks_metrics, param_columns, data)
 
 if __name__ == "__main__":
     main()

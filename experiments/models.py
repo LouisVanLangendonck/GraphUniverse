@@ -460,13 +460,15 @@ class GNNModel(torch.nn.Module):
         
         # Apply prediction head
         if self.is_graph_level_task:
-            # Global mean pooling for graph-level tasks
-            if batch is None:
-                # Single graph case - add batch dimension
-                h = torch.mean(h, dim=0, keepdim=True)
+            # For graph-level tasks, we need to aggregate node features
+            graph = kwargs.get('graph', None)
+            # Get 'batch' from graph if it exists
+            if graph is not None:
+                batch = graph.batch
             else:
-                # Batched case - use global_mean_pool to maintain batch dimension
-                h = global_mean_pool(h, batch)  # Shape: [batch_size, hidden_dim]
+                raise ValueError("Graph not found in kwargs")
+            # Use global mean pooling to get graph-level features
+            h = global_mean_pool(h, batch)
         
         # Apply prediction head
         if self.is_graph_level_task:
@@ -1240,16 +1242,21 @@ class GraphTransformerModel(torch.nn.Module):
         
         # Apply prediction head
         if self.is_graph_level_task:
-            # Global mean pooling for graph-level tasks
-            if batch is None:
-                # Single graph case
-                h = torch.mean(h, dim=0, keepdim=True)
+            # For graph-level tasks, we need to aggregate node features
+            graph = kwargs.get('graph', None)
+            # Get 'batch' from graph if it exists
+            if graph is not None:
+                batch = graph.batch
             else:
-                # Batched case
-                h = global_mean_pool(h, batch)
+                raise ValueError("Graph not found in kwargs")
+            # Use global mean pooling to get graph-level features
+            h = global_mean_pool(h, batch)
         
         # Apply prediction head
-        out = self.readout(h)
+        if self.is_graph_level_task:
+            out = self.readout(h).squeeze(-1)  # Shape: [batch_size, output_dim]
+        else:
+            out = self.readout(h)  # Shape: [batch_size, output_dim]
         
         # Apply scaling factor for regression tasks
         # if self.is_regression:
@@ -1328,11 +1335,18 @@ class MLPModel(nn.Module):
                 # Concatenate input features with PE
                 x = torch.cat([x, pe], dim=-1)
         
+        # Apply prediction head
         if self.is_graph_level_task:
             # For graph-level tasks, we need to aggregate node features
-            if batch is not None:
-                # Use global mean pooling to get graph-level features
-                x = global_mean_pool(x, batch)
+            graph = kwargs.get('graph', None)
+            # Get 'batch' from graph if it exists
+            if graph is not None:
+                batch = graph.batch
+            else:
+                raise ValueError("Graph not found in kwargs")
+            # Use global mean pooling to get graph-level features
+            x = global_mean_pool(x, batch)
+
         
         # Pass through MLP
         out = self.mlp(x)
@@ -2161,16 +2175,21 @@ class SheafDiffusionModel(torch.nn.Module):
         
         # Apply prediction head
         if self.is_graph_level_task:
-            # Global mean pooling for graph-level tasks
-            if batch is None:
-                # Single graph case - add batch dimension
-                h = torch.mean(h, dim=0, keepdim=True)
+            # For graph-level tasks, we need to aggregate node features
+            graph = kwargs.get('graph', None)
+            # Get 'batch' from graph if it exists
+            if graph is not None:
+                batch = graph.batch
             else:
-                # Batched case - use global_mean_pool to maintain batch dimension
-                h = global_mean_pool(h, batch)
-        
+                raise ValueError("Graph not found in kwargs")
+            # Use global mean pooling to get graph-level features
+            h = global_mean_pool(h, batch)
+
         # Apply prediction head
-        out = self.readout(h)
+        if self.is_graph_level_task:
+            out = self.readout(h).squeeze(-1)  # Shape: [batch_size, output_dim]
+        else:
+            out = self.readout(h)  # Shape: [batch_size, output_dim]
         
         # # Apply scaling factor for regression tasks
         # if self.is_regression:
