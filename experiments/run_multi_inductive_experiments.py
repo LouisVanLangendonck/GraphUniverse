@@ -47,18 +47,18 @@ def parse_args():
     
     # Task configuration
     parser.add_argument('--tasks', type=str, nargs='+',     
-                        default=['community', 'k_hop_community_counts_k1', 'k_hop_community_counts_k2', 'k_hop_community_counts_k3'],
-                        choices=['community', 'k_hop_community_counts_k1', 'k_hop_community_counts_k2', 'k_hop_community_counts_k3'],
+                        default=['community'],
+                        choices=['community', 'k_hop_community_counts_k1', 'k_hop_community_counts_k2', 'k_hop_community_counts_k3', 'triangle_count'],
                         help='Learning tasks to run')
     
     # Base experiment settings
-    parser.add_argument('--n_graphs', type=int, default=20,
+    parser.add_argument('--n_graphs', type=int, default=50,
                         help='Number of graphs per family (will be swept over: 10, 30, 50)')
     parser.add_argument('--min_n_nodes', type=int, default=70,
                         help='Minimum nodes per graph')
     parser.add_argument('--max_n_nodes', type=int, default=130,
                         help='Maximum nodes per graph')
-    parser.add_argument('--universe_K', type=int, default=10,
+    parser.add_argument('--universe_K', type=int, default=15,
                         help='Number of communities in universe')
     parser.add_argument('--min_communities', type=int, default=3,
                         help='Minimum number of communities')
@@ -75,18 +75,21 @@ def parse_args():
     # Training settings
     parser.add_argument('--epochs', type=int, default=400,
                         help='Training epochs')
-    parser.add_argument('--patience', type=int, default=50,
+    parser.add_argument('--patience', type=int, default=100,
                         help='Early stopping patience')
-    parser.add_argument('--batch_size', type=int, default=5,
+    parser.add_argument('--batch_size', type=int, default=20,
                         help='Batch size for training (per graph)')
     parser.add_argument('--k_fold', type=int, default=3,
                         help='Number of folds for cross-validation')
 
+
     # Hyperparameter optimization settings
     parser.add_argument('--optimize_hyperparams', action='store_true',
                         help='Enable hyperparameter optimization')
-    parser.add_argument('--n_trials', type=int, default=10,
+    parser.add_argument('--n_trials', type=int, default=5,
                         help='Number of hyperparameter optimization trials')
+    parser.add_argument('--trial_epochs', type=int, default=50,
+                        help='Number of epochs for hyperparameter optimization')
     parser.add_argument('--optimization_timeout', type=int, default=600,
                         help='Timeout in seconds for hyperparameter optimization')
     
@@ -97,8 +100,13 @@ def parse_args():
                         help='Analyze existing results at given path')
     
     # Model selection
+    parser.add_argument('--differentiate_with_and_without_PE', action='store_true', default=False,
+                        help='Differentiate between models with and without PE')
+    parser.add_argument('--max_pe_dim', type=int, default=8,
+                        help='Maximum PE dimension')
+    
     parser.add_argument('--gnn_types', type=str, nargs='+', 
-                        default=['gat', 'gcn', 'sage'], #, 'gin'],
+                        default=['gcn', 'sage'], #, 'gin', 'gat],
                         choices=['fagcn', 'gat', 'gcn', 'sage', 'gin'],
                         help='Types of GNN models to run')
     parser.add_argument('--no_gnn', action='store_false', dest='run_gnn',
@@ -149,6 +157,45 @@ def parse_args():
     parser.add_argument('--allow_unseen_community_combinations_for_eval', action='store_true',
                         help='Allow unseen community combinations in evaluation')
     
+    
+    # Sweep parameter overrides
+    parser.add_argument('--homophily_range_max_min', type=float, default=0.0,
+                        help='Minimum value for homophily_range_max sweep parameter')
+    parser.add_argument('--homophily_range_max_max', type=float, default=0.1,
+                        help='Maximum value for homophily_range_max sweep parameter')
+    parser.add_argument('--homophily_range_max_step', type=float, default=0.1,
+                        help='Step size for homophily_range_max sweep parameter')
+    parser.add_argument('--density_range_max_min', type=float, default=0.0,
+                        help='Minimum value for density_range_max sweep parameter')
+    parser.add_argument('--density_range_max_max', type=float, default=0.0,
+                        help='Maximum value for density_range_max sweep parameter')
+    parser.add_argument('--density_range_max_step', type=float, default=0.01,
+                        help='Step size for density_range_max sweep parameter')
+    
+    # Fixed parameter values (previously random)
+    parser.add_argument('--degree_heterogeneity', type=float, default=1.0,
+                        help='Degree heterogeneity parameter')
+    parser.add_argument('--edge_noise', type=float, default=0.0,
+                        help='Edge noise parameter')
+    parser.add_argument('--cluster_count_factor', type=float, default=1.0,
+                        help='Cluster count factor parameter')
+    parser.add_argument('--cluster_variance', type=float, default=0.5,
+                        help='Cluster variance parameter')
+    parser.add_argument('--center_variance', type=float, default=0.1,
+                        help='Center variance parameter')
+    parser.add_argument('--assignment_skewness', type=float, default=0.0,
+                        help='Assignment skewness parameter')
+    parser.add_argument('--community_exclusivity', type=float, default=1.0,
+                        help='Community exclusivity parameter')
+    parser.add_argument('--universe_randomness_factor', type=float, default=1.0,
+                        help='Universe randomness factor parameter')
+    
+    # DCCC-specific fixed parameters
+    parser.add_argument('--community_imbalance_range_width', type=float, default=0.0,
+                        help='Community imbalance range width (DCCC-SBM only)')
+    parser.add_argument('--degree_separation_range_width', type=float, default=0.8,
+                        help='Degree separation range width (DCCC-SBM only)')
+    
     # Random seed
     parser.add_argument('--seed', type=int, default=42,
                         help='Random seed')
@@ -198,11 +245,10 @@ def create_custom_experiment(args) -> CleanMultiExperimentConfig:
         local_gnn_type=args.local_gnn_type,
         global_model_type=args.global_model_type,
         transformer_prenorm=getattr(args, 'transformer_prenorm', True),
-        max_pe_dim=8,
-        precompute_pe=True,
-        pe_type='laplacian',
+        max_pe_dim=args.max_pe_dim,
         pe_norm_type=None,
-        
+        trial_epochs=args.trial_epochs,
+
         # Training
         epochs=args.epochs,
         patience=args.patience,
@@ -224,6 +270,21 @@ def create_custom_experiment(args) -> CleanMultiExperimentConfig:
         
         # Evaluation settings
         allow_unseen_community_combinations_for_eval=args.allow_unseen_community_combinations_for_eval,
+        differentiate_with_and_without_PE=args.differentiate_with_and_without_PE,
+
+        # Fixed parameters (previously random)
+        degree_heterogeneity=args.degree_heterogeneity,
+        edge_noise=args.edge_noise,
+        cluster_count_factor=args.cluster_count_factor,
+        cluster_variance=args.cluster_variance,
+        center_variance=args.center_variance,
+        assignment_skewness=args.assignment_skewness,
+        community_exclusivity=args.community_exclusivity,
+        universe_randomness_factor=args.universe_randomness_factor,
+        
+        # DCCC-specific fixed parameters
+        community_imbalance_range=(0.0, args.community_imbalance_range_width),
+        degree_separation_range=(0.0, args.degree_separation_range_width),
         
         # Seed
         seed=args.seed
@@ -236,116 +297,60 @@ def create_custom_experiment(args) -> CleanMultiExperimentConfig:
         elif 'k_hop_community_counts_k' in task:
             base_config.is_graph_level_tasks[task] = False
             base_config.is_regression[task] = True
+        elif task == 'triangle_count':
+            base_config.is_graph_level_tasks[task] = True
+            base_config.is_regression[task] = True
         else:
             raise ValueError(f"Invalid task: {task}")
     
-    # Define a simple sweep: homophily vs edge density vs number of graphs
+    # Define sweep parameters
     sweep_parameters = {
         'universe_homophily': ParameterRange(
-            min_val=0.0,
-            max_val=1.0,
-            step=0.25,
+            min_val=0.8,
+            max_val=0.8,
+            step=0.3,
             is_sweep=True
         ),
         'universe_edge_density': ParameterRange(
-            min_val=0.05,
+            min_val=0.15,
             max_val=0.15,
-            step=0.1,
+            step=0.10,
             is_sweep=True
         ),
         'n_graphs': ParameterRange(
-            min_val=10,
-            max_val=30,
-            step=20,
+            min_val=100,
+            max_val=100,
+            step=1,
             is_sweep=True
+        ),
+        # Add homophily_range_max as sweep parameter (max of the range, min will be 0.0)
+        'homophily_range_max': ParameterRange(
+            min_val=args.homophily_range_max_min,
+            max_val=args.homophily_range_max_max,
+            step=args.homophily_range_max_step,
+            is_sweep=True
+        ),
+        # Add density_range_max as sweep parameter (max of the range, min will be 0.0)
+        'density_range_max': ParameterRange(
+            min_val=args.density_range_max_min,
+            max_val=args.density_range_max_max,
+            step=args.density_range_max_step,
+            is_sweep=True
+        ),
+        # Add allow_unseen_community_combinations_for_eval as sweep parameter
+        'allow_unseen_community_combinations_for_eval': ParameterRange(
+            min_val=0,  # False
+            max_val=1,  # True
+            step=1,
+            is_sweep=True,
+            discrete_values=[False, True]  # Use discrete values for boolean
         )
     }
-    
-    # Random parameters
-    random_parameters = {
-        'homophily_range_width': ParameterRange(
-            min_val=0.0,
-            max_val=0.2,
-            distribution="uniform",
-            is_sweep=False
-        ),
-        'density_range_width': ParameterRange(
-            min_val=0.0,
-            max_val=0.05,
-            distribution="uniform",
-            is_sweep=False
-        ),
-        'degree_heterogeneity': ParameterRange(
-            min_val=0.0,
-            max_val=1.0,
-            distribution="uniform",
-            is_sweep=False
-        ),
-        'edge_noise': ParameterRange(
-            min_val=0.0,
-            max_val=0.1,
-            distribution="uniform",
-            is_sweep=False
-        ),
-        'cluster_count_factor': ParameterRange(
-            min_val=0.8,
-            max_val=1.2,
-            distribution="uniform",
-            is_sweep=False
-        ),
-        'cluster_variance': ParameterRange(
-            min_val=0.1,
-            max_val=0.5,
-            distribution="uniform",
-            is_sweep=False
-        ),
-        'center_variance': ParameterRange(
-            min_val=0.1,
-            max_val=0.5,
-            distribution="uniform",
-            is_sweep=False
-        ),
-        'assignment_skewness': ParameterRange(
-            min_val=0.0,
-            max_val=0.3,
-            distribution="uniform",
-            is_sweep=False
-        ),
-        'community_exclusivity': ParameterRange(
-            min_val=0.8,
-            max_val=1.0,
-            distribution="uniform",
-            is_sweep=False
-        ),
-        'universe_randomness_factor': ParameterRange(
-            min_val=0.7,
-            max_val=1.0,
-            distribution="uniform",
-            is_sweep=False
-        ),
-    }
-    
-    # Add DCCC-specific random parameters if needed
-    if args.use_dccc_sbm:
-        random_parameters.update({
-            'community_imbalance_range_width': ParameterRange(
-                min_val=0.0,
-                max_val=0.2,
-                distribution="uniform",
-                is_sweep=False
-            ),
-            'degree_separation_range_width': ParameterRange(
-                min_val=0.4,
-                max_val=1.0,
-                distribution="uniform",
-                is_sweep=False
-            )
-        })
     
     return CleanMultiExperimentConfig(
         base_config=base_config,
         sweep_parameters=sweep_parameters,
-        random_parameters=random_parameters,
+        random_parameters={},  # No more random parameters
         n_repetitions=args.n_repetitions,
         experiment_name=args.experiment_name,
         output_dir=args.output_dir,
@@ -433,7 +438,25 @@ def main():
         # Handle analysis of existing results
         if args.analyze_existing:
             print(f"Analyzing existing results at: {args.analyze_existing}")
-            create_analysis_plots(args.analyze_existing)
+            
+            # Import the analysis function
+            from experiments.inductive.multi_experiment import analyze_saved_multi_experiment_data
+            
+            # Generate data analysis report
+            analysis_report = analyze_saved_multi_experiment_data(args.analyze_existing)
+            print("\n" + analysis_report)
+            
+            # Save the analysis report
+            report_path = os.path.join(args.analyze_existing, "data_analysis_report.txt")
+            with open(report_path, 'w') as f:
+                f.write(analysis_report)
+            print(f"Data analysis report saved to: {report_path}")
+            
+            # Create plots if requested
+            if args.create_plots:
+                create_analysis_plots(args.analyze_existing)
+                print("Analysis plots created!")
+            
             print("Analysis complete!")
             return 0
         
@@ -489,9 +512,18 @@ def main():
             else:
                 print(f"  {param}: {param_range.min_val} to {param_range.max_val}")
         
-        print(f"\nRandom parameters ({len(config.random_parameters)}):")
-        for param, param_range in config.random_parameters.items():
-            print(f"  {param}: [{param_range.min_val}, {param_range.max_val}] ({param_range.distribution})")
+        print(f"\nFixed parameters (previously random):")
+        print(f"  degree_heterogeneity: {args.degree_heterogeneity}")
+        print(f"  edge_noise: {args.edge_noise}")
+        print(f"  cluster_count_factor: {args.cluster_count_factor}")
+        print(f"  cluster_variance: {args.cluster_variance}")
+        print(f"  center_variance: {args.center_variance}")
+        print(f"  assignment_skewness: {args.assignment_skewness}")
+        print(f"  community_exclusivity: {args.community_exclusivity}")
+        print(f"  universe_randomness_factor: {args.universe_randomness_factor}")
+        if args.use_dccc_sbm:
+            print(f"  community_imbalance_range_width: {args.community_imbalance_range_width}")
+            print(f"  degree_separation_range_width: {args.degree_separation_range_width}")
         
         # Confirm before starting
         if config.get_total_runs() > 10:

@@ -11,7 +11,7 @@ from experiments.transductive.training import (
     train_sklearn_transductive,
     evaluate_transductive_model
 )
-from experiments.transductive.metrics import (
+from experiments.metrics import (
     compute_metrics,
     model_performance_summary
 )

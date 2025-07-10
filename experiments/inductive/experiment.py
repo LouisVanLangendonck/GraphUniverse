@@ -433,46 +433,52 @@ class InductiveExperiment:
             else:
                 from experiments.inductive.training import get_total_classes_from_dataloaders
                 output_dim = get_total_classes_from_dataloaders(task_dataloaders)
+
+            if self.config.differentiate_with_and_without_PE:
+                PE_options = [True, False]
+            else:
+                PE_options = [True]
             
             # Train GNN models
             if self.config.run_gnn:
                 for gnn_type in self.config.gnn_types:
-                    from experiments.models import GNNModel
-                    
-                    model = GNNModel(
-                        input_dim=input_dim,
-                        hidden_dim=self.config.hidden_dim,
-                        output_dim=output_dim,
-                        num_layers=self.config.num_layers,
-                        dropout=self.config.dropout,
-                        gnn_type=gnn_type,
-                        is_regression=is_regression,
-                        is_graph_level_task=is_graph_level_task
-                    )
-                    
-                    from experiments.inductive.training import train_and_evaluate_inductive
-                    results = train_and_evaluate_inductive(
-                        model=model,
-                        model_name=gnn_type,
-                        dataloaders=task_dataloaders,
-                        config=self.config,
-                        task=task,
-                        device=self.device,
-                        optimize_hyperparams=self.config.optimize_hyperparams,
-                        experiment_name=getattr(self.config, 'experiment_name', None),
-                        run_id=getattr(self.config, 'run_id', None)
-                    )
-                    
-                    task_results[gnn_type] = results
+                    for PE_option in PE_options:
+
+                        from experiments.models import GNNModel
+                        
+                        model = GNNModel(
+                            input_dim=input_dim,
+                            hidden_dim=self.config.hidden_dim,
+                            output_dim=output_dim,
+                            num_layers=self.config.num_layers,
+                            dropout=self.config.dropout,
+                            gnn_type=gnn_type,
+                            is_regression=is_regression,
+                            is_graph_level_task=is_graph_level_task
+                        )
+                        
+                        from experiments.inductive.training import train_and_evaluate_inductive
+                        results = train_and_evaluate_inductive(
+                            model=model,
+                            model_name=gnn_type,
+                            dataloaders=task_dataloaders,
+                            config=self.config,
+                            task=task,
+                            device=self.device,
+                            optimize_hyperparams=self.config.optimize_hyperparams,
+                            experiment_name=getattr(self.config, 'experiment_name', None),
+                            run_id=getattr(self.config, 'run_id', None),
+                            PE_option=PE_option
+                        )
+                        
+                        pe_model_name = gnn_type + "_PE" if PE_option else gnn_type
+                        task_results[pe_model_name] = results
             
             # Train transformer models
             if self.config.run_transformers:
                 for transformer_type in self.config.transformer_types:
                     from experiments.models import GraphTransformerModel
                     
-                    # Set embedding dimension such that it is divisible by the number of heads
-                    # if self.config.num_heads > 0:
-                    #     input_dim = input_dim // self.config.num_heads * self.config.num_heads
                     
                     model = GraphTransformerModel(
                         input_dim=input_dim,
@@ -482,7 +488,7 @@ class InductiveExperiment:
                         num_layers=self.config.num_layers,
                         dropout=self.config.dropout,
                         is_regression=is_regression,
-                        is_graph_level_task=is_graph_level_task
+                        is_graph_level_task=is_graph_level_task,
                     )
                     
                     from experiments.inductive.training import train_and_evaluate_inductive
@@ -495,96 +501,77 @@ class InductiveExperiment:
                         device=self.device,
                         optimize_hyperparams=self.config.optimize_hyperparams,
                         experiment_name=getattr(self.config, 'experiment_name', None),
-                        run_id=getattr(self.config, 'run_id', None)
+                        run_id=getattr(self.config, 'run_id', None),
+                        PE_option=True # Always add PE to transformer models
                     )
                     
                     task_results[transformer_type] = results
             
             # Train sheaf diffusion models
             if self.config.run_neural_sheaf:
-                # from experiments.neural_sheaf_diffusion.inductive_sheaf_wrapper import SheafDiffusionModel
-                from experiments.models import SheafDiffusionModel
+                for PE_option in PE_options:
+                    # from experiments.neural_sheaf_diffusion.inductive_sheaf_wrapper import SheafDiffusionModel
+                    from experiments.models import SheafDiffusionModel
 
-                model = SheafDiffusionModel(
-                    input_dim=input_dim,
-                    hidden_dim=self.config.hidden_dim,
-                    output_dim=output_dim,
-                    sheaf_type=self.config.sheaf_type,
-                    d=self.config.sheaf_d,
-                    num_layers=self.config.num_layers,
-                    dropout=self.config.dropout,
-                    is_regression=is_regression,
-                    is_graph_level_task=is_graph_level_task)
-                # model = SheafDiffusionModel(
-                #     input_dim=input_dim,
-                #     hidden_dim=self.config.hidden_dim,
-                #     output_dim=output_dim,
-                #     sheaf_type=self.config.sheaf_type,
-                #     d=self.config.sheaf_d,
-                #     num_layers=self.config.num_layers,
-                #     dropout=self.config.dropout,
-                #     is_regression=is_regression,
-                #     is_graph_level_task=False,
-                #     device=self.device,
-                #     normalised=True,
-                #     deg_normalised=False,
-                #     linear=False,
-                #     left_weights=True,
-                #     right_weights=True,
-                #     sparse_learner=False,
-                #     use_act=True,
-                #     sheaf_act="tanh",
-                #     second_linear=False,
-                #     orth='cayley',
-                #     edge_weights=False,
-                #     max_t=1.0,
-                #     add_lp=False,
-                #     add_hp=False
-                # )
+                    model = SheafDiffusionModel(
+                        input_dim=input_dim,
+                        hidden_dim=self.config.hidden_dim,
+                        output_dim=output_dim,
+                        sheaf_type=self.config.sheaf_type,
+                        d=self.config.sheaf_d,
+                        num_layers=self.config.num_layers,
+                        dropout=self.config.dropout,
+                        is_regression=is_regression,
+                        is_graph_level_task=is_graph_level_task)
                 
-                from experiments.inductive.training import train_and_evaluate_inductive
-                results = train_and_evaluate_inductive(
-                    model=model,
-                    model_name='sheaf_diffusion',
-                    dataloaders=task_dataloaders,
-                    config=self.config,
-                    task=task,
-                    device=self.device,
-                    optimize_hyperparams=self.config.optimize_hyperparams,
-                    experiment_name=getattr(self.config, 'experiment_name', None),
-                    run_id=getattr(self.config, 'run_id', None)
-                )
-                
-                task_results['sheaf_diffusion'] = results
+                    from experiments.inductive.training import train_and_evaluate_inductive
+                    results = train_and_evaluate_inductive(
+                        model=model,
+                        model_name='sheaf_diffusion',
+                        dataloaders=task_dataloaders,
+                        config=self.config,
+                        task=task,
+                        device=self.device,
+                        optimize_hyperparams=self.config.optimize_hyperparams,
+                        experiment_name=getattr(self.config, 'experiment_name', None),
+                        run_id=getattr(self.config, 'run_id', None),
+                        PE_option=PE_option
+                    )
+                    
+                    pe_model_name = "sheaf_diffusion_PE" if PE_option else "sheaf_diffusion"
+                    task_results[pe_model_name] = results
 
             # Train MLP model
             if self.config.run_mlp:
-                from experiments.models import MLPModel
-                
-                model = MLPModel(
-                    input_dim=input_dim,
-                    hidden_dim=self.config.hidden_dim,
-                    output_dim=output_dim,
-                    num_layers=self.config.num_layers,
-                    dropout=self.config.dropout,
-                    is_regression=is_regression,
-                    is_graph_level_task=is_graph_level_task
-                )
-                
-                from experiments.inductive.training import train_and_evaluate_inductive
-                results = train_and_evaluate_inductive(
-                    model=model,
-                    model_name='mlp',
-                    dataloaders=task_dataloaders,
-                    config=self.config,
-                    task=task,
-                    device=self.device,
-                    optimize_hyperparams=self.config.optimize_hyperparams,
-                    experiment_name=getattr(self.config, 'experiment_name', None),
-                    run_id=getattr(self.config, 'run_id', None)
-                )
-                
-                task_results['mlp'] = results
+                for PE_option in PE_options:
+                    from experiments.models import MLPModel
+                    
+                    model = MLPModel(
+                        input_dim=input_dim,
+                        hidden_dim=self.config.hidden_dim,
+                        output_dim=output_dim,
+                        num_layers=self.config.num_layers,
+                        dropout=self.config.dropout,
+                        is_regression=is_regression,
+                        is_graph_level_task=is_graph_level_task,
+                    )
+                    
+                    from experiments.inductive.training import train_and_evaluate_inductive
+                    results = train_and_evaluate_inductive(
+                        model=model,
+                        model_name='mlp',
+                        dataloaders=task_dataloaders,
+                        config=self.config,
+                        task=task,
+                        device=self.device,
+                        optimize_hyperparams=self.config.optimize_hyperparams,
+                        experiment_name=getattr(self.config, 'experiment_name', None),
+                        run_id=getattr(self.config, 'run_id', None),
+                        PE_option=PE_option
+                    )
+                    
+                    pe_model_name = "mlp_PE" if PE_option else 'mlp'
+                    task_results[pe_model_name] = results
             
             all_results[task] = task_results
         

@@ -1,0 +1,16 @@
+{
+  "optimization_results": {
+    "best_value": 0.628,
+    "best_params": {
+      "lr": 0.007476704016054981,
+      "weight_decay": 2.6106960430458383e-05,
+      "hidden_dim": 196,
+      "num_layers": 2,
+      "dropout": 0.6009582618181121,
+      "sheaf_type": "diagonal",
+      "d": 4,
+      "pe_type": "rwse",
+      "pe_dim": 26
+    },
+    "n_trials": 30,
+    "study": 

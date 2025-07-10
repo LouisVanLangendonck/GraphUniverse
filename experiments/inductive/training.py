@@ -20,7 +20,7 @@ import random
 
 from experiments.models import GNNModel, MLPModel, SklearnModel, GraphTransformerModel, SheafDiffusionModel
 from experiments.neural_sheaf_diffusion.inductive_sheaf_wrapper import InductiveSheafDiffusionModel
-from experiments.transductive.metrics import compute_metrics_gpu, compute_metrics
+from experiments.metrics import compute_metrics_gpu, compute_metrics
 from experiments.inductive.config import InductiveExperimentConfig
 
 # Set up logging
@@ -128,7 +128,7 @@ def train_inductive_model(
     config: InductiveExperimentConfig,
     task: str,
     device: torch.device,
-    finetuning: Optional[bool] = False
+    finetuning: Optional[bool] = False,
 ) -> Dict[str, Any]:
     """
     Train a model for inductive learning on graph families.
@@ -186,6 +186,8 @@ def train_inductive_model(
         graph_based_model = True
         transformer_based_model = False
         sheaf_based_model = False
+
+    
 
     # Make deep copy of model to always start from for each fold
     model_copy = copy.deepcopy(model)
@@ -928,6 +930,7 @@ def train_and_evaluate_inductive(
     experiment_name: Optional[str] = None,
     run_id: Optional[int] = None, 
     finetuning: Optional[bool] = False,
+    PE_option: Optional[bool] = True
 ) -> Dict[str, Any]:
     """Complete training and evaluation pipeline for inductive learning."""
     
@@ -935,7 +938,6 @@ def train_and_evaluate_inductive(
     print(f"🔄 Task: {task}, is_regression: {is_regression}")
 
     is_graph_level_task = task == 'triangle_count'
-    
 
     if finetuning:
         print(f"Finetuning model. No hyperparameter optimization.")
@@ -945,6 +947,8 @@ def train_and_evaluate_inductive(
         # Handle Graph Transformer models specifically
         if model_name in ['graphormer', 'graphgps']:
             print(f"🔄 Training Graph Transformer: {model.transformer_type}")
+
+            pe_model_name = model.transformer_type
             
             # Update hyperparameter optimization for transformers
             if optimize_hyperparams and not isinstance(model, SklearnModel):
@@ -1167,10 +1171,11 @@ def train_and_evaluate_inductive(
                     config.pe_type = best_params.get('pe_type', config.pe_type)
         
         if model_name == 'sheaf_diffusion':
-            print(f"🔄 Training Sheaf Diffusion")
-            # Update hyperparameter optimization for sheaf diffusion
+            pe_model_name = model_name + "_PE" if PE_option else model_name
+            print(f"🔄 Training {pe_model_name}")
+            # Update hyperparameter optimization for {pe_model_name}
             if optimize_hyperparams:
-                print(f"🎯 Optimizing Sheaf Diffusion hyperparameters...")
+                print(f"🎯 Optimizing {pe_model_name} hyperparameters...")
                 
                 # Get sample batch to determine dimensions
                 first_fold_name = list(dataloaders.keys())[0]
@@ -1218,7 +1223,10 @@ def train_and_evaluate_inductive(
                         print(f"Warning: hidden_dim is not divisible by d, setting hidden_dim to {hidden_dim}")
                     # sheaf_type = trial.suggest_categorical('sheaf_type', ['diag', 'bundle', 'general'])
                     sheaf_type = trial.suggest_categorical('sheaf_type', ['diagonal', 'orthogonal', 'general']) 
-                    pe_type = trial.suggest_categorical('pe_type', [None, 'laplacian', 'degree', 'rwse'])
+                    if PE_option:
+                        pe_type = trial.suggest_categorical('pe_type', [None, 'laplacian', 'degree', 'rwse'])
+                    else:
+                        pe_type = None
 
                     # Create Sheaf Diffusion model with all parameters
                     # trial_model = InductiveSheafDiffusionModel(
@@ -1403,7 +1411,7 @@ def train_and_evaluate_inductive(
                         d=best_params['d'],
                         is_regression=is_regression,
                         is_graph_level_task=task == 'triangle_count',
-                        pe_type=best_params['pe_type'],
+                        pe_type=best_params['pe_type'] if PE_option else None,
                         pe_dim=config.max_pe_dim,
                         ).to(device)
                     
@@ -1427,16 +1435,17 @@ def train_and_evaluate_inductive(
                     config.num_layers = best_params.get('num_layers', config.num_layers)
                     config.dropout = best_params.get('dropout', config.dropout)
                     # config.hidden_dim = best_params.get('hidden_dim', config.hidden_dim)
-                    config.pe_type = best_params.get('pe_type', config.pe_type)
+                    config.pe_type = best_params.get('pe_type', config.pe_type) if PE_option else None
                     config.max_pe_dim = best_params.get('pe_dim', config.max_pe_dim)
         
         # Handle GNN models
         elif model_name in ['gat', 'fagcn', 'gin', 'gcn', 'sage']:
-            print(f"🔄 Training GNN: {model_name}")
+            pe_model_name = model_name + "_PE" if PE_option else model_name
+            print(f"🔄 Training {pe_model_name}")
             
             # Update hyperparameter optimization for GNNs
             if optimize_hyperparams and not isinstance(model, SklearnModel):
-                print(f"🎯 Optimizing GNN hyperparameters...")
+                print(f"🎯 Optimizing {pe_model_name} hyperparameters...")
                 
                 # Get model creator function for GNNs
                 model_creator = lambda **kwargs: GNNModel(**kwargs)
@@ -1477,7 +1486,10 @@ def train_and_evaluate_inductive(
                         num_layers = config.num_layers
 
                     dropout = trial.suggest_float('dropout', 0.1, 0.5)
-                    pe_type = trial.suggest_categorical('pe_type', [None, 'laplacian', 'degree', 'rwse'])
+                    if PE_option:
+                        pe_type = trial.suggest_categorical('pe_type', [None, 'laplacian', 'degree', 'rwse'])
+                    else:
+                        pe_type = None
                     
                     # Initialize default values
                     heads = 1
@@ -1522,7 +1534,7 @@ def train_and_evaluate_inductive(
                         eps=eps,
                         is_regression=is_regression,
                         is_graph_level_task=is_graph_level_task,
-                        pe_type=pe_type,
+                        pe_type=pe_type if PE_option else None,
                         pe_dim=config.max_pe_dim,
                     ).to(device)
                     
@@ -1665,7 +1677,7 @@ def train_and_evaluate_inductive(
                         eps=best_params.get('eps', 0.3),
                         is_regression=is_regression,
                         is_graph_level_task=task == 'triangle_count',
-                        pe_type=best_params.get('pe_type', config.pe_type),
+                        pe_type=best_params.get('pe_type', config.pe_type) if PE_option else None,
                         pe_dim=config.max_pe_dim,
                     ).to(device)
                     
@@ -1673,16 +1685,17 @@ def train_and_evaluate_inductive(
                     config.learning_rate = best_params.get('lr', config.learning_rate)
                     config.weight_decay = best_params.get('weight_decay', config.weight_decay)
                     config.num_layers = best_params.get('num_layers', config.num_layers)
-                    config.pe_type = best_params.get('pe_type', config.pe_type)
+                    config.pe_type = best_params.get('pe_type', config.pe_type) if PE_option else None
                     config.max_pe_dim = best_params.get('pe_dim', config.max_pe_dim)
                     
         # Handle MLP models
         elif isinstance(model, MLPModel):
-            print(f"🔄 Training MLP")
+            pe_model_name = model_name + "_PE" if PE_option else model_name
+            print(f"🔄 Training {pe_model_name}")
             
             # Update hyperparameter optimization for MLPs
             if optimize_hyperparams:
-                print(f"🎯 Optimizing MLP hyperparameters...")
+                print(f"🎯 Optimizing {pe_model_name} hyperparameters...")
                 
                 # Get sample batch to determine dimensions
                 first_fold_name = list(dataloaders.keys())[0]
@@ -1719,7 +1732,10 @@ def train_and_evaluate_inductive(
                     hidden_dim = trial.suggest_int('hidden_dim', 32, 256)
                     num_layers = trial.suggest_int('num_layers', 1, 4)
                     dropout = trial.suggest_float('dropout', 0.1, 0.7)
-                    pe_type = trial.suggest_categorical('pe_type', [None, 'laplacian', 'degree', 'rwse'])
+                    if PE_option:
+                        pe_type = trial.suggest_categorical('pe_type', [None, 'laplacian', 'degree', 'rwse'])
+                    else:
+                        pe_type = None
                     pe_dim = config.max_pe_dim
                     
                     # Create MLP model with all parameters
@@ -1731,7 +1747,7 @@ def train_and_evaluate_inductive(
                         dropout=dropout,
                         is_regression=is_regression,
                         is_graph_level_task=task == 'triangle_count',
-                        pe_type=pe_type,
+                        pe_type=pe_type if PE_option else None,
                         pe_dim=pe_dim,
                     ).to(device)
                     

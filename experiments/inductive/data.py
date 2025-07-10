@@ -1520,7 +1520,8 @@ def create_sheaf_dataloaders(sheaf_inductive_data, config):
                     continue
                 
                 # Use custom collate function for triangle count tasks
-                collate_fn = triangle_count_collate_fn if task == "triangle_count" else None
+                collate_fn = ensure_batch_attribute_collate_fn if task == "triangle_count" else None
+                # collate_fn = triangle_count_collate_fn if task == "triangle_count" else None
                 
                 loader = DataLoader(
                     split_data['graphs'],

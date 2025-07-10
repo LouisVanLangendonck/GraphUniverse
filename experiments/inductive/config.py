@@ -112,6 +112,11 @@ class InductiveExperimentConfig:
         'k_hop_community_counts_k3': True, 
         'k_hop_community_counts_k4': True, 
         'k_hop_community_counts_k5': True, 
+        'k_hop_community_counts_k6': True, 
+        'k_hop_community_counts_k7': True, 
+        'k_hop_community_counts_k8': True, 
+        'k_hop_community_counts_k9': True, 
+        'k_hop_community_counts_k10': True, 
         'triangle_count': True
     })
     is_graph_level_tasks: Dict[str, bool] = field(default_factory=lambda: {
@@ -121,6 +126,11 @@ class InductiveExperimentConfig:
         'k_hop_community_counts_k3': False, 
         'k_hop_community_counts_k4': False, 
         'k_hop_community_counts_k5': False, 
+        'k_hop_community_counts_k6': False, 
+        'k_hop_community_counts_k7': False, 
+        'k_hop_community_counts_k8': False, 
+        'k_hop_community_counts_k9': False, 
+        'k_hop_community_counts_k10': False, 
         'triangle_count': True
     })
     khop_community_counts_k: int = 2
@@ -138,6 +148,7 @@ class InductiveExperimentConfig:
     run_gnn: bool = True
     run_mlp: bool = True
     run_rf: bool = True
+    differentiate_with_and_without_PE: bool = True
     
     # === TRAINING ===
     learning_rate: float = 0.01

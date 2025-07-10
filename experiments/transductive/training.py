@@ -12,7 +12,7 @@ import logging
 from typing import Dict, List, Optional, Tuple, Union, Any, Callable
 
 from experiments.models import GNNModel, MLPModel, SklearnModel, GraphTransformerModel
-from experiments.transductive.metrics import compute_metrics
+from experiments.metrics import compute_metrics
 from experiments.transductive.config import TransductiveExperimentConfig
 from torch.cuda.amp import GradScaler, autocast
 

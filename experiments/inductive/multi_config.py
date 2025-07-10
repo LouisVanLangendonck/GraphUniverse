@@ -259,6 +259,17 @@ class CleanMultiExperimentConfig:
                         # Convert single value to range
                         processed[range_param] = (max(0, center - width/2), center + width/2)
         
+        # Handle new sweep parameters for range max values
+        # Convert homophily_range_max to homophily_range tuple
+        if 'homophily_range_max' in processed:
+            max_val = processed.pop('homophily_range_max')
+            processed['homophily_range'] = (0.0, max_val)
+        
+        # Convert density_range_max to density_range tuple
+        if 'density_range_max' in processed:
+            max_val = processed.pop('density_range_max')
+            processed['density_range'] = (0.0, max_val)
+        
         return processed
     
     def get_total_runs(self) -> int:

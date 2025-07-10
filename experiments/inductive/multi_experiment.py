@@ -16,6 +16,7 @@ import pandas as pd
 import tempfile
 import sys
 import itertools
+import pickle
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from experiments.inductive.multi_config import CleanMultiExperimentConfig, SSLMultiExperimentConfig
@@ -210,53 +211,338 @@ class CleanMultiExperimentRunner:
     ) -> Optional[Dict[str, Any]]:
         """Run a single inductive experiment."""
         try:
-            # Create a temporary directory for this run
-            with tempfile.TemporaryDirectory() as temp_dir:
-                # Set the output directory to the temporary directory
-                config.output_dir = temp_dir
+            # Create a permanent directory for this run within the multi-experiment output
+            run_dir = os.path.join(self.output_dir, f"run_{run_id:04d}")
+            os.makedirs(run_dir, exist_ok=True)
+            
+            # Set the output directory to the permanent directory
+            config.output_dir = run_dir
+            
+            # Create a temporary experiment instance to generate and save graphs
+            from experiments.inductive.experiment import InductiveExperiment
+            temp_experiment = InductiveExperiment(config)
+            
+            # Generate graph family
+            print(f"Generating graph family for run {run_id}...")
+            family_graphs = temp_experiment.generate_graph_family()
+            
+            # Analyze family consistency
+            family_consistency = temp_experiment.analyze_family_consistency()
+            
+            # Calculate community signals
+            graph_signals = temp_experiment.calculate_graph_signals()
+            
+            # Prepare data (this creates the splits and precomputed PEs)
+            print(f"Preparing data for run {run_id}...")
+            dataloaders, unseen_community_combination_score = temp_experiment.prepare_data()
+            
+            # Save the prepared data with exact splits and precomputed PEs
+            inductive_data_path = os.path.join(run_dir, "inductive_data.pkl")
+            sheaf_inductive_data_path = os.path.join(run_dir, "sheaf_inductive_data.pkl")
+            
+            print(f"Saving inductive data to: {inductive_data_path}")
+            with open(inductive_data_path, 'wb') as f:
+                pickle.dump(temp_experiment.inductive_data, f)
+            
+            print(f"Saving sheaf inductive data to: {sheaf_inductive_data_path}")
+            with open(sheaf_inductive_data_path, 'wb') as f:
+                pickle.dump(temp_experiment.sheaf_inductive_data, f)
+            
+            # Save the family graphs as well
+            family_graphs_path = os.path.join(run_dir, "family_graphs.pkl")
+            print(f"Saving family graphs to: {family_graphs_path}")
+            with open(family_graphs_path, 'wb') as f:
+                pickle.dump(family_graphs, f)
+            
+            # Clean up GPU memory from temporary experiment
+            if hasattr(temp_experiment, 'dataloaders'):
+                from experiments.inductive.training import cleanup_gpu_dataloaders
+                cleanup_gpu_dataloaders(temp_experiment.dataloaders, temp_experiment.device)
+            
+            # Now run the actual experiment with the saved data
+            print(f"Running experiment for run {run_id}...")
+            
+            # Create a new experiment instance that will load the saved data
+            from experiments.inductive.experiment import InductiveExperiment
+            experiment = InductiveExperiment(config)
+            
+            # Override the output directory to use the same one as the temporary experiment
+            # This prevents creating a second timestamped directory
+            experiment.output_dir = temp_experiment.output_dir
+            
+            # Load the saved data instead of regenerating
+            print(f"Loading saved data for run {run_id}...")
+            with open(inductive_data_path, 'rb') as f:
+                experiment.inductive_data = pickle.load(f)
+            with open(sheaf_inductive_data_path, 'rb') as f:
+                experiment.sheaf_inductive_data = pickle.load(f)
+            with open(family_graphs_path, 'rb') as f:
+                experiment.family_graphs = pickle.load(f)
+            
+            # Recreate GPU-resident dataloaders from the loaded data
+            print("Recreating GPU-resident dataloaders from saved data...")
+            from experiments.inductive.data import create_gpu_resident_dataloaders, verify_gpu_resident_data
+            
+            dataloaders = create_gpu_resident_dataloaders(experiment.inductive_data, 
+                                                       experiment.config,
+                                                       experiment.device)
+            
+            # Create sheaf-specific dataloaders (batch size 1, with precomputed cache)
+            print("Recreating sheaf-specific dataloaders...")
+            from experiments.inductive.data import create_sheaf_dataloaders
+            sheaf_dataloaders = create_sheaf_dataloaders(experiment.sheaf_inductive_data, experiment.config)
+            
+            # Make sheaf dataloaders GPU-resident as well
+            print("Making sheaf dataloaders GPU-resident...")
+            sheaf_dataloaders = create_gpu_resident_dataloaders(experiment.sheaf_inductive_data, 
+                                                              experiment.config,
+                                                              experiment.device)
+            
+            # Verify data is properly loaded to GPU
+            if not verify_gpu_resident_data(dataloaders, experiment.device):
+                raise RuntimeError("Failed to load normal data to GPU properly")
+            
+            # Verify sheaf data is properly loaded to GPU
+            if not verify_gpu_resident_data(sheaf_dataloaders, experiment.device):
+                raise RuntimeError("Failed to load sheaf data to GPU properly")
+            
+            # Set the dataloaders
+            experiment.dataloaders = dataloaders
+            experiment.sheaf_dataloaders = sheaf_dataloaders
+            
+            # Run experiments without regenerating data
+            experiment_results = experiment.run_experiments()
+            
+            # Store results in experiment instance for saving and reporting
+            experiment.results = experiment_results
+            
+            # Save results
+            experiment.save_results()
+            
+            # Generate summary report
+            summary_report = experiment.generate_summary_report()
+            
+            with open(os.path.join(run_dir, "summary.txt"), 'w') as f:
+                f.write(summary_report)
+            
+            # Compile complete result record
+            complete_result = {
+                # Run metadata
+                'run_id': run_id,
+                'timestamp': datetime.now().strftime("%Y%m%d_%H%M%S"),
                 
-                # Run the experiment
-                experiment_results = run_inductive_experiment(config)
+                # Input parameters
+                'sweep_parameters': sweep_params,
+                'random_parameters': random_params,
+                'all_parameters': {**sweep_params, **random_params},
                 
-                # Compile complete result record
-                complete_result = {
-                    # Run metadata
-                    'run_id': run_id,
-                    'timestamp': datetime.now().strftime("%Y%m%d_%H%M%S"),
-                    
-                    # Input parameters
-                    'sweep_parameters': sweep_params,
-                    'random_parameters': random_params,
-                    'all_parameters': {**sweep_params, **random_params},
-                    
-                    # Method info
-                    'method': 'dccc_sbm' if config.use_dccc_sbm else 'dc_sbm',
-                    'degree_distribution': config.degree_distribution if config.use_dccc_sbm else 'standard',
-                    
-                    # Graph family metrics
-                    'family_properties': self._extract_family_properties(experiment_results),
-                    
-                    # Family consistency metrics
-                    'family_consistency': experiment_results.get('family_consistency', {}),
-                    
-                    # Community signal metrics
-                    'community_signals': experiment_results.get('graph_signals', {}),
-                    
-                    # Model results
-                    'model_results': self._extract_model_results(experiment_results),
-                    
-                    # Experiment metadata
-                    'total_time': experiment_results.get('total_time', 0),
-                    'n_graphs': config.n_graphs,
-                    'universe_K': config.universe_K,
-                    'tasks': config.tasks
-                }
+                # Method info
+                'method': 'dccc_sbm' if config.use_dccc_sbm else 'dc_sbm',
+                'degree_distribution': config.degree_distribution if config.use_dccc_sbm else 'standard',
                 
-                return complete_result
+                # Graph family metrics
+                'family_properties': self._extract_family_properties(experiment_results),
+                
+                # Family consistency metrics
+                'family_consistency': family_consistency,
+                
+                # Community signal metrics
+                'community_signals': graph_signals,
+                
+                # Model results
+                'model_results': experiment_results,
+                
+                # Experiment metadata
+                'total_time': experiment_results.get('total_time', 0),
+                'n_graphs': config.n_graphs,
+                'universe_K': config.universe_K,
+                'tasks': config.tasks,
+                
+                # Data file paths (NEW)
+                'data_files': {
+                    'inductive_data': os.path.relpath(inductive_data_path, self.output_dir),
+                    'sheaf_inductive_data': os.path.relpath(sheaf_inductive_data_path, self.output_dir),
+                    'family_graphs': os.path.relpath(family_graphs_path, self.output_dir),
+                    'config_path': os.path.relpath(os.path.join(run_dir, "config.json"), self.output_dir)
+                },
+                
+                # Unseen community combination score
+                'unseen_community_combination_score': unseen_community_combination_score
+            }
+            
+            return complete_result
             
         except Exception as e:
             logger.error(f"Error in run {run_id}: {str(e)}", exc_info=True)
             return None
+
+    def load_saved_data_for_run(self, run_id: int) -> Dict[str, Any]:
+        """Load saved data for a specific run."""
+        run_dir = os.path.join(self.output_dir, f"run_{run_id:04d}")
+        
+        if not os.path.exists(run_dir):
+            raise FileNotFoundError(f"Run directory not found: {run_dir}")
+        
+        # Load inductive data
+        inductive_data_path = os.path.join(run_dir, "inductive_data.pkl")
+        with open(inductive_data_path, 'rb') as f:
+            inductive_data = pickle.load(f)
+        
+        # Load sheaf inductive data
+        sheaf_inductive_data_path = os.path.join(run_dir, "sheaf_inductive_data.pkl")
+        with open(sheaf_inductive_data_path, 'rb') as f:
+            sheaf_inductive_data = pickle.load(f)
+        
+        # Load family graphs
+        family_graphs_path = os.path.join(run_dir, "family_graphs.pkl")
+        with open(family_graphs_path, 'rb') as f:
+            family_graphs = pickle.load(f)
+        
+        # Load config
+        config_path = os.path.join(run_dir, "config.json")
+        with open(config_path, 'r') as f:
+            config_dict = json.load(f)
+        
+        return {
+            'inductive_data': inductive_data,
+            'sheaf_inductive_data': sheaf_inductive_data,
+            'family_graphs': family_graphs,
+            'config': config_dict,
+            'run_dir': run_dir
+        }
+
+    def get_saved_data_summary(self) -> Dict[str, Any]:
+        """Get a summary of all saved data files across all runs."""
+        summary = {
+            'total_runs': 0,
+            'runs_with_data': 0,
+            'data_files': {},
+            'run_directories': []
+        }
+        
+        # Check each run directory
+        for run_id in range(10000):  # Reasonable upper limit
+            run_dir = os.path.join(self.output_dir, f"run_{run_id:04d}")
+            if not os.path.exists(run_dir):
+                continue
+            
+            summary['total_runs'] += 1
+            run_data = {
+                'run_id': run_id,
+                'run_dir': run_dir,
+                'files': {}
+            }
+            
+            # Check for data files
+            data_files = [
+                'inductive_data.pkl',
+                'sheaf_inductive_data.pkl', 
+                'family_graphs.pkl',
+                'config.json',
+                'results.json',
+                'summary.txt'
+            ]
+            
+            for filename in data_files:
+                file_path = os.path.join(run_dir, filename)
+                if os.path.exists(file_path):
+                    file_size = os.path.getsize(file_path)
+                    run_data['files'][filename] = {
+                        'exists': True,
+                        'size_bytes': file_size,
+                        'size_mb': file_size / (1024 * 1024)
+                    }
+                else:
+                    run_data['files'][filename] = {
+                        'exists': False,
+                        'size_bytes': 0,
+                        'size_mb': 0
+                    }
+            
+            # Check if this run has the essential data files
+            has_essential_data = (
+                run_data['files']['inductive_data.pkl']['exists'] and
+                run_data['files']['family_graphs.pkl']['exists'] and
+                run_data['files']['config.json']['exists']
+            )
+            
+            if has_essential_data:
+                summary['runs_with_data'] += 1
+            
+            run_data['has_essential_data'] = has_essential_data
+            summary['run_directories'].append(run_data)
+        
+        return summary
+
+    def load_all_saved_data(self) -> Dict[int, Dict[str, Any]]:
+        """Load all saved data for all runs."""
+        all_data = {}
+        
+        for run_id in range(10000):  # Reasonable upper limit
+            run_dir = os.path.join(self.output_dir, f"run_{run_id:04d}")
+            if not os.path.exists(run_dir):
+                continue
+            
+            try:
+                run_data = self.load_saved_data_for_run(run_id)
+                all_data[run_id] = run_data
+            except Exception as e:
+                print(f"Warning: Failed to load data for run {run_id}: {e}")
+        
+        return all_data
+
+    def create_data_analysis_report(self) -> str:
+        """Create a comprehensive report of all saved data."""
+        summary = self.get_saved_data_summary()
+        
+        lines = []
+        lines.append("MULTI-EXPERIMENT DATA ANALYSIS REPORT")
+        lines.append("=" * 60)
+        lines.append("")
+        
+        lines.append(f"Total runs found: {summary['total_runs']}")
+        lines.append(f"Runs with essential data: {summary['runs_with_data']}")
+        lines.append(f"Data availability: {summary['runs_with_data']/summary['total_runs']:.1%}" if summary['total_runs'] > 0 else "Data availability: 0%")
+        lines.append("")
+        
+        # Analyze file sizes
+        total_size_mb = 0
+        file_sizes = {}
+        
+        for run_data in summary['run_directories']:
+            for filename, file_info in run_data['files'].items():
+                if file_info['exists']:
+                    if filename not in file_sizes:
+                        file_sizes[filename] = []
+                    file_sizes[filename].append(file_info['size_mb'])
+                    total_size_mb += file_info['size_mb']
+        
+        lines.append("FILE SIZE ANALYSIS:")
+        for filename, sizes in file_sizes.items():
+            if sizes:
+                avg_size = sum(sizes) / len(sizes)
+                total_size = sum(sizes)
+                lines.append(f"  {filename}:")
+                lines.append(f"    Average size: {avg_size:.2f} MB")
+                lines.append(f"    Total size: {total_size:.2f} MB")
+                lines.append(f"    Count: {len(sizes)}")
+        lines.append("")
+        
+        lines.append(f"Total data size: {total_size_mb:.2f} MB")
+        lines.append("")
+        
+        # Show run details
+        lines.append("RUN DETAILS:")
+        for run_data in summary['run_directories'][:10]:  # Show first 10 runs
+            run_id = run_data['run_id']
+            has_data = run_data['has_essential_data']
+            status = "✓" if has_data else "✗"
+            lines.append(f"  Run {run_id:04d}: {status}")
+        
+        if len(summary['run_directories']) > 10:
+            lines.append(f"  ... and {len(summary['run_directories']) - 10} more runs")
+        
+        return "\n".join(lines)
     
     def _extract_family_properties(self, experiment_results: Dict[str, Any]) -> Dict[str, Any]:
         """Extract family properties from experiment results."""
@@ -396,6 +682,14 @@ class CleanMultiExperimentRunner:
         results_path = os.path.join(self.output_dir, "final_results.json")
         with open(results_path, 'w') as f:
             json.dump(self._make_json_serializable(final_results), f, indent=2)
+        
+        # Create and save data analysis report
+        data_analysis_report = self.create_data_analysis_report()
+        data_report_path = os.path.join(self.output_dir, "data_analysis_report.txt")
+        with open(data_report_path, 'w', encoding='utf-8') as f:
+            f.write(data_analysis_report)
+        
+        print(f"Data analysis report saved to: {data_report_path}")
         
         # Create and save DataFrame for analysis
         if self.all_results:
@@ -1179,89 +1473,94 @@ def run_clean_multi_experiments(config: CleanMultiExperimentConfig, continue_fro
 
 
 def create_analysis_plots(results_dir: str, output_dir: Optional[str] = None) -> None:
-    """Create analysis plots from multi-experiment results."""
-    try:
-        import matplotlib.pyplot as plt
-        import seaborn as sns
-    except ImportError:
-        print("Matplotlib and seaborn required for plotting. Skipping plots.")
-        return
+    """Create analysis plots for multi-experiment results."""
+    # Implementation for creating plots
+    pass
+
+def analyze_saved_multi_experiment_data(results_dir: str) -> str:
+    """
+    Analyze saved data from a multi-experiment run.
     
-    if output_dir is None:
-        output_dir = os.path.join(results_dir, "plots")
-    os.makedirs(output_dir, exist_ok=True)
-    
-    # Load results
-    csv_path = os.path.join(results_dir, "results_summary.csv")
-    if not os.path.exists(csv_path):
-        print(f"No results CSV found at {csv_path}")
-        return
-    
-    df = pd.read_csv(csv_path)
-    
-    # Find performance and parameter columns
-    performance_cols = [col for col in df.columns if any(metric in col for metric in ['accuracy', 'f1_macro', 'r2']) and 'mse' not in col]
-    param_cols = [col for col in df.columns if any(param in col for param in ['universe_', 'homophily', 'density', 'degree_'])]
-    
-    plt.style.use('default')
-    
-    # 1. Method comparison
-    if 'method' in df.columns and performance_cols:
-        fig, axes = plt.subplots(1, len(performance_cols), figsize=(5*len(performance_cols), 4))
-        if len(performance_cols) == 1:
-            axes = [axes]
+    Args:
+        results_dir: Path to the multi-experiment results directory
         
-        for i, perf_col in enumerate(performance_cols):
-            if perf_col in df.columns:
-                df.boxplot(column=perf_col, by='method', ax=axes[i])
-                axes[i].set_title(f'{perf_col} by Method')
-                axes[i].set_xlabel('Method')
-                axes[i].set_ylabel(perf_col)
-        
-        plt.tight_layout()
-        plt.savefig(os.path.join(output_dir, 'method_comparison.png'), dpi=300, bbox_inches='tight')
-        plt.close()
+    Returns:
+        Analysis report as a string
+    """
+    if not os.path.exists(results_dir):
+        return f"Error: Results directory not found: {results_dir}"
     
-    # 2. Parameter effects (first few parameters)
-    for param in param_cols[:4]:  # Limit to avoid too many plots
-        if param in df.columns and performance_cols:
-            n_plots = min(2, len(performance_cols))
-            fig, axes = plt.subplots(1, n_plots, figsize=(10, 4))
-            # Ensure axes is always a list
-            if n_plots == 1:
-                axes = [axes]
-            elif not isinstance(axes, list):
-                axes = list(axes)
-            
-            for i, perf_col in enumerate(performance_cols[:2]):
-                if perf_col in df.columns:
-                    axes[i].scatter(df[param], df[perf_col], alpha=0.6)
-                    axes[i].set_xlabel(param)
-                    axes[i].set_ylabel(perf_col)
-                    axes[i].set_title(f'{perf_col} vs {param}')
-                    axes[i].grid(True, alpha=0.3)
-            
-            plt.tight_layout()
-            plt.savefig(os.path.join(output_dir, f'param_effect_{param}.png'), dpi=300, bbox_inches='tight')
-            plt.close()
+    # Load the multi-experiment config
+    config_path = os.path.join(results_dir, "multi_config.json")
+    if not os.path.exists(config_path):
+        return f"Error: Multi-config not found at: {config_path}"
     
-    # 3. Signal analysis
-    signal_cols = [col for col in df.columns if 'signal_' in col and '_mean' in col]
-    if signal_cols:
-        fig, ax = plt.subplots(1, 1, figsize=(10, 6))
-        
-        signal_data = []
-        signal_names = []
-        for col in signal_cols:
-            signal_data.append(df[col].dropna())
-            signal_names.append(col.replace('signal_', '').replace('_mean', '').replace('_', ' ').title())
-        
-        ax.boxplot(signal_data, labels=signal_names)
-        ax.set_title('Community Signal Distributions')
-        ax.set_ylabel('Signal Strength')
-        plt.xticks(rotation=45)
-        plt.tight_layout()
-        plt.savefig(os.path.join(output_dir, 'signal_distributions.png'), dpi=300, bbox_inches='tight')
-        plt.close()
+    with open(config_path, 'r') as f:
+        config_dict = json.load(f)
     
-    print(f"Analysis plots saved to: {output_dir}")
+    # Create a temporary runner to analyze the data
+    from experiments.inductive.multi_config import CleanMultiExperimentConfig
+    temp_config = CleanMultiExperimentConfig.from_dict(config_dict)
+    
+    # Create a temporary runner instance
+    runner = CleanMultiExperimentRunner.__new__(CleanMultiExperimentRunner)
+    runner.output_dir = results_dir
+    runner.config = temp_config
+    
+    # Generate the data analysis report
+    return runner.create_data_analysis_report()
+
+def load_saved_run_data(results_dir: str, run_id: int) -> Dict[str, Any]:
+    """
+    Load saved data for a specific run from a multi-experiment directory.
+    
+    Args:
+        results_dir: Path to the multi-experiment results directory
+        run_id: The run ID to load
+        
+    Returns:
+        Dictionary containing the loaded data
+    """
+    if not os.path.exists(results_dir):
+        raise FileNotFoundError(f"Results directory not found: {results_dir}")
+    
+    # Load the multi-experiment config
+    config_path = os.path.join(results_dir, "multi_config.json")
+    if not os.path.exists(config_path):
+        raise FileNotFoundError(f"Multi-config not found at: {config_path}")
+    
+    with open(config_path, 'r') as f:
+        config_dict = json.load(f)
+    
+    # Create a temporary runner to load the data
+    from experiments.inductive.multi_config import CleanMultiExperimentConfig
+    temp_config = CleanMultiExperimentConfig.from_dict(config_dict)
+    
+    # Create a temporary runner instance
+    runner = CleanMultiExperimentRunner.__new__(CleanMultiExperimentRunner)
+    runner.output_dir = results_dir
+    runner.config = temp_config
+    
+    # Load the specific run data
+    return runner.load_saved_data_for_run(run_id)
+
+def list_available_runs(results_dir: str) -> List[int]:
+    """
+    List all available run IDs in a multi-experiment directory.
+    
+    Args:
+        results_dir: Path to the multi-experiment results directory
+        
+    Returns:
+        List of available run IDs
+    """
+    if not os.path.exists(results_dir):
+        return []
+    
+    available_runs = []
+    for run_id in range(10000):  # Reasonable upper limit
+        run_dir = os.path.join(results_dir, f"run_{run_id:04d}")
+        if os.path.exists(run_dir):
+            available_runs.append(run_id)
+    
+    return available_runs
