@@ -214,15 +214,17 @@ class GraphFamilyGenerator:
         
         # Sample target homophily (relative to universe homophily)
         homophily_offset = np.random.uniform(self.homophily_range[0], self.homophily_range[1])
+        pos_or_neg = np.random.choice([-1, 1])
         target_homophily = np.clip(
-            self.universe.homophily + homophily_offset,
+            self.universe.homophily + homophily_offset*pos_or_neg,
             0.0, 1.0
         )
         
         # Sample target density (relative to universe density)
         density_offset = np.random.uniform(self.density_range[0], self.density_range[1])
+        pos_or_neg = np.random.choice([-1, 1])
         target_density = np.clip(
-            self.universe.edge_density + density_offset,
+            self.universe.edge_density + density_offset*pos_or_neg,
             self.min_edge_density, 1.0
         )
         

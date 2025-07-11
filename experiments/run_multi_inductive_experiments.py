@@ -52,7 +52,7 @@ def parse_args():
                         help='Learning tasks to run')
     
     # Base experiment settings
-    parser.add_argument('--n_graphs', type=int, default=50,
+    parser.add_argument('--n_graphs', type=int, default=100,
                         help='Number of graphs per family (will be swept over: 10, 30, 50)')
     parser.add_argument('--min_n_nodes', type=int, default=70,
                         help='Minimum nodes per graph')
@@ -73,11 +73,11 @@ def parse_args():
                         help='Degree distribution for DCCC-SBM')
     
     # Training settings
-    parser.add_argument('--epochs', type=int, default=400,
+    parser.add_argument('--epochs', type=int, default=800,
                         help='Training epochs')
     parser.add_argument('--patience', type=int, default=100,
                         help='Early stopping patience')
-    parser.add_argument('--batch_size', type=int, default=20,
+    parser.add_argument('--batch_size', type=int, default=25,
                         help='Batch size for training (per graph)')
     parser.add_argument('--k_fold', type=int, default=3,
                         help='Number of folds for cross-validation')
@@ -86,9 +86,9 @@ def parse_args():
     # Hyperparameter optimization settings
     parser.add_argument('--optimize_hyperparams', action='store_true',
                         help='Enable hyperparameter optimization')
-    parser.add_argument('--n_trials', type=int, default=5,
+    parser.add_argument('--n_trials', type=int, default=20,
                         help='Number of hyperparameter optimization trials')
-    parser.add_argument('--trial_epochs', type=int, default=50,
+    parser.add_argument('--trial_epochs', type=int, default=100,
                         help='Number of epochs for hyperparameter optimization')
     parser.add_argument('--optimization_timeout', type=int, default=600,
                         help='Timeout in seconds for hyperparameter optimization')
@@ -106,7 +106,7 @@ def parse_args():
                         help='Maximum PE dimension')
     
     parser.add_argument('--gnn_types', type=str, nargs='+', 
-                        default=['gcn', 'sage'], #, 'gin', 'gat],
+                        default=['gcn', 'sage', 'gin', 'gat'],
                         choices=['fagcn', 'gat', 'gcn', 'sage', 'gin'],
                         help='Types of GNN models to run')
     parser.add_argument('--no_gnn', action='store_false', dest='run_gnn',
@@ -161,13 +161,13 @@ def parse_args():
     # Sweep parameter overrides
     parser.add_argument('--homophily_range_max_min', type=float, default=0.0,
                         help='Minimum value for homophily_range_max sweep parameter')
-    parser.add_argument('--homophily_range_max_max', type=float, default=0.1,
+    parser.add_argument('--homophily_range_max_max', type=float, default=0.0,
                         help='Maximum value for homophily_range_max sweep parameter')
     parser.add_argument('--homophily_range_max_step', type=float, default=0.1,
                         help='Step size for homophily_range_max sweep parameter')
-    parser.add_argument('--density_range_max_min', type=float, default=0.0,
+    parser.add_argument('--density_range_max_min', type=float, default=0.1,
                         help='Minimum value for density_range_max sweep parameter')
-    parser.add_argument('--density_range_max_max', type=float, default=0.0,
+    parser.add_argument('--density_range_max_max', type=float, default=0.1,
                         help='Maximum value for density_range_max sweep parameter')
     parser.add_argument('--density_range_max_step', type=float, default=0.01,
                         help='Step size for density_range_max sweep parameter')
@@ -306,13 +306,13 @@ def create_custom_experiment(args) -> CleanMultiExperimentConfig:
     # Define sweep parameters
     sweep_parameters = {
         'universe_homophily': ParameterRange(
-            min_val=0.8,
+            min_val=0.2,
             max_val=0.8,
             step=0.3,
             is_sweep=True
         ),
         'universe_edge_density': ParameterRange(
-            min_val=0.15,
+            min_val=0.05,
             max_val=0.15,
             step=0.10,
             is_sweep=True
