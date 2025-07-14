@@ -117,12 +117,8 @@ def extract_model_metrics(model_results, experiment_dir=None, family_properties=
     # Get mean density for normalization if available
     mean_density = None
     if is_regression and family_properties:
-        # Try different possible keys for mean density
-        density_keys = ['edge_density_mean', 'density_mean', 'mean_density', 'family_density_mean']
-        for key in density_keys:
-            if key in family_properties:
-                mean_density = family_properties[key]
-                break
+        mean_density = family_properties['densities_mean']
+
     
     for task_name, task_results in model_results.items():
         if isinstance(task_results, dict):
@@ -165,9 +161,9 @@ def extract_model_metrics(model_results, experiment_dir=None, family_properties=
                                 if is_regression and mean_density is not None and mean_density > 0:
                                     # Create normalized version (divide by mean density)
                                     normalized_mean = mean_val / mean_density
-                                    # For normalized metrics, we also negate to keep "higher is better"
-                                    if metric_name.lower() in ['mse', 'rmse', 'mae']:
-                                        normalized_mean = -normalized_mean
+                                    # # For normalized metrics, we also negate to keep "higher is better"
+                                    # if metric_name.lower() in ['mse', 'rmse', 'mae']:
+                                    #     normalized_mean = -normalized_mean
                                     
                                     # Calculate normalized CI (propagate uncertainty)
                                     normalized_ci = ci_95 / mean_density
@@ -176,6 +172,11 @@ def extract_model_metrics(model_results, experiment_dir=None, family_properties=
                                     key_normalized_ci = f"model.{task_name}.{model_name}.{metric_name}_normalized.ci95"
                                     metrics[key_normalized_mean] = normalized_mean
                                     metrics[key_normalized_ci] = normalized_ci
+                                    
+                                    # print(f"DEBUG: Created normalized metric: {key_normalized_mean} = {normalized_mean}")
+                                else:
+                                    # print(f"DEBUG: Skipped normalized metric for {metric_name}. is_regression={is_regression}, mean_density={mean_density}")
+                                    pass
                     
                     # Fallback for non-fold structure
                     else:
@@ -760,7 +761,7 @@ multi_inductive_experiment_dir = st.sidebar.selectbox(
         "multi_results/community_detect",
         "multi_results/final_k1_hop"
     ],
-    index=0,
+    index=1,  # Default to regression task to show normalized metrics
     help="Select the experiment directory to analyze"
 )
 
@@ -835,12 +836,20 @@ if 'df' in st.session_state and st.session_state.df is not None:
                     metric_name = parts[-2]  # Second to last part before 'mean'
                     available_metrics.add(metric_name)
         
-        metric_options = sorted(list(available_metrics))
+        # Sort metrics to show normalized versions after regular versions
+        metric_options = sorted(list(available_metrics), key=lambda x: (x.replace('_normalized', ''), x))
+        
         selected_metric = st.selectbox(
             "Select metric type:",
             options=metric_options,
             index=0 if metric_options else None
         )
+        
+        # Show info about normalized metrics
+        if is_regression_task(multi_inductive_experiment_dir):
+            st.info("ℹ️ Normalized metrics (ending with '_normalized') are available for regression tasks. These metrics are divided by the mean edge density to make them more comparable across different graph densities.")
+        else:
+            st.info("ℹ️ Normalized metrics are only available for regression tasks. Switch to a regression experiment directory to see them.")
     
     # Model selection
     st.subheader("Model Selection")
@@ -1010,352 +1019,143 @@ if 'df' in st.session_state and st.session_state.df is not None:
                                     if not valid_data.empty:
                                         all_y_values.extend(valid_data['mean_value'].tolist())
                         
-                        # Calculate global y-range
-                        if fit_target == "Ranking":
-                            if all_ranking_data:
-                                y_min, y_max = min(all_ranking_data), max(all_ranking_data)
-                                y_padding = (y_max - y_min) * 0.05
-                                global_y_range = [y_max + y_padding, y_min - y_padding]  # Inverted for ranking
-                            else:
-                                global_y_range = [len(selected_models) + 0.5, 0.5]  # Default ranking range
+                    # Calculate global y-range
+                    if fit_target == "Ranking":
+                        if all_ranking_data:
+                            y_min, y_max = min(all_ranking_data), max(all_ranking_data)
+                            y_padding = (y_max - y_min) * 0.05
+                            y_range = [y_max + y_padding, y_min - y_padding]  # Inverted for ranking
                         else:
-                            if all_y_values:
-                                y_min, y_max = min(all_y_values), max(all_y_values)
-                                y_padding = (y_max - y_min) * 0.05
-                                global_y_range = [y_min - y_padding, y_max + y_padding]
-                            else:
-                                global_y_range = [0, 1]  # Default range
-                        
-                        # Calculate global x-axis range for Grouped Bar plots
-                        all_x_values = plot_df[x_axis].dropna().tolist()
-                        if all_x_values:
-                            x_min, x_max = min(all_x_values), max(all_x_values)
-                            x_padding = (x_max - x_min) * 0.05
-                            x_range = [x_min - x_padding, x_max + x_padding]
+                            y_range = [len(selected_models) + 0.5, 0.5]  # Default ranking range
+                    else:
+                        if all_y_values:
+                            y_min, y_max = min(all_y_values), max(all_y_values)
+                            y_padding = (y_max - y_min) * 0.05
+                            y_range = [y_min - y_padding, y_max + y_padding]
                         else:
-                            x_range = None  # Let plotly auto-scale
+                            y_range = [0, 1]  # Default range
+                    
+                    # Create subplots using make_subplots
+                    n_cols = min(3, len(unique_values))
+                    n_rows = (len(unique_values) + n_cols - 1) // n_cols
+                    
+                    fig = make_subplots(
+                        rows=n_rows, 
+                        cols=n_cols,
+                        subplot_titles=[f"{second_param}={value}" for value in sorted(unique_values)],
+                        vertical_spacing=0.1,
+                        horizontal_spacing=0.1,
+                        shared_yaxes=True,
+                        shared_xaxes=True
+                    )
+                    
+                    # Add bars to each subplot
+                    for i, value in enumerate(sorted(unique_values)):
+                        # Calculate subplot position
+                        row = (i // n_cols) + 1
+                        col = (i % n_cols) + 1
                         
-                        # Create subplots using make_subplots
-                        n_cols = min(3, len(unique_values))
-                        n_rows = (len(unique_values) + n_cols - 1) // n_cols
+                        # Filter data for this value
+                        filtered_df = plot_df[plot_df[second_param] == value]
                         
-                        fig = make_subplots(
-                            rows=n_rows, 
-                            cols=n_cols,
-                            subplot_titles=[f"{second_param}={value}" for value in sorted(unique_values)],
-                            vertical_spacing=0.1,
-                            horizontal_spacing=0.1,
-                            shared_yaxes=True,
-                            shared_xaxes=True
+                        # Calculate grouped bar data for this subplot
+                        grouped_df = calculate_grouped_bar_data(
+                            filtered_df, x_axis, selected_models, selected_metric, 
+                            fit_target, n_ranking_samples, ranking_seed, task_name
                         )
                         
-                        # Add bars to each subplot
-                        for i, value in enumerate(sorted(unique_values)):
-                            # Calculate subplot position
-                            row = (i // n_cols) + 1
-                            col = (i % n_cols) + 1
+                        if not grouped_df.empty:
+                            # Create grouped bar chart for this subplot
+                            unique_x_vals = sorted(grouped_df['x_value'].unique())
+                            n_models = len(selected_models)
                             
-                            # Filter data for this value
-                            filtered_df = plot_df[plot_df[second_param] == value]
+                            # Calculate bar positions
+                            bar_width = max(0.15, 0.8 / n_models)  # Ensure minimum bar width
+                            x_positions = np.arange(len(unique_x_vals))
                             
-                            # Calculate grouped bar data for this subplot
-                            grouped_df = calculate_grouped_bar_data(
-                                filtered_df, x_axis, selected_models, selected_metric, 
-                                fit_target, n_ranking_samples, ranking_seed
+                            colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', 
+                                        '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf']
+                            
+                            for j, model in enumerate(selected_models):
+                                model_data = grouped_df[grouped_df['model'] == model]
+                                if not model_data.empty:
+                                    valid_data = model_data.dropna(subset=['mean_value'])
+                                    if not valid_data.empty:
+                                        color = colors[j % len(colors)]
+                                        # Use actual categorical x-values for bars
+                                        x_vals = [x for x in unique_x_vals]
+                                        y_values = []
+                                        std_values = []
+                                        for x_val in x_vals:
+                                            if x_val in valid_data['x_value'].values:
+                                                row_data = valid_data[valid_data['x_value'] == x_val].iloc[0]
+                                                y_values.append(row_data['mean_value'])
+                                                std_values.append(row_data['std_value'])
+                                            else:
+                                                y_values.append(None)
+                                                std_values.append(None)
+                                        bar_trace = go.Bar(
+                                            x=x_vals,
+                                            y=y_values,
+                                            name=f"{model}",
+                                            marker_color=color,
+                                            error_y=dict(
+                                                type='data',
+                                                array=std_values,
+                                                visible=True,
+                                                thickness=1,
+                                                width=3
+                                            ),
+                                            hovertemplate=f'<b>{model}</b><br>' +
+                                                        f'{second_param}: {value}<br>' +
+                                                        f'{x_axis}: %{{x}}<br>' +
+                                                        f'Mean: %{{y}}<br>' +
+                                                        f'Std: %{{error_y.array}}<br>' +
+                                                        '<extra></extra>',
+                                            showlegend=(i == 0)  # Only show legend for first subplot
+                                        )
+                                        fig.add_trace(bar_trace, row=row, col=col)
+                            # Set x-axis ticks to actual categorical values
+                            fig.update_xaxes(
+                                ticktext=[str(x) for x in unique_x_vals],
+                                tickvals=unique_x_vals,
+                                row=row, col=col
                             )
-                            
-                            if not grouped_df.empty:
-                                # Create grouped bar chart for this subplot
-                                unique_x_vals = sorted(grouped_df['x_value'].unique())
-                                n_models = len(selected_models)
-                                
-                                # Calculate bar positions
-                                bar_width = max(0.15, 0.8 / n_models)  # Ensure minimum bar width
-                                x_positions = np.arange(len(unique_x_vals))
-                                
-                                colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', 
-                                         '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf']
-                                
-                                for j, model in enumerate(selected_models):
-                                    model_data = grouped_df[grouped_df['model'] == model]
-                                    
-                                    if not model_data.empty:
-                                        # Filter out NaN values for plotting
-                                        valid_data = model_data.dropna(subset=['mean_value'])
-                                        
-                                        if not valid_data.empty:
-                                            color = colors[j % len(colors)]
-                                            
-                                            # Calculate bar positions for this model
-                                            offset = (j - (n_models-1)/2) * bar_width
-                                            bar_positions = x_positions + offset
-                                            
-                                            # Map data to bar positions correctly
-                                            y_values = []
-                                            std_values = []
-                                            for x_val in unique_x_vals:
-                                                if x_val in valid_data['x_value'].values:
-                                                    row_data = valid_data[valid_data['x_value'] == x_val].iloc[0]
-                                                    y_values.append(row_data['mean_value'])
-                                                    std_values.append(row_data['std_value'])
-                                                else:
-                                                    y_values.append(np.nan)
-                                                    std_values.append(np.nan)
-                                            
-                                            # Add bar trace to subplot
-                                            bar_trace = go.Bar(
-                                                x=bar_positions,
-                                                y=y_values,
-                                                name=f"{model}",
-                                                marker_color=color,
-                                                error_y=dict(
-                                                    type='data',
-                                                    array=std_values,
-                                                    visible=True,
-                                                    thickness=1,
-                                                    width=3
-                                                ),
-                                                hovertemplate=f'<b>{model}</b><br>' +
-                                                              f'{second_param}: {value}<br>' +
-                                                              f'{x_axis}: %{{x}}<br>' +
-                                                              f'Mean: %{{y}}<br>' +
-                                                              f'Std: %{{error_y.array}}<br>' +
-                                                              '<extra></extra>',
-                                                showlegend=(i == 0)  # Only show legend for first subplot
-                                            )
-                                            
-                                            fig.add_trace(bar_trace, row=row, col=col)
-                                
-                                # Update x-axis labels for this subplot
-                                fig.update_xaxes(
-                                    ticktext=[str(x) for x in unique_x_vals],
-                                    tickvals=x_positions,
-                                    row=row, col=col
-                                )
-                        
-                        # Update layout for grouped bar subplots
-                        y_axis_title = "Model Rank" if fit_target == 'Ranking' else selected_metric.replace('_', ' ').replace('-', ' ').title()
-                        
-                        fig.update_layout(
-                            title=dict(
-                                text=f"Grouped Bar: {selected_metric.replace('_', ' ').replace('-', ' ').title()} vs {x_axis.replace('_', ' ').replace('-', ' ').title()} by {second_param.replace('_', ' ').replace('-', ' ').title()}",
-                                x=0.5,
-                                xanchor='center',
-                                font=dict(size=16, color='black')
-                            ),
-                            legend=dict(
-                                x=1.02,
-                                y=0.5,
-                                xanchor='left',
-                                yanchor='middle',
-                                bgcolor='rgba(255,255,255,0.9)',
-                                bordercolor='black',
-                                borderwidth=1,
-                                font=dict(size=11)
-                            ),
-                            plot_bgcolor='white',
-                            paper_bgcolor='white',
-                            height=300 * n_rows,
-                            margin=dict(l=60, r=150, t=80, b=60)
-                        )
-                        
-                        # Update all subplot axes with global y-range
-                        for i in range(1, n_rows + 1):
-                            for j in range(1, n_cols + 1):
-                                # Calculate appropriate x-range for grouped bars
-                                bar_x_min = -0.5
-                                bar_x_max = 2.5  # Fixed range for grouped bars
-                                
-                                fig.update_xaxes(
-                                    title=dict(text=x_axis.replace('_', ' ').replace('-', ' ').title(), font=dict(size=12)),
-                                    showgrid=True,
-                                    gridwidth=1,
-                                    gridcolor='lightgray',
-                                    zeroline=True,
-                                    zerolinewidth=1,
-                                    zerolinecolor='black',
-                                    range=[bar_x_min, bar_x_max],
-                                    row=i, col=j
-                                )
-                                fig.update_yaxes(
-                                    title=dict(text=y_axis_title, font=dict(size=12)),
-                                    showgrid=True,
-                                    gridwidth=1,
-                                    gridcolor='lightgray',
-                                    zeroline=True,
-                                    zerolinewidth=1,
-                                    zerolinecolor='black',
-                                    range=global_y_range,
-                                    row=i, col=j
-                                )
-                            # Calculate subplot position
-                            row = (i // n_cols) + 1
-                            col = (i % n_cols) + 1
-                            
-                            # Filter data for this value
-                            filtered_df = plot_df[plot_df[second_param] == value]
-                            
-                            # Calculate grouped bar data for this subplot
-                            grouped_df = calculate_grouped_bar_data(
-                                filtered_df, x_axis, selected_models, selected_metric, 
-                                fit_target, n_ranking_samples, ranking_seed
-                            )
-                            
-                            # Debug: Show data availability for this subplot
-                            if st.checkbox(f"Debug data for {second_param}={value}", key=f"debug_{value}_{i}"):
-                                st.write(f"**Data for {second_param}={value}:**")
-                                st.write(f"Filtered data shape: {filtered_df.shape}")
-                                st.write(f"Grouped data shape: {grouped_df.shape}")
-                                st.write("Grouped data:")
-                                st.dataframe(grouped_df)
-                                
-                                # Show data availability for each model
-                                for model in selected_models:
-                                    model_metric_col = f"model.{task_name}.{model}.{selected_metric}.mean"
-                                    model_data = filtered_df.dropna(subset=[model_metric_col])
-                                    st.write(f"{model}: {len(model_data)} data points")
-                            
-                            if not grouped_df.empty:
-                                # Create grouped bar chart for this subplot
-                                unique_x_vals = sorted(grouped_df['x_value'].unique())
-                                n_models = len(selected_models)
-                                
-                                # Calculate bar positions
-                                bar_width = max(0.15, 0.8 / n_models)  # Ensure minimum bar width
-                                x_positions = np.arange(len(unique_x_vals))
-                                
-                                # Debug: Show subplot info
-                                if st.checkbox(f"Debug subplot {second_param}={value}", key=f"debug_subplot_{value}_{i}"):
-                                    st.write(f"**Subplot info for {second_param}={value}:**")
-                                    st.write(f"Unique x values: {unique_x_vals}")
-                                    st.write(f"Number of models: {n_models}")
-                                    st.write(f"Bar width: {bar_width}")
-                                    st.write(f"X positions: {x_positions}")
-                                    st.write(f"All models: {selected_models}")
-                                
-                                colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', 
-                                         '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf']
-                                
-                                for j, model in enumerate(selected_models):
-                                    model_data = grouped_df[grouped_df['model'] == model]
-                                    
-                                    if not model_data.empty:
-                                        # Filter out NaN values for plotting
-                                        valid_data = model_data.dropna(subset=['mean_value'])
-                                        
-                                        if not valid_data.empty:
-                                            color = colors[j % len(colors)]
-                                            
-                                            # Calculate bar positions for this model
-                                            # Ensure slight offset to avoid exact integer positions
-                                            offset = (j - (n_models-1)/2) * bar_width
-                                            bar_positions = x_positions + offset
-                                            
-                                            # Add tiny offset to avoid exact integer positions
-                                            if np.any(np.abs(bar_positions - np.round(bar_positions)) < 1e-10):
-                                                bar_positions = bar_positions + 1e-6
-                                            
-                                            # Map data to bar positions correctly
-                                            # Create a mapping from x_value to position index
-                                            x_to_pos = {x_val: pos for pos, x_val in enumerate(unique_x_vals)}
-                                            
-                                            # Get the values in the correct order
-                                            y_values = []
-                                            std_values = []
-                                            for x_val in unique_x_vals:
-                                                if x_val in valid_data['x_value'].values:
-                                                    row_data = valid_data[valid_data['x_value'] == x_val].iloc[0]
-                                                    y_values.append(row_data['mean_value'])
-                                                    std_values.append(row_data['std_value'])
-                                                else:
-                                                    y_values.append(np.nan)
-                                                    std_values.append(np.nan)
-                                            
-                                            # Debug: Show bar plotting info
-                                            if st.checkbox(f"Debug bars for {second_param}={value}", key=f"debug_bars_{value}_{model}"):
-                                                st.write(f"**Bar plotting for {model} in {second_param}={value}:**")
-                                                st.write(f"Valid data shape: {valid_data.shape}")
-                                                st.write(f"Bar positions: {bar_positions}")
-                                                st.write(f"Y values: {y_values}")
-                                                st.write(f"Std values: {std_values}")
-                                                st.write(f"X values: {unique_x_vals}")
-                                            
-                                            # Add bar trace
-                                            bar_trace = go.Bar(
-                                                x=bar_positions,
-                                                y=y_values,
-                                                name=f"{model}",
-                                                marker_color=color,
-                                                error_y=dict(
-                                                    type='data',
-                                                    array=std_values,
-                                                    visible=True,
-                                                    thickness=1,
-                                                    width=3
-                                                ),
-                                                hovertemplate=f'<b>{model}</b><br>' +
-                                                              f'{second_param}: {value}<br>' +
-                                                              f'{x_axis}: %{{x}}<br>' +
-                                                              f'Mean: %{{y}}<br>' +
-                                                              f'Std: %{{error_y.array}}<br>' +
-                                                              '<extra></extra>',
-                                                showlegend=(i == 0)  # Only show legend for first subplot
-                                            )
-                                            
-                                            fig.add_trace(bar_trace, row=row, col=col)
-                                            
-                                            # Debug: Confirm trace was added
-                                            if st.checkbox(f"Debug trace addition for {second_param}={value}", key=f"debug_trace_{value}_{model}"):
-                                                st.write(f"**Trace added for {model} in {second_param}={value}:**")
-                                                st.write(f"Trace data: {bar_trace}")
-                                                st.write(f"Figure traces count: {len(fig.data)}")
-                                        else:
-                                            # Debug: Show when no valid data
-                                            if st.checkbox(f"Debug missing bars for {second_param}={value}", key=f"debug_missing_{value}_{model}"):
-                                                st.write(f"**No valid data for {model} in {second_param}={value}:**")
-                                                st.write(f"Model data shape: {model_data.shape}")
-                                                st.write(f"NaN count in mean_value: {model_data['mean_value'].isna().sum()}")
-                                                st.write(f"All mean values: {model_data['mean_value'].tolist()}")
-                                
-                                # Update x-axis labels
-                                fig.update_xaxes(
-                                    ticktext=[str(x) for x in unique_x_vals],
-                                    tickvals=x_positions,
-                                    row=row, col=col
-                                )
-                        
-                        # Update layout for grouped bar subplots
-                        y_axis_title = "Model Rank" if fit_target == 'Ranking' else selected_metric.replace('_', ' ').replace('-', ' ').title()
-                        
-                        fig.update_layout(
-                            title=dict(
-                                text=f"Grouped Bar: {selected_metric.replace('_', ' ').replace('-', ' ').title()} vs {x_axis.replace('_', ' ').replace('-', ' ').title()} by {second_param.replace('_', ' ').replace('-', ' ').title()}",
-                                x=0.5,
-                                xanchor='center',
-                                font=dict(size=16, color='black')
-                            ),
-                            legend=dict(
-                                x=1.02,
-                                y=0.5,
-                                xanchor='left',
-                                yanchor='middle',
-                                bgcolor='rgba(255,255,255,0.9)',
-                                bordercolor='black',
-                                borderwidth=1,
-                                font=dict(size=11)
-                            ),
-                            plot_bgcolor='white',
-                            paper_bgcolor='white',
-                            height=300 * n_rows,
-                            margin=dict(l=60, r=150, t=80, b=60)
-                        )
-                        
-                        # Update all subplot axes
-                        for i in range(1, n_rows + 1):
-                            for j in range(1, n_cols + 1):
-                                # Calculate appropriate x-range for grouped bars
-                                # Get the unique_x_vals for this specific subplot
-                                subplot_value = sorted(unique_values)[(i-1) * n_cols + (j-1)]
+                    
+                    # Update layout for grouped bar subplots
+                    y_axis_title = "Model Rank" if fit_target == 'Ranking' else selected_metric.replace('_', ' ').replace('-', ' ').title()
+                    
+                    fig.update_layout(
+                        title=dict(
+                            text=f"Grouped Bar: {selected_metric.replace('_', ' ').replace('-', ' ').title()} vs {x_axis.replace('_', ' ').replace('-', ' ').title()} by {second_param.replace('_', ' ').replace('-', ' ').title()}",
+                            x=0.5,
+                            xanchor='center',
+                            font=dict(size=16, color='black')
+                        ),
+                        legend=dict(
+                            x=1.02,
+                            y=0.5,
+                            xanchor='left',
+                            yanchor='middle',
+                            bgcolor='rgba(255,255,255,0.9)',
+                            bordercolor='black',
+                            borderwidth=1,
+                            font=dict(size=11)
+                        ),
+                        plot_bgcolor='white',
+                        paper_bgcolor='white',
+                        height=300 * n_rows,
+                        margin=dict(l=60, r=150, t=100, b=60),  # Increase top margin
+                        title_font_size=18
+                    )
+                    
+                    # Update all subplot axes with proper x-ranges for grouped bars
+                    for i in range(1, n_rows + 1):
+                        for j in range(1, n_cols + 1):
+                            # Calculate appropriate x-range for grouped bars based on actual data
+                            subplot_idx = (i-1) * n_cols + (j-1)
+                            if subplot_idx < len(unique_values):
+                                subplot_value = sorted(unique_values)[subplot_idx]
                                 subplot_filtered_df = plot_df[plot_df[second_param] == subplot_value]
                                 subplot_grouped_df = calculate_grouped_bar_data(
                                     subplot_filtered_df, x_axis, selected_models, selected_metric, 
@@ -1363,31 +1163,202 @@ if 'df' in st.session_state and st.session_state.df is not None:
                                 )
                                 subplot_unique_x_vals = sorted(subplot_grouped_df['x_value'].unique()) if not subplot_grouped_df.empty else []
                                 
+                                # Calculate proper x-range based on actual number of x-values
+                                if subplot_unique_x_vals:
+                                    bar_x_min = -0.5
+                                    bar_x_max = len(subplot_unique_x_vals) - 0.5
+                                else:
+                                    bar_x_min = -0.5
+                                    bar_x_max = 0.5
+                            else:
+                                # Empty subplot
                                 bar_x_min = -0.5
-                                bar_x_max = len(subplot_unique_x_vals) - 0.5 if subplot_unique_x_vals else 0.5
+                                bar_x_max = 0.5
+                            
+                            fig.update_xaxes(
+                                title=dict(text=x_axis.replace('_', ' ').replace('-', ' ').title(), font=dict(size=12)),
+                                showgrid=True,
+                                gridwidth=1,
+                                gridcolor='lightgray',
+                                zeroline=True,
+                                zerolinewidth=1,
+                                zerolinecolor='black',
+                                range=[bar_x_min, bar_x_max],
+                                row=i, col=j
+                            )
+                            fig.update_yaxes(
+                                title=dict(text=y_axis_title, font=dict(size=12)),
+                                showgrid=True,
+                                gridwidth=1,
+                                gridcolor='lightgray',
+                                zeroline=True,
+                                zerolinewidth=1,
+                                zerolinecolor='black',
+                                range=y_range,
+                                row=i, col=j
+                            )
+                        # Calculate subplot position
+                        row = (i // n_cols) + 1
+                        col = (i % n_cols) + 1
+                        
+                        # Filter data for this value
+                        filtered_df = plot_df[plot_df[second_param] == value]
+                        
+                        # Calculate grouped bar data for this subplot
+                        grouped_df = calculate_grouped_bar_data(
+                            filtered_df, x_axis, selected_models, selected_metric, 
+                            fit_target, n_ranking_samples, ranking_seed
+                        )
+                        
+                        if not grouped_df.empty:
+                            # Create grouped bar chart for this subplot
+                            unique_x_vals = sorted(grouped_df['x_value'].unique())
+                            n_models = len(selected_models)
+                            
+                            # Calculate bar positions
+                            bar_width = max(0.15, 0.8 / n_models)  # Ensure minimum bar width
+                            x_positions = np.arange(len(unique_x_vals))
+                            
+                            # Debug: Show subplot info
+                            
+                            colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', 
+                                        '#8c564b', '#e377c2', '#7f7f7f', '#bcbd22', '#17becf']
+                            
+                            for j, model in enumerate(selected_models):
+                                model_data = grouped_df[grouped_df['model'] == model]
                                 
-                                fig.update_xaxes(
-                                    title=dict(text=x_axis.replace('_', ' ').replace('-', ' ').title(), font=dict(size=12)),
-                                    showgrid=True,
-                                    gridwidth=1,
-                                    gridcolor='lightgray',
-                                    zeroline=True,
-                                    zerolinewidth=1,
-                                    zerolinecolor='black',
-                                    range=[bar_x_min, bar_x_max],  # Use bar-specific range
-                                    row=i, col=j
-                                )
-                                fig.update_yaxes(
-                                    title=dict(text=y_axis_title, font=dict(size=12)),
-                                    showgrid=True,
-                                    gridwidth=1,
-                                    gridcolor='lightgray',
-                                    zeroline=True,
-                                    zerolinewidth=1,
-                                    zerolinecolor='black',
-                                    range=None,  # Let plotly auto-scale for scatter/line fit
-                                    row=i, col=j
-                                )
+                                if not model_data.empty:
+                                    # Filter out NaN values for plotting
+                                    valid_data = model_data.dropna(subset=['mean_value'])
+                                    
+                                    if not valid_data.empty:
+                                        color = colors[j % len(colors)]
+                                        
+                                        # Calculate bar positions for this model
+                                        # Ensure slight offset to avoid exact integer positions
+                                        offset = (j - (n_models-1)/2) * bar_width
+                                        bar_positions = x_positions + offset
+                                        
+                                        # Add tiny offset to avoid exact integer positions
+                                        if np.any(np.abs(bar_positions - np.round(bar_positions)) < 1e-10):
+                                            bar_positions = bar_positions + 1e-6
+                                        
+                                        # Map data to bar positions correctly
+                                        # Create a mapping from x_value to position index
+                                        x_to_pos = {x_val: pos for pos, x_val in enumerate(unique_x_vals)}
+                                        
+                                        # Get the values in the correct order
+                                        y_values = []
+                                        std_values = []
+                                        for x_val in unique_x_vals:
+                                            if x_val in valid_data['x_value'].values:
+                                                row_data = valid_data[valid_data['x_value'] == x_val].iloc[0]
+                                                y_values.append(row_data['mean_value'])
+                                                std_values.append(row_data['std_value'])
+                                            else:
+                                                y_values.append(np.nan)
+                                                std_values.append(np.nan)
+                                        
+                                        # Debug: Show bar plotting info
+                                        
+                                        # Add bar trace
+                                        bar_trace = go.Bar(
+                                            x=bar_positions,
+                                            y=y_values,
+                                            name=f"{model}",
+                                            marker_color=color,
+                                            error_y=dict(
+                                                type='data',
+                                                array=std_values,
+                                                visible=True,
+                                                thickness=1,
+                                                width=3
+                                            ),
+                                            hovertemplate=f'<b>{model}</b><br>' +
+                                                            f'{second_param}: {value}<br>' +
+                                                            f'{x_axis}: %{{x}}<br>' +
+                                                            f'Mean: %{{y}}<br>' +
+                                                            f'Std: %{{error_y.array}}<br>' +
+                                                            '<extra></extra>',
+                                            showlegend=(i == 0)  # Only show legend for first subplot
+                                        )
+                                        
+                                        fig.add_trace(bar_trace, row=row, col=col)
+                                        
+                                        
+                                    else:
+                                        pass
+                            # Update x-axis labels
+                            fig.update_xaxes(
+                                ticktext=[str(x) for x in unique_x_vals],
+                                tickvals=x_positions,
+                                row=row, col=col
+                            )
+                    
+                    # Update layout for grouped bar subplots
+                    y_axis_title = "Model Rank" if fit_target == 'Ranking' else selected_metric.replace('_', ' ').replace('-', ' ').title()
+                    
+                    fig.update_layout(
+                        title=dict(
+                            text=f"Grouped Bar: {selected_metric.replace('_', ' ').replace('-', ' ').title()} vs {x_axis.replace('_', ' ').replace('-', ' ').title()} by {second_param.replace('_', ' ').replace('-', ' ').title()}",
+                            x=0.5,
+                            xanchor='center',
+                            font=dict(size=16, color='black')
+                        ),
+                        legend=dict(
+                            x=1.02,
+                            y=0.5,
+                            xanchor='left',
+                            yanchor='middle',
+                            bgcolor='rgba(255,255,255,0.9)',
+                            bordercolor='black',
+                            borderwidth=1,
+                            font=dict(size=11)
+                        ),
+                        plot_bgcolor='white',
+                        paper_bgcolor='white',
+                        height=300 * n_rows,
+                        margin=dict(l=60, r=150, t=80, b=60)
+                    )
+                    
+                    # Update all subplot axes
+                    for i in range(1, n_rows + 1):
+                        for j in range(1, n_cols + 1):
+                            # Calculate appropriate x-range for grouped bars
+                            # Get the unique_x_vals for this specific subplot
+                            subplot_value = sorted(unique_values)[(i-1) * n_cols + (j-1)]
+                            subplot_filtered_df = plot_df[plot_df[second_param] == subplot_value]
+                            subplot_grouped_df = calculate_grouped_bar_data(
+                                subplot_filtered_df, x_axis, selected_models, selected_metric, 
+                                fit_target, n_ranking_samples, ranking_seed, task_name
+                            )
+                            subplot_unique_x_vals = sorted(subplot_grouped_df['x_value'].unique()) if not subplot_grouped_df.empty else []
+                            
+                            bar_x_min = -0.5
+                            bar_x_max = len(subplot_unique_x_vals) - 0.5 if subplot_unique_x_vals else 0.5
+                            
+                            fig.update_xaxes(
+                                title=dict(text=x_axis.replace('_', ' ').replace('-', ' ').title(), font=dict(size=12)),
+                                showgrid=True,
+                                gridwidth=1,
+                                gridcolor='lightgray',
+                                zeroline=True,
+                                zerolinewidth=1,
+                                zerolinecolor='black',
+                                range=[bar_x_min, bar_x_max],  # Use bar-specific range
+                                row=i, col=j
+                            )
+                            fig.update_yaxes(
+                                title=dict(text=y_axis_title, font=dict(size=12)),
+                                showgrid=True,
+                                gridwidth=1,
+                                gridcolor='lightgray',
+                                zeroline=True,
+                                zerolinewidth=1,
+                                zerolinecolor='black',
+                                range=None,  # Let plotly auto-scale for scatter/line fit
+                                row=i, col=j
+                            )
                     else:
                         # Original scatter/line fit logic for subplots
                         
