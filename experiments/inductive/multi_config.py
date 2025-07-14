@@ -270,6 +270,15 @@ class CleanMultiExperimentConfig:
             max_val = processed.pop('density_range_max')
             processed['density_range'] = (0.0, max_val)
         
+        # Handle combined homophily and density parameter
+        if 'homophily_density_combination' in processed:
+            combination = processed.pop('homophily_density_combination')
+            # Parse the combination string (e.g., "0.1,0.0")
+            if isinstance(combination, str):
+                homophily_max, density_max = map(float, combination.split(','))
+                processed['homophily_range'] = (0.0, homophily_max)
+                processed['density_range'] = (0.0, density_max)
+        
         return processed
     
     def get_total_runs(self) -> int:

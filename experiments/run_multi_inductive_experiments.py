@@ -47,22 +47,22 @@ def parse_args():
     
     # Task configuration
     parser.add_argument('--tasks', type=str, nargs='+',     
-                        default=['community'],
+                        default=['k_hop_community_counts_k1'],
                         choices=['community', 'k_hop_community_counts_k1', 'k_hop_community_counts_k2', 'k_hop_community_counts_k3', 'triangle_count'],
                         help='Learning tasks to run')
     
     # Base experiment settings
     parser.add_argument('--n_graphs', type=int, default=100,
                         help='Number of graphs per family (will be swept over: 10, 30, 50)')
-    parser.add_argument('--min_n_nodes', type=int, default=70,
+    parser.add_argument('--min_n_nodes', type=int, default=80,
                         help='Minimum nodes per graph')
-    parser.add_argument('--max_n_nodes', type=int, default=130,
+    parser.add_argument('--max_n_nodes', type=int, default=120,
                         help='Maximum nodes per graph')
     parser.add_argument('--universe_K', type=int, default=15,
                         help='Number of communities in universe')
     parser.add_argument('--min_communities', type=int, default=3,
                         help='Minimum number of communities')
-    parser.add_argument('--max_communities', type=int, default=7,
+    parser.add_argument('--max_communities', type=int, default=8,
                         help='Maximum number of communities')
     
     # Method selection
@@ -73,11 +73,11 @@ def parse_args():
                         help='Degree distribution for DCCC-SBM')
     
     # Training settings
-    parser.add_argument('--epochs', type=int, default=800,
+    parser.add_argument('--epochs', type=int, default=1000,
                         help='Training epochs')
     parser.add_argument('--patience', type=int, default=100,
                         help='Early stopping patience')
-    parser.add_argument('--batch_size', type=int, default=25,
+    parser.add_argument('--batch_size', type=int, default=35,
                         help='Batch size for training (per graph)')
     parser.add_argument('--k_fold', type=int, default=3,
                         help='Number of folds for cross-validation')
@@ -158,19 +158,10 @@ def parse_args():
                         help='Allow unseen community combinations in evaluation')
     
     
-    # Sweep parameter overrides
-    parser.add_argument('--homophily_range_max_min', type=float, default=0.0,
-                        help='Minimum value for homophily_range_max sweep parameter')
-    parser.add_argument('--homophily_range_max_max', type=float, default=0.0,
-                        help='Maximum value for homophily_range_max sweep parameter')
-    parser.add_argument('--homophily_range_max_step', type=float, default=0.1,
-                        help='Step size for homophily_range_max sweep parameter')
-    parser.add_argument('--density_range_max_min', type=float, default=0.1,
-                        help='Minimum value for density_range_max sweep parameter')
-    parser.add_argument('--density_range_max_max', type=float, default=0.1,
-                        help='Maximum value for density_range_max sweep parameter')
-    parser.add_argument('--density_range_max_step', type=float, default=0.01,
-                        help='Step size for density_range_max sweep parameter')
+    # Combined sweep parameter for homophily and density ranges
+    parser.add_argument('--homophily_density_combinations', type=str, nargs='+',
+                        default=['0.2,0.0', '0.0,0.1', '0.0,0.0'],
+                        help='Combinations of (homophily_range_max, density_range_max) as comma-separated pairs. Format: "homophily_max,density_max"')
     
     # Fixed parameter values (previously random)
     parser.add_argument('--degree_heterogeneity', type=float, default=1.0,
@@ -179,9 +170,9 @@ def parse_args():
                         help='Edge noise parameter')
     parser.add_argument('--cluster_count_factor', type=float, default=1.0,
                         help='Cluster count factor parameter')
-    parser.add_argument('--cluster_variance', type=float, default=0.5,
+    parser.add_argument('--cluster_variance', type=float, default=0.05,
                         help='Cluster variance parameter')
-    parser.add_argument('--center_variance', type=float, default=0.1,
+    parser.add_argument('--center_variance', type=float, default=1.2,
                         help='Center variance parameter')
     parser.add_argument('--assignment_skewness', type=float, default=0.0,
                         help='Assignment skewness parameter')
@@ -215,7 +206,7 @@ def create_custom_experiment(args) -> CleanMultiExperimentConfig:
         min_communities=args.min_communities,
         max_communities=args.max_communities,
         universe_K=args.universe_K,
-        universe_feature_dim=32,
+        universe_feature_dim=16,
         use_parallel_training=args.use_parallel_training,
 
         # Method
@@ -312,9 +303,9 @@ def create_custom_experiment(args) -> CleanMultiExperimentConfig:
             is_sweep=True
         ),
         'universe_edge_density': ParameterRange(
-            min_val=0.05,
-            max_val=0.15,
-            step=0.10,
+            min_val=0.06,
+            max_val=0.30,
+            step=0.12,
             is_sweep=True
         ),
         'n_graphs': ParameterRange(
@@ -323,19 +314,13 @@ def create_custom_experiment(args) -> CleanMultiExperimentConfig:
             step=1,
             is_sweep=True
         ),
-        # Add homophily_range_max as sweep parameter (max of the range, min will be 0.0)
-        'homophily_range_max': ParameterRange(
-            min_val=args.homophily_range_max_min,
-            max_val=args.homophily_range_max_max,
-            step=args.homophily_range_max_step,
-            is_sweep=True
-        ),
-        # Add density_range_max as sweep parameter (max of the range, min will be 0.0)
-        'density_range_max': ParameterRange(
-            min_val=args.density_range_max_min,
-            max_val=args.density_range_max_max,
-            step=args.density_range_max_step,
-            is_sweep=True
+        # Combined homophily and density range parameters
+        'homophily_density_combination': ParameterRange(
+            min_val=0,
+            max_val=len(args.homophily_density_combinations) - 1,
+            step=1,
+            is_sweep=True,
+            discrete_values=args.homophily_density_combinations
         ),
         # Add allow_unseen_community_combinations_for_eval as sweep parameter
         'allow_unseen_community_combinations_for_eval': ParameterRange(
@@ -506,7 +491,12 @@ def main():
             if hasattr(param_range, 'get_sweep_values'):
                 try:
                     values = param_range.get_sweep_values()
-                    print(f"  {param}: {len(values)} values from {min(values)} to {max(values)}")
+                    if param == 'homophily_density_combination':
+                        print(f"  {param}: {len(values)} combinations")
+                        for i, combo in enumerate(values):
+                            print(f"    Sweep {i}: {combo}")
+                    else:
+                        print(f"  {param}: {len(values)} values from {min(values)} to {max(values)}")
                 except:
                     print(f"  {param}: {param_range.min_val} to {param_range.max_val}")
             else:

@@ -894,7 +894,7 @@ def get_hyperparameter_space(trial, model_type: str, is_regression: bool) -> Dic
         'lr': trial.suggest_float('lr', 1e-4, 1e-2, log=True),
         'weight_decay': trial.suggest_float('weight_decay', 1e-5, 1e-2, log=True),
         'patience': trial.suggest_int('patience', 20, 50),
-        'hidden_dim': trial.suggest_int('hidden_dim', 32, 256),
+        'hidden_dim': trial.suggest_int('hidden_dim', 32, 64),
         'num_layers': trial.suggest_int('num_layers', 1, 4),
         'dropout': trial.suggest_float('dropout', 0.1, 0.7)
     }
@@ -1660,7 +1660,7 @@ def train_and_evaluate_inductive(
                         heads = best_params.get('heads', 1)
                         hidden_dim = base_dim * heads
                     else:
-                        hidden_dim = best_params.get('hidden_dim', 64)
+                        hidden_dim = best_params.get('hidden_dim', 32)
 
                     model = GNNModel(
                         input_dim=input_dim,
@@ -1729,7 +1729,7 @@ def train_and_evaluate_inductive(
                     patience = config.patience
                     
                     # MLP-specific hyperparameters
-                    hidden_dim = trial.suggest_int('hidden_dim', 32, 256)
+                    hidden_dim = trial.suggest_int('hidden_dim', 16, 64)
                     num_layers = trial.suggest_int('num_layers', 1, 4)
                     dropout = trial.suggest_float('dropout', 0.1, 0.7)
                     if PE_option:
@@ -1859,7 +1859,7 @@ def train_and_evaluate_inductive(
                     # Recreate model with optimized parameters
                     model = MLPModel(
                         input_dim=input_dim,
-                        hidden_dim=best_params.get('hidden_dim', 64),
+                        hidden_dim=best_params.get('hidden_dim', 32),
                         output_dim=output_dim,
                         num_layers=best_params.get('num_layers', 2),
                         dropout=best_params.get('dropout', 0.5),

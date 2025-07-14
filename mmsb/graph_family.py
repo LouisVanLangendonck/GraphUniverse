@@ -225,7 +225,7 @@ class GraphFamilyGenerator:
         pos_or_neg = np.random.choice([-1, 1])
         target_density = np.clip(
             self.universe.edge_density + density_offset*pos_or_neg,
-            self.min_edge_density, 1.0
+            0.05, 1.0
         )
         
         # Sample DCCC parameters if using DCCC-SBM

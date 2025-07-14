@@ -863,41 +863,70 @@ def compute_khop_community_counts_universe_indexed(
     k: int
 ) -> torch.Tensor:
     """
-    Compute k-hop community counts with universe indexing.
-    
-    Args:
-        graph: NetworkX graph
-        community_labels: Node community labels
-        universe_communities: Mapping from local to universe community indices
-        universe_K: Number of communities in universe
-        k: Number of hops
-        
-    Returns:
-        Tensor of shape (n_nodes, universe_K) containing k-hop community counts
+    Compute k-hop community counts (only nodes at exactly k-hops) with universe indexing.
     """
     n_nodes = graph.number_of_nodes()
     counts = np.zeros((n_nodes, universe_K))
     
-    # For each node
     for node in range(n_nodes):
-        # Get k-hop neighborhood
-        neighbors = set([node])
-        for _ in range(k):
-            new_neighbors = set()
-            for n in neighbors:
-                new_neighbors.update(graph.neighbors(n))
-            neighbors.update(new_neighbors)
+        # Get nodes at exact distance k using single-source shortest path
+        sp_lengths = nx.single_source_shortest_path_length(graph, node, cutoff=k)
+        khop_nodes = [n for n, dist in sp_lengths.items() if dist == k]
         
-        # Count communities in neighborhood
-        for neighbor in neighbors:
+        for neighbor in khop_nodes:
             local_comm = community_labels[neighbor]
             if local_comm in universe_communities:
                 universe_comm = universe_communities[local_comm]
                 counts[node, universe_comm] += 1
             else:
-                raise ValueError(f"Community {local_comm} not found in universe communities")
+                raise ValueError(f"Community {local_comm} not in universe_communities")
     
     return torch.tensor(counts, dtype=torch.float)
+
+
+# def compute_khop_community_counts_universe_indexed(
+#     graph: nx.Graph,
+#     community_labels: np.ndarray,
+#     universe_communities: Dict[int, int],
+#     universe_K: int,
+#     k: int
+# ) -> torch.Tensor:
+#     """
+#     Compute k-hop community counts with universe indexing.
+    
+#     Args:
+#         graph: NetworkX graph
+#         community_labels: Node community labels
+#         universe_communities: Mapping from local to universe community indices
+#         universe_K: Number of communities in universe
+#         k: Number of hops
+        
+#     Returns:
+#         Tensor of shape (n_nodes, universe_K) containing k-hop community counts
+#     """
+#     n_nodes = graph.number_of_nodes()
+#     counts = np.zeros((n_nodes, universe_K))
+    
+#     # For each node
+#     for node in range(n_nodes):
+#         # Get k-hop neighborhood
+#         neighbors = set([node])
+#         for _ in range(k):
+#             new_neighbors = set()
+#             for n in neighbors:
+#                 new_neighbors.update(graph.neighbors(n))
+#             neighbors.update(new_neighbors)
+        
+#         # Count communities in neighborhood
+#         for neighbor in neighbors:
+#             local_comm = community_labels[neighbor]
+#             if local_comm in universe_communities:
+#                 universe_comm = universe_communities[local_comm]
+#                 counts[node, universe_comm] += 1
+#             else:
+#                 raise ValueError(f"Community {local_comm} not found in universe communities")
+    
+#     return torch.tensor(counts, dtype=torch.float)
 
 def generate_universe_based_metapath_tasks(
     family_graphs: List[GraphSample],

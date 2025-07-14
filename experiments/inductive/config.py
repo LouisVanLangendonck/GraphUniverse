@@ -157,7 +157,7 @@ class InductiveExperimentConfig:
     patience: int = 50
     optimized_patience: Optional[int] = None  # Store optimized patience value if available
     batch_size: int = 1
-    hidden_dim: int = 64
+    hidden_dim: int = 32
     num_layers: int = 3
     dropout: float = 0.5
     # Special parameter for FAGCN
