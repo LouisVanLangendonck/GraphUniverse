@@ -21,7 +21,7 @@ if parent_dir not in sys.path:
     sys.path.append(parent_dir)
 
 # Import MMSB modules
-from mmsb.model import GraphUniverse, GraphSample
+from graph_universe.model import GraphUniverse, GraphSample
 from utils.visualizations import (
     plot_graph_communities,
     plot_membership_matrix,

@@ -29,9 +29,9 @@ if parent_dir not in sys.path:
     sys.path.append(parent_dir)
 
 # Import MMSB modules
-from mmsb.model import GraphUniverse, GraphSample
-from mmsb.graph_family import GraphFamilyGenerator, FamilyConsistencyAnalyzer
-from mmsb.feature_regimes import (
+from graph_universe.model import GraphUniverse, GraphSample
+from graph_universe.graph_family import GraphFamilyGenerator, FamilyConsistencyAnalyzer
+from graph_universe.feature_regimes import (
     SimplifiedFeatureGenerator,
     NeighborhoodFeatureAnalyzer, 
     FeatureClusterLabelGenerator

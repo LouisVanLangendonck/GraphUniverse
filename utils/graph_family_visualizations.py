@@ -12,7 +12,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from typing import Dict, List, Optional, Tuple, Union, Any
 from .visualizations import plot_graph_communities, plot_membership_matrix, plot_community_matrix
-from mmsb.model import GraphSample
+from graph_universe.model import GraphSample
 
 def plot_parameter_distributions(parameter_samples: List[Dict[str, List[float]]], family_names: List[str], ax: Optional[plt.Axes] = None) -> plt.Figure:
     """

@@ -19,7 +19,7 @@ import networkx as nx
 import scipy.sparse as sp
 from typing import Dict, List, Optional, Tuple, Union, Callable, Any
 import pandas as pd
-from mmsb.feature_regimes import (
+from graph_universe.feature_regimes import (
     SimplifiedFeatureGenerator,
     NeighborhoodFeatureAnalyzer,
     FeatureClusterLabelGenerator

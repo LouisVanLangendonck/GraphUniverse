@@ -32,7 +32,7 @@ if parent_dir not in sys.path:
     sys.path.append(parent_dir)
 
 # Import MMSB modules
-from mmsb.model import GraphUniverse, GraphSample
+from graph_universe.model import GraphUniverse, GraphSample
 
 # Parameter ranges to explore
 DEFAULT_PARAM_RANGES = {

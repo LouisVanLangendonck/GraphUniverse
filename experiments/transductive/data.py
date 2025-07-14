@@ -10,8 +10,8 @@ from typing import Dict, List, Optional, Tuple, Union, Any
 import networkx as nx
 from collections import defaultdict
 
-from mmsb.model import GraphSample, GraphUniverse
-from mmsb.feature_regimes import graphsample_to_pyg
+from graph_universe.model import GraphSample, GraphUniverse
+from graph_universe.feature_regimes import graphsample_to_pyg
 from utils.metapath_analysis import MetapathAnalyzer, UniverseMetapathSelector
 
 

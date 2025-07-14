@@ -20,8 +20,8 @@ import torch.nn as nn
 import copy
 import pickle
 
-from mmsb.model import GraphUniverse
-from mmsb.graph_family import GraphFamilyGenerator, FamilyConsistencyAnalyzer
+from graph_universe.model import GraphUniverse
+from graph_universe.graph_family import GraphFamilyGenerator, FamilyConsistencyAnalyzer
 from experiments.inductive.data import (
     prepare_inductive_data, 
     create_inductive_dataloaders,

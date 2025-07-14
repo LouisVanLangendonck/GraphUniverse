@@ -1201,7 +1201,7 @@ def create_pretraining_dataloader(
     pin_memory: bool = False
 ) -> DataLoader:
     """Create dataloader for pre-training graphs."""
-    from mmsb.feature_regimes import graphsample_to_pyg
+    from graph_universe.feature_regimes import graphsample_to_pyg
     
     # Convert graphs to PyG format
     pyg_graphs = []

@@ -45,8 +45,8 @@ from utils.graph_family_utils import (
 )
 
 # Import MMSB modules
-from mmsb.model import GraphUniverse, GraphSample
-from mmsb.graph_family import GraphFamilyGenerator
+from graph_universe.model import GraphUniverse, GraphSample
+from graph_universe.graph_family import GraphFamilyGenerator
 from utils.parameter_analysis import (
     analyze_graph_parameters,
     compute_statistics,
@@ -56,7 +56,7 @@ from utils.parameter_analysis import (
 
 
 def _generate_family(family_name, family_params, n_graphs_per_family, graph_failure_counts=None, graph_failure_threshold=None, key=None, dist_type=None):
-    from mmsb.graph_family import GraphFamilyGenerator  # Needed for multiprocessing
+    from graph_universe.graph_family import GraphFamilyGenerator  # Needed for multiprocessing
     try:
         print(f"    [FAMILY CREATE] dist_type in family_params: {family_params.get('method_distribution', None)} | family_name: {family_name}")
         generator = GraphFamilyGenerator(

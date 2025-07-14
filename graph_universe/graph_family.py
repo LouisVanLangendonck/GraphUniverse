@@ -9,7 +9,7 @@ the family members.
 import numpy as np
 from typing import Dict, List, Optional, Tuple, Union, Any
 import pandas as pd
-from mmsb.model import GraphUniverse, GraphSample
+from graph_universe.model import GraphUniverse, GraphSample
 from tqdm import tqdm
 import time
 import warnings

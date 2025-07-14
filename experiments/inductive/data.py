@@ -20,8 +20,8 @@ from torch_geometric.utils import get_laplacian, to_scipy_sparse_matrix
 from scipy.sparse.linalg import eigsh
 import copy
 
-from mmsb.model import GraphSample, GraphUniverse
-from mmsb.feature_regimes import graphsample_to_pyg
+from graph_universe.model import GraphSample, GraphUniverse
+from graph_universe.feature_regimes import graphsample_to_pyg
 from utils.metapath_analysis import MetapathAnalyzer, UniverseMetapathSelector, FamilyMetapathEvaluator
 from experiments.inductive.config import PreTrainingConfig, InductiveExperimentConfig
 
@@ -196,8 +196,8 @@ class GraphFamilyManager:
     
     def _generate_graph_family(self) -> List:
         """Generate the graph family using existing infrastructure."""
-        from mmsb.model import GraphUniverse
-        from mmsb.graph_family import GraphFamilyGenerator
+        from graph_universe.model import GraphUniverse
+        from graph_universe.graph_family import GraphFamilyGenerator
         
         # Create universe
         universe = GraphUniverse(

@@ -12,8 +12,8 @@ from datetime import datetime
 import numpy as np
 import torch
 
-from mmsb.model import GraphUniverse
-from mmsb.graph_family import GraphFamilyGenerator
+from graph_universe.model import GraphUniverse
+from graph_universe.graph_family import GraphFamilyGenerator
 from experiments.transductive.data import (
     prepare_transductive_data,
     analyze_graph_properties,
