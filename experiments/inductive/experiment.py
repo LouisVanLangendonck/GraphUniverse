@@ -112,12 +112,28 @@ class InductiveExperiment:
                 self.family_graphs = finetuning_graphs
                 return finetuning_graphs
         
-        # Otherwise, generate new graph family (existing logic)
+        # Otherwise, generate new graph family
         print("\n" + "="*60)
         print("GENERATING GRAPH FAMILY")
         print("="*60)
         
-        # Create universe with clean parameters
+        # Create universe and family generator
+        universe, family_generator = self._create_universe_and_generator()
+        
+        # Generate graphs based on distributional shift configuration
+        if self.config.distributional_shift_in_eval:
+            self.family_graphs, self.communities_per_graph = self._generate_with_distributional_shift(
+                family_generator, universe
+            )
+        else:
+            self.family_graphs, self.communities_per_graph = self._generate_standard_family(
+                family_generator
+            )
+        
+        return self.family_graphs
+    
+    def _create_universe_and_generator(self):
+        """Create universe and family generator with clean parameters."""
         print("Creating graph universe...")
         universe = GraphUniverse(
             K=self.config.universe_K,
@@ -137,10 +153,8 @@ class InductiveExperiment:
             triangle_community_relation_homogeneity=self.config.triangle_community_relation_homogeneity,
             seed=self.config.seed
         )
-        
-        # Create family generator with clean parameters
-        print("Setting up graph family generator...")
 
+        print("Setting up graph family generator...")
         family_generator = GraphFamilyGenerator(
             universe=universe,
             min_n_nodes=self.config.min_n_nodes,
@@ -179,54 +193,222 @@ class InductiveExperiment:
             seed=self.config.seed
         )
         
-        # Generate family
-        if self.config.allow_unseen_community_combinations_for_eval:
-            print(f"Generating family of {self.config.n_graphs} graphs...")
-            start_time = time.time()
-            self.family_graphs = family_generator.generate_family(
-                show_progress=True,
-                collect_stats=self.config.collect_family_stats,
-                n_graphs=self.config.n_graphs
-            )
-            self.communities_per_graph = family_generator.community_labels_per_graph
-            generation_time = time.time() - start_time
-
-            self.family_graphs_training_indices, self.family_graphs_val_test_indices = None, None
-            
-            print(f"Family generation completed in {generation_time:.2f} seconds")
-            print(f"Successfully generated {len(self.family_graphs)} graphs")
-        else:
-            print(f"Generating family of training graphs")
-            start_time = time.time()
-            family_graphs_training = family_generator.generate_family(
-                show_progress=True,
-                collect_stats=self.config.collect_family_stats,
-                n_graphs=self.config.n_graphs
-            )
-            communities_per_training_graph = family_generator.community_labels_per_graph
-            training_community_combinations = family_generator.seen_community_combinations
-
-            print(f"Generating family of validation and test graphs with community combinations that are seen in training graphs")
-            start_time = time.time()
-            # print(f"Training community combinations: {training_community_combinations}")
-            family_graphs_val_test = family_generator.generate_family(
-                show_progress=True,
-                collect_stats=self.config.collect_family_stats,
-                n_graphs=self.config.n_graphs,
-                allowed_community_combinations=training_community_combinations
-            )
-            communities_per_val_test_graph = family_generator.community_labels_per_graph
-
-            # Merge the two families but keep indices of training graphs and val/test graphs separate
-            self.family_graphs = family_graphs_training + family_graphs_val_test
-            self.family_graphs_training_indices = list(range(len(family_graphs_training)))
-            self.family_graphs_val_test_indices = list(range(len(family_graphs_training), len(family_graphs_training) + len(family_graphs_val_test)))
-
-            self.communities_per_graph = communities_per_training_graph + communities_per_val_test_graph
-
-            generation_time = time.time() - start_time
+        return universe, family_generator
+    
+    def _generate_standard_family(self, family_generator):
+        """Generate standard graph family without distributional shifts."""
+        print(f"Generating family of {self.config.n_graphs} graphs...")
+        start_time = time.time()
         
-        return self.family_graphs
+        family_graphs = family_generator.generate_family(
+            show_progress=False,
+            collect_stats=self.config.collect_family_stats,
+            n_graphs=self.config.n_graphs
+        )
+        communities_per_graph = family_generator.community_labels_per_graph
+        
+        generation_time = time.time() - start_time
+        print(f"Family generation completed in {generation_time:.2f} seconds")
+        print(f"Successfully generated {len(family_graphs)} graphs")
+        
+        # Set indices for standard case (all graphs available for all splits)
+        self.family_graphs_training_indices = list(range(len(family_graphs)))
+        self.family_graphs_val_test_indices = list(range(len(family_graphs)))
+        self.family_graphs_training_val_indices = None
+        self.family_graphs_test_indices = None
+        
+        return family_graphs, communities_per_graph
+    
+    def _generate_with_distributional_shift(self, family_generator, universe):
+        """Generate graph family with distributional shifts."""
+        shift_type = self.config.distributional_shift_in_eval_type
+        
+        if shift_type in ['homophily', 'density', 'n_nodes']:
+            return self._generate_property_shift(family_generator, universe, shift_type)
+        else:
+            raise ValueError(f"Unknown distributional shift type: {shift_type}")
+        
+    def _generate_property_shift(self, family_generator, universe, shift_type):
+        """Generate graphs with property shift (homophily, density, or n_nodes)."""
+        print(f"Generating family with {shift_type} shift...")
+        
+        # Determine which splits should have the shift
+        if self.config.distributional_shift_test_only:
+            # Generate training+val graphs normally
+            print(f"Generating training+validation graphs...")
+            training_val_graphs = family_generator.generate_family(
+                show_progress=False,
+                collect_stats=self.config.collect_family_stats,
+                n_graphs=self.config.n_graphs
+            )
+            training_val_communities = family_generator.community_labels_per_graph
+            
+            # Generate test graphs with shift
+            print(f"Generating test graphs with {shift_type} shift...")
+            shifted_graphs = self._generate_shifted_graphs(
+                family_generator, universe, shift_type, 
+                n_graphs=int(self.config.n_graphs * self.config.test_graph_ratio)
+            )
+            shifted_communities = family_generator.community_labels_per_graph
+            
+            # Merge and set indices
+            family_graphs = training_val_graphs + shifted_graphs
+            communities_per_graph = training_val_communities + shifted_communities
+            
+            self.family_graphs_training_val_indices = list(range(len(training_val_graphs)))
+            self.family_graphs_test_indices = list(range(len(training_val_graphs), len(family_graphs)))
+            self.family_graphs_training_indices = None
+            self.family_graphs_val_test_indices = None
+            
+        else:
+            # Generate training graphs normally
+            print(f"Generating training graphs...")
+            training_graphs = family_generator.generate_family(
+                show_progress=False,
+                collect_stats=self.config.collect_family_stats,
+                n_graphs=self.config.n_graphs
+            )
+            training_communities = family_generator.community_labels_per_graph
+            
+            # Generate val+test graphs with shift
+            print(f"Generating validation+test graphs with {shift_type} shift...")
+            shifted_graphs = self._generate_shifted_graphs(
+                family_generator, universe, shift_type, 
+                n_graphs=self.config.n_graphs
+            )
+            shifted_communities = family_generator.community_labels_per_graph
+            
+            # Merge and set indices
+            family_graphs = training_graphs + shifted_graphs
+            communities_per_graph = training_communities + shifted_communities
+            
+            self.family_graphs_training_indices = list(range(len(training_graphs)))
+            self.family_graphs_val_test_indices = list(range(len(training_graphs), len(family_graphs)))
+            self.family_graphs_training_val_indices = None
+            self.family_graphs_test_indices = None
+        
+        print(f"Total graphs: {len(family_graphs)}")
+        print(f"Training graphs: {len(training_graphs) if 'training_graphs' in locals() else len(training_val_graphs)}")
+        print(f"Shifted graphs: {len(shifted_graphs)}")
+        
+        return family_graphs, communities_per_graph
+    
+    def _generate_shifted_graphs(self, family_generator, universe, shift_type, n_graphs):
+        """Generate graphs with a specific property shift."""
+        # Create shifted universe
+        shifted_universe = copy.deepcopy(universe)
+        
+        # Apply the shift
+        if shift_type == 'homophily':
+            shift_amount = self.config.distributional_shift_in_eval_homophily_shift
+            direction = -1 # Fix to have a homophily shift in the negative direction
+            shifted_universe.homophily = np.clip(
+                universe.homophily + direction * shift_amount, 0, 1
+            )
+            print(f"Homophily shift: {universe.homophily:.3f} -> {shifted_universe.homophily:.3f}")
+            
+        elif shift_type == 'density':
+            shift_amount = self.config.distributional_shift_in_eval_density_shift
+            direction = 1 # Fix to have a density shift in the positive direction
+            shifted_universe.edge_density = np.clip(
+                universe.edge_density + direction * shift_amount, 0, 0.5
+            )
+            print(f"Density shift: {universe.edge_density:.3f} -> {shifted_universe.edge_density:.3f}")
+            
+        elif shift_type == 'n_nodes':
+            shift_amount = self.config.distributional_shift_in_eval_n_nodes_shift
+            min_nodes = self.config.min_n_nodes + shift_amount
+            max_nodes = self.config.max_n_nodes + shift_amount
+            print(f"Node count shift: [{self.config.min_n_nodes}, {self.config.max_n_nodes}] -> [{min_nodes}, {max_nodes}]")
+            
+            # Create new family generator with shifted node range
+            shifted_family_generator = GraphFamilyGenerator(
+                universe=shifted_universe,
+                min_n_nodes=min_nodes,
+                max_n_nodes=max_nodes,
+                min_communities=self.config.min_communities,
+                max_communities=self.config.max_communities,
+                min_component_size=self.config.min_component_size,
+                homophily_range=self.config.homophily_range,
+                density_range=self.config.density_range,
+                
+                # Method selection
+                use_dccc_sbm=self.config.use_dccc_sbm,
+                degree_distribution=self.config.degree_distribution,
+                
+                # DCCC-SBM parameters
+                community_imbalance_range=self.config.community_imbalance_range,
+                degree_separation_range=self.config.degree_separation_range,
+                power_law_exponent_range=self.config.power_law_exponent_range,
+                exponential_rate_range=self.config.exponential_rate_range,
+                uniform_min_factor_range=self.config.uniform_min_factor_range,
+                uniform_max_factor_range=self.config.uniform_max_factor_range,
+                
+                # Fixed parameters
+                degree_heterogeneity=self.config.degree_heterogeneity,
+                edge_noise=self.config.edge_noise,
+                
+                # Generation constraints
+                max_parameter_search_attempts=self.config.max_parameter_search_attempts,
+                parameter_search_range=self.config.parameter_search_range,
+                max_retries=self.config.max_retries,
+                min_edge_density=self.config.min_edge_density,
+                disable_deviation_limiting=self.config.disable_deviation_limiting,
+                max_mean_community_deviation=self.config.max_mean_community_deviation,
+                max_max_community_deviation=self.config.max_max_community_deviation,
+                
+                seed=self.config.seed
+            )
+            
+            return shifted_family_generator.generate_family(
+                show_progress=False,
+                collect_stats=self.config.collect_family_stats,
+                n_graphs=n_graphs
+            )
+        
+        shifted_family_generator = GraphFamilyGenerator(
+            universe=shifted_universe,
+            min_n_nodes=self.config.min_n_nodes,
+            max_n_nodes=self.config.max_n_nodes,
+            min_communities=self.config.min_communities,
+            max_communities=self.config.max_communities,
+            min_component_size=self.config.min_component_size,
+            homophily_range=self.config.homophily_range,
+            density_range=self.config.density_range,
+            
+            # Method selection
+            use_dccc_sbm=self.config.use_dccc_sbm,
+            degree_distribution=self.config.degree_distribution,
+            
+            # DCCC-SBM parameters
+            community_imbalance_range=self.config.community_imbalance_range,
+            degree_separation_range=self.config.degree_separation_range,
+            power_law_exponent_range=self.config.power_law_exponent_range,
+            exponential_rate_range=self.config.exponential_rate_range,
+            uniform_min_factor_range=self.config.uniform_min_factor_range,
+            uniform_max_factor_range=self.config.uniform_max_factor_range,
+            
+            # Fixed parameters
+            degree_heterogeneity=self.config.degree_heterogeneity,
+            edge_noise=self.config.edge_noise,
+            
+            # Generation constraints
+            max_parameter_search_attempts=self.config.max_parameter_search_attempts,
+            parameter_search_range=self.config.parameter_search_range,
+            max_retries=self.config.max_retries,
+            min_edge_density=self.config.min_edge_density,
+            disable_deviation_limiting=self.config.disable_deviation_limiting,
+            max_mean_community_deviation=self.config.max_mean_community_deviation,
+            max_max_community_deviation=self.config.max_max_community_deviation,
+            
+            seed=self.config.seed
+        )
+        
+        return shifted_family_generator.generate_family(
+            show_progress=False,
+            collect_stats=self.config.collect_family_stats,
+            n_graphs=n_graphs
+        )
     
     def analyze_family_consistency(self) -> Dict[str, Any]:
         """Analyze family consistency using existing methods."""
@@ -329,19 +511,17 @@ class InductiveExperiment:
             raise ValueError("Must generate graph family before preparing data")
         
         # Prepare inductive data
-        inductive_data, sheaf_inductive_data, fold_indices = prepare_inductive_data(self.family_graphs, 
+        inductive_data, _, split_index_dict = prepare_inductive_data(self.family_graphs, 
                                                 self.config,
                                                 family_graphs_training_indices=self.family_graphs_training_indices,
                                                 family_graphs_val_test_indices=self.family_graphs_val_test_indices,
+                                                family_graphs_training_val_indices=self.family_graphs_training_val_indices,
+                                                family_graphs_test_indices=self.family_graphs_test_indices,
                                                 family_graph_community_labels_list=self.communities_per_graph,
                                                 )
         
-        unseen_community_combination_score = self.calculate_unseen_community_combination_score(fold_indices)
-        print(f"Unseen community combination score: {unseen_community_combination_score}")
-        
-        # Store data dictionaries to save later
+        # Store data dictionary to save later
         self.inductive_data = inductive_data
-        self.sheaf_inductive_data = sheaf_inductive_data
         
         # Create GPU-resident dataloaders for efficiency
         print("Creating GPU-resident dataloaders...")
@@ -349,42 +529,35 @@ class InductiveExperiment:
                                                    self.config,
                                                    self.device)
         
-        # Create sheaf-specific dataloaders (batch size 1, with precomputed cache)
-        print("Creating sheaf-specific dataloaders...")
-        from experiments.inductive.data import create_sheaf_dataloaders
-        sheaf_dataloaders = create_sheaf_dataloaders(sheaf_inductive_data, self.config)
-        
-        # Make sheaf dataloaders GPU-resident as well
-        print("Making sheaf dataloaders GPU-resident...")
-        sheaf_dataloaders = create_gpu_resident_dataloaders(sheaf_inductive_data, 
-                                                          self.config,
-                                                          self.device)
-        
         # Verify data is properly loaded to GPU
         if not verify_gpu_resident_data(dataloaders, self.device):
-            raise RuntimeError("Failed to load normal data to GPU properly")
-        
-        # Verify sheaf data is properly loaded to GPU
-        if not verify_gpu_resident_data(sheaf_dataloaders, self.device):
-            raise RuntimeError("Failed to load sheaf data to GPU properly")
+            raise RuntimeError("Failed to load data to GPU properly")
         
         # Print split information
         for task in self.config.tasks:
             print(f"\nTask: {task}")
-            for fold_name, fold_data in inductive_data[task].items():
-                if fold_name == 'metadata':  # Skip metadata entry
-                    continue
-                print(f"  Fold: {fold_name}")
-                for split_name, split_data in fold_data.items():
-                    if split_name == 'metadata':  # Skip metadata entry
+            if 'split' in inductive_data[task]:
+                # New single split structure
+                split_data = inductive_data[task]['split']
+                for split_name, split_info in split_data.items():
+                    n_graphs = split_info['n_graphs']
+                    batch_size = split_info['batch_size']
+                    print(f"  {split_name}: {n_graphs} graphs, batch size {batch_size}")
+            else:
+                # Old fold-based structure (for backward compatibility)
+                for fold_name, fold_data in inductive_data[task].items():
+                    if fold_name == 'metadata':  # Skip metadata entry
                         continue
-                    n_graphs = split_data['n_graphs']
-                    batch_size = split_data['batch_size']
-                    print(f"    {split_name}: {n_graphs} graphs, batch size {batch_size}")
+                    print(f"  Fold: {fold_name}")
+                    for split_name, split_data in fold_data.items():
+                        if split_name == 'metadata':  # Skip metadata entry
+                            continue
+                        n_graphs = split_data['n_graphs']
+                        batch_size = split_data['batch_size']
+                        print(f"    {split_name}: {n_graphs} graphs, batch size {batch_size}")
         
         self.dataloaders = dataloaders
-        self.sheaf_dataloaders = sheaf_dataloaders
-        return dataloaders, unseen_community_combination_score
+        return dataloaders, split_index_dict
     
     def run_experiments(self) -> Dict[str, Any]:
         """Run experiments for all configured tasks and models."""
@@ -416,12 +589,12 @@ class InductiveExperiment:
             print(f"{'='*40}")
             
             task_dataloaders = self.dataloaders[task]
-            # task_sheaf_dataloaders = self.sheaf_dataloaders[task]
             task_results = {}
             
             # Get dimensions from sample batch
-            first_fold_name = list(task_dataloaders.keys())[0]
-            sample_batch = next(iter(task_dataloaders[first_fold_name]['train']))
+            # Handle flattened structure: task_dataloaders[split_name] = DataLoader
+            sample_batch = next(iter(task_dataloaders['train']))
+            
             input_dim = sample_batch.x.shape[1]
             
             is_regression = task.startswith('k_hop_community_counts') or task == 'triangle_count'
@@ -648,30 +821,62 @@ class InductiveExperiment:
             clean_results[task] = {}
 
             for model_name, model_results in task_results.items():
-                test_metrics = {}
-                best_val_metrics = []
-                train_times = []
-
-                if 'fold_test_metrics' in model_results:
+                # Handle new repetition-based structure
+                if 'repetition_test_metrics' in model_results:
+                    # New structure with repetitions
+                    repetition_test_metrics = model_results.get('repetition_test_metrics', {})
+                    repetition_best_val_metrics = model_results.get('repetition_best_val_metrics', {})
+                    repetition_train_time = model_results.get('repetition_train_time', {})
+                    
+                    # Aggregate test metrics across repetitions
+                    test_metrics = {}
+                    best_val_metrics = []
+                    train_times = []
+                    
+                    for repetition_name, repetition_data in repetition_test_metrics.items():
+                        for metric in repetition_data:
+                            if metric not in test_metrics:
+                                test_metrics[metric] = [repetition_data[metric]]
+                            else:
+                                test_metrics[metric].append(repetition_data[metric])
+                    
+                    # Collect best val metrics and train times
+                    for repetition_name in repetition_best_val_metrics:
+                        best_val_metrics.append(repetition_best_val_metrics[repetition_name])
+                        train_times.append(repetition_train_time[repetition_name])
+                    
                     success = True
+                    
+                elif 'fold_test_metrics' in model_results:
+                    # Old fold-based structure (for backward compatibility)
+                    model_fold_test_metrics = model_results.get('fold_test_metrics', {})
+                    model_fold_best_val_metrics = model_results.get('fold_best_val_metrics', [])
+                    model_fold_train_time = model_results.get('fold_train_time', 0.0)
+
+                    test_metrics = {}
+                    best_val_metrics = []
+                    train_times = []
+
+                    for fold_name, fold_data in model_fold_test_metrics.items():
+                        for metric in fold_data:
+                            if metric not in test_metrics:
+                                test_metrics[metric] = [fold_data[metric]]
+                            else:
+                                test_metrics[metric].append(fold_data[metric])
+
+                        best_val_metrics.append(model_fold_best_val_metrics[fold_name])
+                        train_times.append(model_fold_train_time[fold_name])
+                    
+                    success = True
+                    
                 else:
+                    # Fallback for other result structures
+                    test_metrics = {}
+                    best_val_metrics = []
+                    train_times = []
                     success = False
 
-                model_fold_test_metrics = model_results.get('fold_test_metrics', {})
-                model_fold_best_val_metrics = model_results.get('fold_best_val_metrics', [])
-                model_fold_train_time = model_results.get('fold_train_time', 0.0)
-
-                for fold_name, fold_data in model_fold_test_metrics.items():
-                    for metric in fold_data:
-                        if metric not in test_metrics:
-                            test_metrics[metric] = [fold_data[metric]]
-                        else:
-                            test_metrics[metric].append(fold_data[metric])
-
-                    best_val_metrics.append(model_fold_best_val_metrics[fold_name])
-                    train_times.append(model_fold_train_time[fold_name])
-
-                # Go over each metric in test metrics and take the mean and std
+                # Calculate final aggregated metrics
                 final_test_metrics = {}
                 for metric in test_metrics:
                     final_test_metrics[metric] = {
@@ -759,36 +964,193 @@ class InductiveExperiment:
         else:
             return obj
     
-    def calculate_unseen_community_combination_score(self, fold_indices: Dict[int, Dict[str, List[int]]]) -> float:
-        """Calculate unseen community combination score."""
-        unseen_community_combination_scores = []
-        for fold_name, fold_data in fold_indices.items():
-            print(f"Fold {fold_name}:")
-            training_combinations = []
-            for graph_indices in fold_data['train']:
-                training_combinations.append(self.communities_per_graph[graph_indices])
-            # Use set of sorted tuples for uniqueness
-            unique_set_of_community_training_combinations = {tuple(sorted(arr)) for arr in training_combinations}
-            unique_list_of_community_training_combinations = [list(tup) for tup in unique_set_of_community_training_combinations]
-            print(f"Training combinations: {unique_list_of_community_training_combinations}")
 
-            val_test_fold_unseen_community_combinations = 0
-            number_of_val_test_graphs = len(fold_data['val']) + len(fold_data['test'])
-            for graph_indices in fold_data['val'] + fold_data['test']:
-                sorted_tuple_of_community_combination = tuple(sorted(self.communities_per_graph[graph_indices]))
-                # print(f"To add or not to add: {sorted_tuple_of_community_combination} in {unique_set_of_community_training_combinations}")
-                if sorted_tuple_of_community_combination not in unique_set_of_community_training_combinations:
-                    val_test_fold_unseen_community_combinations += 1
 
-            # print(f"Nummber of unseen community combinations: {val_test_fold_unseen_community_combinations}")
-            unseen_community_combination_score_fold = val_test_fold_unseen_community_combinations / number_of_val_test_graphs
-            unseen_community_combination_scores.append(unseen_community_combination_score_fold)
+    def validate_distributional_shifts(self) -> Dict[str, Any]:
+        """Comprehensive validation of distributional shifts."""
+        print("\n" + "="*60)
+        print("VALIDATING DISTRIBUTIONAL SHIFTS")
+        print("="*60)
+        
+        validation_results = {
+            'property_shifts': {},
+            'overall_status': 'PASS'
+        }
+        
+        # Validate property shifts if applicable
+        if (self.config.distributional_shift_in_eval and 
+            self.config.distributional_shift_in_eval_type in ['homophily', 'density', 'n_nodes']):
+            validation_results['property_shifts'] = self._validate_property_shifts()
+        
+        # Print summary
+        self._print_validation_summary(validation_results)
+        
+        return validation_results
+    
 
-        print(f"Unseen community combination scores: {unseen_community_combination_scores}")
-        unseen_community_combination_score = np.mean(unseen_community_combination_scores)
-
-        return unseen_community_combination_score
-
+    
+    def _validate_property_shifts(self) -> Dict[str, Any]:
+        """Validate that property shifts are correctly applied."""
+        print(f"\nValidating {self.config.distributional_shift_in_eval_type} shifts...")
+        
+        shift_type = self.config.distributional_shift_in_eval_type
+        
+        # Determine which graphs should have the shift
+        if self.config.distributional_shift_test_only:
+            # Test graphs should have shift
+            if self.family_graphs_test_indices is not None:
+                shifted_indices = self.family_graphs_test_indices
+                baseline_indices = self.family_graphs_training_val_indices
+            else:
+                # Fallback: assume last portion is test
+                n_graphs = len(self.family_graphs)
+                test_size = int(n_graphs * self.config.test_graph_ratio)
+                shifted_indices = list(range(n_graphs - test_size, n_graphs))
+                baseline_indices = list(range(n_graphs - test_size))
+        else:
+            # Val and test graphs should have shift
+            if self.family_graphs_val_test_indices is not None:
+                shifted_indices = self.family_graphs_val_test_indices
+                baseline_indices = self.family_graphs_training_indices
+            else:
+                # Fallback: assume second half has shift
+                n_graphs = len(self.family_graphs)
+                shifted_indices = list(range(n_graphs // 2, n_graphs))
+                baseline_indices = list(range(n_graphs // 2))
+        
+        # Calculate property statistics
+        baseline_stats = self._calculate_property_statistics(baseline_indices, shift_type)
+        shifted_stats = self._calculate_property_statistics(shifted_indices, shift_type)
+        
+        # Validate the shift
+        validation_result = {
+            'shift_type': shift_type,
+            'baseline_stats': baseline_stats,
+            'shifted_stats': shifted_stats,
+            'shift_magnitude': self._calculate_shift_magnitude(baseline_stats, shifted_stats, shift_type),
+            'status': 'PASS'  # Will be updated based on validation logic
+        }
+        
+        # Print statistics
+        print(f"  Baseline {shift_type}: {baseline_stats['mean']:.3f} ± {baseline_stats['std']:.3f}")
+        print(f"  Shifted {shift_type}: {shifted_stats['mean']:.3f} ± {shifted_stats['std']:.3f}")
+        print(f"  Shift magnitude: {validation_result['shift_magnitude']:.3f}")
+        
+        # Validate that shift is significant
+        if shift_type in ['homophily', 'density']:
+            expected_shift = self.config.distributional_shift_in_eval_homophily_shift if shift_type == 'homophily' else self.config.distributional_shift_in_eval_density_shift
+            actual_shift = abs(shifted_stats['mean'] - baseline_stats['mean'])
+            if actual_shift < expected_shift * 0.5:  # Allow some tolerance
+                validation_result['status'] = 'FAIL'
+                print(f"  WARNING: Shift magnitude ({actual_shift:.3f}) is smaller than expected ({expected_shift:.3f})")
+            else:
+                print(f"  ✓ Shift magnitude is appropriate")
+        
+        elif shift_type == 'n_nodes':
+            expected_shift = self.config.distributional_shift_in_eval_n_nodes_shift
+            actual_shift = shifted_stats['mean'] - baseline_stats['mean']
+            if abs(actual_shift) < expected_shift * 0.5:  # Allow some tolerance
+                validation_result['status'] = 'FAIL'
+                print(f"  WARNING: Node count shift ({actual_shift:.1f}) is smaller than expected ({expected_shift:.1f})")
+            else:
+                print(f"  ✓ Node count shift is appropriate")
+        
+        return validation_result
+    
+    def _calculate_property_statistics(self, indices: List[int], property_type: str) -> Dict[str, float]:
+        """Calculate statistics for a specific property across a set of graphs."""
+        if not indices or not self.family_graphs:
+            return {'mean': 0.0, 'std': 0.0, 'min': 0.0, 'max': 0.0}
+        
+        values = []
+        for idx in indices:
+            if idx < len(self.family_graphs):
+                graph = self.family_graphs[idx]
+                
+                if property_type == 'homophily':
+                    # Calculate homophily from graph structure
+                    homophily = self._calculate_graph_homophily(graph)
+                    values.append(homophily)
+                    
+                elif property_type == 'density':
+                    # Calculate edge density
+                    n_edges = graph.graph.number_of_edges()
+                    n_nodes = graph.graph.number_of_nodes()
+                    density = n_edges / (n_nodes * (n_nodes - 1) / 2) if n_nodes > 1 else 0
+                    values.append(density)
+                    
+                elif property_type == 'n_nodes':
+                    # Node count
+                    values.append(graph.graph.number_of_nodes())
+        
+        if not values:
+            return {'mean': 0.0, 'std': 0.0, 'min': 0.0, 'max': 0.0}
+        
+        return {
+            'mean': float(np.mean(values)),
+            'std': float(np.std(values)),
+            'min': float(np.min(values)),
+            'max': float(np.max(values))
+        }
+    
+    def _calculate_graph_homophily(self, graph_sample) -> float:
+        """Calculate homophily for a single graph."""
+        try:
+            # Use community labels to calculate homophily
+            if hasattr(graph_sample, 'community_labels') and graph_sample.community_labels is not None:
+                labels = graph_sample.community_labels
+                edges = list(graph_sample.graph.edges())
+                
+                if not edges:
+                    return 0.0
+                
+                same_community_edges = 0
+                for u, v in edges:
+                    if labels[u] == labels[v]:
+                        same_community_edges += 1
+                
+                return same_community_edges / len(edges)
+            else:
+                return 0.0
+        except Exception:
+            return 0.0
+    
+    def _calculate_shift_magnitude(self, baseline_stats: Dict, shifted_stats: Dict, shift_type: str) -> float:
+        """Calculate the magnitude of the property shift."""
+        baseline_mean = baseline_stats['mean']
+        shifted_mean = shifted_stats['mean']
+        
+        if shift_type in ['homophily', 'density']:
+            return abs(shifted_mean - baseline_mean)
+        elif shift_type == 'n_nodes':
+            return shifted_mean - baseline_mean
+        else:
+            return 0.0
+    
+    def _print_validation_summary(self, validation_results: Dict[str, Any]):
+        """Print a summary of validation results."""
+        print("\n" + "="*60)
+        print("VALIDATION SUMMARY")
+        print("="*60)
+        
+        overall_status = 'PASS'
+        
+        # Property shift validation
+        if validation_results['property_shifts']:
+            ps_result = validation_results['property_shifts']
+            print(f"Property Shifts ({ps_result['shift_type']}): {ps_result['status']}")
+            if ps_result['status'] == 'FAIL':
+                overall_status = 'FAIL'
+        
+        print(f"\nOverall Validation Status: {overall_status}")
+        
+        if overall_status == 'PASS':
+            print("✓ All distributional shifts are correctly implemented")
+        else:
+            print("✗ Some distributional shifts have issues")
+        
+        validation_results['overall_status'] = overall_status
+    
     def run(self) -> Dict[str, Any]:
         """Run complete experiment pipeline."""
         try:
@@ -798,6 +1160,9 @@ class InductiveExperiment:
             # Generate graph family
             self.family_graphs = self.generate_graph_family()
             
+            # Validate distributional shifts
+            validation_results = self.validate_distributional_shifts()
+            
             # Analyze family consistency
             family_consistency = self.analyze_family_consistency()
             
@@ -805,7 +1170,7 @@ class InductiveExperiment:
             graph_signals = self.calculate_graph_signals()
             
             # Prepare data
-            dataloaders, unseen_community_combination_score = self.prepare_data()
+            dataloaders, split_index_dict = self.prepare_data()
             
             # Run experiments
             results = self.run_experiments()
@@ -813,11 +1178,9 @@ class InductiveExperiment:
             # Store results in instance variable for saving and reporting
             self.results = results
 
-            # Save self.inductive_data and self.sheaf_inductive_data to file as pickle
+            # Save self.inductive_data to file as pickle
             with open(os.path.join(self.output_dir, "inductive_data.pkl"), 'wb') as f:
                 pickle.dump(self.inductive_data, f)
-            with open(os.path.join(self.output_dir, "sheaf_inductive_data.pkl"), 'wb') as f:
-                pickle.dump(self.sheaf_inductive_data, f)
             
             # Save results
             self.save_results()
@@ -836,13 +1199,13 @@ class InductiveExperiment:
             return {
                 'output_dir': self.output_dir,
                 'family_graphs': self.family_graphs,
+                'validation_results': validation_results,
                 'family_consistency': family_consistency,
                 'graph_signals': graph_signals,
                 'results': results,
                 'config': self.config,
                 'summary_report': summary_report,
-                'total_time': total_time,
-                'unseen_community_combination_score': unseen_community_combination_score
+                'total_time': total_time
             }
             
         except Exception as e:
@@ -1018,6 +1381,7 @@ class InductiveExperiment:
         lines.append(f"  Models trained: {total_models}")
         lines.append(f"  Successful: {successful_models}")
         lines.append(f"  Success rate: {successful_models/total_models:.1%}" if total_models > 0 else "  Success rate: 0%")
+        lines.append(f"  Repetitions per model: {self.config.n_repetitions}")
         
         return "\n".join(lines)
 
@@ -1116,7 +1480,7 @@ class PreTrainingRunner:
         # Generate family
         print(f"Generating {self.config.get_total_graphs()} graphs total...")
         start_time = time.time()
-        family_graphs = family_generator.generate_family(show_progress=True)
+        family_graphs = family_generator.generate_family(show_progress=False)
         generation_time = time.time() - start_time
         
         print(f"Family generation completed in {generation_time:.2f} seconds")
@@ -1932,4 +2296,120 @@ def load_finetuning_graphs_from_model(
             return None
     
     return None
+
+def test_distributional_shifts():
+    """Legacy test function - use test_distributional_shifts_detailed() in test_distributional_shifts.py instead."""
+    print("This function is deprecated. Use test_distributional_shifts_detailed() from test_distributional_shifts.py instead.")
+    return {}
+
+
+
+def test_property_shifts():
+    """Specific test for property shifts."""
+    print("="*80)
+    print("TESTING PROPERTY SHIFTS")
+    print("="*80)
+    
+    from experiments.inductive.config import InductiveExperimentConfig
+    
+    # Test different property shifts
+    property_tests = [
+        {
+            'name': 'Homophily Shift',
+            'shift_type': 'homophily',
+            'shift_amount': 0.2
+        },
+        {
+            'name': 'Density Shift',
+            'shift_type': 'density',
+            'shift_amount': 0.2
+        },
+        {
+            'name': 'Node Count Shift',
+            'shift_type': 'n_nodes',
+            'shift_amount': 50
+        }
+    ]
+    
+    results = {}
+    
+    for test in property_tests:
+        print(f"\nTesting {test['name']}...")
+        
+        # Create config
+        config = InductiveExperimentConfig(
+            # Basic settings
+            n_graphs=100,
+            train_graph_ratio=0.6,
+            val_graph_ratio=0.2,
+            test_graph_ratio=0.2,
+            n_repetitions=3,
+            
+            # Property shift
+            distributional_shift_in_eval=True,
+            distributional_shift_in_eval_type=test['shift_type'],
+            distributional_shift_test_only=True,
+            
+            # Shift amounts
+            distributional_shift_in_eval_homophily_shift=test['shift_amount'] if test['shift_type'] == 'homophily' else 0.2,
+            distributional_shift_in_eval_density_shift=test['shift_amount'] if test['shift_type'] == 'density' else 0.1,
+            distributional_shift_in_eval_n_nodes_shift=test['shift_amount'] if test['shift_type'] == 'n_nodes' else 20,
+            
+            # Graph generation settings
+            universe_K=10,
+            universe_feature_dim=16,
+            universe_edge_density=0.2,
+            universe_homophily=0.3,
+            min_n_nodes=70,
+            max_n_nodes=120,
+            min_communities=4,
+            max_communities=7,
+            
+            # Tasks
+            tasks=['community'],
+            
+            # Other settings
+            seed=42,
+            output_dir=f'test_property_{test["shift_type"]}_output',
+            force_cpu=True
+        )
+        
+        # Create experiment
+        experiment = InductiveExperiment(config)
+        
+        # Generate graph family
+        family_graphs = experiment.generate_graph_family()
+        
+        # Validate property shifts
+        validation_results = experiment.validate_distributional_shifts()
+        
+        # Check if property shift is significant
+        if validation_results['property_shifts']:
+            property_result = validation_results['property_shifts']
+            shift_magnitude = property_result['shift_magnitude']
+            expected_shift = test['shift_amount']
+            
+            # Check if shift is significant (at least 50% of expected)
+            if shift_magnitude >= expected_shift * 0.5:
+                print(f"✓ {test['name']}: Shift magnitude {shift_magnitude:.3f} is appropriate")
+                results[test['name']] = {'success': True, 'shift_magnitude': shift_magnitude}
+            else:
+                print(f"✗ {test['name']}: Shift magnitude {shift_magnitude:.3f} is too small")
+                results[test['name']] = {'success': False, 'shift_magnitude': shift_magnitude}
+        else:
+            print(f"✗ {test['name']}: No property shift validation results")
+            results[test['name']] = {'success': False, 'error': 'No validation results'}
+    
+    # Print summary
+    print(f"\nProperty Shift Test Summary:")
+    passed_tests = sum(1 for result in results.values() if result['success'])
+    total_tests = len(results)
+    
+    for test_name, result in results.items():
+        status = "PASS" if result['success'] else "FAIL"
+        print(f"  {test_name}: {status}")
+    
+    print(f"\nOverall: {passed_tests}/{total_tests} property shift tests passed")
+    
+    return results
 

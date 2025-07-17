@@ -142,6 +142,46 @@ class DataProcessor:
                                         key_normalized_ci = f"model.{task_name}.{model_name}.{metric_name}_normalized.ci95"
                                         metrics[key_normalized_mean] = normalized_mean
                                         metrics[key_normalized_ci] = normalized_ci
+                        elif 'repetition_test_metrics' in model_data:
+                            # New repetition-based structure
+                            repetition_metrics = model_data['repetition_test_metrics']
+                            repetition_values = {}
+                            
+                            # Collect all repetition values for each metric
+                            for repetition_name, repetition_data in repetition_metrics.items():
+                                if isinstance(repetition_data, dict):
+                                    for metric_name, metric_value in repetition_data.items():
+                                        if isinstance(metric_value, (int, float)):
+                                            if metric_name not in repetition_values:
+                                                repetition_values[metric_name] = []
+                                            repetition_values[metric_name].append(metric_value)
+                            
+                            # Calculate mean and 95% confidence interval for each metric
+                            for metric_name, values in repetition_values.items():
+                                if values:
+                                    mean_val = np.mean(values)
+                                    std_val = np.std(values)
+                                    n_repetitions = len(values)
+                                    ci_95 = 1.96 * std_val / np.sqrt(n_repetitions)
+                                    
+                                    # For regression tasks, negate MSE values to make maximum = best
+                                    if is_regression and metric_name.lower() in ['mse', 'rmse', 'mae']:
+                                        mean_val = -mean_val
+                                    
+                                    key_mean = f"model.{task_name}.{model_name}.{metric_name}.mean"
+                                    key_ci = f"model.{task_name}.{model_name}.{metric_name}.ci95"
+                                    metrics[key_mean] = mean_val
+                                    metrics[key_ci] = ci_95
+                                    
+                                    # Add normalized version for regression tasks
+                                    if is_regression and mean_density is not None and mean_density > 0:
+                                        normalized_mean = mean_val / mean_density
+                                        normalized_ci = ci_95 / mean_density
+                                        
+                                        key_normalized_mean = f"model.{task_name}.{model_name}.{metric_name}_normalized.mean"
+                                        key_normalized_ci = f"model.{task_name}.{model_name}.{metric_name}_normalized.ci95"
+                                        metrics[key_normalized_mean] = normalized_mean
+                                        metrics[key_normalized_ci] = normalized_ci
                         else:
                             # Fallback for non-fold structure
                             for metric_name, metric_value in model_data.items():

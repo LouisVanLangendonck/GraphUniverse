@@ -59,15 +59,20 @@ def parse_args():
                         help='Dont do any other experiments. Only fine-tune pre-trained models and from scratch version of it and hyperparameter optimization of that model type.')    
         
     # === TASKS ===
-    parser.add_argument('--tasks', type=str, nargs='+', default=['k_hop_community_counts_k4'],
+    parser.add_argument('--tasks', type=str, nargs='+', default=['community'],
                         choices=['community', 'k_hop_community_counts_k1', 'k_hop_community_counts_k2', 'k_hop_community_counts_k3', 'triangle_count'],
                         help='Learning tasks to run')
     parser.add_argument('--khop_k', type=int, default=2,
                         help='k value for k-hop community counting task')
     
-    # === DATA SPLITS ===
-    parser.add_argument('--no_unseen_community_combinations_for_eval', action='store_true', default=False,
-                        help='Do not allow unseen community combinations for evaluation')
+    # === EVALUATION DISTRIBUTIONAL SHIFT ===
+    parser.add_argument('--distributional_shift_in_eval', action='store_true', default=True,
+                        help='Use distributional shift in evaluation')
+    parser.add_argument('--distributional_shift_test_only', action='store_true', default=True,
+                        help='Use distributional shift in evaluation only for test set')
+    parser.add_argument('--distributional_shift_in_eval_type', type=str, default='homophily',
+                        choices=['homophily', 'density', 'n_nodes'],
+                        help='Type of distributional shift to apply in evaluation')
 
     # === GRAPH FAMILY GENERATION ===
     parser.add_argument('--n_graphs', type=int, default=80,
@@ -103,17 +108,17 @@ def parse_args():
     # === GRAPH FAMILY VARIATION ===
     parser.add_argument('--homophily_range', type=float, nargs=2, default=[0.0, 0.1],
                         help='Range around universe homophily')
-    parser.add_argument('--density_range', type=float, nargs=2, default=[0.0, 0.1],
+    parser.add_argument('--density_range', type=float, nargs=2, default=[0.0, 0.05],
                         help='Range around universe density')
     parser.add_argument('--degree_heterogeneity', type=float, default=0.5,
                         help='Degree heterogeneity parameter')
-    parser.add_argument('--edge_noise', type=float, default=0.1,
+    parser.add_argument('--edge_noise', type=float, default=0.0,
                         help='Edge noise level')
     
     # === DCCC-SBM PARAMETERS ===
-    parser.add_argument('--community_imbalance_range', type=float, nargs=2, default=[0.0, 0.3],
+    parser.add_argument('--community_imbalance_range', type=float, nargs=2, default=[0.0, 0.1],
                         help='Range for community size imbalance (DCCC-SBM)')
-    parser.add_argument('--degree_separation_range', type=float, nargs=2, default=[0.3, 1.0],
+    parser.add_argument('--degree_separation_range', type=float, nargs=2, default=[0.5, 1.0],
                         help='Range for degree distribution separation (DCCC-SBM)')
     
     # === METAPATH TASK ARGUMENTS === 
@@ -131,7 +136,7 @@ def parse_args():
     # === MODELS ===
     parser.add_argument('--differentiate_with_and_without_PE', action='store_true', default=False,
                         help='Differentiate between models with and without PE')
-    parser.add_argument('--gnn_types', type=str, nargs='+', default=['gcn', 'sage', 'gin', 'gat'],
+    parser.add_argument('--gnn_types', type=str, nargs='+', default=['gcn', 'sage'],
                         choices=['gcn', 'fagcn', 'sage', 'gat', 'gin'],
                         help='Types of GNN models to run')
     parser.add_argument('--transformer_types', type=str, nargs='+', 
@@ -170,6 +175,8 @@ def parse_args():
                         help='Number of trials for hyperparameter optimization')
     parser.add_argument('--trial_epochs', type=int, default=50,
                         help='Number of epochs for hyperparameter optimization')
+    parser.add_argument('--n_repetitions', type=int, default=3,
+                        help='Number of random seed repetitions for statistical robustness')
 
     # === ANALYSIS ===
     parser.add_argument('--require_consistency_check', action='store_true', default=False,
@@ -182,9 +189,9 @@ def parse_args():
     # === FEATURE GENERATION ===
     parser.add_argument('--cluster_count_factor', type=float, default=1.0,
                         help='Factor for cluster count')
-    parser.add_argument('--center_variance', type=float, default=1.2,
+    parser.add_argument('--center_variance', type=float, default=0.1,
                         help='Variance for center of clusters')
-    parser.add_argument('--cluster_variance', type=float, default=0.05,
+    parser.add_argument('--cluster_variance', type=float, default=0.5,
                         help='Variance for cluster sizes')
     parser.add_argument('--assignment_skewness', type=float, default=0.0,
                         help='Skewness for feature assignment')
@@ -235,7 +242,7 @@ def create_config_from_args(args) -> InductiveExperimentConfig:
         
         # === SSL FINE-TUNING SETUP ===
         use_pretrained=args.use_pretrained,
-        pretrained_model_dir=args.pretrained_model_dir,
+        pretrained_model_dir=getattr(args, 'pretrained_model_dir', None),
         pretrained_model_id=getattr(args, 'pretrained_model_id', None),
         graph_family_id=getattr(args, 'graph_family_id', None),
         graph_family_dir=getattr(args, 'graph_family_dir', 'graph_families'),
@@ -250,8 +257,10 @@ def create_config_from_args(args) -> InductiveExperimentConfig:
         tasks=args.tasks,
         khop_community_counts_k=args.khop_k,
 
-        # === DATA SPLITS ===
-        allow_unseen_community_combinations_for_eval=False if args.no_unseen_community_combinations_for_eval else True,
+        # === EVALUATION DISTRIBUTIONAL SHIFT ===
+        distributional_shift_in_eval=args.distributional_shift_in_eval,
+        distributional_shift_in_eval_type=args.distributional_shift_in_eval_type,
+        distributional_shift_test_only=args.distributional_shift_test_only,
 
         # === METAPATH CONFIGURATION ===
         enable_metapath_tasks=args.enable_metapath_tasks,
@@ -326,6 +335,7 @@ def create_config_from_args(args) -> InductiveExperimentConfig:
         batch_size=args.batch_size,
         n_trials=args.n_trials,
         trial_epochs=args.trial_epochs,
+        n_repetitions=args.n_repetitions,
 
         # === ANALYSIS ===
         require_consistency_check=args.require_consistency_check,
@@ -357,6 +367,7 @@ def main():
     print(f"  Node range: [{config.min_n_nodes}, {config.max_n_nodes}]")
     print(f"  Community range: [{config.min_communities}, {config.max_communities}]")
     print(f"  Tasks: {', '.join(config.tasks)}")
+    print(f"  Repetitions: {config.n_repetitions} (with different random seeds)")
     
     models = []
     if config.run_gnn:

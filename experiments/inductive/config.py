@@ -44,7 +44,13 @@ class InductiveExperimentConfig:
     max_n_nodes: int = 120
     min_communities: int = 3
     max_communities: int = 7
-    
+    distributional_shift_in_eval: bool = True # Whether to shift the validation set
+    distributional_shift_test_only: bool = False # Whether to shift the test set only
+    distributional_shift_in_eval_type: str = 'unseen_community_combinations' # Type of distributional shift to apply in evaluation
+    distributional_shift_in_eval_homophily_shift: float = 0.2
+    distributional_shift_in_eval_density_shift: float = 0.1
+    distributional_shift_in_eval_n_nodes_shift: int = 150
+
     # === UNIVERSE PARAMETERS ===
     universe_K: int = 10
     universe_feature_dim: int = 32
@@ -74,8 +80,8 @@ class InductiveExperimentConfig:
     use_dccc_sbm: bool = True  # If False, uses standard DC-SBM
     
     # === DCCC-SBM PARAMETERS ===
-    community_imbalance_range: Tuple[float, float] = (0.0, 0.3)
-    degree_separation_range: Tuple[float, float] = (0.0, 1.0)
+    community_imbalance_range: Tuple[float, float] = (0.0, 0.2)
+    degree_separation_range: Tuple[float, float] = (0.5, 1.0)
     degree_distribution: str = "power_law"  # "power_law", "exponential", "uniform", "standard"
     
     # Degree distribution specific parameters
@@ -96,12 +102,11 @@ class InductiveExperimentConfig:
     min_component_size: int = 10
     
     # === DATA SPLITS ===
-    k_fold: int = 3
+    n_repetitions: int = 3  # Number of random seed repetitions instead of k-fold
     train_graph_ratio: float = 0.5
     val_graph_ratio: float = 0.25
     test_graph_ratio: float = 0.25
     inductive_mode: str = "graph_level"  # "graph_level" or "mixed"
-    allow_unseen_community_combinations_for_eval: bool = True
     
     # === TASKS ===
     tasks: List[str] = field(default_factory=lambda: ['community', 'triangle_count'])
@@ -414,7 +419,7 @@ class PreTrainingConfig:
     
     def __post_init__(self):
         """Validate configuration."""
-        valid_tasks = ["link_prediction", "dgi", "graphmae"]
+        valid_tasks = ["link_prediction", "dgi", "graphcl"]
         if self.pretraining_task not in valid_tasks:
             raise ValueError(f"pretraining_task must be one of {valid_tasks}")
         

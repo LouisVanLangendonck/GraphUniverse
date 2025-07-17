@@ -86,9 +86,27 @@ def get_total_classes_from_dataloaders(dataloaders: Dict[str, DataLoader]) -> in
             output_dim = int(output_dim)
         return output_dim
     
-    # Fallback: Get from first batch if metadata not available
-    first_fold_name = list(dataloaders.keys())[0]
-    sample_batch = next(iter(dataloaders[first_fold_name]['train']))
+    # Handle flattened structure: dataloaders[task][split_name] = DataLoader
+    sample_batch = next(iter(dataloaders['train']))
+    if hasattr(sample_batch, 'universe_K'):
+        output_dim = sample_batch.universe_K
+        print(f"Using universe K from batch: {output_dim}")
+        # Ensure output_dim is always an int
+        if isinstance(output_dim, torch.Tensor):
+            output_dim = output_dim.cpu().numpy()
+            if hasattr(output_dim, 'size') and output_dim.size > 1:
+                output_dim = int(output_dim[0])
+            else:
+                output_dim = int(output_dim)
+        elif isinstance(output_dim, (list, tuple)):
+            output_dim = int(output_dim[0])
+        else:
+            output_dim = int(output_dim)
+        return output_dim
+    
+    # Handle old fold-based structure (for backward compatibility)
+    first_split_name = list(dataloaders.keys())[0]
+    sample_batch = next(iter(dataloaders[first_split_name]['train']))
     if hasattr(sample_batch, 'universe_K'):
         output_dim = sample_batch.universe_K
         print(f"Using universe K from batch: {output_dim}")
@@ -107,15 +125,14 @@ def get_total_classes_from_dataloaders(dataloaders: Dict[str, DataLoader]) -> in
     
     # Last resort: Try to infer from labels
     all_labels = set()
-    for fold_name, fold_data in dataloaders.items():
-        if fold_name == 'metadata':
+    
+    # Handle flattened structure: dataloaders[task][split_name] = DataLoader
+    for split_name, dataloader in dataloaders.items():
+        if split_name == 'metadata':
             continue
-        for split_name, dataloader in fold_data.items():
-            if split_name == 'metadata':
-                continue
-            for batch in dataloader:
-                labels = batch.y
-                all_labels.update(labels.cpu().numpy().tolist())
+        for batch in dataloader:
+            labels = batch.y
+            all_labels.update(labels.cpu().numpy().tolist())
     
     output_dim = max(all_labels) + 1
     print(f"Warning: Inferring output dimension from labels: {output_dim}")
@@ -124,7 +141,7 @@ def get_total_classes_from_dataloaders(dataloaders: Dict[str, DataLoader]) -> in
 def train_inductive_model(
     model: Union[GNNModel, MLPModel, SklearnModel, GraphTransformerModel, SheafDiffusionModel],
     model_name: str,
-    dataloaders: Dict[str, Dict[str, DataLoader]],
+    dataloaders: Dict[str, Any],
     config: InductiveExperimentConfig,
     task: str,
     device: torch.device,
@@ -137,6 +154,7 @@ def train_inductive_model(
     Args:
         model: Model to train
         dataloaders: Dictionary with train/val/test dataloaders (GPU-resident)
+                   Can be either new single split structure or old fold-based structure
         config: Experiment configuration
         task: Current task name
         device: Device to use for training
@@ -154,20 +172,14 @@ def train_inductive_model(
     effective_patience = config.patience
 
     training_history = {}
-    for fold_name, fold_data in dataloaders.items():
-        training_history[fold_name] = {
-            'train_loss': [],
-            'val_loss': [],
-            'train_metric': [],
-            'val_metric': []
-    }
-    fold_train_time = {}
-    fold_test_metrics = {}
-    fold_best_val_metrics = {}
+    repetition_train_time = {}
+    repetition_test_metrics = {}
+    repetition_best_val_metrics = {}
     
     print(f"\nStarting training with patience={effective_patience}")
     print("Early stopping will trigger if validation metric doesn't improve for", effective_patience, "epochs")
     print(f"Using GPU-resident data on {device}")
+    print(f"Running {config.n_repetitions} repetitions with different random seeds")
     
     # Check if the model is graph-based
     if model_name in ['mlp', 'sklearn', 'rf']:
@@ -187,24 +199,31 @@ def train_inductive_model(
         transformer_based_model = False
         sheaf_based_model = False
 
-    
-
-    # Make deep copy of model to always start from for each fold
+    # Make deep copy of model to always start from for each repetition
     model_copy = copy.deepcopy(model)
 
     # Track initial GPU memory
     initial_memory = torch.cuda.memory_allocated() if torch.cuda.is_available() else 0
 
     try:
-        # Train for each fold
-        for fold_name, fold_data in dataloaders.items():
+        # Train for each repetition with different random seeds
+        for repetition in range(config.n_repetitions):
             start_time = time.time()
             print("--------------------------------")
-            print(f"--- Training fold {fold_name} ---")
+            print(f"--- Training repetition {repetition + 1}/{config.n_repetitions} ---")
             print("--------------------------------\n")
-            train_loader = fold_data['train']
-            val_loader = fold_data['val']
-            test_loader = fold_data['test']
+            
+            # Set different random seed for each repetition
+            torch.manual_seed(config.seed + repetition)
+            np.random.seed(config.seed + repetition)
+            if torch.cuda.is_available():
+                torch.cuda.manual_seed(config.seed + repetition)
+            
+            # Get the data loaders based on structure
+            # The dataloaders structure is now flattened: dataloaders[task][split_name] = DataLoader
+            train_loader = dataloaders['train']
+            val_loader = dataloaders['val']
+            test_loader = dataloaders['test']
 
             model = copy.deepcopy(model_copy)
             
@@ -238,19 +257,6 @@ def train_inductive_model(
             optimizer = None
             if sheaf_based_model:
                 # For sheaf models, we need to do a dummy forward pass first to initialize parameters
-                # print("Initializing sheaf model parameters...")
-                # with torch.no_grad():
-                #     # Get first batch to initialize the model
-                #     first_batch = next(iter(train_loader))
-                #     # Ensure data is on the same device as the model
-                #     if not all_data_on_device:
-                #         first_batch = first_batch.to(device)
-                #     if hasattr(first_batch, 'batch') and first_batch.batch is not None:
-                #         _ = model(first_batch.x, first_batch.edge_index, first_batch.batch)
-                #     else:
-                #         _ = model(first_batch.x, first_batch.edge_index)
-                
-                # Now create optimizer after parameters are initialized
                 param_count = sum(p.numel() for p in model.parameters())
                 print(f"Sheaf model initialized with {param_count} parameters")
                 
@@ -284,10 +290,6 @@ def train_inductive_model(
                     # Forward pass - check if model requires edge_index
                     if graph_based_model or sheaf_based_model or transformer_based_model:
                         out = model(batch.x, batch.edge_index, graph=batch)
-                    # elif transformer_based_model:
-                    #     out = model(batch.x, batch.edge_index, data=batch, batch=batch.batch)
-                    # elif sheaf_based_model:
-                    #     out = model(batch.x, batch.edge_index, graph=batch)
                     else:  # MLPModel or other non-GNN model
                         out = model(batch.x, graph=batch)
                     
@@ -320,149 +322,122 @@ def train_inductive_model(
                         
                         if graph_based_model or sheaf_based_model or transformer_based_model:
                             out = model(batch.x, batch.edge_index, graph=batch)
-                        # elif transformer_based_model:
-                        #     out = model(batch.x, batch.edge_index, data=batch, batch=batch.batch)
-                        # elif sheaf_based_model:
-                        #     out = model(batch.x, batch.edge_index, graph=batch)
-                        else:
+                        else:  # MLPModel or other non-GNN model
                             out = model(batch.x, graph=batch)
                         
+                        # Compute validation loss
                         loss = criterion(out, batch.y)
                         val_loss += loss.item()
                         
-                        # Keep predictions on GPU for now
+                        # Store predictions for metrics
                         if is_regression:
                             val_predictions.append(out.detach())
+                            val_targets.append(batch.y.detach())
                         else:
                             val_predictions.append(out.argmax(dim=1).detach())
-                        
-                        val_targets.append(batch.y.detach())
+                            val_targets.append(batch.y.detach())
                 
-                # Calculate metrics - use GPU-based computation to avoid CPU transfer bottleneck
+                # Calculate metrics
                 train_pred = torch.cat(train_predictions, dim=0)
                 train_true = torch.cat(train_targets, dim=0)
                 val_pred = torch.cat(val_predictions, dim=0)
                 val_true = torch.cat(val_targets, dim=0)
                 
-                # Use GPU-based metrics computation
                 train_metrics = compute_metrics_gpu(train_true, train_pred, is_regression)
                 val_metrics = compute_metrics_gpu(val_true, val_pred, is_regression)
                 
-                # Clear prediction lists
-                train_predictions.clear()
-                train_targets.clear()
-                val_predictions.clear()
-                val_targets.clear()
+                # Store training history
+                if f'repetition_{repetition}' not in training_history:
+                    training_history[f'repetition_{repetition}'] = {
+                        'train_loss': [],
+                        'val_loss': [],
+                        'train_metric': [],
+                        'val_metric': []
+                    }
                 
-                # Get primary metrics
+                training_history[f'repetition_{repetition}']['train_loss'].append(train_loss / len(train_loader))
+                training_history[f'repetition_{repetition}']['val_loss'].append(val_loss / len(val_loader))
+                
+                # Store appropriate metric based on task type
                 if is_regression:
-                    if config.regression_loss == 'mae':
-                        train_metric = train_metrics['mae']
-                        val_metric = val_metrics['mae']
-                    elif config.regression_loss == 'mse':
-                        train_metric = train_metrics['mse']
-                        val_metric = val_metrics['mse']
-                    else:
-                        raise ValueError(f"Invalid regression loss: {config.regression_loss}")
+                    train_metric = train_metrics.get('mae', 0.0)
+                    val_metric = val_metrics.get('mae', 0.0)
                 else:
-                    train_metric = train_metrics['f1_macro']
-                    val_metric = val_metrics['f1_macro']
+                    train_metric = train_metrics.get('f1_macro', 0.0)
+                    val_metric = val_metrics.get('f1_macro', 0.0)
                 
-                # Store metrics
-                training_history[fold_name]['train_loss'].append(train_loss / len(train_loader))
-                training_history[fold_name]['val_loss'].append(val_loss / len(val_loader))
-                training_history[fold_name]['train_metric'].append(train_metric)
-                training_history[fold_name]['val_metric'].append(val_metric)
+                training_history[f'repetition_{repetition}']['train_metric'].append(train_metric)
+                training_history[f'repetition_{repetition}']['val_metric'].append(val_metric)
                 
-                # Print progress
-                if epoch % 10 == 0 or epoch == config.epochs - 1:
-                    print_str = f"FOLD {fold_name} - Epoch {epoch:3d}: Train Loss: {train_loss/len(train_loader):.4f}, Val Loss: {val_loss/len(val_loader):.4f}, " \
-                            f"Train Metric: {train_metric:.4f}, Val Metric: {val_metric:.4f}"
-                    
-                    # Add relative error for k_hop task
-                    if task.startswith('k_hop_community_counts'):
-                        train_rel_error = train_metrics.get('relative_error', 0.0)
-                        val_rel_error = val_metrics.get('relative_error', 0.0)
-                        print_str += f", Train Rel Error: {train_rel_error:.4f}, Val Rel Error: {val_rel_error:.4f}"
-                        
-                        # Print random node's target and predicted vectors
-                        if len(val_predictions) > 0:
-                            # Get a random batch
-                            random_batch_idx = np.random.randint(0, len(val_predictions))
-                            random_pred = val_predictions[random_batch_idx]
-                            random_true = val_targets[random_batch_idx]
-                            
-                            # Get a random node from that batch
-                            random_node_idx = np.random.randint(0, len(random_pred))
-                            
-                            print(f"\nRandom node vectors at epoch {epoch}:")
-                            print(f"Target vector: {random_true[random_node_idx].cpu().numpy()}")
-                            # Rounded and minimum 0:
-                            print(f"Predicted vector (rounded): {np.round(np.maximum(random_pred[random_node_idx].cpu().numpy(), 0))}")
-                    
-                    print(print_str)
-                
-                # Model selection
-                improved = False
+                # Early stopping logic
                 if is_regression:
-                    if config.regression_loss == 'mae':
-                        improved = val_metric < best_val_metric
-                    elif config.regression_loss == 'mse':
-                        improved = val_metric < best_val_metric
+                    # For regression, lower is better
+                    if val_metric < best_val_metric:
+                        best_val_metric = val_metric
+                        best_model_state = copy.deepcopy(model.state_dict())
+                        patience_counter = 0
                     else:
-                        raise ValueError(f"Invalid regression loss: {config.regression_loss}")
+                        patience_counter += 1
                 else:
-                    improved = val_metric > best_val_metric
+                    # For classification, higher is better
+                    if val_metric > best_val_metric:
+                        best_val_metric = val_metric
+                        best_model_state = copy.deepcopy(model.state_dict())
+                        patience_counter = 0
+                    else:
+                        patience_counter += 1
                 
-                if improved:
-                    best_val_metric = val_metric
-                    # Use deepcopy to preserve all model state, not just parameters
-                    best_model = copy.deepcopy(model)
-                    patience_counter = 0
-                else:
-                    patience_counter += 1
-                    if patience_counter >= effective_patience:
-                        print(f"Early stopping triggered at epoch {epoch}!")
-                        break
+                if patience_counter >= effective_patience:
+                    print(f"Early stopping triggered after {epoch + 1} epochs")
+                    break
+                
+                if epoch % 10 == 0:
+                    print(f"Epoch {epoch + 1}/{config.epochs} - Train Loss: {train_loss / len(train_loader):.4f} - Val Loss: {val_loss / len(val_loader):.4f}")
+                    print(f"Train Metric: {train_metric:.4f} - Val Metric: {val_metric:.4f}")
             
-            train_time = time.time() - start_time
+            # Load best model for testing
+            if best_model_state is not None:
+                model.load_state_dict(best_model_state)
+            
+            # Test evaluation
+            test_metrics = evaluate_inductive_model_gpu_resident(
+                model, graph_based_model, transformer_based_model, sheaf_based_model,
+                test_loader, is_regression, device, finetuning
+            )
+            
+            # Store results for this repetition
+            repetition_train_time[f'repetition_{repetition}'] = time.time() - start_time
+            repetition_test_metrics[f'repetition_{repetition}'] = test_metrics
+            repetition_best_val_metrics[f'repetition_{repetition}'] = best_val_metric
+            
+            print(f"Repetition {repetition + 1} completed:")
+            print(f"  Best validation metric: {best_val_metric:.4f}")
+            print(f"  Test metrics: {test_metrics}")
+            print(f"  Training time: {repetition_train_time[f'repetition_{repetition}']:.2f}s")
         
-            # Use best model for evaluation
-            if 'best_model' in locals():
-                model = best_model
-                print("Using best model (deepcopy) for evaluation")
-            else:
-                print("No improvement found, using final model")
-            
-            # Final evaluation on test set
-            test_metrics = evaluate_inductive_model_gpu_resident(model, graph_based_model, transformer_based_model, sheaf_based_model, test_loader, is_regression, device, finetuning)
-
-            fold_train_time[fold_name] = train_time
-            fold_best_val_metrics[fold_name] = best_val_metric
-            fold_test_metrics[fold_name] = test_metrics
-            
-            # Clear model from GPU after fold
-            model = model.cpu()
-            del model
-            torch.cuda.empty_cache()
-            
+        # Calculate aggregated results across repetitions
+        final_results = {
+            'training_history': training_history,
+            'repetition_train_time': repetition_train_time,
+            'repetition_test_metrics': repetition_test_metrics,
+            'repetition_best_val_metrics': repetition_best_val_metrics,
+            'aggregated_metrics': _aggregate_repetition_results(
+                repetition_test_metrics, repetition_best_val_metrics, repetition_train_time
+            )
+        }
+        
+        return final_results
+        
     finally:
-        # Print final GPU memory usage
+        # Clean up GPU memory
         if torch.cuda.is_available():
-            final_memory = torch.cuda.memory_allocated()
-            print(f"GPU memory used: {(final_memory - initial_memory) / 1024**2:.2f} MB")
             torch.cuda.empty_cache()
-        
-    return {
-        'fold_train_time': fold_train_time,
-        'fold_best_val_metrics': fold_best_val_metrics,
-        'fold_test_metrics': fold_test_metrics,
-        'training_history': training_history,
-    }
+            final_memory = torch.cuda.memory_allocated()
+            print(f"GPU memory cleanup: {initial_memory / 1024**2:.1f}MB -> {final_memory / 1024**2:.1f}MB")
 
 def train_sklearn_inductive(
     model: SklearnModel,
-    dataloaders: Dict[str, DataLoader],
+    dataloaders: Dict[str, Any],
     config: InductiveExperimentConfig,
     is_regression: bool
 ) -> Dict[str, Any]:
@@ -471,18 +446,22 @@ def train_sklearn_inductive(
     
     Args:
         model: Sklearn model to train
-        dataloaders: Dictionary with dataloaders
+        dataloaders: Dictionary with dataloaders (can be new or old structure)
         config: Experiment configuration
         is_regression: Whether this is a regression task
         
     Returns:
         Dictionary with training results
     """
+    # Extract train and test loaders based on flattened structure
+    train_loader = dataloaders['train']
+    test_loader = dataloaders['test']
+    
     # Extract features and labels from all graphs in training set
     train_features = []
     train_labels = []
     
-    for batch in dataloaders['train']:
+    for batch in train_loader:
         # Convert batch to numpy
         batch_features = batch.x.cpu().numpy()
         batch_labels = batch.y.cpu().numpy()
@@ -519,7 +498,7 @@ def train_sklearn_inductive(
     test_features = []
     test_labels = []
     
-    for batch in dataloaders['test']:
+    for batch in test_loader:
         batch_features = batch.x.cpu().numpy()
         batch_labels = batch.y.cpu().numpy()
         
@@ -922,7 +901,7 @@ def get_hyperparameter_space(trial, model_type: str, is_regression: bool) -> Dic
 def train_and_evaluate_inductive(
     model: Union[GNNModel, MLPModel, SklearnModel, GraphTransformerModel, SheafDiffusionModel],  # Updated type hint
     model_name: str,
-    dataloaders: Dict[str, Dict[str, DataLoader]],
+    dataloaders: Dict[str, Any],
     config: InductiveExperimentConfig,
     task: str,
     device: torch.device,
@@ -958,8 +937,8 @@ def train_and_evaluate_inductive(
                 model_creator = lambda **kwargs: GraphTransformerModel(**kwargs)
                 
                 # Get sample batch to determine dimensions
-                first_fold_name = list(dataloaders.keys())[0]
-                sample_batch = next(iter(dataloaders[first_fold_name]['train']))
+                sample_batch = next(iter(dataloaders['train']))
+                
                 input_dim = sample_batch.x.shape[1]
 
                 if sample_batch.x.device != device:
@@ -984,9 +963,6 @@ def train_and_evaluate_inductive(
                 # Store transformer type for the objective function
                 transformer_type = model.transformer_type
                 
-                # Use only the first fold for optimization
-                opt_fold = first_fold_name
-                print(f"Using fold {opt_fold} for optimization")
                 
                 def objective(trial: Trial) -> float:
                     # Common hyperparameters
@@ -1051,13 +1027,13 @@ def train_and_evaluate_inductive(
                     best_val_metric = float('inf') if is_regression else 0.0
                     patience_counter = 0
 
-                    # Train and evaluate on the optimization fold
-                    fold_dataloader = dataloaders[opt_fold]
+                    train_loader = dataloaders['train']
+                    val_loader = dataloaders['val']
 
                     for epoch in range(max_epochs):
                         # Training
                         trial_model.train()
-                        for batch in fold_dataloader['train']:
+                        for batch in train_loader:
                             if not all_data_on_device:
                                 batch = batch.to(device)
                             optimizer.zero_grad()
@@ -1072,7 +1048,7 @@ def train_and_evaluate_inductive(
                         val_targets = []
                         
                         with torch.no_grad():
-                            for batch in fold_dataloader['val']:
+                            for batch in val_loader:
                                 out = trial_model(batch.x, batch.edge_index, graph=batch)
                                 
                                 if is_regression:
@@ -1119,56 +1095,53 @@ def train_and_evaluate_inductive(
                     # Return metric for optimization
                     if is_regression:
                         if config.regression_loss in ['mae', 'mse']:
-                            final_metric = -best_val_metric  # Negative because we minimize MAE
+                            return -best_val_metric  # Negative because we minimize
                         else:
-                            final_metric = best_val_metric  # Positive because we maximize R²
+                            return best_val_metric  # Positive because we maximize
                     else:
-                        final_metric = best_val_metric  # Positive because we maximize F1
-                    
-                    return final_metric
+                        return best_val_metric  # Positive because we maximize
                 
                 # Run optimization
                 study.optimize(objective, n_trials=config.n_trials, timeout=config.optimization_timeout)
                 
-                # Apply optimized parameters
-                if study.best_params:
-                    best_params = study.best_params
-                    print(f"🎯 Applying optimized parameters:")
-                    for key, value in best_params.items():
-                        print(f"   {key}: {value}")
-                    
-                    # Recreate model with optimized parameters
-                    base_dim = best_params['base_dim']
-                    num_heads = best_params['num_heads']
-                    hidden_dim = base_dim * num_heads
-                    
-                    if transformer_type == "graphgps":
-                        # GraphGPS parameters - only use accepted parameters
-                        model = GraphTransformerModel(
-                            input_dim=input_dim,
-                            hidden_dim=hidden_dim,
-                            output_dim=output_dim,
-                            transformer_type=transformer_type,
-                            num_layers=best_params.get('num_layers', config.num_layers),
-                            dropout=best_params.get('dropout', 0.1),
-                            num_heads=num_heads,
-                            is_regression=is_regression,
-                            is_graph_level_task=config.is_graph_level_tasks.get(task, task == 'triangle_count'),
-                            local_gnn_type=best_params['local_gnn_type'],
-                            attn_type=best_params['attn_type'],
-                            pe_dim=config.max_pe_dim,
-                            pe_type=best_params['pe_type'],
-                            pe_norm_type=None,
-                        ).to(device)
-                    
-                    # Update config with optimized parameters
-                    config.learning_rate = best_params.get('lr', config.learning_rate)
-                    config.weight_decay = best_params.get('weight_decay', config.weight_decay)
-                    config.num_layers = best_params.get('num_layers', config.num_layers)
-                    config.dropout = best_params.get('dropout', config.dropout)
-                    # config.hidden_dim = best_params.get('hidden_dim', config.hidden_dim)
-                    config.max_pe_dim = best_params.get('pe_dim', config.max_pe_dim)
-                    config.pe_type = best_params.get('pe_type', config.pe_type)
+                # Update model with best parameters
+                best_params = study.best_params
+                print(f"Best parameters: {best_params}")
+                
+                # Update model with best parameters
+                model = GraphTransformerModel(
+                    input_dim=input_dim,
+                    hidden_dim=best_params.get('hidden_dim', config.hidden_dim),
+                    output_dim=output_dim,
+                    transformer_type=transformer_type,
+                    num_layers=best_params.get('num_layers', config.num_layers),
+                    dropout=best_params.get('dropout', config.dropout),
+                    num_heads=best_params['num_heads'],
+                    is_regression=is_regression,
+                    is_graph_level_task=config.is_graph_level_tasks.get(task, task == 'triangle_count'),
+                    local_gnn_type=best_params['local_gnn_type'],
+                    attn_type=best_params['attn_type'],
+                    pe_dim=config.max_pe_dim,
+                    pe_type=best_params['pe_type'],
+                    pe_norm_type=None,
+                )
+                
+                print(f"✅ Hyperparameter optimization completed for {model_name}")
+                print(f"Best value: {study.best_value:.4f}")
+                print(f"Best parameters: {study.best_params}")
+            
+            # Train the model with repetitions
+            results = train_inductive_model(
+                model=model,
+                model_name=model_name,
+                dataloaders=dataloaders,
+                config=config,
+                task=task,
+                device=device,
+                finetuning=finetuning
+            )
+            
+            return results
         
         if model_name == 'sheaf_diffusion':
             pe_model_name = model_name + "_PE" if PE_option else model_name
@@ -1178,8 +1151,7 @@ def train_and_evaluate_inductive(
                 print(f"🎯 Optimizing {pe_model_name} hyperparameters...")
                 
                 # Get sample batch to determine dimensions
-                first_fold_name = list(dataloaders.keys())[0]
-                sample_batch = next(iter(dataloaders[first_fold_name]['train']))
+                sample_batch = next(iter(dataloaders['train']))
                 input_dim = sample_batch.x.shape[1]
 
                 if sample_batch.x.device != device:
@@ -1229,21 +1201,6 @@ def train_and_evaluate_inductive(
                         pe_type = None
 
                     # Create Sheaf Diffusion model with all parameters
-                    # trial_model = InductiveSheafDiffusionModel(
-                    #     input_dim=input_dim,
-                    #     hidden_dim=hidden_dim,
-                    #     output_dim=output_dim,
-                    #     sheaf_type=sheaf_type,
-                    #     d=d,
-                    #     num_layers=num_layers,
-                    #     dropout=dropout,
-                    #     input_dropout=0.1,
-                    #     is_regression=is_regression,
-                    #     is_graph_level_task=False,
-                    #     device=device
-                    # ).to(device)
-                
-
                     trial_model = SheafDiffusionModel(
                         input_dim=input_dim,
                         hidden_dim=hidden_dim,
@@ -1257,32 +1214,6 @@ def train_and_evaluate_inductive(
                         pe_type=pe_type,
                         pe_dim=config.max_pe_dim,
                         ).to(device)
-                    #     input_dim=input_dim,
-                    #     hidden_dim=hidden_dim,
-                    #     output_dim=output_dim,
-                    #     sheaf_type=sheaf_type,
-                    #     num_layers=num_layers,
-                    #     dropout=dropout,
-                    #     d=d,
-                    #     is_regression=is_regression,
-                    #     is_graph_level_task=config.is_graph_level_tasks.get(task, task == 'triangle_count')
-                    # ).to(device)
-                    
-                    # Initialize sheaf model parameters with a dummy forward pass
-                    # with torch.no_grad():
-                    #     first_batch = next(iter(dataloaders[first_fold_name]['train']))
-                    #     # Ensure data is on the same device as the model
-                    #     if not all_data_on_device:
-                    #         first_batch = first_batch.to(device)
-                    #     if hasattr(first_batch, 'batch') and first_batch.batch is not None:
-                    #         _ = trial_model(first_batch.x, first_batch.edge_index, first_batch.batch)
-                    #     else:
-                    #         _ = trial_model(first_batch.x, first_batch.edge_index)
-                    
-                    # Now create optimizer after parameters are initialized
-                    # param_count = sum(p.numel() for p in trial_model.parameters())
-                    # if param_count == 0:
-                    #     return float('-inf')  # Return worst possible score if no parameters
                     
                     optimizer = torch.optim.Adam(trial_model.parameters(), lr=lr, weight_decay=weight_decay)
                     
@@ -1302,11 +1233,13 @@ def train_and_evaluate_inductive(
                     best_val_metric = float('inf') if is_regression else 0.0
                     patience_counter = 0
                     
-                    fold_dataloader = dataloaders[first_fold_name]
+                    train_loader = dataloaders['train']
+                    val_loader = dataloaders['val']
+                    
                     for epoch in range(max_epochs):
                         # Training
                         trial_model.train()
-                        for batch in fold_dataloader['train']:
+                        for batch in train_loader:
                             if not all_data_on_device:  
                                 print("Warning: Not all data is on device. Moving batch to device...")
                                 batch = batch.to(device)
@@ -1322,7 +1255,7 @@ def train_and_evaluate_inductive(
                         val_targets = []
                         
                         with torch.no_grad():
-                            for batch in fold_dataloader['val']:
+                            for batch in val_loader:
                                 if not all_data_on_device:
                                     batch = batch.to(device)
                                 out = trial_model(batch.x, batch.edge_index, graph=batch)
@@ -1445,19 +1378,21 @@ def train_and_evaluate_inductive(
             
             # Update hyperparameter optimization for GNNs
             if optimize_hyperparams and not isinstance(model, SklearnModel):
-                print(f"🎯 Optimizing {pe_model_name} hyperparameters...")
-                
-                # Get model creator function for GNNs
-                model_creator = lambda **kwargs: GNNModel(**kwargs)
+                print(f"🎯 Optimizing GNN hyperparameters...")
                 
                 # Get sample batch to determine dimensions
-                first_fold_name = list(dataloaders.keys())[0]
-                sample_batch = next(iter(dataloaders[first_fold_name]['train']))
+                sample_batch = next(iter(dataloaders['train']))
                 input_dim = sample_batch.x.shape[1]
+
+                if sample_batch.x.device != device:
+                    print("Batches are not on device")
+                    all_data_on_device = False
+                else:
+                    print("All batches are already on device")
+                    all_data_on_device = True
                 
                 if is_regression:
                     output_dim = sample_batch.y.shape[1] if len(sample_batch.y.shape) > 1 else 1
-                    print(f"Output dim: {output_dim}")
                 else:
                     output_dim = get_total_classes_from_dataloaders(dataloaders)
                 
@@ -1467,9 +1402,6 @@ def train_and_evaluate_inductive(
                 
                 study_name = f"gnn_{model_name}_{'regression' if is_regression else 'classification'}"
                 study = create_study(direction='maximize')
-                
-                # Store GNN type for the objective function
-                gnn_type = model_name
                 
                 def objective(trial: Trial) -> float:
                     # Common hyperparameters
@@ -1499,46 +1431,38 @@ def train_and_evaluate_inductive(
                     norm_type = 'none'
                     agg_type = 'sum'
                     
-                    # GNN-specific parameters
-                    if gnn_type == "gat":
-                        # First suggest number of heads
+                    # Model-specific hyperparameters
+                    if model_name == "gat":
                         heads = trial.suggest_int('heads', 1, 8)
-                        # Then suggest a base dimension and multiply by heads to ensure divisibility
-                        base_dim = trial.suggest_int('base_dim', 8, 32)
-                        hidden_dim = base_dim * heads
+                        # Make sure heads * num_layers is smaller than 16
+                        while heads * num_layers > 12:
+                            heads = trial.suggest_int('heads', 1, 8)
                         concat_heads = trial.suggest_categorical('concat_heads', [True, False])
-                        residual = trial.suggest_categorical('residual', [True, False])
-                        norm_type = trial.suggest_categorical('norm_type', ['none', 'layer'])
-                        agg_type = trial.suggest_categorical('agg_type', ['mean', 'sum'])
-                    elif gnn_type == "fagcn":
+                    elif model_name == "fagcn":
                         eps = trial.suggest_float('eps', 0.0, 1.0)
-                    elif gnn_type in ["gcn", "sage", "gin"]:
-                        residual = trial.suggest_categorical('residual', [True, False])
-                        norm_type = trial.suggest_categorical('norm_type', ['none', 'layer'])
-                        if gnn_type in ["sage", "gcn"]:
-                            agg_type = trial.suggest_categorical('agg_type', ['mean', 'sum'])
+                    elif model_name == "gin":
+                        eps = trial.suggest_float('eps', 0.0, 1.0)
                     
-                    # Create GNN model with all parameters
+                    # Create GNN model with suggested hyperparameters
                     trial_model = GNNModel(
                         input_dim=input_dim,
                         hidden_dim=hidden_dim,
                         output_dim=output_dim,
                         num_layers=num_layers,
                         dropout=dropout,
-                        gnn_type=gnn_type,
-                        residual=residual,
-                        norm_type=norm_type,
-                        agg_type=agg_type,
+                        gnn_type=model_name,
+                        is_regression=is_regression,
+                        is_graph_level_task=config.is_graph_level_tasks.get(task, task == 'triangle_count'),
                         heads=heads,
                         concat_heads=concat_heads,
                         eps=eps,
-                        is_regression=is_regression,
-                        is_graph_level_task=is_graph_level_task,
-                        pe_type=pe_type if PE_option else None,
+                        residual=residual,
+                        norm_type=norm_type,
+                        agg_type=agg_type,
+                        pe_type=pe_type,
                         pe_dim=config.max_pe_dim,
                     ).to(device)
                     
-                    # Train model with reduced epochs for speed
                     optimizer = torch.optim.Adam(trial_model.parameters(), lr=lr, weight_decay=weight_decay)
                     
                     # Set up loss function
@@ -1557,21 +1481,13 @@ def train_and_evaluate_inductive(
                     best_val_metric = float('inf') if is_regression else 0.0
                     patience_counter = 0
 
-                    fold_dataloader = dataloaders[first_fold_name]
-
-                    # Check for one batch if already on device (which means all are on device already)
-                    for batch in fold_dataloader['train']:
-                        if batch.x.device == device:
-                            all_data_on_device = True
-                            break
-                        else:
-                            all_data_on_device = False
-                            break
+                    train_loader = dataloaders['train']
+                    val_loader = dataloaders['val']
 
                     for epoch in range(max_epochs):
                         # Training
                         trial_model.train()
-                        for batch in fold_dataloader['train']:
+                        for batch in train_loader:
                             if not all_data_on_device:
                                 batch = batch.to(device)
                             optimizer.zero_grad()
@@ -1586,9 +1502,7 @@ def train_and_evaluate_inductive(
                         val_targets = []
                         
                         with torch.no_grad():
-                            for batch in fold_dataloader['val']:
-                                if not all_data_on_device:
-                                    batch = batch.to(device)
+                            for batch in val_loader:
                                 out = trial_model(batch.x, batch.edge_index, graph=batch)
                                 
                                 if is_regression:
@@ -1602,7 +1516,7 @@ def train_and_evaluate_inductive(
                         val_pred = torch.cat(val_predictions, dim=0)
                         val_true = torch.cat(val_targets, dim=0)
                         val_metrics = compute_metrics_gpu(val_true, val_pred, is_regression)
-                        
+
                         if is_regression:
                             if config.regression_loss == 'mae':
                                 val_metric = val_metrics['mae']
@@ -1618,11 +1532,6 @@ def train_and_evaluate_inductive(
                                     patience_counter = 0
                                 else:
                                     patience_counter += 1
-                            else:
-                                val_metric = val_metrics['r2']
-                                if val_metric > best_val_metric:  # Higher is better for R²
-                                    best_val_metric = val_metric
-                                    patience_counter = 0
                         else:
                             val_metric = val_metrics['f1_macro']
                             if val_metric > best_val_metric:  # Higher is better for F1
@@ -1635,71 +1544,67 @@ def train_and_evaluate_inductive(
                     # Return metric for optimization
                     if is_regression:
                         if config.regression_loss in ['mae', 'mse']:
-                            final_metric = -best_val_metric  # Negative because we minimize MAE
+                            return -best_val_metric  # Negative because we minimize
                         else:
-                            final_metric = best_val_metric  # Positive because we maximize R²
+                            return best_val_metric  # Positive because we maximize
                     else:
-                        final_metric = best_val_metric  # Positive because we maximize F1
-                    
-                    return final_metric
+                        return best_val_metric  # Positive because we maximize
                 
                 # Run optimization
                 study.optimize(objective, n_trials=config.n_trials, timeout=config.optimization_timeout)
                 
-                # Apply optimized parameters
-                if study.best_params:
-                    best_params = study.best_params
-                    print(f"🎯 Applying optimized parameters:")
-                    for key, value in best_params.items():
-                        print(f"   {key}: {value}")
-                    
-                    # Recreate model with optimized parameters
-                    if gnn_type == 'gat':
-                        # For GAT, ensure hidden_dim is properly calculated from base_dim and heads
-                        base_dim = best_params.get('base_dim', 8)
-                        heads = best_params.get('heads', 1)
-                        hidden_dim = base_dim * heads
-                    else:
-                        hidden_dim = best_params.get('hidden_dim', 32)
-
-                    model = GNNModel(
-                        input_dim=input_dim,
-                        hidden_dim=hidden_dim,
-                        output_dim=output_dim,
-                        num_layers=best_params.get('num_layers', 2),
-                        dropout=best_params.get('dropout', 0.5),
-                        gnn_type=gnn_type,
-                        residual=best_params.get('residual', False),
-                        norm_type=best_params.get('norm_type', 'none'),
-                        agg_type=best_params.get('agg_type', 'sum'),
-                        heads=best_params.get('heads', 1),
-                        concat_heads=best_params.get('concat_heads', True),
-                        eps=best_params.get('eps', 0.3),
-                        is_regression=is_regression,
-                        is_graph_level_task=task == 'triangle_count',
-                        pe_type=best_params.get('pe_type', config.pe_type) if PE_option else None,
-                        pe_dim=config.max_pe_dim,
-                    ).to(device)
-                    
-                    # Update config with optimized parameters
-                    config.learning_rate = best_params.get('lr', config.learning_rate)
-                    config.weight_decay = best_params.get('weight_decay', config.weight_decay)
-                    config.num_layers = best_params.get('num_layers', config.num_layers)
-                    config.pe_type = best_params.get('pe_type', config.pe_type) if PE_option else None
-                    config.max_pe_dim = best_params.get('pe_dim', config.max_pe_dim)
-                    
+                # Update model with best parameters
+                best_params = study.best_params
+                print(f"Best parameters: {best_params}")
+                
+                # Update model with best parameters
+                model = GNNModel(
+                    input_dim=input_dim,
+                    hidden_dim=best_params.get('hidden_dim', config.hidden_dim),
+                    output_dim=output_dim,
+                    num_layers=best_params.get('num_layers', config.num_layers),
+                    dropout=best_params.get('dropout', config.dropout),
+                    gnn_type=model_name,
+                    is_regression=is_regression,
+                    is_graph_level_task=config.is_graph_level_tasks.get(task, task == 'triangle_count'),
+                    heads=best_params.get('heads', 1),
+                    concat_heads=best_params.get('concat_heads', True),
+                    eps=best_params.get('eps', 0.3),
+                    residual=best_params.get('residual', False),
+                    norm_type=best_params.get('norm_type', 'none'),
+                    agg_type=best_params.get('agg_type', 'sum'),
+                    pe_type=best_params.get('pe_type', None) if PE_option else None,
+                    pe_dim=config.max_pe_dim,
+                )
+                
+                print(f"✅ Hyperparameter optimization completed for {model_name}")
+                print(f"Best value: {study.best_value:.4f}")
+                print(f"Best parameters: {study.best_params}")
+            
+            # Train the model with repetitions
+            results = train_inductive_model(
+                model=model,
+                model_name=model_name,
+                dataloaders=dataloaders,
+                config=config,
+                task=task,
+                device=device,
+                finetuning=finetuning
+            )
+            
+            return results
+        
         # Handle MLP models
-        elif isinstance(model, MLPModel):
-            pe_model_name = model_name + "_PE" if PE_option else model_name
+        elif model_name == 'mlp':
+            pe_model_name = "mlp_PE" if PE_option else 'mlp'
             print(f"🔄 Training {pe_model_name}")
             
             # Update hyperparameter optimization for MLPs
-            if optimize_hyperparams:
-                print(f"🎯 Optimizing {pe_model_name} hyperparameters...")
+            if optimize_hyperparams and not isinstance(model, SklearnModel):
+                print(f"🎯 Optimizing MLP hyperparameters...")
                 
                 # Get sample batch to determine dimensions
-                first_fold_name = list(dataloaders.keys())[0]
-                sample_batch = next(iter(dataloaders[first_fold_name]['train']))
+                sample_batch = next(iter(dataloaders['train']))
                 input_dim = sample_batch.x.shape[1]
 
                 if sample_batch.x.device != device:
@@ -1714,7 +1619,7 @@ def train_and_evaluate_inductive(
                 else:
                     output_dim = get_total_classes_from_dataloaders(dataloaders)
                 
-                # Create optimization study
+                # Create a single optimization study
                 import optuna
                 from optuna import create_study, Trial
                 
@@ -1723,22 +1628,25 @@ def train_and_evaluate_inductive(
                 
                 def objective(trial: Trial) -> float:
                     # Common hyperparameters
-                    lr = trial.suggest_float('lr', 1e-4, 1e-2, log=True)
+                    lr = trial.suggest_float('lr', 1e-3, 1e-2, log=True)
                     weight_decay = trial.suggest_float('weight_decay', 1e-5, 1e-2, log=True)
                     # Use config patience instead of optimizing it
                     patience = config.patience
                     
                     # MLP-specific hyperparameters
-                    hidden_dim = trial.suggest_int('hidden_dim', 16, 64)
-                    num_layers = trial.suggest_int('num_layers', 1, 4)
-                    dropout = trial.suggest_float('dropout', 0.1, 0.7)
+                    hidden_dim = config.hidden_dim #trial.suggest_int('hidden_dim', 32, 256)
+                    if task.startswith('k_hop_community_counts'):
+                        num_layers = trial.suggest_int('num_layers', config.khop_community_counts_k + 1, config.khop_community_counts_k + 2)
+                    else:
+                        num_layers = config.num_layers
+
+                    dropout = trial.suggest_float('dropout', 0.1, 0.5)
                     if PE_option:
                         pe_type = trial.suggest_categorical('pe_type', [None, 'laplacian', 'degree', 'rwse'])
                     else:
                         pe_type = None
-                    pe_dim = config.max_pe_dim
                     
-                    # Create MLP model with all parameters
+                    # Create MLP model with suggested hyperparameters
                     trial_model = MLPModel(
                         input_dim=input_dim,
                         hidden_dim=hidden_dim,
@@ -1746,9 +1654,9 @@ def train_and_evaluate_inductive(
                         num_layers=num_layers,
                         dropout=dropout,
                         is_regression=is_regression,
-                        is_graph_level_task=task == 'triangle_count',
-                        pe_type=pe_type if PE_option else None,
-                        pe_dim=pe_dim,
+                        is_graph_level_task=config.is_graph_level_tasks.get(task, task == 'triangle_count'),
+                        pe_type=pe_type,
+                        pe_dim=config.max_pe_dim,
                     ).to(device)
                     
                     optimizer = torch.optim.Adam(trial_model.parameters(), lr=lr, weight_decay=weight_decay)
@@ -1768,13 +1676,14 @@ def train_and_evaluate_inductive(
                     max_epochs = config.trial_epochs
                     best_val_metric = float('inf') if is_regression else 0.0
                     patience_counter = 0
-                    
-                    fold_dataloader = dataloaders[first_fold_name]
+
+                    train_loader = dataloaders['train']
+                    val_loader = dataloaders['val']
 
                     for epoch in range(max_epochs):
                         # Training
                         trial_model.train()
-                        for batch in fold_dataloader['train']:
+                        for batch in train_loader:
                             if not all_data_on_device:
                                 batch = batch.to(device)
                             optimizer.zero_grad()
@@ -1789,9 +1698,7 @@ def train_and_evaluate_inductive(
                         val_targets = []
                         
                         with torch.no_grad():
-                            for batch in fold_dataloader['val']:
-                                if not all_data_on_device:
-                                    batch = batch.to(device)
+                            for batch in val_loader:
                                 out = trial_model(batch.x, graph=batch)
                                 
                                 if is_regression:
@@ -1805,7 +1712,7 @@ def train_and_evaluate_inductive(
                         val_pred = torch.cat(val_predictions, dim=0)
                         val_true = torch.cat(val_targets, dim=0)
                         val_metrics = compute_metrics_gpu(val_true, val_pred, is_regression)
-                        
+
                         if is_regression:
                             if config.regression_loss == 'mae':
                                 val_metric = val_metrics['mae']
@@ -1821,11 +1728,6 @@ def train_and_evaluate_inductive(
                                     patience_counter = 0
                                 else:
                                     patience_counter += 1
-                            else:
-                                val_metric = val_metrics['r2']
-                                if val_metric > best_val_metric:  # Higher is better for R²
-                                    best_val_metric = val_metric
-                                    patience_counter = 0
                         else:
                             val_metric = val_metrics['f1_macro']
                             if val_metric > best_val_metric:  # Higher is better for F1
@@ -1838,62 +1740,74 @@ def train_and_evaluate_inductive(
                     # Return metric for optimization
                     if is_regression:
                         if config.regression_loss in ['mae', 'mse']:
-                            final_metric = -best_val_metric  # Negative because we minimize MAE
+                            return -best_val_metric  # Negative because we minimize
                         else:
-                            final_metric = best_val_metric  # Positive because we maximize R²
+                            return best_val_metric  # Positive because we maximize
                     else:
-                        final_metric = best_val_metric  # Positive because we maximize F1
-                    
-                    return final_metric
+                        return best_val_metric  # Positive because we maximize
                 
                 # Run optimization
                 study.optimize(objective, n_trials=config.n_trials, timeout=config.optimization_timeout)
                 
-                # Apply optimized parameters
-                if study.best_params:
-                    best_params = study.best_params
-                    print(f"🎯 Applying optimized parameters:")
-                    for key, value in best_params.items():
-                        print(f"   {key}: {value}")
-                    
-                    # Recreate model with optimized parameters
-                    model = MLPModel(
-                        input_dim=input_dim,
-                        hidden_dim=best_params.get('hidden_dim', 32),
-                        output_dim=output_dim,
-                        num_layers=best_params.get('num_layers', 2),
-                        dropout=best_params.get('dropout', 0.5),
-                        is_regression=is_regression,
-                        is_graph_level_task=task == 'triangle_count',
-                        pe_type=best_params.get('pe_type', config.pe_type),
-                        pe_dim=config.max_pe_dim,
-                    ).to(device)
-                    
-                    # Update config with optimized parameters
-                    config.learning_rate = best_params.get('lr', config.learning_rate)
-                    config.weight_decay = best_params.get('weight_decay', config.weight_decay)
-                    config.pe_type = best_params.get('pe_type', config.pe_type)
-                    config.max_pe_dim = best_params.get('pe_dim', config.max_pe_dim)
-                    
+                # Update model with best parameters
+                best_params = study.best_params
+                print(f"Best parameters: {best_params}")
+                
+                # Update model with best parameters
+                model = MLPModel(
+                    input_dim=input_dim,
+                    hidden_dim=best_params.get('hidden_dim', config.hidden_dim),
+                    output_dim=output_dim,
+                    num_layers=best_params.get('num_layers', config.num_layers),
+                    dropout=best_params.get('dropout', config.dropout),
+                    is_regression=is_regression,
+                    is_graph_level_task=config.is_graph_level_tasks.get(task, task == 'triangle_count'),
+                    pe_type=best_params.get('pe_type', None) if PE_option else None,
+                    pe_dim=config.max_pe_dim,
+                )
+                
+                print(f"✅ Hyperparameter optimization completed for {model_name}")
+                print(f"Best value: {study.best_value:.4f}")
+                print(f"Best parameters: {study.best_params}")
+            
+            # Train the model with repetitions
+            results = train_inductive_model(
+                model=model,
+                model_name=model_name,
+                dataloaders=dataloaders,
+                config=config,
+                task=task,
+                device=device,
+                finetuning=finetuning
+            )
+            
+            return results
+        
         # Handle sklearn models
-        elif isinstance(model, SklearnModel):
-            print(f"🔄 Training sklearn model: {model.model_type}")
+        else:
+            print(f"🔄 Training {model_name}")
             
             # Update hyperparameter optimization for sklearn models
-            if optimize_hyperparams:
-                print(f"🎯 Optimizing sklearn model hyperparameters...")
+            if optimize_hyperparams and isinstance(model, SklearnModel):
+                print(f"🎯 Optimizing sklearn hyperparameters...")
                 
                 # Get sample batch to determine dimensions
-                first_fold_name = list(dataloaders.keys())[0]
-                sample_batch = next(iter(dataloaders[first_fold_name]['train']))
+                sample_batch = next(iter(dataloaders['train']))
                 input_dim = sample_batch.x.shape[1]
+
+                if sample_batch.x.device != device:
+                    print("Batches are not on device")
+                    all_data_on_device = False
+                else:
+                    print("All batches are already on device")
+                    all_data_on_device = True
                 
                 if is_regression:
                     output_dim = sample_batch.y.shape[1] if len(sample_batch.y.shape) > 1 else 1
                 else:
                     output_dim = get_total_classes_from_dataloaders(dataloaders)
                 
-                # Create optimization study
+                # Create a single optimization study
                 import optuna
                 from optuna import create_study, Trial
                 
@@ -1902,8 +1816,9 @@ def train_and_evaluate_inductive(
                 
                 def objective(trial: Trial) -> float:
                     # Model-specific hyperparameters
+                    
                     if model.model_type == "rf":  # Random Forest
-                        n_estimators = trial.suggest_int('n_estimators', 50, 500)
+                        n_estimators = trial.suggest_int('n_estimators', 50, 300)
                         max_depth = trial.suggest_int('max_depth', 3, 20)
                         min_samples_split = trial.suggest_int('min_samples_split', 2, 10)
                         min_samples_leaf = trial.suggest_int('min_samples_leaf', 1, 5)
@@ -1921,7 +1836,8 @@ def train_and_evaluate_inductive(
                     
                     elif model.model_type == "svm":  # Support Vector Machine
                         C = trial.suggest_float('C', 0.1, 10.0, log=True)
-                        gamma = trial.suggest_float('gamma', 1e-4, 1.0, log=True)
+                        kernel = trial.suggest_categorical('kernel', ['rbf', 'linear', 'poly'])
+                        gamma = trial.suggest_categorical('gamma', ['scale', 'auto'])
                         
                         trial_model = SklearnModel(
                             input_dim=input_dim,
@@ -1929,6 +1845,7 @@ def train_and_evaluate_inductive(
                             model_type="svm",
                             is_regression=is_regression,
                             C=C,
+                            kernel=kernel,
                             gamma=gamma
                         )
                     
@@ -1954,8 +1871,16 @@ def train_and_evaluate_inductive(
                         )
                     
                     # Train and evaluate model
-                    fold_dataloader = dataloaders[first_fold_name]
-                    results = train_sklearn_inductive(trial_model, fold_dataloader, config, is_regression)
+                    train_loader = dataloaders['train']
+                    test_loader = dataloaders['test']
+                    
+                    # Create a temporary dataloaders structure for sklearn training
+                    temp_dataloaders = {
+                        'train': train_loader,
+                        'test': test_loader
+                    }
+                    
+                    results = train_sklearn_inductive(trial_model, temp_dataloaders, config, is_regression)
                     
                     # Return metric for optimization
                     if is_regression:
@@ -1971,44 +1896,59 @@ def train_and_evaluate_inductive(
                 # Run optimization
                 study.optimize(objective, n_trials=config.n_trials, timeout=config.optimization_timeout)
                 
-                # Apply optimized parameters
-                if study.best_params:
-                    best_params = study.best_params
-                    print(f"🎯 Applying optimized parameters:")
-                    for key, value in best_params.items():
-                        print(f"   {key}: {value}")
-                    
-                    # Recreate model with optimized parameters
-                    if model.model_type == "rf":
-                        model = SklearnModel(
-                            input_dim=input_dim,
-                            output_dim=output_dim,
-                            model_type="rf",
-                            is_regression=is_regression,
-                            n_estimators=best_params.get('n_estimators', 100),
-                            max_depth=best_params.get('max_depth', None),
-                            min_samples_split=best_params.get('min_samples_split', 2),
-                            min_samples_leaf=best_params.get('min_samples_leaf', 1)
-                        )
-                    elif model.model_type == "svm":
-                        model = SklearnModel(
-                            input_dim=input_dim,
-                            output_dim=output_dim,
-                            model_type="svm",
-                            is_regression=is_regression,
-                            C=best_params.get('C', 1.0),
-                            gamma=best_params.get('gamma', 'scale')
-                        )
-                    elif model.model_type == "knn":
-                        model = SklearnModel(
-                            input_dim=input_dim,
-                            output_dim=output_dim,
-                            model_type="knn",
-                            is_regression=is_regression,
-                            n_neighbors=best_params.get('n_neighbors', 5),
-                            weights=best_params.get('weights', 'uniform')
-                        )
-        
+                # Update model with best parameters
+                best_params = study.best_params
+                print(f"Best parameters: {best_params}")
+                
+                # Recreate model with best parameters
+                if model.model_type == "rf":
+                    model = SklearnModel(
+                        input_dim=input_dim,
+                        output_dim=output_dim,
+                        model_type="rf",
+                        is_regression=is_regression,
+                        n_estimators=best_params['n_estimators'],
+                        max_depth=best_params['max_depth'],
+                        min_samples_split=best_params['min_samples_split'],
+                        min_samples_leaf=best_params['min_samples_leaf']
+                    )
+                elif model.model_type == "svm":
+                    model = SklearnModel(
+                        input_dim=input_dim,
+                        output_dim=output_dim,
+                        model_type="svm",
+                        is_regression=is_regression,
+                        C=best_params['C'],
+                        kernel=best_params['kernel'],
+                        gamma=best_params['gamma']
+                    )
+                elif model.model_type == "knn":
+                    model = SklearnModel(
+                        input_dim=input_dim,
+                        output_dim=output_dim,
+                        model_type="knn",
+                        is_regression=is_regression,
+                        n_neighbors=best_params['n_neighbors'],
+                        weights=best_params['weights']
+                    )
+                
+                print(f"✅ Hyperparameter optimization completed for {model_name}")
+                print(f"Best value: {study.best_value:.4f}")
+                print(f"Best parameters: {study.best_params}")
+            
+            # Train the model with repetitions
+            results = train_inductive_model(
+                model=model,
+                model_name=model_name,
+                dataloaders=dataloaders,
+                config=config,
+                task=task,
+                device=device,
+                finetuning=finetuning
+            )
+            
+            return results
+    
     # Train the model (either original or optimized)
     results = train_inductive_model(
         model=model,
@@ -2039,32 +1979,32 @@ def cleanup_gpu_dataloaders(dataloaders: Dict[str, Dict[str, Any]], device: torc
     print(f"🧹 Cleaning up GPU memory on {device}...")
     
     for task, task_data in dataloaders.items():
-        for fold_name, fold_data in task_data.items():
-            for split_name, dataloader in fold_data.items():
-                if split_name == 'metadata':
-                    continue
+        # Handle flattened structure (dataloaders[task][split_name] = DataLoader)
+        for split_name, dataloader in task_data.items():
+            if split_name == 'metadata':
+                continue
+            
+            # Clear all batches from GPU
+            for batch in dataloader:
+                # Move batch data to CPU and delete
+                if hasattr(batch, 'x'):
+                    batch.x = batch.x.cpu()
+                if hasattr(batch, 'edge_index'):
+                    batch.edge_index = batch.edge_index.cpu()
+                if hasattr(batch, 'y'):
+                    batch.y = batch.y.cpu()
+                if hasattr(batch, 'batch'):
+                    batch.batch = batch.batch.cpu()
                 
-                # Clear all batches from GPU
-                for batch in dataloader:
-                    # Move batch data to CPU and delete
-                    if hasattr(batch, 'x'):
-                        batch.x = batch.x.cpu()
-                    if hasattr(batch, 'edge_index'):
-                        batch.edge_index = batch.edge_index.cpu()
-                    if hasattr(batch, 'y'):
-                        batch.y = batch.y.cpu()
-                    if hasattr(batch, 'batch'):
-                        batch.batch = batch.batch.cpu()
-                    
-                    # Clear any PE tensors
-                    for attr_name in dir(batch):
-                        if attr_name.endswith('_pe'):
-                            pe_tensor = getattr(batch, attr_name)
-                            if hasattr(pe_tensor, 'cpu'):
-                                setattr(batch, attr_name, pe_tensor.cpu())
-                
-                # Clear the dataloader itself
-                del dataloader
+                # Clear any PE tensors
+                for attr_name in dir(batch):
+                    if attr_name.endswith('_pe'):
+                        pe_tensor = getattr(batch, attr_name)
+                        if hasattr(pe_tensor, 'cpu'):
+                            setattr(batch, attr_name, pe_tensor.cpu())
+            
+            # Clear the dataloader itself
+            del dataloader
     
     # Force GPU memory cleanup
     if torch.cuda.is_available():
@@ -2073,3 +2013,49 @@ def cleanup_gpu_dataloaders(dataloaders: Dict[str, Dict[str, Any]], device: torc
         gc.collect()
     
     print(f"✅ GPU memory cleaned up")
+
+def _aggregate_repetition_results(
+    repetition_test_metrics: Dict[str, Dict[str, float]],
+    repetition_best_val_metrics: Dict[str, float],
+    repetition_train_time: Dict[str, float]
+) -> Dict[str, Any]:
+    """Aggregate results across repetitions."""
+    import numpy as np
+    
+    # Aggregate test metrics
+    aggregated_test_metrics = {}
+    for metric_name in repetition_test_metrics[list(repetition_test_metrics.keys())[0]].keys():
+        values = [repetition_test_metrics[rep][metric_name] for rep in repetition_test_metrics.keys()]
+        aggregated_test_metrics[metric_name] = {
+            'mean': float(np.mean(values)),
+            'std': float(np.std(values)),
+            'min': float(np.min(values)),
+            'max': float(np.max(values)),
+            'values': values
+        }
+    
+    # Aggregate validation metrics
+    val_values = list(repetition_best_val_metrics.values())
+    aggregated_val_metrics = {
+        'mean': float(np.mean(val_values)),
+        'std': float(np.std(val_values)),
+        'min': float(np.min(val_values)),
+        'max': float(np.max(val_values)),
+        'values': val_values
+    }
+    
+    # Aggregate training times
+    time_values = list(repetition_train_time.values())
+    aggregated_train_time = {
+        'mean': float(np.mean(time_values)),
+        'std': float(np.std(time_values)),
+        'min': float(np.min(time_values)),
+        'max': float(np.max(time_values)),
+        'values': time_values
+    }
+    
+    return {
+        'test_metrics': aggregated_test_metrics,
+        'val_metrics': aggregated_val_metrics,
+        'train_time': aggregated_train_time
+    }

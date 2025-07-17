@@ -52,28 +52,46 @@ def create_dataloaders_from_saved_data(inductive_data: Dict, config_dict: Dict):
         print(f"\nProcessing task: {task_name}")
         dataloaders[task_name] = {}
         
-        for fold_name, fold_data in task_data.items():
-            if fold_name == 'metadata':
-                continue
-                
-            print(f"  Fold: {fold_name}")
-            dataloaders[task_name][fold_name] = {}
+        # Handle new single split structure
+        if 'split' in task_data:
+            # New structure: task_data['split']['train']['graphs']
+            split_data = task_data['split']
+            dataloaders[task_name]['split'] = {}
             
-            for split_name, split_data in fold_data.items():
-                if split_name == 'metadata':
-                    continue
-                    
-                print(f"    Split: {split_name} - {split_data['n_graphs']} graphs")
+            for split_name, split_info in split_data.items():
+                print(f"  Split: {split_name} - {split_info['n_graphs']} graphs")
                 
                 # Create DataLoader from the saved data
-                # The data should already be in the correct format
                 dataloader = DataLoader(
-                    split_data['graphs'],
-                    batch_size=split_data['batch_size'],
+                    split_info['graphs'],
+                    batch_size=split_info['batch_size'],
                     shuffle=(split_name == 'train')
                 )
                 
-                dataloaders[task_name][fold_name][split_name] = dataloader
+                dataloaders[task_name]['split'][split_name] = dataloader
+        else:
+            # Old fold-based structure (for backward compatibility)
+            for fold_name, fold_data in task_data.items():
+                if fold_name == 'metadata':
+                    continue
+                    
+                print(f"  Fold: {fold_name}")
+                dataloaders[task_name][fold_name] = {}
+                
+                for split_name, split_data in fold_data.items():
+                    if split_name == 'metadata':
+                        continue
+                        
+                    print(f"    Split: {split_name} - {split_data['n_graphs']} graphs")
+                    
+                    # Create DataLoader from the saved data
+                    dataloader = DataLoader(
+                        split_data['graphs'],
+                        batch_size=split_data['batch_size'],
+                        shuffle=(split_name == 'train')
+                    )
+                    
+                    dataloaders[task_name][fold_name][split_name] = dataloader
     
     return dataloaders
 
@@ -126,8 +144,14 @@ def train_graphsage_on_saved_data(dataloaders: Dict, config_dict: Dict):
         print(f"{'='*40}")
         
         # Get sample batch to determine dimensions
-        first_fold_name = list(task_dataloaders.keys())[0]
-        sample_batch = next(iter(task_dataloaders[first_fold_name]['train']))
+        # Handle new single split structure
+        if 'split' in task_dataloaders:
+            # New structure: task_dataloaders['split']['train']
+            sample_batch = next(iter(task_dataloaders['split']['train']))
+        else:
+            # Old fold-based structure (for backward compatibility)
+            first_fold_name = list(task_dataloaders.keys())[0]
+            sample_batch = next(iter(task_dataloaders[first_fold_name]['train']))
         input_dim = sample_batch.x.shape[1]
         
         # Determine if it's regression or classification
@@ -144,10 +168,17 @@ def train_graphsage_on_saved_data(dataloaders: Dict, config_dict: Dict):
         else:
             # Count unique classes
             all_labels = []
-            for fold_name, fold_data in task_dataloaders.items():
-                for split_name, dataloader in fold_data.items():
+            # Handle new single split structure
+            if 'split' in task_dataloaders:
+                for split_name, dataloader in task_dataloaders['split'].items():
                     for batch in dataloader:
                         all_labels.extend(batch.y.cpu().numpy().flatten())
+            else:
+                # Old fold-based structure (for backward compatibility)
+                for fold_name, fold_data in task_dataloaders.items():
+                    for split_name, dataloader in fold_data.items():
+                        for batch in dataloader:
+                            all_labels.extend(batch.y.cpu().numpy().flatten())
             output_dim = len(set(all_labels))
         
         print(f"Input dim: {input_dim}, Output dim: {output_dim}")
@@ -183,7 +214,13 @@ def train_graphsage_on_saved_data(dataloaders: Dict, config_dict: Dict):
             print(f"✓ Successfully trained GraphSAGE on {task_name}")
             
             # Print some results
-            if 'fold_test_metrics' in task_results:
+            if 'repetition_test_metrics' in task_results:
+                # New repetition-based structure
+                test_metrics = task_results['repetition_test_metrics']
+                for repetition_name, metrics in test_metrics.items():
+                    print(f"  {repetition_name}: {metrics}")
+            elif 'fold_test_metrics' in task_results:
+                # Old fold-based structure (for backward compatibility)
                 test_metrics = task_results['fold_test_metrics']
                 for fold_name, metrics in test_metrics.items():
                     print(f"  {fold_name}: {metrics}")

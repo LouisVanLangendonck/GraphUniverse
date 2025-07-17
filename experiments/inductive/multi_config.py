@@ -279,6 +279,21 @@ class CleanMultiExperimentConfig:
                 processed['homophily_range'] = (0.0, homophily_max)
                 processed['density_range'] = (0.0, density_max)
         
+        # Handle distributional shift combination parameter
+        if 'distributional_shift_combination' in processed:
+            combination = processed.pop('distributional_shift_combination')
+            # combination is a tuple: (bool, str, bool) - (shift_enabled, shift_type, test_only)
+            if isinstance(combination, tuple) and len(combination) == 3:
+                shift_enabled, shift_type, test_only = combination
+                processed['distributional_shift_in_eval'] = shift_enabled
+                processed['distributional_shift_in_eval_type'] = shift_type
+                processed['distributional_shift_test_only'] = test_only
+            elif isinstance(combination, tuple) and len(combination) == 2:
+                # Backward compatibility with old 2-tuple format
+                shift_enabled, shift_type = combination
+                processed['distributional_shift_in_eval'] = shift_enabled
+                processed['distributional_shift_in_eval_type'] = shift_type
+        
         return processed
     
     def get_total_runs(self) -> int:
@@ -299,7 +314,8 @@ class CleanMultiExperimentConfig:
                     'max_val': pr.max_val,
                     'step': pr.step,
                     'is_sweep': pr.is_sweep,
-                    'distribution': pr.distribution
+                    'distribution': pr.distribution,
+                    'discrete_values': pr.discrete_values
                 }
                 for name, pr in self.sweep_parameters.items()
             },
@@ -311,7 +327,8 @@ class CleanMultiExperimentConfig:
                     'is_sweep': pr.is_sweep,
                     'distribution': pr.distribution,
                     'mean': pr.mean,
-                    'std': pr.std
+                    'std': pr.std,
+                    'discrete_values': pr.discrete_values
                 }
                 for name, pr in self.random_parameters.items()
             },

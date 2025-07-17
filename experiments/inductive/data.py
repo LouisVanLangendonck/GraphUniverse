@@ -585,12 +585,14 @@ def prepare_inductive_data(
     pe_types: List[str] = ['laplacian', 'degree', 'rwse'],
     family_graphs_training_indices: Optional[List[int]] = None,
     family_graphs_val_test_indices: Optional[List[int]] = None,
+    family_graphs_training_val_indices: Optional[List[int]] = None,
+    family_graphs_test_indices: Optional[List[int]] = None,
     family_graph_community_labels_list: Optional[List[List[int]]] = None,
 ) -> Dict[str, Dict[str, Any]]:
     """
     Central function to prepare graph family data for inductive learning.
     Handles multiple task types (community prediction, k-hop counting, metapath tasks)
-    in a unified way.
+    in a unified way with proper distributional shift handling.
     
     Args:
         family_graphs: List of GraphSample objects from the same family
@@ -609,11 +611,7 @@ def prepare_inductive_data(
     print(f"\nUsing universe K: {universe_K}")
     
     # Calculate split sizes
-    if config.allow_unseen_community_combinations_for_eval:
-        n_graphs = len(family_graphs)
-    else:
-        n_graphs = len(family_graphs_training_indices)
-
+    n_graphs = config.n_graphs
     n_train = int(n_graphs * config.train_graph_ratio)
     n_val = int(n_graphs * config.val_graph_ratio)
     n_test = n_graphs - n_train - n_val
@@ -625,6 +623,64 @@ def prepare_inductive_data(
     
     # First convert all graphs to PyG format and compute labels for each task
     print("\nConverting graphs to PyG format and computing labels...")
+    pyg_graphs_by_task = _convert_graphs_to_pyg_format(family_graphs, config, universe_K)
+
+    # Add PE precomputation
+    if config.precompute_pe:
+        print(f"\nPrecomputing positional encodings...")
+        print(f"PE types: {pe_types}")
+        print(f"PE dimension: {config.max_pe_dim}")
+
+        # Create temporary data structure for PE computation
+        temp_data = {task: {'graphs': graphs} for task, graphs in pyg_graphs_by_task.items()}
+        temp_data = add_positional_encodings_to_data(
+            temp_data, 
+            pe_types=pe_types,
+            max_pe_dim=config.max_pe_dim
+        )
+        # Update graphs with PE
+        for task in pyg_graphs_by_task:
+            pyg_graphs_by_task[task] = temp_data[task]['graphs']
+
+    # Now create single split with proper distributional shift handling
+    if config.n_repetitions <= 0:
+        raise ValueError(f"n_repetitions must be greater than 0")
+    
+    # Create splits based on distributional shift configuration
+    split_config = _create_split_configuration(
+        config, n_graphs, n_train, n_val, n_test,
+        family_graphs_training_indices, family_graphs_val_test_indices,
+        family_graphs_training_val_indices, family_graphs_test_indices,
+        family_graph_community_labels_list
+    )
+    
+    # Process each task
+    split_index_dict = {}
+    for task in config.tasks:
+        print(f"\nPreparing single split for task: {task}")
+        task_data = {}
+        
+        # Get the pre-processed graphs for this task
+        pyg_graphs = pyg_graphs_by_task[task]
+        
+        # Create single split (will be repeated with different seeds during training)
+        split_indices = _create_single_split(
+            config, split_config, pyg_graphs, n_train, n_val, n_test, family_graph_community_labels_list
+        )
+        split_index_dict[task] = split_indices
+        
+        # Create task data structure
+        task_data = _create_task_data_structure(
+            config, task, pyg_graphs, split_indices, universe_K, family_graphs
+        )
+        
+        inductive_data[task] = task_data
+    
+    # Return normal splits and fold indices
+    return inductive_data, {}, split_index_dict
+
+def _convert_graphs_to_pyg_format(family_graphs: List[GraphSample], config, universe_K: int) -> Dict[str, List]:
+    """Convert graphs to PyG format and compute task-specific labels."""
     pyg_graphs_by_task = {}
     
     for task in config.tasks:
@@ -666,194 +722,186 @@ def prepare_inductive_data(
             
             pyg_graphs.append(pyg_data)
             
-            if (i + 1) % 10 == 0:
-                print(f"    Processed {i + 1}/{len(family_graphs)} graphs")
+            # if (i + 1) % 10 == 0:
+            #     print(f"    Processed {i + 1}/{len(family_graphs)} graphs")
         
         pyg_graphs_by_task[task] = pyg_graphs
-
-    # Add PE precomputation
-    if config.precompute_pe:
-        print(f"\nPrecomputing positional encodings...")
-        print(f"PE types: {pe_types}")
-        print(f"PE dimension: {config.max_pe_dim}")
-
-        # Create temporary data structure for PE computation
-        temp_data = {task: {'graphs': graphs} for task, graphs in pyg_graphs_by_task.items()}
-        temp_data = add_positional_encodings_to_data(
-            temp_data, 
-            pe_types=pe_types,
-            max_pe_dim=config.max_pe_dim
-        )
-        # Update graphs with PE
-        for task in pyg_graphs_by_task:
-            pyg_graphs_by_task[task] = temp_data[task]['graphs']
-
-    # Now create k-fold splits
-    if config.k_fold <= 0:
-        raise ValueError(f"K-fold must be greater than 0")
     
-    # For all folds, fix the test set to be the same for all folds
-    if config.allow_unseen_community_combinations_for_eval:
-        test_indices = np.random.permutation(n_graphs)[:n_test].tolist()
-        remaining_indices = [i for i in range(n_graphs) if i not in test_indices]
-    else:
-        print(family_graphs_val_test_indices)
-        test_indices = np.random.permutation(family_graphs_val_test_indices)[:n_test].tolist()
-        test_community_combinations = []
-        for idx in test_indices:
-            test_community_combinations.append(set(family_graph_community_labels_list[idx].tolist()))
-        print(f"Test community combinations: {test_community_combinations}")
+    return pyg_graphs_by_task
 
-        mandatory_train_indices = []
-        seen_combinations_for_mandatory_train = []
-        for training_index in family_graphs_training_indices:
-            graph_community_labels = set(family_graph_community_labels_list[training_index].tolist())
-            if any(graph_community_labels == test_comb for test_comb in test_community_combinations) and not any(graph_community_labels == seen_comb for seen_comb in seen_combinations_for_mandatory_train):
-                mandatory_train_indices.append(training_index)
-                seen_combinations_for_mandatory_train.append(graph_community_labels)
-        
-        # Remove mandatory train indices from remaining train indices
-        remaining_train_indices = [i for i in family_graphs_training_indices if i not in mandatory_train_indices]
-        remaining_val_indices = [i for i in family_graphs_val_test_indices if i not in test_indices]
-
-    # Process each task
-    for task in config.tasks:
-        print(f"\nPreparing k-fold splits for task: {task}")
-        task_data = {}
-        
-        # Get the pre-processed graphs for this task
-        pyg_graphs = pyg_graphs_by_task[task]
-        test_graphs = [pyg_graphs[i] for i in test_indices]
-
-        # Create k-fold splits
-        fold_indices = {}
-        for i in range(config.k_fold):
-            fold_indices[i] = {'train': [], 'val': [], 'test': []}
-            # Randomly shuffle the indices
-            np.random.seed(config.seed + i)  # Different seed for each fold
-
-            if config.allow_unseen_community_combinations_for_eval:
-                indices = np.random.permutation(remaining_indices)
-                train_indices = indices[:n_train].tolist()
-                val_indices = indices[n_train:n_train + n_val].tolist()
-                fold_indices[i]['train'] = train_indices
-                fold_indices[i]['val'] = val_indices
-                fold_indices[i]['test'] = test_indices
+def _create_split_configuration(
+    config, n_graphs: int, n_train: int, n_val: int, n_test: int,
+    family_graphs_training_indices: Optional[List[int]] = None,
+    family_graphs_val_test_indices: Optional[List[int]] = None,
+    family_graphs_training_val_indices: Optional[List[int]] = None,
+    family_graphs_test_indices: Optional[List[int]] = None,
+    family_graph_community_labels_list: Optional[List[List[int]]] = None,
+) -> Dict[str, Any]:
+    """Create split configuration based on distributional shift settings."""
+    
+    split_config = {
+        'distributional_shift': config.distributional_shift_in_eval,
+        'shift_type': config.distributional_shift_in_eval_type,
+        'test_only': config.distributional_shift_test_only,
+        'n_train': n_train,
+        'n_val': n_val,
+        'n_test': n_test
+    }
+    
+    # Handle different distributional shift scenarios
+    if config.distributional_shift_in_eval:
+        # Property shifts (homophily, density, n_nodes)
+        if config.distributional_shift_test_only:
+            # Test only: training+val graphs, test graphs with shift
+            if family_graphs_test_indices is not None:
+                split_config['test_indices'] = family_graphs_test_indices
+                split_config['training_val_indices'] = family_graphs_training_val_indices
             else:
-                # First add mandatory train indices
-                train_indices = mandatory_train_indices.copy()
-                
-                # Get remaining number of train indices needed
-                remaining_n_train_indices_to_sample = n_train - len(mandatory_train_indices)
-                
-                # Randomly sample remaining train indices
-                permuted_train_indices = np.random.permutation(remaining_train_indices)
-                train_indices.extend(permuted_train_indices[:remaining_n_train_indices_to_sample].tolist())
-                
-                # Get all community combinations in current train fold
-                train_community_combinations = set()
-                for train_idx in train_indices:
-                    train_community_combinations.add(tuple(sorted(family_graph_community_labels_list[train_idx].tolist())))
-                
-                # Select validation indices that have community combinations seen in train
-                val_indices = []
-                permuted_val_indices = np.random.permutation(remaining_val_indices)
-                
-                for val_idx in permuted_val_indices:
-                    val_community_combination = tuple(sorted(family_graph_community_labels_list[val_idx].tolist()))
-                    if val_community_combination in train_community_combinations and len(val_indices) < n_val:
-                        val_indices.append(val_idx)
-                
-                print(f"Fold {i}:")
-                print(f"  Train size: {len(train_indices)} (including {len(mandatory_train_indices)} mandatory)")
-                print(f"  Val size: {len(val_indices)}")
-                print(f"  Test size: {len(test_indices)}")
-                
-                fold_indices[i]['train'] = train_indices
-                fold_indices[i]['val'] = val_indices
-                fold_indices[i]['test'] = test_indices
-
-            fold_name = f'fold_{i}'
-            task_data[fold_name] = {
-                'train': {
-                    'graphs': [pyg_graphs[i] for i in train_indices],
-                    'n_graphs': len(train_indices),
-                    'batch_size': min(len(train_indices), config.batch_size),
-                    'indices': train_indices
-                },
-                'val': {
-                    'graphs': [pyg_graphs[i] for i in val_indices],
-                    'n_graphs': len(val_indices),
-                    'batch_size': len(val_indices),
-                    'indices': val_indices
-                },
-                'test': {
-                    'graphs': test_graphs,
-                    'n_graphs': len(test_graphs),
-                    'batch_size': len(test_graphs),
-                    'indices': test_indices
-                }
-            }
-        
-        # Add task-specific metadata
-        is_regression = config.is_regression.get(task, False)
-        
-        # Calculate output dimension based on task type
-        if task == "community":
-            output_dim = universe_K
-        elif task == "triangle_count":
-            output_dim = 1
-        elif task.startswith("k_hop_community_counts"):
-            output_dim = universe_K
+                # Fallback: assume last portion is test
+                split_config['test_indices'] = list(range(n_graphs - n_test, n_graphs))
+                split_config['training_val_indices'] = list(range(n_graphs - n_test))
         else:
-            raise ValueError(f"Unknown task: {task}")
+            # Val and test: training graphs, val+test graphs with shift
+            if family_graphs_training_indices is not None and family_graphs_val_test_indices is not None:
+                split_config['training_indices'] = family_graphs_training_indices
+                split_config['val_test_indices'] = family_graphs_val_test_indices
+            else:
+                # Fallback: assume first half is training, second half is val+test
+                split_config['training_indices'] = list(range(n_graphs // 2))
+                split_config['val_test_indices'] = list(range(n_graphs // 2, n_graphs))
+    else:
+        # No distributional shift: standard split
+        split_config['test_indices'] = np.random.permutation(n_graphs)[:n_test].tolist()
+        split_config['remaining_indices'] = [i for i in range(n_graphs) if i not in split_config['test_indices']]
+    
+    return split_config
+
+def _create_single_split(
+    config, split_config: Dict[str, Any], pyg_graphs: List, 
+    n_train: int, n_val: int, n_test: int, family_graph_community_labels_list: Optional[List[List[int]]] = None
+) -> Dict[str, List[int]]:
+    """Create a single split with proper distributional shift handling."""
+    
+    # Standard split or property shift
+    if split_config['distributional_shift'] and split_config['test_only']:
+        # Property shift test only
+        # Use single train/val split, same test split
+        available_train_val = split_config['training_val_indices'].copy()
         
-        task_data['metadata'] = {
-            'is_regression': is_regression,
-            'output_dim': output_dim,
-            'input_dim': family_graphs[0].features.shape[1] if family_graphs[0].features is not None else 0,
-            'task_type': task,
-            'universe_K': universe_K
+        # Ensure we have enough graphs for single split
+        if len(available_train_val) < n_train + n_val:
+            print(f"Warning: Only {len(available_train_val)} graphs available for train+val, need {n_train + n_val}")
+            # Use all available graphs
+            train_val_indices = available_train_val
+        else:
+            # Use single random permutation for the split
+            np.random.seed(config.seed)
+            train_val_indices = np.random.permutation(available_train_val)[:n_train + n_val].tolist()
+        
+        train_indices = train_val_indices[:n_train]
+        val_indices = train_val_indices[n_train:n_train + n_val]
+        test_indices = split_config['test_indices']
+        
+    elif split_config['distributional_shift'] and not split_config['test_only']:
+        # Property shift val and test
+        # Use single train split, and single val split from the shifted pool
+        available_train = split_config['training_indices'].copy()
+        available_val_test = split_config['val_test_indices'].copy()
+        
+        # Ensure we have enough graphs
+        if len(available_train) < n_train:
+            print(f"Warning: Only {len(available_train)} graphs available for train, need {n_train}")
+            train_indices = available_train
+        else:
+            # Use single random permutation for train split
+            np.random.seed(config.seed)
+            train_indices = np.random.permutation(available_train)[:n_train].tolist()
+        
+        if len(available_val_test) < n_val + n_test:
+            print(f"Warning: Only {len(available_val_test)} graphs available for val+test, need {n_val + n_test}")
+            val_test_indices = available_val_test
+        else:
+            # Use single random permutation for val/test split
+            np.random.seed(config.seed + 1000)  # Different seed for val/test to avoid correlation
+            val_test_indices = np.random.permutation(available_val_test)[:n_val + n_test].tolist()
+        
+        val_indices = val_test_indices[:n_val]
+        test_indices = val_test_indices[n_val:n_val + n_test]
+        
+    else:
+        # Standard split
+        indices = np.random.permutation(split_config['remaining_indices'])
+        train_indices = indices[:n_train].tolist()
+        val_indices = indices[n_train:n_train + n_val].tolist()
+        test_indices = split_config['test_indices']
+    
+    return {
+        'train': train_indices,
+        'val': val_indices,
+        'test': test_indices
+    }
+
+def _create_task_data_structure(
+    config, task: str, pyg_graphs: List, split_indices: Dict[str, List[int]], 
+    universe_K: int, family_graphs: List[GraphSample]
+) -> Dict[str, Any]:
+    """Create the task data structure with proper metadata."""
+    
+    task_data = {}
+    
+    # Create single split structure
+    task_data['split'] = {
+        'train': {
+            'graphs': [pyg_graphs[i] for i in split_indices['train']],
+            'n_graphs': len(split_indices['train']),
+            'batch_size': min(len(split_indices['train']), config.batch_size),
+            'indices': split_indices['train']
+        },
+        'val': {
+            'graphs': [pyg_graphs[i] for i in split_indices['val']],
+            'n_graphs': len(split_indices['val']),
+            'batch_size': len(split_indices['val']),
+            'indices': split_indices['val']
+        },
+        'test': {
+            'graphs': [pyg_graphs[i] for i in split_indices['test']],
+            'n_graphs': len(split_indices['test']),
+            'batch_size': len(split_indices['test']),
+            'indices': split_indices['test']
         }
-        
-        # Add task-specific metadata
-        if task.startswith("k_hop_community_counts_k"):
-            k = int(task.split("k")[-1])
-            task_data['metadata'].update({
-                'k_value': k,
-                'universe_K': universe_K
-            })
-        
-        inductive_data[task] = task_data
+    }
     
-    # After all splits are created for each task, create sheaf-specific splits with batch size 1
-    sheaf_inductive_data = {}
-    for task, task_data in inductive_data.items():
-        sheaf_task_data = {}
-        for fold_name, fold_data in task_data.items():
-            if fold_name == 'metadata' or fold_name == 'metapath_analysis':
-                sheaf_task_data[fold_name] = copy.deepcopy(fold_data)
-                continue
-                
-            sheaf_fold_data = {}
-            for split_name, split_data in fold_data.items():
-                if split_name == 'metadata' or split_name == 'metapath_analysis':
-                    sheaf_fold_data[split_name] = copy.deepcopy(split_data)
-                    continue
-                    
-                # Deep copy graphs and attach cache
-                sheaf_graphs = [precompute_sheaf_laplacian(copy.deepcopy(g)) for g in split_data['graphs']]
-                sheaf_fold_data[split_name] = {
-                    'graphs': sheaf_graphs,
-                    'n_graphs': len(sheaf_graphs),
-                    'batch_size': 1,  # Always batch size 1 for sheaf
-                    'indices': split_data['indices']
-                }
-            sheaf_task_data[fold_name] = sheaf_fold_data
-        sheaf_inductive_data[task] = sheaf_task_data
+    # Add task-specific metadata
+    is_regression = config.is_regression.get(task, False)
     
-    # Return normal splits, sheaf-specific splits, and fold indices
-    return inductive_data, sheaf_inductive_data, fold_indices
+    # Calculate output dimension based on task type
+    if task == "community":
+        output_dim = universe_K
+    elif task == "triangle_count":
+        output_dim = 1
+    elif task.startswith("k_hop_community_counts"):
+        output_dim = universe_K
+    else:
+        raise ValueError(f"Unknown task: {task}")
+    
+    task_data['metadata'] = {
+        'is_regression': is_regression,
+        'output_dim': output_dim,
+        'input_dim': family_graphs[0].features.shape[1] if family_graphs[0].features is not None else 0,
+        'task_type': task,
+        'universe_K': universe_K
+    }
+    
+    # Add task-specific metadata
+    if task.startswith("k_hop_community_counts_k"):
+        k = int(task.split("k")[-1])
+        task_data['metadata'].update({
+            'k_value': k,
+            'universe_K': universe_K
+        })
+    
+    return task_data
+
 
 def compute_khop_community_counts_universe_indexed(
     graph: nx.Graph,
@@ -882,51 +930,6 @@ def compute_khop_community_counts_universe_indexed(
                 raise ValueError(f"Community {local_comm} not in universe_communities")
     
     return torch.tensor(counts, dtype=torch.float)
-
-
-# def compute_khop_community_counts_universe_indexed(
-#     graph: nx.Graph,
-#     community_labels: np.ndarray,
-#     universe_communities: Dict[int, int],
-#     universe_K: int,
-#     k: int
-# ) -> torch.Tensor:
-#     """
-#     Compute k-hop community counts with universe indexing.
-    
-#     Args:
-#         graph: NetworkX graph
-#         community_labels: Node community labels
-#         universe_communities: Mapping from local to universe community indices
-#         universe_K: Number of communities in universe
-#         k: Number of hops
-        
-#     Returns:
-#         Tensor of shape (n_nodes, universe_K) containing k-hop community counts
-#     """
-#     n_nodes = graph.number_of_nodes()
-#     counts = np.zeros((n_nodes, universe_K))
-    
-#     # For each node
-#     for node in range(n_nodes):
-#         # Get k-hop neighborhood
-#         neighbors = set([node])
-#         for _ in range(k):
-#             new_neighbors = set()
-#             for n in neighbors:
-#                 new_neighbors.update(graph.neighbors(n))
-#             neighbors.update(new_neighbors)
-        
-#         # Count communities in neighborhood
-#         for neighbor in neighbors:
-#             local_comm = community_labels[neighbor]
-#             if local_comm in universe_communities:
-#                 universe_comm = universe_communities[local_comm]
-#                 counts[node, universe_comm] += 1
-#             else:
-#                 raise ValueError(f"Community {local_comm} not found in universe communities")
-    
-#     return torch.tensor(counts, dtype=torch.float)
 
 def generate_universe_based_metapath_tasks(
     family_graphs: List[GraphSample],
@@ -1125,27 +1128,46 @@ def create_inductive_dataloaders(
     
     for task, task_data in inductive_data.items():
         task_loaders = {}
-        for fold_name, fold_data in task_data.items():
-            fold_loaders = {}
-            if fold_name == 'metadata' or fold_name == 'metapath_analysis':
-                continue
-            
-            # Determine batch size for this task
-            # No need to enforce consistent batch size for triangle_count; use split batch size
-            
-            for split_name, split_data in fold_data.items():
+        
+        # Handle the new structure with 'split' key
+        if 'split' in task_data:
+            # New structure: task_data['split']['train']['graphs']
+            split_data = task_data['split']
+            for split_name, split_info in split_data.items():
+                shuffle = (split_name == 'train')
+                batch_size = split_info['batch_size']
+                
+                # Use custom collate function for triangle count tasks
+                if task == "triangle_count":
+                    collate_fn = ensure_batch_attribute_collate_fn
+                    loader = DataLoader(
+                        split_info['graphs'],
+                        batch_size=batch_size,
+                        shuffle=shuffle,
+                        num_workers=0,
+                        collate_fn=collate_fn
+                    )
+                else:
+                    loader = DataLoader(
+                        split_info['graphs'],
+                        batch_size=batch_size,
+                        shuffle=shuffle,
+                        num_workers=0,
+                    )
+                
+                task_loaders[split_name] = loader
+        else:
+            # Old structure: task_data['train']['graphs'] (for backward compatibility)
+            for split_name, split_data in task_data.items():
                 if split_name == 'metadata' or split_name == 'metapath_analysis':
                     continue
                 
                 shuffle = (split_name == 'train')
-                
                 batch_size = split_data['batch_size']
                 
                 # Use custom collate function for triangle count tasks
-                
                 if task == "triangle_count":
                     collate_fn = ensure_batch_attribute_collate_fn
-                
                     loader = DataLoader(
                         split_data['graphs'],
                         batch_size=batch_size,
@@ -1161,10 +1183,7 @@ def create_inductive_dataloaders(
                         num_workers=0,
                     )
                 
-                fold_loaders[split_name] = loader
-                
-            
-            task_loaders[fold_name] = fold_loaders
+                task_loaders[split_name] = loader
         
         dataloaders[task] = task_loaders
     
@@ -1340,22 +1359,43 @@ def add_positional_encodings_to_data(
             
         print(f"  Processing task: {task_name}")
         
-        # Get graphs for this task
-        graphs = task_data['graphs']
-        print(f"    Processing {len(graphs)} graphs")
-        
-        for i, graph in enumerate(graphs):
-            # Compute PE for this graph
-            pe_dict = pe_computer.compute_all_pe(graph.edge_index, graph.x.size(0))
+        # Handle the new structure with 'split' key
+        if 'split' in task_data:
+            # New structure: task_data['split']['train']['graphs']
+            split_data = task_data['split']
+            for split_name, split_info in split_data.items():
+                graphs = split_info['graphs']
+                print(f"    Processing {len(graphs)} graphs for {split_name}")
+                
+                for i, graph in enumerate(graphs):
+                    # Compute PE for this graph
+                    pe_dict = pe_computer.compute_all_pe(graph.edge_index, graph.x.size(0))
+                    
+                    # Add PE to graph data
+                    for pe_name, pe_tensor in pe_dict.items():
+                        setattr(graph, pe_name, pe_tensor)
+                    
+                    total_graphs += 1
+                    
+                    if (i + 1) % 10 == 0:
+                        print(f"      Processed {i + 1}/{len(graphs)} graphs for {split_name}")
+        else:
+            # Old structure: task_data['graphs'] (for backward compatibility)
+            graphs = task_data['graphs']
+            print(f"    Processing {len(graphs)} graphs")
             
-            # Add PE to graph data
-            for pe_name, pe_tensor in pe_dict.items():
-                setattr(graph, pe_name, pe_tensor)
-            
-            total_graphs += 1
-            
-            if (i + 1) % 10 == 0:
-                print(f"      Processed {i + 1}/{len(graphs)} graphs")
+            for i, graph in enumerate(graphs):
+                # Compute PE for this graph
+                pe_dict = pe_computer.compute_all_pe(graph.edge_index, graph.x.size(0))
+                
+                # Add PE to graph data
+                for pe_name, pe_tensor in pe_dict.items():
+                    setattr(graph, pe_name, pe_tensor)
+                
+                total_graphs += 1
+                
+                if (i + 1) % 10 == 0:
+                    print(f"      Processed {i + 1}/{len(graphs)} graphs")
     
     print(f"✓ Added PE to {total_graphs} graphs total")
     return inductive_data
@@ -1392,19 +1432,51 @@ def create_gpu_resident_dataloaders(
     
     for task, task_data in inductive_data.items():
         task_loaders = {}
-        for fold_name, fold_data in task_data.items():
-            fold_loaders = {}
-            if fold_name == 'metadata' or fold_name == 'metapath_analysis':
-                continue
-            
-            # Determine batch size for this task
-            # No need to enforce consistent batch size for triangle_count; use split batch size
-            
-            for split_name, split_data in fold_data.items():
+        
+        # Handle the new structure with 'split' key
+        if 'split' in task_data:
+            # New structure: task_data['split']['train']['graphs']
+            split_data = task_data['split']
+            for split_name, split_info in split_data.items():
+                print(f"  Loading {split_name} data for {task}...")
+                
+                # Move all graphs to GPU at once
+                gpu_graphs = []
+                for graph in split_info['graphs']:
+                    # Create a copy of the graph on GPU
+                    gpu_graph = graph.to(device)
+                    gpu_graphs.append(gpu_graph)
+                
+                shuffle = (split_name == 'train')
+                batch_size = split_info['batch_size']
+                
+                # Use custom collate function for triangle count tasks
+                if task == "triangle_count":
+                    collate_fn = ensure_batch_attribute_collate_fn
+                    loader = DataLoader(
+                        gpu_graphs,
+                        batch_size=batch_size,
+                        shuffle=shuffle,
+                        num_workers=0,  # Keep 0 since data is already on GPU
+                        collate_fn=collate_fn
+                    )
+                else:
+                    loader = DataLoader(
+                        gpu_graphs,
+                        batch_size=batch_size,
+                        shuffle=shuffle,
+                        num_workers=0,  # Keep 0 since data is already on GPU
+                    )
+                
+                task_loaders[split_name] = loader
+                print(f"    ✓ Loaded {len(gpu_graphs)} graphs to {device}")
+        else:
+            # Old structure: task_data['train']['graphs'] (for backward compatibility)
+            for split_name, split_data in task_data.items():
                 if split_name == 'metadata' or split_name == 'metapath_analysis':
                     continue
                 
-                print(f"  Loading {split_name} data for {task}/{fold_name}...")
+                print(f"  Loading {split_name} data for {task}...")
                 
                 # Move all graphs to GPU at once
                 gpu_graphs = []
@@ -1414,17 +1486,11 @@ def create_gpu_resident_dataloaders(
                     gpu_graphs.append(gpu_graph)
                 
                 shuffle = (split_name == 'train')
-                
-                # Use consistent batch size for triangle count tasks
                 batch_size = split_data['batch_size']
                 
                 # Use custom collate function for triangle count tasks
-                # Use the batch attribute ensuring collate function for all tasks
-                
                 if task == "triangle_count":
                     collate_fn = ensure_batch_attribute_collate_fn
-                
-                    # Create dataloader with GPU-resident data
                     loader = DataLoader(
                         gpu_graphs,
                         batch_size=batch_size,
@@ -1433,7 +1499,6 @@ def create_gpu_resident_dataloaders(
                         collate_fn=collate_fn
                     )
                 else:
-                    # Create dataloader with GPU-resident data
                     loader = DataLoader(
                         gpu_graphs,
                         batch_size=batch_size,
@@ -1441,13 +1506,21 @@ def create_gpu_resident_dataloaders(
                         num_workers=0,  # Keep 0 since data is already on GPU
                     )
                 
-                fold_loaders[split_name] = loader
-                
+                task_loaders[split_name] = loader
                 print(f"    ✓ Loaded {len(gpu_graphs)} graphs to {device}")
-            
-            task_loaders[fold_name] = fold_loaders
         
-        dataloaders[task] = task_loaders
+        # Create the structure that training functions expect
+        # If we have a 'split' structure, flatten it to direct access
+        if 'split' in task_loaders:
+            # Flatten the split structure: task_loaders['split']['train'] -> task_loaders['train']
+            split_data = task_loaders['split']
+            flattened_loaders = {}
+            for split_name, dataloader in split_data.items():
+                flattened_loaders[split_name] = dataloader
+            dataloaders[task] = flattened_loaders
+        else:
+            # Already in the correct structure
+            dataloaders[task] = task_loaders
     
     print(f"✅ All data loaded to {device}")
     return dataloaders
@@ -1466,31 +1539,30 @@ def verify_gpu_resident_data(dataloaders: Dict[str, Dict[str, Any]], device: tor
     print(f"🔍 Verifying data is on {device}...")
     
     for task, task_data in dataloaders.items():
-        for fold_name, fold_data in task_data.items():
-            for split_name, dataloader in fold_data.items():
-                if split_name == 'metadata':
-                    continue
+        for split_name, dataloader in task_data.items():
+            if split_name == 'metadata':
+                continue
+            
+            # Check first few batches
+            batch_count = 0
+            for batch in dataloader:
+                if batch_count >= 3:  # Only check first 3 batches
+                    break
                 
-                # Check first few batches
-                batch_count = 0
-                for batch in dataloader:
-                    if batch_count >= 3:  # Only check first 3 batches
-                        break
-                    
-                    # Check main tensors
-                    if hasattr(batch, 'x') and batch.x.device != device:
-                        print(f"❌ {task}/{fold_name}/{split_name}: x tensor on {batch.x.device}, expected {device}")
-                        return False
-                    
-                    if hasattr(batch, 'edge_index') and batch.edge_index.device != device:
-                        print(f"❌ {task}/{fold_name}/{split_name}: edge_index tensor on {batch.edge_index.device}, expected {device}")
-                        return False
-                    
-                    if hasattr(batch, 'y') and batch.y.device != device:
-                        print(f"❌ {task}/{fold_name}/{split_name}: y tensor on {batch.y.device}, expected {device}")
-                        return False
-                    
-                    batch_count += 1
+                # Check main tensors
+                if hasattr(batch, 'x') and batch.x.device != device:
+                    print(f"❌ {task}/{split_name}: x tensor on {batch.x.device}, expected {device}")
+                    return False
+                
+                if hasattr(batch, 'edge_index') and batch.edge_index.device != device:
+                    print(f"❌ {task}/{split_name}: edge_index tensor on {batch.edge_index.device}, expected {device}")
+                    return False
+                
+                if hasattr(batch, 'y') and batch.y.device != device:
+                    print(f"❌ {task}/{split_name}: y tensor on {batch.y.device}, expected {device}")
+                    return False
+                
+                batch_count += 1
     
     print(f"✅ All data verified to be on {device}")
     return True
@@ -1530,41 +1602,3 @@ def precompute_sheaf_laplacian(graph):
     
     return graph
 
-# --- Sheaf-specific dataloader creation ---
-def create_sheaf_dataloaders(sheaf_inductive_data, config):
-    """
-    Create dataloaders for sheaf splits (batch size 1 everywhere).
-    Usage: sheaf_dataloaders = create_sheaf_dataloaders(sheaf_inductive_data, config)
-    """
-    from torch_geometric.loader import DataLoader
-    dataloaders = {}
-    for task, task_data in sheaf_inductive_data.items():
-        task_loaders = {}
-        for fold_name, fold_data in task_data.items():
-            fold_loaders = {}
-            if fold_name == 'metadata' or fold_name == 'metapath_analysis':
-                continue
-            for split_name, split_data in fold_data.items():
-                if split_name == 'metadata' or split_name == 'metapath_analysis':
-                    continue
-                
-                # Use custom collate function for triangle count tasks
-                collate_fn = ensure_batch_attribute_collate_fn if task == "triangle_count" else None
-                # collate_fn = triangle_count_collate_fn if task == "triangle_count" else None
-                
-                loader = DataLoader(
-                    split_data['graphs'],
-                    batch_size=1,  # Always batch size 1
-                    shuffle=(split_name == 'train'),
-                    num_workers=0,
-                    collate_fn=collate_fn
-                )
-                fold_loaders[split_name] = loader
-            task_loaders[fold_name] = fold_loaders
-        dataloaders[task] = task_loaders
-    return dataloaders
-
-# --- Usage in experiment runner ---
-# When running the sheaf model, use the sheaf_inductive_data and create_sheaf_dataloaders.
-# For other models, use the normal splits and dataloaders.
-# This ensures identical splits but with sheaf-specific precomputation and batch size 1.

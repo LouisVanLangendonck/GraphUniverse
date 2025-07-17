@@ -25,7 +25,7 @@ def parse_args():
     
     # Experiment selection
     parser.add_argument('--preset', type=str, 
-                        choices=['homophily_density', 'dccc_comparison', 'benchmark', 'custom'],
+                        choices=['custom'],
                         default='custom',
                         help='Preset experiment configuration')
     
@@ -34,8 +34,6 @@ def parse_args():
                         help='Name for custom experiment')
     parser.add_argument('--output_dir', type=str, default='multi_results',
                         help='Base output directory')
-    parser.add_argument('--n_repetitions', type=int, default=1,
-                        help='Number of repetitions per parameter combination')
     parser.add_argument('--use_parallel_training', action='store_true', default=False,
                         help='Use parallel training')
 
@@ -47,7 +45,7 @@ def parse_args():
     
     # Task configuration
     parser.add_argument('--tasks', type=str, nargs='+',     
-                        default=['k_hop_community_counts_k1'],
+                        default=['community'],
                         choices=['community', 'k_hop_community_counts_k1', 'k_hop_community_counts_k2', 'k_hop_community_counts_k3', 'triangle_count'],
                         help='Learning tasks to run')
     
@@ -77,10 +75,10 @@ def parse_args():
                         help='Training epochs')
     parser.add_argument('--patience', type=int, default=100,
                         help='Early stopping patience')
-    parser.add_argument('--batch_size', type=int, default=35,
+    parser.add_argument('--batch_size', type=int, default=50,
                         help='Batch size for training (per graph)')
-    parser.add_argument('--k_fold', type=int, default=3,
-                        help='Number of folds for cross-validation')
+    parser.add_argument('--n_repetitions', type=int, default=3,
+                        help='Number of random seed repetitions for statistical robustness')
 
 
     # Hyperparameter optimization settings
@@ -153,14 +151,20 @@ def parse_args():
     parser.add_argument('--sheaf_d', type=int, default=2,
                         help='Sheaf dimension')
     
-    # Evaluation settings
-    parser.add_argument('--allow_unseen_community_combinations_for_eval', action='store_true',
-                        help='Allow unseen community combinations in evaluation')
-    
+    # === EVALUATION DISTRIBUTIONAL SHIFT ===
+    # Note: These parameters are overridden by the sweep configuration below
+    # The sweep creates 7 combinations: no shift + (homophily/density/n_nodes) × (test_only=True/False)
+    parser.add_argument('--distributional_shift_in_eval', action='store_true', default=True,
+                        help='Use distributional shift in evaluation (overridden by sweep)')
+    parser.add_argument('--distributional_shift_in_eval_type', type=str, default='density',
+                        choices=['homophily', 'density', 'n_nodes'],
+                        help='Type of distributional shift to apply in evaluation (overridden by sweep)')
+    parser.add_argument('--distributional_shift_test_only', action='store_true', default=True,
+                        help='Use distributional shift in evaluation only for test set (overridden by sweep)')
     
     # Combined sweep parameter for homophily and density ranges
     parser.add_argument('--homophily_density_combinations', type=str, nargs='+',
-                        default=['0.2,0.0', '0.0,0.1', '0.0,0.0'],
+                        default=['0.1,0.05'],
                         help='Combinations of (homophily_range_max, density_range_max) as comma-separated pairs. Format: "homophily_max,density_max"')
     
     # Fixed parameter values (previously random)
@@ -170,9 +174,9 @@ def parse_args():
                         help='Edge noise parameter')
     parser.add_argument('--cluster_count_factor', type=float, default=1.0,
                         help='Cluster count factor parameter')
-    parser.add_argument('--cluster_variance', type=float, default=0.05,
+    parser.add_argument('--cluster_variance', type=float, default=0.5,
                         help='Cluster variance parameter')
-    parser.add_argument('--center_variance', type=float, default=1.2,
+    parser.add_argument('--center_variance', type=float, default=0.1,
                         help='Center variance parameter')
     parser.add_argument('--assignment_skewness', type=float, default=0.0,
                         help='Assignment skewness parameter')
@@ -184,7 +188,7 @@ def parse_args():
     # DCCC-specific fixed parameters
     parser.add_argument('--community_imbalance_range_width', type=float, default=0.0,
                         help='Community imbalance range width (DCCC-SBM only)')
-    parser.add_argument('--degree_separation_range_width', type=float, default=0.8,
+    parser.add_argument('--degree_separation_range_width', type=float, default=0.7,
                         help='Degree separation range width (DCCC-SBM only)')
     
     # Random seed
@@ -192,7 +196,6 @@ def parse_args():
                         help='Random seed')
     
     return parser.parse_args()
-
 
 def create_custom_experiment(args) -> CleanMultiExperimentConfig:
     """Create a custom experiment configuration from arguments."""
@@ -244,7 +247,7 @@ def create_custom_experiment(args) -> CleanMultiExperimentConfig:
         epochs=args.epochs,
         patience=args.patience,
         batch_size=args.batch_size,
-        k_fold=args.k_fold,
+        n_repetitions=args.n_repetitions,
         
         # Hyperparameter optimization
         optimize_hyperparams=args.optimize_hyperparams,
@@ -260,8 +263,12 @@ def create_custom_experiment(args) -> CleanMultiExperimentConfig:
         sheaf_d=args.sheaf_d,
         
         # Evaluation settings
-        allow_unseen_community_combinations_for_eval=args.allow_unseen_community_combinations_for_eval,
         differentiate_with_and_without_PE=args.differentiate_with_and_without_PE,
+        
+        # Distributional shift evaluation settings
+        distributional_shift_in_eval=args.distributional_shift_in_eval,
+        distributional_shift_in_eval_type=args.distributional_shift_in_eval_type,
+        distributional_shift_test_only=args.distributional_shift_test_only,
 
         # Fixed parameters (previously random)
         degree_heterogeneity=args.degree_heterogeneity,
@@ -297,15 +304,15 @@ def create_custom_experiment(args) -> CleanMultiExperimentConfig:
     # Define sweep parameters
     sweep_parameters = {
         'universe_homophily': ParameterRange(
-            min_val=0.2,
-            max_val=0.8,
+            min_val=0.5,
+            max_val=0.5,
             step=0.3,
             is_sweep=True
         ),
         'universe_edge_density': ParameterRange(
-            min_val=0.06,
-            max_val=0.30,
-            step=0.12,
+            min_val=0.10,
+            max_val=0.10,
+            step=0.20,
             is_sweep=True
         ),
         'n_graphs': ParameterRange(
@@ -322,13 +329,23 @@ def create_custom_experiment(args) -> CleanMultiExperimentConfig:
             is_sweep=True,
             discrete_values=args.homophily_density_combinations
         ),
-        # Add allow_unseen_community_combinations_for_eval as sweep parameter
-        'allow_unseen_community_combinations_for_eval': ParameterRange(
-            min_val=0,  # False
-            max_val=1,  # True
+        # Distributional shift evaluation sweep parameters
+        # Creates 7 combinations: no shift + (homophily/density/n_nodes) × (test_only=True/False)
+        # Format: (shift_enabled, shift_type, test_only)
+        'distributional_shift_combination': ParameterRange(
+            min_val=0,
+            max_val=6,  # 7 combinations total
             step=1,
             is_sweep=True,
-            discrete_values=[False, True]  # Use discrete values for boolean
+            discrete_values=[
+                (False, None, True),  # No distributional shift (baseline)
+                (True, 'homophily', True),  # Homophily shift, test only
+                # (True, 'homophily', False),  # Homophily shift, train + test
+                # (True, 'density', True),  # Density shift, test only
+                # (True, 'density', False),  # Density shift, train + test
+                # (True, 'n_nodes', True),  # N_nodes shift, test only
+                # (True, 'n_nodes', False)  # N_nodes shift, train + test
+            ]
         )
     }
     
@@ -342,7 +359,6 @@ def create_custom_experiment(args) -> CleanMultiExperimentConfig:
         continue_on_failure=True,
         run_neural_sheaf=args.run_neural_sheaf
     )
-
 
 def load_intermediate_results(result_dir: str) -> tuple:
     """Load intermediate results and config from a directory."""
@@ -389,6 +405,7 @@ def load_intermediate_results(result_dir: str) -> tuple:
         results = json.load(f)
     
     return config_dict, results
+
 
 def get_next_sweep_params(config_dict: dict, completed_results: list) -> dict:
     """Get the next sweep parameter combination to run."""

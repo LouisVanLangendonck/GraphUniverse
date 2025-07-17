@@ -207,11 +207,11 @@ class SimplifiedFeatureGenerator:
             self.cluster_stats['community_distribution'][cluster, comm_id] += 1
         
         # Log some basic statistics
-        print(f"Cluster assignment stats:")
-        print(f"  Most frequent cluster: {np.argmax(self.cluster_stats['cluster_counts'])} "
-              f"with {np.max(self.cluster_stats['cluster_counts'])} nodes")
-        print(f"  Least frequent cluster: {np.argmin(self.cluster_stats['cluster_counts'])} "
-              f"with {np.min(self.cluster_stats['cluster_counts'])} nodes")
+        # print(f"Cluster assignment stats:")
+        # print(f"  Most frequent cluster: {np.argmax(self.cluster_stats['cluster_counts'])} "
+        #       f"with {np.max(self.cluster_stats['cluster_counts'])} nodes")
+        # print(f"  Least frequent cluster: {np.argmin(self.cluster_stats['cluster_counts'])} "
+        #       f"with {np.min(self.cluster_stats['cluster_counts'])} nodes")
         
         return node_clusters
     

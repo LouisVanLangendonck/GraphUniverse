@@ -81,9 +81,14 @@ class HyperparameterAnalyzer:
                                 first_fold = next(iter(fold_metrics.values()))
                                 if isinstance(first_fold, dict):
                                     available_metrics.update(first_fold.keys())
+                        elif 'repetition_test_metrics' in model_data:
+                            # New repetition-based structure
+                            repetition_metrics = model_data['repetition_test_metrics']
+                            if repetition_metrics:
+                                available_metrics.update(repetition_metrics.keys())
                         # Also check if metrics are directly in model_data
                         for key in model_data.keys():
-                            if key not in ['optimal_hyperparams', 'test_metrics', 'fold_test_metrics'] and isinstance(model_data[key], (int, float)):
+                            if key not in ['optimal_hyperparams', 'test_metrics', 'fold_test_metrics', 'repetition_test_metrics'] and isinstance(model_data[key], (int, float)):
                                 available_metrics.add(key)
         
         return list(hyperparams), list(available_metrics)
@@ -128,6 +133,20 @@ class HyperparameterAnalyzer:
                                     
                                     if fold_values:
                                         performance_values.append(np.mean(fold_values))
+                                        metric_found = True
+                            
+                            elif 'repetition_test_metrics' in model_data:
+                                # New repetition-based structure
+                                repetition_metrics = model_data['repetition_test_metrics']
+                                if repetition_metrics:
+                                    # Calculate mean across repetitions
+                                    repetition_values = []
+                                    for repetition_name, repetition_data in repetition_metrics.items():
+                                        if isinstance(repetition_data, dict) and performance_metric in repetition_data:
+                                            repetition_values.append(repetition_data[performance_metric])
+                                    
+                                    if repetition_values:
+                                        performance_values.append(np.mean(repetition_values))
                                         metric_found = True
                             
                             # Check if metric is directly in model_data

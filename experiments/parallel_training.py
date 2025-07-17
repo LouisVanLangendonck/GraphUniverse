@@ -245,8 +245,14 @@ def create_all_model_jobs_across_tasks(
         task_dataloaders = all_dataloaders[task]
         
         # Get dimensions from sample batch
-        first_fold_name = list(task_dataloaders.keys())[0]
-        sample_batch = next(iter(task_dataloaders[first_fold_name]['train']))
+        # Handle new single split structure
+        if 'split' in task_dataloaders:
+            # New structure: task_dataloaders['split']['train']
+            sample_batch = next(iter(task_dataloaders['split']['train']))
+        else:
+            # Old fold-based structure (for backward compatibility)
+            first_fold_name = list(task_dataloaders.keys())[0]
+            sample_batch = next(iter(task_dataloaders[first_fold_name]['train']))
         input_dim = sample_batch.x.shape[1]
         
         is_regression = task.startswith('k_hop_community_counts') or task == 'triangle_count'

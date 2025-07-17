@@ -17,6 +17,8 @@ import tempfile
 import sys
 import itertools
 import pickle
+import threading
+import queue
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from experiments.inductive.multi_config import CleanMultiExperimentConfig, SSLMultiExperimentConfig
@@ -24,11 +26,166 @@ from experiments.run_inductive_experiments import run_inductive_experiment
 from experiments.inductive.config import InductiveExperimentConfig, PreTrainingConfig
 from experiments.inductive.multi_config import ParameterRange
 from experiments.inductive.experiment import PreTrainingRunner
-from experiments.inductive.data import GraphFamilyManager
-
+from experiments.inductive.data import GraphFamilyManager, analyze_graph_family_properties
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+
+class ParallelPreparationManager:
+    """Manages parallel preparation of next graph family while current one trains."""
+    
+    def __init__(self):
+        self.preparation_queue = queue.Queue(maxsize=2)  # Only keep 2 prepared families
+        self.prepared_families = {}
+        self.prepared_data = {}
+        self.worker_thread = None
+        self.stop_worker = False
+        
+    def start_worker(self, config: CleanMultiExperimentConfig):
+        """Start the background worker thread."""
+        self.config = config
+        self.worker_thread = threading.Thread(target=self._worker_loop, daemon=True)
+        self.worker_thread.start()
+        print("🔄 Started parallel preparation worker")
+    
+    def stop_worker(self):
+        """Stop the background worker thread."""
+        self.stop_worker = True
+        if self.worker_thread and self.worker_thread.is_alive():
+            self.worker_thread.join(timeout=5)
+        print("🔄 Stopped parallel preparation worker")
+    
+    def _worker_loop(self):
+        """Background worker that prepares graph families."""
+        while not self.stop_worker:
+            try:
+                # Get next preparation request
+                preparation_request = self.preparation_queue.get(timeout=1.0)
+                if preparation_request is None:  # Stop signal
+                    break
+                
+                run_id, sweep_params, random_params = preparation_request
+                print(f"🔄 Preparing graph family for run {run_id} in background...")
+                
+                # Prepare the graph family
+                prepared_data = self._prepare_single_family(run_id, sweep_params, random_params)
+                
+                # Store prepared data
+                self.prepared_families[run_id] = prepared_data
+                print(f"✅ Prepared graph family for run {run_id}")
+                
+            except queue.Empty:
+                continue
+            except Exception as e:
+                print(f"❌ Error in parallel preparation: {e}")
+                continue
+    
+    def _prepare_single_family(self, run_id: int, sweep_params: Dict, random_params: Dict) -> Dict[str, Any]:
+        """Prepare a single graph family with all data."""
+        try:
+            # Process special parameters
+            processed_sweep = self._process_special_parameters(sweep_params)
+            processed_random = self._process_special_parameters(random_params)
+            
+            # Create run configuration
+            run_config = self.config.create_run_config(
+                sweep_params=processed_sweep,
+                random_params=processed_random,
+                run_id=run_id
+            )
+            
+            # Set unique seed for this specific run
+            run_seed = 42 + run_id
+            np.random.seed(run_seed)
+            run_config.seed = run_seed
+            
+            # Create temporary experiment instance to generate and save graphs
+            from experiments.inductive.experiment import InductiveExperiment
+            temp_experiment = InductiveExperiment(run_config)
+            
+            # Generate graph family
+            family_graphs = temp_experiment.generate_graph_family()
+            
+            # Analyze family consistency
+            family_consistency = temp_experiment.analyze_family_consistency()
+            
+            # Calculate community signals
+            graph_signals = temp_experiment.calculate_graph_signals()
+
+            # # Analyze family properties
+            # family_properties = analyze_graph_family_properties(family_graphs)
+            
+            # Prepare data (this creates the splits and precomputed PEs)
+            dataloaders, split_index_dict = temp_experiment.prepare_data()
+            # print(split_index_dict)
+
+            # Calc family properties PER split indices
+            family_properties = {}
+            for task_name, splits in split_index_dict.items():
+                family_properties[task_name] = {}
+                for split_name, split_indices in splits.items():
+                    split_family_graphs = [family_graphs[i] for i in split_indices]
+                    split_family_properties = analyze_graph_family_properties(split_family_graphs)
+                    family_properties[task_name][split_name] = split_family_properties
+
+            unseen_community_combination_scores = {}  # Default empty dict since prepare_data doesn't return this
+            
+            # Clean up GPU memory from temporary experiment
+            if hasattr(temp_experiment, 'dataloaders'):
+                from experiments.inductive.training import cleanup_gpu_dataloaders
+                cleanup_gpu_dataloaders(temp_experiment.dataloaders, temp_experiment.device)
+            
+            return {
+                'run_config': run_config,
+                'family_graphs': family_graphs,
+                'family_consistency': family_consistency,
+                'family_properties': family_properties,
+                'graph_signals': graph_signals,
+                'inductive_data': temp_experiment.inductive_data,
+                'unseen_community_combination_scores': unseen_community_combination_scores,
+                'run_id': run_id,
+                'sweep_params': processed_sweep,
+                'random_params': processed_random
+            }
+            
+        except Exception as e:
+            print(f"❌ Failed to prepare family for run {run_id}: {e}")
+            return None
+    
+    def _process_special_parameters(self, params: Dict[str, float]) -> Dict[str, Any]:
+        """Process special parameters that need conversion."""
+        processed = params.copy()
+        
+        # Convert degree_distribution index to string
+        if 'degree_distribution' in processed:
+            dist_map = {0: 'standard', 1: 'power_law', 2: 'exponential', 3: 'uniform'}
+            idx = int(processed['degree_distribution'])
+            processed['degree_distribution'] = dist_map.get(idx, 'power_law')
+        
+        # Convert use_dccc_sbm index to boolean
+        if 'use_dccc_sbm' in processed:
+            processed['use_dccc_sbm'] = bool(int(processed['use_dccc_sbm']))
+        
+        return processed
+    
+    def request_preparation(self, run_id: int, sweep_params: Dict, random_params: Dict):
+        """Request preparation of a graph family."""
+        try:
+            self.preparation_queue.put((run_id, sweep_params, random_params), timeout=1.0)
+            print(f"🔄 Queued preparation for run {run_id}")
+        except queue.Full:
+            print(f"⚠️  Preparation queue full, skipping preparation for run {run_id}")
+    
+    def get_prepared_family(self, run_id: int) -> Optional[Dict[str, Any]]:
+        """Get prepared family data if available."""
+        return self.prepared_families.pop(run_id, None)
+    
+    def cleanup(self):
+        """Clean up resources."""
+        self.stop_worker = True
+        if self.worker_thread and self.worker_thread.is_alive():
+            self.worker_thread.join(timeout=5)
 
 
 class CleanMultiExperimentRunner:
@@ -51,6 +208,9 @@ class CleanMultiExperimentRunner:
         self.all_results = []
         self.failed_runs = []
         
+        # Initialize parallel preparation manager
+        self.parallel_manager = ParallelPreparationManager()
+        
         # If continuing from previous results, load them
         if continue_from_results:
             self.all_results = continue_from_results.get('all_results', [])
@@ -72,10 +232,9 @@ class CleanMultiExperimentRunner:
         # Get parameter combinations
         sweep_combinations = self.config.get_parameter_combinations()
         total_combinations = len(sweep_combinations)
-        total_runs = total_combinations * self.config.n_repetitions
+        total_runs = total_combinations
         
         print(f"Parameter sweep combinations: {total_combinations}")
-        print(f"Repetitions per combination: {self.config.n_repetitions}")
         print(f"Total runs: {total_runs}")
         
         # Get completed sweep parameter combinations
@@ -95,11 +254,14 @@ class CleanMultiExperimentRunner:
         
         print(f"Remaining combinations to run: {len(remaining_combinations)}")
         
+        # Start parallel preparation worker
+        self.parallel_manager.start_worker(self.config)
+        
         run_id = len(self.all_results)  # Start from the next run ID
         base_seed = 42 + run_id  # Adjust base seed to avoid overlap
         
         # Progress tracking
-        with tqdm(total=len(remaining_combinations) * self.config.n_repetitions, desc="Running experiments") as pbar:
+        with tqdm(total=len(remaining_combinations), desc="Running experiments") as pbar:
             
             for combo_idx, sweep_params in enumerate(remaining_combinations):
                 print(f"\n{'-'*60}")
@@ -107,19 +269,33 @@ class CleanMultiExperimentRunner:
                 print(f"Sweep parameters: {sweep_params}")
                 print(f"{'-'*60}")
                 
-                for rep in range(self.config.n_repetitions):
-                    print(f"\nRepetition {rep + 1}/{self.config.n_repetitions}")
+                # Request preparation of next family (if not the last one)
+                if combo_idx + 1 < len(remaining_combinations):
+                    next_run_id = run_id + 1
+                    next_sweep_params = remaining_combinations[combo_idx + 1]
+                    next_random_params = self.config.sample_random_parameters()
+                    self.parallel_manager.request_preparation(next_run_id, next_sweep_params, next_random_params)
+                
+                try:
+                    # Check if we have prepared data for this run
+                    prepared_data = self.parallel_manager.get_prepared_family(run_id)
                     
-                    try:
-                        # Set unique seed for this specific run
-                        run_seed = base_seed + run_id
-                        np.random.seed(run_seed)
-                        
-                        # Sample random parameters for THIS specific run
+                    if prepared_data is not None:
+                        print(f"✅ Using pre-prepared data for run {run_id}")
+                        # Use prepared data
+                        run_config = prepared_data['run_config']
+                        family_graphs = prepared_data['family_graphs']
+                        family_consistency = prepared_data['family_consistency']
+                        family_properties = prepared_data['family_properties']
+                        graph_signals = prepared_data['graph_signals']
+                        inductive_data = prepared_data['inductive_data']
+                        unseen_community_combination_scores = prepared_data['unseen_community_combination_scores']
+                        processed_sweep = prepared_data['sweep_params']
+                        processed_random = prepared_data['random_params']
+                    else:
+                        print(f"🔄 Preparing data for run {run_id} (not pre-prepared)")
+                        # Prepare data normally
                         random_params = self.config.sample_random_parameters()
-                        print(f"Random parameters: {random_params}")
-                        
-                        # Process special parameters
                         processed_sweep = self._process_special_parameters(sweep_params)
                         processed_random = self._process_special_parameters(random_params)
                         
@@ -131,48 +307,182 @@ class CleanMultiExperimentRunner:
                         )
                         
                         # Set the run's seed in the config
+                        run_seed = base_seed + run_id
+                        np.random.seed(run_seed)
                         run_config.seed = run_seed
                         
-                        # Run single experiment
-                        result = self._run_single_experiment(
-                            config=run_config,
-                            run_id=run_id,
-                            sweep_params=processed_sweep,
-                            random_params=processed_random,
-                            run_subdir=None
-                        )
+                        # Create a temporary experiment instance to generate and save graphs
+                        from experiments.inductive.experiment import InductiveExperiment
+                        temp_experiment = InductiveExperiment(run_config)
                         
-                        if result is not None:
-                            self.all_results.append(result)
-                            print(f"Run {run_id} completed successfully")
-                        else:
-                            print(f"Run {run_id} failed")
+                        # Generate graph family
+                        print(f"Generating graph family for run {run_id}...")
+                        family_graphs = temp_experiment.generate_graph_family()
                         
-                    except Exception as e:
-                        error_info = {
-                            'run_id': run_id,
-                            'sweep_params': sweep_params,
-                            'random_params': random_params,
-                            'error': str(e),
-                            'traceback': traceback.format_exc(),
-                            'timestamp': datetime.now().strftime("%Y%m%d_%H%M%S")
-                        }
-                        self.failed_runs.append(error_info)
+                        # Analyze family consistency
+                        family_consistency = temp_experiment.analyze_family_consistency()
                         
-                        print(f"Run {run_id} failed with error: {str(e)}")
+                        # Calculate community signals
+                        graph_signals = temp_experiment.calculate_graph_signals()
                         
-                        if not self.config.continue_on_failure:
-                            print("Stopping due to failure (continue_on_failure=False)")
-                            break
+                        # Prepare data (this creates the splits and precomputed PEs)
+                        print(f"Preparing data for run {run_id}...")
+                        dataloaders, split_index_dict = temp_experiment.prepare_data()
+
+                        # Calc family properties PER split indices
+                        family_properties = {}
+                        for task_name, splits in split_index_dict.items():
+                            family_properties[task_name] = {}
+                            for split_name, split_indices in splits.items():
+                                split_family_graphs = [family_graphs[i] for i in split_indices]
+                                split_family_properties = analyze_graph_family_properties(split_family_graphs)
+                                family_properties[task_name][split_name] = split_family_properties
+
+                        unseen_community_combination_scores = {}  # Default empty dict since prepare_data doesn't return this
+                        
+                        # Store data for later use
+                        inductive_data = temp_experiment.inductive_data
+                        
+                        # Clean up GPU memory from temporary experiment
+                        if hasattr(temp_experiment, 'dataloaders'):
+                            from experiments.inductive.training import cleanup_gpu_dataloaders
+                            cleanup_gpu_dataloaders(temp_experiment.dataloaders, temp_experiment.device)
                     
-                    run_id += 1
-                    pbar.update(1)
+                    # Create permanent directory for this run
+                    run_dir = os.path.join(self.output_dir, f"run_{run_id:04d}")
+                    os.makedirs(run_dir, exist_ok=True)
                     
-                    # Save intermediate results after every run
-                    self._save_intermediate_results()
+                    # Save the prepared data
+                    inductive_data_path = os.path.join(run_dir, "inductive_data.pkl")
+                    family_graphs_path = os.path.join(run_dir, "family_graphs.pkl")
+                    
+                    print(f"Saving inductive data to: {inductive_data_path}")
+                    with open(inductive_data_path, 'wb') as f:
+                        pickle.dump(inductive_data, f)
+                    
+                    print(f"Saving family graphs to: {family_graphs_path}")
+                    with open(family_graphs_path, 'wb') as f:
+                        pickle.dump(family_graphs, f)
+                    
+                    # Now run the actual experiment with the saved data
+                    print(f"Running experiment for run {run_id}...")
+                    
+                    # Create a new experiment instance that will load the saved data
+                    from experiments.inductive.experiment import InductiveExperiment
+                    experiment = InductiveExperiment(run_config)
+                    
+                    # Override the output directory to use the same one as the temporary experiment
+                    experiment.output_dir = run_dir
+                    
+                    # Load the saved data instead of regenerating
+                    print(f"Loading saved data for run {run_id}...")
+                    with open(inductive_data_path, 'rb') as f:
+                        experiment.inductive_data = pickle.load(f)
+                    with open(family_graphs_path, 'rb') as f:
+                        experiment.family_graphs = pickle.load(f)
+                    
+                    # Recreate GPU-resident dataloaders from the loaded data
+                    print("Recreating GPU-resident dataloaders from saved data...")
+                    from experiments.inductive.data import create_gpu_resident_dataloaders, verify_gpu_resident_data
+                    
+                    dataloaders = create_gpu_resident_dataloaders(experiment.inductive_data, 
+                                                               experiment.config,
+                                                               experiment.device)
+                    
+                    # Verify data is properly loaded to GPU
+                    if not verify_gpu_resident_data(dataloaders, experiment.device):
+                        raise RuntimeError("Failed to load data to GPU properly")
+                    
+                    # Set the dataloaders
+                    experiment.dataloaders = dataloaders
+                    
+                    # Run experiments without regenerating data
+                    experiment_results = experiment.run_experiments()
+                    
+                    # Store results in experiment instance for saving and reporting
+                    experiment.results = experiment_results
+                    
+                    # # Save results
+                    # experiment.save_results()
+                    
+                    # # Generate summary report
+                    # summary_report = experiment.generate_summary_report()
+                    
+                    # with open(os.path.join(run_dir, "summary.txt"), 'w') as f:
+                    #     f.write(summary_report)
+                    
+                    # Compile complete result record
+                    complete_result = {
+                        # Run metadata
+                        'run_id': run_id,
+                        'timestamp': datetime.now().strftime("%Y%m%d_%H%M%S"),
+                        
+                        # Input parameters
+                        'sweep_parameters': processed_sweep,
+                        'random_parameters': processed_random,
+                        'all_parameters': {**processed_sweep, **processed_random},
+                        
+                        # Method info
+                        'method': 'dccc_sbm' if run_config.use_dccc_sbm else 'dc_sbm',
+                        'degree_distribution': run_config.degree_distribution if run_config.use_dccc_sbm else 'standard',
+                        
+                        # Graph family metrics
+                        'family_properties': family_properties,
+                        
+                        # Family consistency metrics
+                        'family_consistency': family_consistency,
+                        
+                        # Community signal metrics
+                        'community_signals': graph_signals,
+                        
+                        # Model results
+                        'model_results': experiment_results,
+                        
+                        # Experiment metadata
+                        'total_time': experiment_results.get('total_time', 0),
+                        'n_graphs': run_config.n_graphs,
+                        'universe_K': run_config.universe_K,
+                        'tasks': run_config.tasks,
+                        
+                        # Data file paths
+                        'data_files': {
+                            'inductive_data': os.path.relpath(inductive_data_path, self.output_dir),
+                            'family_graphs': os.path.relpath(family_graphs_path, self.output_dir),
+                            'config_path': os.path.relpath(os.path.join(run_dir, "config.json"), self.output_dir)
+                        },
+                        
+                        # Unseen community combination scores
+                        'unseen_community_combination_scores': unseen_community_combination_scores
+                    }
+                    
+                    self.all_results.append(complete_result)
+                    print(f"Run {run_id} completed successfully")
+                    
+                except Exception as e:
+                    error_info = {
+                        'run_id': run_id,
+                        'sweep_params': sweep_params,
+                        'random_params': random_params,
+                        'error': str(e),
+                        'traceback': traceback.format_exc(),
+                        'timestamp': datetime.now().strftime("%Y%m%d_%H%M%S")
+                    }
+                    self.failed_runs.append(error_info)
+                    
+                    print(f"Run {run_id} failed with error: {str(e)}")
+                    
+                    if not self.config.continue_on_failure:
+                        print("Stopping due to failure (continue_on_failure=False)")
+                        break
                 
-                if not self.config.continue_on_failure and self.failed_runs:
-                    break
+                run_id += 1
+                pbar.update(1)
+                
+                # Save intermediate results after every run
+                self._save_intermediate_results()
+        
+        # Stop parallel preparation worker
+        self.parallel_manager.cleanup()
         
         total_time = time.time() - start_time
         
@@ -234,19 +544,14 @@ class CleanMultiExperimentRunner:
             
             # Prepare data (this creates the splits and precomputed PEs)
             print(f"Preparing data for run {run_id}...")
-            dataloaders, unseen_community_combination_score = temp_experiment.prepare_data()
+            dataloaders, unseen_community_combination_scores = temp_experiment.prepare_data()
             
             # Save the prepared data with exact splits and precomputed PEs
             inductive_data_path = os.path.join(run_dir, "inductive_data.pkl")
-            sheaf_inductive_data_path = os.path.join(run_dir, "sheaf_inductive_data.pkl")
             
             print(f"Saving inductive data to: {inductive_data_path}")
             with open(inductive_data_path, 'wb') as f:
                 pickle.dump(temp_experiment.inductive_data, f)
-            
-            print(f"Saving sheaf inductive data to: {sheaf_inductive_data_path}")
-            with open(sheaf_inductive_data_path, 'wb') as f:
-                pickle.dump(temp_experiment.sheaf_inductive_data, f)
             
             # Save the family graphs as well
             family_graphs_path = os.path.join(run_dir, "family_graphs.pkl")
@@ -274,8 +579,6 @@ class CleanMultiExperimentRunner:
             print(f"Loading saved data for run {run_id}...")
             with open(inductive_data_path, 'rb') as f:
                 experiment.inductive_data = pickle.load(f)
-            with open(sheaf_inductive_data_path, 'rb') as f:
-                experiment.sheaf_inductive_data = pickle.load(f)
             with open(family_graphs_path, 'rb') as f:
                 experiment.family_graphs = pickle.load(f)
             
@@ -287,28 +590,12 @@ class CleanMultiExperimentRunner:
                                                        experiment.config,
                                                        experiment.device)
             
-            # Create sheaf-specific dataloaders (batch size 1, with precomputed cache)
-            print("Recreating sheaf-specific dataloaders...")
-            from experiments.inductive.data import create_sheaf_dataloaders
-            sheaf_dataloaders = create_sheaf_dataloaders(experiment.sheaf_inductive_data, experiment.config)
-            
-            # Make sheaf dataloaders GPU-resident as well
-            print("Making sheaf dataloaders GPU-resident...")
-            sheaf_dataloaders = create_gpu_resident_dataloaders(experiment.sheaf_inductive_data, 
-                                                              experiment.config,
-                                                              experiment.device)
-            
             # Verify data is properly loaded to GPU
             if not verify_gpu_resident_data(dataloaders, experiment.device):
-                raise RuntimeError("Failed to load normal data to GPU properly")
-            
-            # Verify sheaf data is properly loaded to GPU
-            if not verify_gpu_resident_data(sheaf_dataloaders, experiment.device):
-                raise RuntimeError("Failed to load sheaf data to GPU properly")
+                raise RuntimeError("Failed to load data to GPU properly")
             
             # Set the dataloaders
             experiment.dataloaders = dataloaders
-            experiment.sheaf_dataloaders = sheaf_dataloaders
             
             # Run experiments without regenerating data
             experiment_results = experiment.run_experiments()
@@ -361,13 +648,12 @@ class CleanMultiExperimentRunner:
                 # Data file paths (NEW)
                 'data_files': {
                     'inductive_data': os.path.relpath(inductive_data_path, self.output_dir),
-                    'sheaf_inductive_data': os.path.relpath(sheaf_inductive_data_path, self.output_dir),
                     'family_graphs': os.path.relpath(family_graphs_path, self.output_dir),
                     'config_path': os.path.relpath(os.path.join(run_dir, "config.json"), self.output_dir)
                 },
                 
-                # Unseen community combination score
-                'unseen_community_combination_score': unseen_community_combination_score
+                # Unseen community combination scores
+                'unseen_community_combination_scores': unseen_community_combination_scores
             }
             
             return complete_result
@@ -388,11 +674,6 @@ class CleanMultiExperimentRunner:
         with open(inductive_data_path, 'rb') as f:
             inductive_data = pickle.load(f)
         
-        # Load sheaf inductive data
-        sheaf_inductive_data_path = os.path.join(run_dir, "sheaf_inductive_data.pkl")
-        with open(sheaf_inductive_data_path, 'rb') as f:
-            sheaf_inductive_data = pickle.load(f)
-        
         # Load family graphs
         family_graphs_path = os.path.join(run_dir, "family_graphs.pkl")
         with open(family_graphs_path, 'rb') as f:
@@ -405,7 +686,6 @@ class CleanMultiExperimentRunner:
         
         return {
             'inductive_data': inductive_data,
-            'sheaf_inductive_data': sheaf_inductive_data,
             'family_graphs': family_graphs,
             'config': config_dict,
             'run_dir': run_dir
@@ -436,7 +716,6 @@ class CleanMultiExperimentRunner:
             # Check for data files
             data_files = [
                 'inductive_data.pkl',
-                'sheaf_inductive_data.pkl', 
                 'family_graphs.pkl',
                 'config.json',
                 'results.json',
@@ -588,59 +867,115 @@ class CleanMultiExperimentRunner:
         for task, task_results in experiment_results['results'].items():
             clean_results[task] = {}
             for model_name, model_results in task_results.items():
-                # Extract fold metrics
-                fold_test_metrics = model_results.get('fold_test_metrics', {})
-                fold_best_val_metrics = model_results.get('fold_best_val_metrics', {})
-                fold_train_time = model_results.get('fold_train_time', {})
-                
-                # Calculate statistics for each metric
-                test_metrics = {}
-                best_val_metrics = []
-                train_times = []
-                
-                # Process test metrics
-                for fold_name, fold_data in fold_test_metrics.items():
-                    for metric, value in fold_data.items():
-                        if metric not in test_metrics:
-                            test_metrics[metric] = []
-                        test_metrics[metric].append(value)
-                
-                # Process best val metrics
-                for fold_name, value in fold_best_val_metrics.items():
-                    best_val_metrics.append(value)
-                
-                # Process train times
-                for fold_name, value in fold_train_time.items():
-                    train_times.append(value)
-                
-                # Calculate final statistics
-                final_test_metrics = {}
-                for metric, values in test_metrics.items():
-                    final_test_metrics[metric] = {
-                        'mean': float(np.mean(values)),
-                        'std': float(np.std(values)),
-                        'list': values
+                # Handle new repetition-based structure
+                if 'repetition_test_metrics' in model_results:
+                    repetition_test_metrics = model_results.get('repetition_test_metrics', {})
+                    repetition_best_val_metrics = model_results.get('repetition_best_val_metrics', {})
+                    repetition_train_time = model_results.get('repetition_train_time', {})
+                    
+                    # Calculate statistics for each metric
+                    test_metrics = {}
+                    best_val_metrics = []
+                    train_times = []
+                    
+                    # Process test metrics
+                    for repetition_name, repetition_data in repetition_test_metrics.items():
+                        for metric, value in repetition_data.items():
+                            if metric not in test_metrics:
+                                test_metrics[metric] = []
+                            test_metrics[metric].append(value)
+                    
+                    # Process best val metrics
+                    for repetition_name, value in repetition_best_val_metrics.items():
+                        best_val_metrics.append(value)
+                    
+                    # Process train times
+                    for repetition_name, value in repetition_train_time.items():
+                        train_times.append(value)
+                    
+                    # Calculate final statistics
+                    final_test_metrics = {}
+                    for metric, values in test_metrics.items():
+                        final_test_metrics[metric] = {
+                            'mean': float(np.mean(values)),
+                            'std': float(np.std(values)),
+                            'list': values
+                        }
+                    
+                    final_best_val_metrics = {
+                        'mean': float(np.mean(best_val_metrics)) if best_val_metrics else 0.0,
+                        'std': float(np.std(best_val_metrics)) if best_val_metrics else 0.0,
+                        'list': best_val_metrics
                     }
-                
-                final_best_val_metrics = {
-                    'mean': float(np.mean(best_val_metrics)) if best_val_metrics else 0.0,
-                    'std': float(np.std(best_val_metrics)) if best_val_metrics else 0.0,
-                    'list': best_val_metrics
-                }
-                
-                final_train_time = {
-                    'mean': float(np.mean(train_times)) if train_times else 0.0,
-                    'std': float(np.std(train_times)) if train_times else 0.0,
-                    'list': train_times
-                }
-                
-                clean_results[task][model_name] = {
-                    'test_metrics': final_test_metrics,
-                    'best_val_metrics': final_best_val_metrics,
-                    'train_time': final_train_time,
-                    'optimal_hyperparams': model_results.get('optimal_hyperparams', {}),
-                    'success': bool(fold_test_metrics)  # True if we have fold metrics
-                }
+                    
+                    final_train_time = {
+                        'mean': float(np.mean(train_times)) if train_times else 0.0,
+                        'std': float(np.std(train_times)) if train_times else 0.0,
+                        'list': train_times
+                    }
+                    
+                    clean_results[task][model_name] = {
+                        'test_metrics': final_test_metrics,
+                        'best_val_metrics': final_best_val_metrics,
+                        'train_time': final_train_time,
+                        'optimal_hyperparams': model_results.get('optimal_hyperparams', {}),
+                        'success': bool(repetition_test_metrics)  # True if we have repetition metrics
+                    }
+                    
+                elif 'fold_test_metrics' in model_results:
+                    # Old fold-based structure (for backward compatibility)
+                    fold_test_metrics = model_results.get('fold_test_metrics', {})
+                    fold_best_val_metrics = model_results.get('fold_best_val_metrics', {})
+                    fold_train_time = model_results.get('fold_train_time', {})
+                    
+                    # Calculate statistics for each metric
+                    test_metrics = {}
+                    best_val_metrics = []
+                    train_times = []
+                    
+                    # Process test metrics
+                    for fold_name, fold_data in fold_test_metrics.items():
+                        for metric, value in fold_data.items():
+                            if metric not in test_metrics:
+                                test_metrics[metric] = []
+                            test_metrics[metric].append(value)
+                    
+                    # Process best val metrics
+                    for fold_name, value in fold_best_val_metrics.items():
+                        best_val_metrics.append(value)
+                    
+                    # Process train times
+                    for fold_name, value in fold_train_time.items():
+                        train_times.append(value)
+                    
+                    # Calculate final statistics
+                    final_test_metrics = {}
+                    for metric, values in test_metrics.items():
+                        final_test_metrics[metric] = {
+                            'mean': float(np.mean(values)),
+                            'std': float(np.std(values)),
+                            'list': values
+                        }
+                    
+                    final_best_val_metrics = {
+                        'mean': float(np.mean(best_val_metrics)) if best_val_metrics else 0.0,
+                        'std': float(np.std(best_val_metrics)) if best_val_metrics else 0.0,
+                        'list': best_val_metrics
+                    }
+                    
+                    final_train_time = {
+                        'mean': float(np.mean(train_times)) if train_times else 0.0,
+                        'std': float(np.std(train_times)) if train_times else 0.0,
+                        'list': train_times
+                    }
+                    
+                    clean_results[task][model_name] = {
+                        'test_metrics': final_test_metrics,
+                        'best_val_metrics': final_best_val_metrics,
+                        'train_time': final_train_time,
+                        'optimal_hyperparams': model_results.get('optimal_hyperparams', {}),
+                        'success': bool(fold_test_metrics)  # True if we have fold metrics
+                    }
         
         return clean_results
     
@@ -872,7 +1207,6 @@ class CleanMultiExperimentRunner:
         # Parameter sweep summary
         sweep_combinations = len(self.config.get_parameter_combinations())
         lines.append(f"Parameter sweep combinations: {sweep_combinations}")
-        lines.append(f"Repetitions per combination: {self.config.n_repetitions}")
         lines.append("")
         
         lines.append("Sweep parameters:")
@@ -1058,7 +1392,6 @@ class SSLMultiExperimentRunner:
             'family_configurations': len(self.config.get_family_configurations()),
             'model_configurations': len(self.config.get_model_configurations()),
             'parameters': {
-                'n_repetitions': self.config.n_repetitions,
                 'continue_on_failure': self.config.continue_on_failure,
                 'save_individual_results': self.config.save_individual_results,
                 'max_concurrent_families': self.config.max_concurrent_families,
@@ -1296,11 +1629,11 @@ class SSLMultiExperimentRunner:
         family_configs = self.config.get_family_configurations()
         model_configs = self.config.get_model_configurations()
         
-        total_experiments = len(family_configs) * len(model_configs) * self.config.n_repetitions
+        total_experiments = len(family_configs) * len(model_configs)
         
         print(f"Graph family configurations: {len(family_configs)}")
         print(f"Model configurations: {len(model_configs)}")
-        print(f"Repetitions: {self.config.n_repetitions}")
+        # print(f"Repetitions: {self.config.n_repetitions}")
         print(f"Total experiments: {total_experiments}")
         
         # Run experiments
@@ -1309,7 +1642,7 @@ class SSLMultiExperimentRunner:
         with tqdm(total=total_experiments, desc="Running SSL experiments") as pbar:
             for family_config in family_configs:
                 for model_config in model_configs:
-                    for rep in range(self.config.n_repetitions):
+                    # for rep in range(self.config.n_repetitions):
                         
                         result = self.run_single_experiment(
                             exp_id=exp_id,
@@ -1364,7 +1697,6 @@ class SSLMultiExperimentRunner:
                 'total_planned': self.config.get_total_experiments(),
                 'family_configurations': len(self.config.get_family_configurations()),
                 'model_configurations': len(self.config.get_model_configurations()),
-                'repetitions': self.config.n_repetitions
             },
             'execution_summary': {
                 'successful_experiments': len(self.all_results),
