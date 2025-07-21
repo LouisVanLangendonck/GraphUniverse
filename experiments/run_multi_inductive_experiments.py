@@ -1,6 +1,14 @@
 """
 Script to run clean multi-experiment sweeps.
 Example usage of parameter sweeps with random sampling.
+
+ASYNC PREPARATION:
+- By default, the script uses async graph family preparation to overlap data preparation
+  with training. This can improve overall throughput but may cause GPU memory conflicts.
+- Use --no_async_preparation to disable async preparation and use sequential preparation
+  instead. This is recommended if you experience GPU memory issues or slower performance.
+- Async preparation prepares the next graph family while the current one is training.
+- Sequential preparation prepares each graph family only when needed.
 """
 
 import os
@@ -17,6 +25,7 @@ from experiments.inductive.multi_config import (
     ParameterRange,
 )
 from experiments.inductive.multi_experiment import run_clean_multi_experiments, create_analysis_plots
+from experiments.models import SheafDiffusionModel
 
 
 def parse_args():
@@ -43,18 +52,22 @@ def parse_args():
     parser.add_argument('--intermediate_result_dir', type=str, default=None,
                         help='Directory containing intermediate results to continue from')
     
+    # Async preparation option
+    parser.add_argument('--no_async_preparation', action='store_true',
+                        help='Disable async graph family preparation (use sequential preparation)')
+    
     # Task configuration
     parser.add_argument('--tasks', type=str, nargs='+',     
-                        default=['community'],
+                        default=['triangle_count'],
                         choices=['community', 'k_hop_community_counts_k1', 'k_hop_community_counts_k2', 'k_hop_community_counts_k3', 'triangle_count'],
                         help='Learning tasks to run')
     
     # Base experiment settings
     parser.add_argument('--n_graphs', type=int, default=100,
-                        help='Number of graphs per family (will be swept over: 10, 30, 50)')
-    parser.add_argument('--min_n_nodes', type=int, default=80,
+                        help='Number of graphs per family')
+    parser.add_argument('--min_n_nodes', type=int, default=70,
                         help='Minimum nodes per graph')
-    parser.add_argument('--max_n_nodes', type=int, default=120,
+    parser.add_argument('--max_n_nodes', type=int, default=110,
                         help='Maximum nodes per graph')
     parser.add_argument('--universe_K', type=int, default=15,
                         help='Number of communities in universe')
@@ -104,7 +117,7 @@ def parse_args():
                         help='Maximum PE dimension')
     
     parser.add_argument('--gnn_types', type=str, nargs='+', 
-                        default=['gcn', 'sage', 'gin', 'gat'],
+                        default=['gat', 'gcn', 'sage', 'gin'],
                         choices=['fagcn', 'gat', 'gcn', 'sage', 'gin'],
                         help='Types of GNN models to run')
     parser.add_argument('--no_gnn', action='store_false', dest='run_gnn',
@@ -164,7 +177,7 @@ def parse_args():
     
     # Combined sweep parameter for homophily and density ranges
     parser.add_argument('--homophily_density_combinations', type=str, nargs='+',
-                        default=['0.1,0.05'],
+                        default=['0.00,0.00', '0.00,0.1'],
                         help='Combinations of (homophily_range_max, density_range_max) as comma-separated pairs. Format: "homophily_max,density_max"')
     
     # Fixed parameter values (previously random)
@@ -186,9 +199,9 @@ def parse_args():
                         help='Universe randomness factor parameter')
     
     # DCCC-specific fixed parameters
-    parser.add_argument('--community_imbalance_range_width', type=float, default=0.0,
+    parser.add_argument('--community_imbalance_range_width', type=float, default=0.1,
                         help='Community imbalance range width (DCCC-SBM only)')
-    parser.add_argument('--degree_separation_range_width', type=float, default=0.7,
+    parser.add_argument('--degree_separation_range_width', type=float, default=0.8,
                         help='Degree separation range width (DCCC-SBM only)')
     
     # Random seed
@@ -282,7 +295,7 @@ def create_custom_experiment(args) -> CleanMultiExperimentConfig:
         
         # DCCC-specific fixed parameters
         community_imbalance_range=(0.0, args.community_imbalance_range_width),
-        degree_separation_range=(0.0, args.degree_separation_range_width),
+        degree_separation_range=(0.2, max(1.0, 0.2 + args.degree_separation_range_width)),
         
         # Seed
         seed=args.seed
@@ -311,8 +324,8 @@ def create_custom_experiment(args) -> CleanMultiExperimentConfig:
         ),
         'universe_edge_density': ParameterRange(
             min_val=0.10,
-            max_val=0.10,
-            step=0.20,
+            max_val=0.40,
+            step=0.15,
             is_sweep=True
         ),
         'n_graphs': ParameterRange(
@@ -339,12 +352,12 @@ def create_custom_experiment(args) -> CleanMultiExperimentConfig:
             is_sweep=True,
             discrete_values=[
                 (False, None, True),  # No distributional shift (baseline)
-                (True, 'homophily', True),  # Homophily shift, test only
-                # (True, 'homophily', False),  # Homophily shift, train + test
-                # (True, 'density', True),  # Density shift, test only
-                # (True, 'density', False),  # Density shift, train + test
-                # (True, 'n_nodes', True),  # N_nodes shift, test only
-                # (True, 'n_nodes', False)  # N_nodes shift, train + test
+                # (True, 'homophily', True),  # Homophily shift, test only
+                # (True, 'homophily', False),  # Homophily shift, val + test
+                (True, 'density', True),  # Density shift, test only
+                (True, 'density', False),  # Density shift, val + test
+                (True, 'n_nodes', True),  # N_nodes shift, test only
+                (True, 'n_nodes', False)  # N_nodes shift, val + test
             ]
         )
     }
@@ -357,6 +370,7 @@ def create_custom_experiment(args) -> CleanMultiExperimentConfig:
         experiment_name=args.experiment_name,
         output_dir=args.output_dir,
         continue_on_failure=True,
+        use_async_preparation=not args.no_async_preparation,
         run_neural_sheaf=args.run_neural_sheaf
     )
 
@@ -502,6 +516,8 @@ def main():
         print(f"  Output directory: {config.output_dir}")
         print(f"  Total runs planned: {config.get_total_runs()}")
         print(f"  Base method: {'DCCC-SBM' if config.base_config.use_dccc_sbm else 'DC-SBM'}")
+        print(f"  Async preparation: {config.use_async_preparation}")
+        print(f"  Preparation mode: {'Async (overlapped)' if config.use_async_preparation else 'Sequential'}")
         
         print(f"\nSweep parameters ({len(config.sweep_parameters)}):")
         for param, param_range in config.sweep_parameters.items():

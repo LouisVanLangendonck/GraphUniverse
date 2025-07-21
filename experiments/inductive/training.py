@@ -1001,7 +1001,7 @@ def train_and_evaluate_inductive(
                         dropout=dropout,
                         num_heads=num_heads,
                         is_regression=is_regression,
-                        is_graph_level_task=config.is_graph_level_tasks.get(task, task == 'triangle_count'),
+                        is_graph_level_task=is_graph_level_task,
                         local_gnn_type=local_gnn_type,
                         attn_type=attn_type,
                         pe_dim=config.max_pe_dim,
@@ -1118,7 +1118,7 @@ def train_and_evaluate_inductive(
                     dropout=best_params.get('dropout', config.dropout),
                     num_heads=best_params['num_heads'],
                     is_regression=is_regression,
-                    is_graph_level_task=config.is_graph_level_tasks.get(task, task == 'triangle_count'),
+                    is_graph_level_task=is_graph_level_task,
                     local_gnn_type=best_params['local_gnn_type'],
                     attn_type=best_params['attn_type'],
                     pe_dim=config.max_pe_dim,
@@ -1210,7 +1210,7 @@ def train_and_evaluate_inductive(
                         dropout=dropout,
                         d=d,
                         is_regression=is_regression,
-                        is_graph_level_task=config.is_graph_level_tasks.get(task, task == 'triangle_count'),
+                        is_graph_level_task=is_graph_level_task,
                         pe_type=pe_type,
                         pe_dim=config.max_pe_dim,
                         ).to(device)
@@ -1343,7 +1343,7 @@ def train_and_evaluate_inductive(
                         dropout=best_params['dropout'],
                         d=best_params['d'],
                         is_regression=is_regression,
-                        is_graph_level_task=task == 'triangle_count',
+                        is_graph_level_task=is_graph_level_task,
                         pe_type=best_params['pe_type'] if PE_option else None,
                         pe_dim=config.max_pe_dim,
                         ).to(device)
@@ -1434,10 +1434,13 @@ def train_and_evaluate_inductive(
                     # Model-specific hyperparameters
                     if model_name == "gat":
                         heads = trial.suggest_int('heads', 1, 8)
-                        # Make sure heads * num_layers is smaller than 16
-                        while heads * num_layers > 12:
-                            heads = trial.suggest_int('heads', 1, 8)
                         concat_heads = trial.suggest_categorical('concat_heads', [True, False])
+                        hidden_dim = trial.suggest_int('hidden_dim', 8, 32)
+                        # Set hidden dim to be divisible by heads
+                        if hidden_dim % heads != 0:
+                            hidden_dim = hidden_dim // heads * heads
+                            # trial.suggest_int('hidden_dim', hidden_dim, hidden_dim)
+                            print(f"Warning: hidden_dim is not divisible by heads, setting hidden_dim to {hidden_dim}")
                     elif model_name == "fagcn":
                         eps = trial.suggest_float('eps', 0.0, 1.0)
                     elif model_name == "gin":
@@ -1452,7 +1455,7 @@ def train_and_evaluate_inductive(
                         dropout=dropout,
                         gnn_type=model_name,
                         is_regression=is_regression,
-                        is_graph_level_task=config.is_graph_level_tasks.get(task, task == 'triangle_count'),
+                        is_graph_level_task=is_graph_level_task,
                         heads=heads,
                         concat_heads=concat_heads,
                         eps=eps,
@@ -1490,6 +1493,7 @@ def train_and_evaluate_inductive(
                         for batch in train_loader:
                             if not all_data_on_device:
                                 batch = batch.to(device)
+                                print(f"Batch is not on device, moving to device")
                             optimizer.zero_grad()
                             out = trial_model(batch.x, batch.edge_index, graph=batch)
                             loss = criterion(out, batch.y)
@@ -1551,6 +1555,7 @@ def train_and_evaluate_inductive(
                         return best_val_metric  # Positive because we maximize
                 
                 # Run optimization
+                print(f"Running optimization for {config.n_trials} trials")
                 study.optimize(objective, n_trials=config.n_trials, timeout=config.optimization_timeout)
                 
                 # Update model with best parameters
@@ -1566,7 +1571,7 @@ def train_and_evaluate_inductive(
                     dropout=best_params.get('dropout', config.dropout),
                     gnn_type=model_name,
                     is_regression=is_regression,
-                    is_graph_level_task=config.is_graph_level_tasks.get(task, task == 'triangle_count'),
+                    is_graph_level_task=is_graph_level_task,
                     heads=best_params.get('heads', 1),
                     concat_heads=best_params.get('concat_heads', True),
                     eps=best_params.get('eps', 0.3),
@@ -1654,7 +1659,7 @@ def train_and_evaluate_inductive(
                         num_layers=num_layers,
                         dropout=dropout,
                         is_regression=is_regression,
-                        is_graph_level_task=config.is_graph_level_tasks.get(task, task == 'triangle_count'),
+                        is_graph_level_task=is_graph_level_task,
                         pe_type=pe_type,
                         pe_dim=config.max_pe_dim,
                     ).to(device)
@@ -1761,7 +1766,7 @@ def train_and_evaluate_inductive(
                     num_layers=best_params.get('num_layers', config.num_layers),
                     dropout=best_params.get('dropout', config.dropout),
                     is_regression=is_regression,
-                    is_graph_level_task=config.is_graph_level_tasks.get(task, task == 'triangle_count'),
+                    is_graph_level_task=is_graph_level_task,
                     pe_type=best_params.get('pe_type', None) if PE_option else None,
                     pe_dim=config.max_pe_dim,
                 )

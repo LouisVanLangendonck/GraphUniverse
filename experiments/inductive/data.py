@@ -519,7 +519,7 @@ class PreTrainedModelSaver:
         """Get all models trained on a specific graph family."""
         all_models = self.list_models()
         return [model for model in all_models if model.get('family_id') == family_id]
-   
+
 def select_graphs_for_maximum_coverage(
     family_graphs: List[GraphSample],
     universe_K: int,
@@ -1129,61 +1129,61 @@ def create_inductive_dataloaders(
     for task, task_data in inductive_data.items():
         task_loaders = {}
         
-        # Handle the new structure with 'split' key
-        if 'split' in task_data:
-            # New structure: task_data['split']['train']['graphs']
-            split_data = task_data['split']
-            for split_name, split_info in split_data.items():
-                shuffle = (split_name == 'train')
-                batch_size = split_info['batch_size']
+        # # Handle the new structure with 'split' key
+        # if 'split' in task_data:
+        #     # New structure: task_data['split']['train']['graphs']
+        #     split_data = task_data['split']
+        #     for split_name, split_info in split_data.items():
+        #         shuffle = (split_name == 'train')
+        #         batch_size = split_info['batch_size']
                 
-                # Use custom collate function for triangle count tasks
-                if task == "triangle_count":
-                    collate_fn = ensure_batch_attribute_collate_fn
-                    loader = DataLoader(
-                        split_info['graphs'],
-                        batch_size=batch_size,
-                        shuffle=shuffle,
-                        num_workers=0,
-                        collate_fn=collate_fn
-                    )
-                else:
-                    loader = DataLoader(
-                        split_info['graphs'],
-                        batch_size=batch_size,
-                        shuffle=shuffle,
-                        num_workers=0,
-                    )
+        #         # Use custom collate function for triangle count tasks
+        #         if task == "triangle_count":
+        #             collate_fn = ensure_batch_attribute_collate_fn
+        #             loader = DataLoader(
+        #                 split_info['graphs'],
+        #                 batch_size=batch_size,
+        #                 shuffle=shuffle,
+        #                 num_workers=0,
+        #                 collate_fn=collate_fn
+        #             )
+        #         else:
+        #             loader = DataLoader(
+        #                 split_info['graphs'],
+        #                 batch_size=batch_size,
+        #                 shuffle=shuffle,
+        #                 num_workers=0,
+        #             )
                 
-                task_loaders[split_name] = loader
-        else:
-            # Old structure: task_data['train']['graphs'] (for backward compatibility)
-            for split_name, split_data in task_data.items():
-                if split_name == 'metadata' or split_name == 'metapath_analysis':
-                    continue
-                
-                shuffle = (split_name == 'train')
-                batch_size = split_data['batch_size']
-                
-                # Use custom collate function for triangle count tasks
-                if task == "triangle_count":
-                    collate_fn = ensure_batch_attribute_collate_fn
-                    loader = DataLoader(
-                        split_data['graphs'],
-                        batch_size=batch_size,
-                        shuffle=shuffle,
-                        num_workers=0,
-                        collate_fn=collate_fn
-                    )
-                else:
-                    loader = DataLoader(
-                        split_data['graphs'],
-                        batch_size=batch_size,
-                        shuffle=shuffle,
-                        num_workers=0,
-                    )
-                
-                task_loaders[split_name] = loader
+        #         task_loaders[split_name] = loader
+        # else:
+        # Old structure: task_data['train']['graphs'] (for backward compatibility)
+        for split_name, split_data in task_data.items():
+            if split_name == 'metadata' or split_name == 'metapath_analysis':
+                continue
+            
+            shuffle = (split_name == 'train')
+            batch_size = split_data['batch_size']
+            
+            # Use custom collate function for triangle count tasks
+            if task == "triangle_count":
+                collate_fn = ensure_batch_attribute_collate_fn
+                loader = DataLoader(
+                    split_data['graphs'],
+                    batch_size=batch_size,
+                    shuffle=shuffle,
+                    num_workers=0,
+                    collate_fn=collate_fn
+                )
+            else:
+                loader = DataLoader(
+                    split_data['graphs'],
+                    batch_size=batch_size,
+                    shuffle=shuffle,
+                    num_workers=0,
+                )
+            
+            task_loaders[split_name] = loader
         
         dataloaders[task] = task_loaders
     

@@ -8,7 +8,6 @@ from typing import Dict, List, Optional, Tuple, Any
 import json
 import os
 
-
 @dataclass
 class InductiveExperimentConfig:
     """Clean configuration for inductive graph learning experiments."""
@@ -47,9 +46,9 @@ class InductiveExperimentConfig:
     distributional_shift_in_eval: bool = True # Whether to shift the validation set
     distributional_shift_test_only: bool = False # Whether to shift the test set only
     distributional_shift_in_eval_type: str = 'unseen_community_combinations' # Type of distributional shift to apply in evaluation
-    distributional_shift_in_eval_homophily_shift: float = 0.2
+    distributional_shift_in_eval_homophily_shift: float = 0.15
     distributional_shift_in_eval_density_shift: float = 0.1
-    distributional_shift_in_eval_n_nodes_shift: int = 150
+    distributional_shift_in_eval_n_nodes_shift: int = 100
 
     # === UNIVERSE PARAMETERS ===
     universe_K: int = 10
@@ -277,7 +276,6 @@ class InductiveExperimentConfig:
         with open(filepath, 'r') as f:
             config_dict = json.load(f)
         return cls.from_dict(config_dict)
-
 
 @dataclass
 class PreTrainingConfig:
@@ -587,3 +585,5 @@ class PreTrainingConfig:
         with open(filepath, 'r') as f:
             config_dict = json.load(f)
         return cls.from_dict(config_dict)
+
+

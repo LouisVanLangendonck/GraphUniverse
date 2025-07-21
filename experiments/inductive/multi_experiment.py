@@ -19,6 +19,7 @@ import itertools
 import pickle
 import threading
 import queue
+import torch
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from experiments.inductive.multi_config import CleanMultiExperimentConfig, SSLMultiExperimentConfig
@@ -113,12 +114,18 @@ class ParallelPreparationManager:
             # Calculate community signals
             graph_signals = temp_experiment.calculate_graph_signals()
 
-            # # Analyze family properties
-            # family_properties = analyze_graph_family_properties(family_graphs)
-            
             # Prepare data (this creates the splits and precomputed PEs)
+            # Use CPU-only preparation to avoid GPU memory conflicts
+            print(f"🔄 Preparing data for run {run_id} (CPU-only to avoid GPU conflicts)...")
+            
+            # Temporarily set device to CPU for preparation
+            original_device = temp_experiment.device
+            temp_experiment.device = torch.device('cpu')
+            
             dataloaders, split_index_dict = temp_experiment.prepare_data()
-            # print(split_index_dict)
+            
+            # Restore original device
+            temp_experiment.device = original_device
 
             # Calc family properties PER split indices
             family_properties = {}
@@ -131,7 +138,7 @@ class ParallelPreparationManager:
 
             unseen_community_combination_scores = {}  # Default empty dict since prepare_data doesn't return this
             
-            # Clean up GPU memory from temporary experiment
+            # Clean up any GPU memory that might have been used
             if hasattr(temp_experiment, 'dataloaders'):
                 from experiments.inductive.training import cleanup_gpu_dataloaders
                 cleanup_gpu_dataloaders(temp_experiment.dataloaders, temp_experiment.device)
@@ -208,8 +215,10 @@ class CleanMultiExperimentRunner:
         self.all_results = []
         self.failed_runs = []
         
-        # Initialize parallel preparation manager
-        self.parallel_manager = ParallelPreparationManager()
+        # Initialize parallel preparation manager (only if async mode is enabled)
+        self.parallel_manager = None
+        if getattr(config, 'use_async_preparation', True):
+            self.parallel_manager = ParallelPreparationManager()
         
         # If continuing from previous results, load them
         if continue_from_results:
@@ -220,6 +229,7 @@ class CleanMultiExperimentRunner:
         print(f"Multi-experiment runner initialized")
         print(f"Output directory: {self.output_dir}")
         print(f"Total runs planned: {config.get_total_runs()}")
+        print(f"Async preparation: {getattr(config, 'use_async_preparation', True)}")
     
     def run_all_experiments(self) -> Dict[str, Any]:
         """Run all configured experiments."""
@@ -254,8 +264,9 @@ class CleanMultiExperimentRunner:
         
         print(f"Remaining combinations to run: {len(remaining_combinations)}")
         
-        # Start parallel preparation worker
-        self.parallel_manager.start_worker(self.config)
+        # Start parallel preparation worker only if async mode is enabled
+        if self.parallel_manager is not None:
+            self.parallel_manager.start_worker(self.config)
         
         run_id = len(self.all_results)  # Start from the next run ID
         base_seed = 42 + run_id  # Adjust base seed to avoid overlap
@@ -269,16 +280,19 @@ class CleanMultiExperimentRunner:
                 print(f"Sweep parameters: {sweep_params}")
                 print(f"{'-'*60}")
                 
-                # Request preparation of next family (if not the last one)
-                if combo_idx + 1 < len(remaining_combinations):
+                # Request preparation of next family (if async mode and not the last one)
+                if (self.parallel_manager is not None and 
+                    combo_idx + 1 < len(remaining_combinations)):
                     next_run_id = run_id + 1
                     next_sweep_params = remaining_combinations[combo_idx + 1]
                     next_random_params = self.config.sample_random_parameters()
                     self.parallel_manager.request_preparation(next_run_id, next_sweep_params, next_random_params)
                 
                 try:
-                    # Check if we have prepared data for this run
-                    prepared_data = self.parallel_manager.get_prepared_family(run_id)
+                    # Check if we have prepared data for this run (async mode only)
+                    prepared_data = None
+                    if self.parallel_manager is not None:
+                        prepared_data = self.parallel_manager.get_prepared_family(run_id)
                     
                     if prepared_data is not None:
                         print(f"✅ Using pre-prepared data for run {run_id}")
@@ -367,6 +381,11 @@ class CleanMultiExperimentRunner:
                     # Now run the actual experiment with the saved data
                     print(f"Running experiment for run {run_id}...")
                     
+                    # Monitor GPU memory before starting experiment
+                    if torch.cuda.is_available():
+                        gpu_memory_before = torch.cuda.memory_allocated() / 1024**3  # GB
+                        print(f"🖥️  GPU memory before experiment: {gpu_memory_before:.2f} GB")
+                    
                     # Create a new experiment instance that will load the saved data
                     from experiments.inductive.experiment import InductiveExperiment
                     experiment = InductiveExperiment(run_config)
@@ -402,14 +421,18 @@ class CleanMultiExperimentRunner:
                     # Store results in experiment instance for saving and reporting
                     experiment.results = experiment_results
                     
-                    # # Save results
-                    # experiment.save_results()
-                    
-                    # # Generate summary report
-                    # summary_report = experiment.generate_summary_report()
-                    
-                    # with open(os.path.join(run_dir, "summary.txt"), 'w') as f:
-                    #     f.write(summary_report)
+                    # Monitor GPU memory after experiment
+                    if torch.cuda.is_available():
+                        gpu_memory_after = torch.cuda.memory_allocated() / 1024**3  # GB
+                        print(f"🖥️  GPU memory after experiment: {gpu_memory_after:.2f} GB")
+                        
+                        # Force GPU cleanup
+                        torch.cuda.empty_cache()
+                        import gc
+                        gc.collect()
+                        
+                        gpu_memory_cleaned = torch.cuda.memory_allocated() / 1024**3  # GB
+                        print(f"🖥️  GPU memory after cleanup: {gpu_memory_cleaned:.2f} GB")
                     
                     # Compile complete result record
                     complete_result = {
@@ -481,8 +504,9 @@ class CleanMultiExperimentRunner:
                 # Save intermediate results after every run
                 self._save_intermediate_results()
         
-        # Stop parallel preparation worker
-        self.parallel_manager.cleanup()
+        # Stop parallel preparation worker if it exists
+        if self.parallel_manager is not None:
+            self.parallel_manager.cleanup()
         
         total_time = time.time() - start_time
         
@@ -1202,6 +1226,7 @@ class CleanMultiExperimentRunner:
         lines.append(f"Success rate: {success_rate:.1%}")
         lines.append(f"Total time: {total_time:.1f}s ({total_time/3600:.2f}h)")
         lines.append(f"Average time per run: {total_time/total_attempted:.1f}s" if total_attempted > 0 else "Average time per run: N/A")
+        lines.append(f"Async preparation: {getattr(self.config, 'use_async_preparation', True)}")
         lines.append("")
         
         # Parameter sweep summary

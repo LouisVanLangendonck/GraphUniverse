@@ -75,11 +75,11 @@ def parse_args():
                         help='Type of distributional shift to apply in evaluation')
 
     # === GRAPH FAMILY GENERATION ===
-    parser.add_argument('--n_graphs', type=int, default=80,
+    parser.add_argument('--n_graphs', type=int, default=100,
                         help='Number of graphs to generate in family')
-    parser.add_argument('--min_n_nodes', type=int, default=70,
+    parser.add_argument('--min_n_nodes', type=int, default=80,
                         help='Minimum number of nodes per graph')
-    parser.add_argument('--max_n_nodes', type=int, default=130,
+    parser.add_argument('--max_n_nodes', type=int, default=120,
                         help='Maximum number of nodes per graph')
     parser.add_argument('--min_communities', type=int, default=4,
                         help='Minimum number of communities per graph')
@@ -136,7 +136,7 @@ def parse_args():
     # === MODELS ===
     parser.add_argument('--differentiate_with_and_without_PE', action='store_true', default=False,
                         help='Differentiate between models with and without PE')
-    parser.add_argument('--gnn_types', type=str, nargs='+', default=['gcn', 'sage'],
+    parser.add_argument('--gnn_types', type=str, nargs='+', default=['gat', 'gcn', 'sage', 'gin'],
                         choices=['gcn', 'fagcn', 'sage', 'gat', 'gin'],
                         help='Types of GNN models to run')
     parser.add_argument('--transformer_types', type=str, nargs='+', 
@@ -169,11 +169,11 @@ def parse_args():
                         help='Learning rate for neural models')
     parser.add_argument('--hidden_dim', type=int, default=32,
                         help='Hidden dimension for neural models')
-    parser.add_argument('--batch_size', type=int, default=20,
+    parser.add_argument('--batch_size', type=int, default=50,
                         help='Batch size for training')
-    parser.add_argument('--n_trials', type=int, default=15,
+    parser.add_argument('--n_trials', type=int, default=20,
                         help='Number of trials for hyperparameter optimization')
-    parser.add_argument('--trial_epochs', type=int, default=50,
+    parser.add_argument('--trial_epochs', type=int, default=100,
                         help='Number of epochs for hyperparameter optimization')
     parser.add_argument('--n_repetitions', type=int, default=3,
                         help='Number of random seed repetitions for statistical robustness')

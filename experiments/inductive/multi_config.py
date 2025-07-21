@@ -120,6 +120,7 @@ class CleanMultiExperimentConfig:
         # Resource management
         max_concurrent_families: int = 1,  # Number of graph families to generate concurrently
         reuse_families: bool = True,  # Reuse graph families across experiments
+        use_async_preparation: bool = True,  # Whether to use async graph family preparation
         
         # Random seed management
         base_seed: int = 42,
@@ -147,6 +148,7 @@ class CleanMultiExperimentConfig:
         self.save_individual_results = save_individual_results
         self.max_concurrent_families = max_concurrent_families
         self.reuse_families = reuse_families
+        self.use_async_preparation = use_async_preparation
         self.base_seed = base_seed
         
         # Model configuration
@@ -299,7 +301,7 @@ class CleanMultiExperimentConfig:
     def get_total_runs(self) -> int:
         """Calculate total number of experiment runs."""
         n_combinations = len(self.get_parameter_combinations())
-        return n_combinations * self.n_repetitions
+        return n_combinations
     
     def save(self, filepath: str) -> None:
         """Save configuration to file."""
@@ -335,9 +337,11 @@ class CleanMultiExperimentConfig:
             'n_repetitions': self.n_repetitions,
             'output_dir': self.output_dir,
             'experiment_name': self.experiment_name,
+            'continue_on_failure': self.continue_on_failure,
             'save_individual_results': self.save_individual_results,
             'max_concurrent_families': self.max_concurrent_families,
             'reuse_families': self.reuse_families,
+            'use_async_preparation': self.use_async_preparation,
             'base_seed': self.base_seed,
             'gnn_models': self.gnn_models,
             'transformer_models': self.transformer_models,
@@ -372,10 +376,11 @@ class CleanMultiExperimentConfig:
             sweep_parameters=sweep_parameters,
             random_parameters=random_parameters,
             n_repetitions=config_dict['n_repetitions'],
-            continue_on_failure=config_dict['continue_on_failure'],
-            save_individual_results=config_dict['save_individual_results'],
-            max_concurrent_families=config_dict['max_concurrent_families'],
-            reuse_families=config_dict['reuse_families'],
+            continue_on_failure=config_dict.get('continue_on_failure', True),
+            save_individual_results=config_dict.get('save_individual_results', True),
+            max_concurrent_families=config_dict.get('max_concurrent_families', 1),
+            reuse_families=config_dict.get('reuse_families', True),
+            use_async_preparation=config_dict.get('use_async_preparation', True),
             base_seed=config_dict['base_seed'],
             gnn_models=config_dict['gnn_models'],
             transformer_models=config_dict['transformer_models'],
