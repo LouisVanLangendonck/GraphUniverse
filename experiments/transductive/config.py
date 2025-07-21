@@ -18,6 +18,7 @@ class TransductiveExperimentConfig:
     seed: int = 42
     device_id: int = 0
     force_cpu: bool = False
+    n_repetitions: int = 3  # Number of random seed repetitions for single-graph splits
 
     # === GRAPH GENERATION ===
     num_nodes: int = 100
@@ -39,8 +40,8 @@ class TransductiveExperimentConfig:
     degree_center_method: str = "linear"  # "linear", "random", "shuffled"
     
     # === GRAPH VARIATION ===
-    homophily_range: Tuple[float, float] = (0.0, 0.2)
-    density_range: Tuple[float, float] = (0.0, 0.2)
+    homophily_range: Tuple[float, float] = (0.0, 0.0)
+    density_range: Tuple[float, float] = (0.0, 0.0)
     degree_heterogeneity: float = 0.5
     edge_noise: float = 0.1
     
@@ -48,7 +49,7 @@ class TransductiveExperimentConfig:
     use_dccc_sbm: bool = False  # If False, uses standard DC-SBM
     
     # === DCCC-SBM PARAMETERS ===
-    community_imbalance_range: Tuple[float, float] = (0.0, 0.3)
+    community_imbalance_range: Tuple[float, float] = (0.0, 0.0)
     degree_separation_range: Tuple[float, float] = (0.0, 1.0)
     degree_distribution: str = "power_law"  # "power_law", "exponential", "uniform", "standard"
     
@@ -61,7 +62,7 @@ class TransductiveExperimentConfig:
     
     # === GENERATION CONSTRAINTS ===
     max_parameter_search_attempts: int = 20
-    parameter_search_range: float = 0.5
+    parameter_search_range: float = 0.0  # Always 0 for single graph
     max_retries: int = 10
     min_edge_density: float = 0.005
     disable_deviation_limiting: bool = False
@@ -76,8 +77,33 @@ class TransductiveExperimentConfig:
     max_training_nodes: Optional[int] = None  # Maximum number of nodes to use for training
     
     # === TASKS ===
-    tasks: List[str] = field(default_factory=lambda: ['community'])
-    is_regression: Dict[str, bool] = field(default_factory=lambda: {'community': False, 'k_hop_community_counts': True})
+    tasks: List[str] = field(default_factory=lambda: ['community', 'k_hop_community_counts_k1', 'k_hop_community_counts_k2'])
+    is_regression: Dict[str, bool] = field(default_factory=lambda: {
+        'community': False,
+        'k_hop_community_counts_k1': True,
+        'k_hop_community_counts_k2': True,
+        'k_hop_community_counts_k3': True,
+        'k_hop_community_counts_k4': True,
+        'k_hop_community_counts_k5': True,
+        'k_hop_community_counts_k6': True,
+        'k_hop_community_counts_k7': True,
+        'k_hop_community_counts_k8': True,
+        'k_hop_community_counts_k9': True,
+        'k_hop_community_counts_k10': True
+    })
+    is_graph_level_tasks: Dict[str, bool] = field(default_factory=lambda: {
+        'community': False,
+        'k_hop_community_counts_k1': False,
+        'k_hop_community_counts_k2': False,
+        'k_hop_community_counts_k3': False,
+        'k_hop_community_counts_k4': False,
+        'k_hop_community_counts_k5': False,
+        'k_hop_community_counts_k6': False,
+        'k_hop_community_counts_k7': False,
+        'k_hop_community_counts_k8': False,
+        'k_hop_community_counts_k9': False,
+        'k_hop_community_counts_k10': False
+    })
     khop_community_counts_k: int = 2
 
     # === METAPATH TASK SETTINGS ===
@@ -88,10 +114,14 @@ class TransductiveExperimentConfig:
     max_community_participation: float = 0.95
     
     # === MODELS ===
-    gnn_types: List[str] = field(default_factory=lambda: ['gcn', 'sage', 'gat', 'fagcn'])
+    gnn_types: List[str] = field(default_factory=lambda: ['gcn', 'sage', 'gat', 'fagcn', 'gin'])
     run_gnn: bool = True
     run_mlp: bool = True
     run_rf: bool = True
+    run_neural_sheaf: bool = False
+    sheaf_type: str = "diagonal" # "diagonal", "bundle", "general"
+    sheaf_d: int = 2
+    differentiate_with_and_without_PE: bool = True
     
     # === TRAINING ===
     learning_rate: float = 0.01
@@ -106,7 +136,7 @@ class TransductiveExperimentConfig:
     eps: float = 0.2
 
     # === GRAPH TRANSFORMER CONFIGURATION ===
-    transformer_types: List[str] = field(default_factory=lambda: ['graphormer'])
+    transformer_types: List[str] = field(default_factory=lambda: ['graphgps'])
     run_transformers: bool = False
     
     # Transformer-specific parameters
@@ -121,6 +151,10 @@ class TransductiveExperimentConfig:
     global_model_type: str = "transformer"
     transformer_prenorm: bool = True
     
+    # === POSITIONAL ENCODING ===
+    pe_type: str = 'laplacian' # Choose from None, 'laplacian', 'degree', 'rwse'
+    max_pe_dim: int = 8
+    
     # === HYPERPARAMETER OPTIMIZATION ===
     optimize_hyperparams: bool = False
     n_trials: int = 20
@@ -132,22 +166,52 @@ class TransductiveExperimentConfig:
     # Regression-specific parameters
     regression_loss: str = 'mae'  # 'mse' or 'mae'
     regression_metrics: List[str] = field(default_factory=lambda: ['mae', 'mse', 'rmse', 'r2'])
-    
+
     def __post_init__(self):
-        """Validate configuration."""
         # Validate split ratios
         total_ratio = self.train_ratio + self.val_ratio + self.test_ratio
         if abs(total_ratio - 1.0) > 1e-6:
             raise ValueError(f"Split ratios must sum to 1.0, got {total_ratio}")
-        
         # Validate DCCC-SBM parameters
         if self.use_dccc_sbm:
             valid_distributions = ["standard", "power_law", "exponential", "uniform"]
             if self.degree_distribution not in valid_distributions:
                 raise ValueError(f"Invalid degree distribution: {self.degree_distribution}")
-        
         if self.num_communities > self.universe_K:
             raise ValueError("num_communities cannot exceed universe_K")
+        # Validate range parameters for single graph
+        for rng in [self.homophily_range, self.density_range, self.community_imbalance_range, self.degree_separation_range]:
+            if rng[0] != 0.0 or rng[1] != 0.0:
+                print("Warning: All range parameters should be (0.0, 0.0) for single-graph transductive experiments.")
+        # Ensure is_regression and is_graph_level_tasks are always set
+        if self.is_regression is None:
+            self.is_regression = {
+                'community': False,
+                'k_hop_community_counts_k1': True,
+                'k_hop_community_counts_k2': True,
+                'k_hop_community_counts_k3': True,
+                'k_hop_community_counts_k4': True,
+                'k_hop_community_counts_k5': True,
+                'k_hop_community_counts_k6': True,
+                'k_hop_community_counts_k7': True,
+                'k_hop_community_counts_k8': True,
+                'k_hop_community_counts_k9': True,
+                'k_hop_community_counts_k10': True
+            }
+        if self.is_graph_level_tasks is None:
+            self.is_graph_level_tasks = {
+                'community': False,
+                'k_hop_community_counts_k1': False,
+                'k_hop_community_counts_k2': False,
+                'k_hop_community_counts_k3': False,
+                'k_hop_community_counts_k4': False,
+                'k_hop_community_counts_k5': False,
+                'k_hop_community_counts_k6': False,
+                'k_hop_community_counts_k7': False,
+                'k_hop_community_counts_k8': False,
+                'k_hop_community_counts_k9': False,
+                'k_hop_community_counts_k10': False
+            }
     
     def get_splits(self) -> Tuple[int, int, int]:
         """Calculate number of nodes for each split."""

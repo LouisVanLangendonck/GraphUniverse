@@ -20,7 +20,7 @@ from experiments.transductive.data import (
     validate_transductive_data
 )
 from experiments.transductive.training import train_and_evaluate_transductive
-from experiments.models import GNNModel, MLPModel, SklearnModel, GraphTransformerModel
+from experiments.models import GNNModel, MLPModel, SklearnModel, GraphTransformerModel, SheafDiffusionModel
 from experiments.transductive.config import TransductiveExperimentConfig
 
 logging.basicConfig(level=logging.INFO)
@@ -102,7 +102,7 @@ class TransductiveExperiment:
         print("Setting up graph generator...")
         family_generator = GraphFamilyGenerator(
             universe=universe,
-            n_graphs=1,  # Only generate one graph
+
             min_n_nodes=self.config.num_nodes,
             max_n_nodes=self.config.num_nodes,  # Fixed size
             min_communities=self.config.num_communities,
@@ -142,7 +142,7 @@ class TransductiveExperiment:
         # Generate single graph
         print(f"Generating single graph with {self.config.num_nodes} nodes and {self.config.num_communities} communities...")
         start_time = time.time()
-        family_graphs = family_generator.generate_family(show_progress=False)
+        family_graphs = family_generator.generate_family(n_graphs=1, show_progress=False)
         generation_time = time.time() - start_time
         
         if not family_graphs:
@@ -192,69 +192,42 @@ class TransductiveExperiment:
             print(f"Warning: Failed to calculate signals: {e}")
             return {}
     
-    def prepare_data(self) -> Dict[str, Dict[str, Any]]:
+    def prepare_data(self) -> Dict[str, Any]:
         """Prepare data for transductive learning."""
         print("\n" + "="*60)
         print("PREPARING TRANSDUCTIVE DATA")
         print("="*60)
-        
         if self.graph_sample is None:
             raise ValueError("Must generate graph before preparing data")
-        
-        # Prepare transductive data
+        # Prepare transductive data (now returns {'splits': [...]})
         transductive_data = prepare_transductive_data(self.graph_sample, self.config)
-        
-        # Validate data
-        validation_results = validate_transductive_data(transductive_data, self.config)
-        if not validation_results['valid']:
-            for issue in validation_results['issues']:
-                print(f"Warning: {issue}")
-        
-        # Print split information
-        for task in self.config.tasks:
-            if task in transductive_data:
-                task_data = transductive_data[task]
-                n_train = len(task_data['train_idx'])
-                n_val = len(task_data['val_idx'])
-                n_test = len(task_data['test_idx'])
-                print(f"\nTask: {task}")
-                print(f"  Train nodes: {n_train}")
-                print(f"  Val nodes: {n_val}")
-                print(f"  Test nodes: {n_test}")
-        
         self.transductive_data = transductive_data
         return transductive_data
-    
+
     def run_experiments(self) -> Dict[str, Any]:
-        """Run transductive experiments on single graph."""
+        """Run transductive experiments on single graph with multiple splits."""
         print("\n" + "="*60)
         print("RUNNING TRANSDUCTIVE EXPERIMENTS")
         print("="*60)
-        
         if not hasattr(self, 'transductive_data'):
             raise ValueError("Must prepare data before running experiments")
-        
         all_results = {}
-        
+        splits = self.transductive_data['splits']
+        n_reps = len(splits)
         for task in self.config.tasks:
             print(f"\n{'='*40}")
             print(f"TASK: {task.upper()}")
             print(f"{'='*40}")
-            
             task_results = {}
-            task_data = self.transductive_data[task]
-            is_regression = task == 'k_hop_community_counts'
-            
-            # Get dimensions
-            input_dim = task_data['features'].shape[1]
-            output_dim = task_data['metadata']['output_dim']
-            
+            split0 = splits[0]
+            is_regression = task != 'community'
+            is_graph_level_task = False
+            input_dim = split0['features'].shape[1]
+            output_dim = self.config.universe_K
             print(f"Model configuration:")
             print(f"  Input dim: {input_dim}")
             print(f"  Output dim: {output_dim}")
             print(f"  Is regression: {is_regression}")
-            
-            # Determine models to run
             models_to_run = []
             if self.config.run_gnn:
                 models_to_run.extend(self.config.gnn_types)
@@ -264,106 +237,141 @@ class TransductiveExperiment:
                 models_to_run.append('mlp')
             if self.config.run_rf:
                 models_to_run.append('rf')
-            
-            # Train each model
+            if self.config.run_neural_sheaf:
+                models_to_run.append('neural_sheaf')
             for model_name in models_to_run:
                 print(f"\n--- Training {model_name.upper()} ---")
-                
                 try:
-                    # Create model
-                    if model_name in self.config.gnn_types:
-                        if model_name == 'fagcn':
-                            model = GNNModel(
-                                input_dim=input_dim,
-                                hidden_dim=self.config.hidden_dim,
-                                output_dim=output_dim,
-                                num_layers=self.config.num_layers,
-                                dropout=self.config.dropout,
-                                gnn_type=model_name,
-                                is_regression=is_regression,
-                                eps=self.config.eps
-                            )
-                        else:
-                            model = GNNModel(
-                                input_dim=input_dim,
-                                hidden_dim=self.config.hidden_dim,
-                                output_dim=output_dim,
-                                num_layers=self.config.num_layers,
-                                dropout=self.config.dropout,
-                                gnn_type=model_name,
-                                is_regression=is_regression
-                            )
-                    
-                    elif model_name in self.config.transformer_types:
-                        model = GraphTransformerModel(
-                            input_dim=input_dim,
-                            hidden_dim=self.config.hidden_dim,
-                            output_dim=output_dim,
-                            transformer_type=model_name,
-                            num_layers=self.config.num_layers,
-                            dropout=self.config.dropout,
-                            is_regression=is_regression,
-                            num_heads=self.config.transformer_num_heads,
-                            max_nodes=self.config.transformer_max_nodes,
-                            max_path_length=self.config.transformer_max_path_length,
-                            precompute_encodings=self.config.transformer_precompute_encodings,
-                            cache_encodings=self.config.transformer_cache_encodings,
-                            local_gnn_type=self.config.local_gnn_type,
-                            global_model_type=self.config.global_model_type,
-                            prenorm=self.config.transformer_prenorm
-                        )
-                    
-                    elif model_name == 'mlp':
-                        model = MLPModel(
-                            input_dim=input_dim,
-                            hidden_dim=self.config.hidden_dim,
-                            output_dim=output_dim,
-                            num_layers=self.config.num_layers,
-                            dropout=self.config.dropout,
-                            is_regression=is_regression
-                        )
-                    
-                    elif model_name == 'rf':
-                        model = SklearnModel(
-                            input_dim=input_dim,
-                            output_dim=output_dim,
-                            is_regression=is_regression
-                        )
-                    
-                    # Train model
-                    results = train_and_evaluate_transductive(
+                    # 1. Hyperparameter optimization on split0
+                    model = self._instantiate_model(model_name, input_dim, output_dim, is_regression, is_graph_level_task)
+                    hyperopt_result = train_and_evaluate_transductive(
                         model=model,
-                        task_data=task_data,
+                        task_data=split0,
                         config=self.config,
                         task=task,
                         device=self.device,
-                        optimize_hyperparams=self.config.optimize_hyperparams
+                        optimize_hyperparams=True,
+                        model_name=model_name
                     )
-                    
-                    # Store results
+                    best_hyperparams = hyperopt_result.get('optimal_hyperparams', {})
+                    # 2. Final evaluation on all splits
+                    rep_results = []
+                    for split in splits:
+                        model = self._instantiate_model(model_name, input_dim, output_dim, is_regression, is_graph_level_task, best_hyperparams)
+                        result = train_and_evaluate_transductive(
+                            model=model,
+                            task_data=split,
+                            config=self.config,
+                            task=task,
+                            device=self.device,
+                            optimize_hyperparams=False,
+                            model_name=model_name,
+                            hyperparams=best_hyperparams
+                        )
+                        rep_results.append(result)
+                    # Aggregate metrics
+                    metrics_keys = rep_results[0]['test_metrics'].keys()
+                    aggregated_metrics = {}
+                    for key in metrics_keys:
+                        values = [r['test_metrics'][key] for r in rep_results]
+                        aggregated_metrics[key] = {
+                            'mean': float(np.mean(values)),
+                            'std': float(np.std(values)),
+                            'all': values
+                        }
                     task_results[model_name] = {
-                        'test_metrics': results.get('test_metrics', {}),
-                        'train_time': results.get('train_time', 0.0),
-                        'training_history': results.get('training_history', {}),
-                        'optimal_hyperparams': results.get('optimal_hyperparams', {})
+                        'test_metrics': aggregated_metrics,
+                        'train_time': np.mean([r['train_time'] for r in rep_results]),
+                        'training_history': rep_results,
+                        'optimal_hyperparams': best_hyperparams
                     }
-                    
                     print(f"✓ {model_name.upper()} completed successfully")
-                
                 except Exception as e:
                     error_msg = f"Error in {model_name} model: {str(e)}"
                     print(f"✗ {error_msg}")
                     logger.error(error_msg, exc_info=True)
-                    
                     task_results[model_name] = {
                         'error': error_msg,
                         'test_metrics': {}
                     }
-                
             all_results[task] = task_results
-        
         self.results = all_results
         return all_results
+
+    def _instantiate_model(self, model_name, input_dim, output_dim, is_regression, is_graph_level_task, hyperparams=None):
+        # Helper to instantiate a model with given hyperparameters
+        hp = hyperparams or {}
+        if model_name in self.config.gnn_types:
+            return GNNModel(
+                input_dim=input_dim,
+                hidden_dim=hp.get('hidden_dim', self.config.hidden_dim),
+                output_dim=output_dim,
+                num_layers=hp.get('num_layers', self.config.num_layers),
+                dropout=hp.get('dropout', self.config.dropout),
+                gnn_type=model_name,
+                is_regression=is_regression,
+                is_graph_level_task=is_graph_level_task,
+                heads=hp.get('heads', 1),
+                concat_heads=hp.get('concat_heads', True),
+                eps=hp.get('eps', 0.3),
+                pe_type=hp.get('pe_type', self.config.pe_type),
+                pe_dim=hp.get('pe_dim', self.config.max_pe_dim)
+            )
+        elif model_name in self.config.transformer_types:
+            return GraphTransformerModel(
+                input_dim=input_dim,
+                hidden_dim=hp.get('hidden_dim', self.config.hidden_dim),
+                output_dim=output_dim,
+                transformer_type=model_name,
+                num_layers=hp.get('num_layers', self.config.num_layers),
+                dropout=hp.get('dropout', self.config.dropout),
+                is_regression=is_regression,
+                is_graph_level_task=is_graph_level_task,
+                num_heads=hp.get('num_heads', self.config.transformer_num_heads),
+                max_nodes=self.config.transformer_max_nodes,
+                max_path_length=self.config.transformer_max_path_length,
+                precompute_encodings=self.config.transformer_precompute_encodings,
+                cache_encodings=self.config.transformer_cache_encodings,
+                local_gnn_type=self.config.local_gnn_type,
+                global_model_type=self.config.global_model_type,
+                prenorm=self.config.transformer_prenorm,
+                pe_type=hp.get('pe_type', self.config.pe_type),
+                pe_dim=hp.get('pe_dim', self.config.max_pe_dim)
+            )
+        elif model_name == 'mlp':
+            return MLPModel(
+                input_dim=input_dim,
+                hidden_dim=hp.get('hidden_dim', self.config.hidden_dim),
+                output_dim=output_dim,
+                num_layers=hp.get('num_layers', self.config.num_layers),
+                dropout=hp.get('dropout', self.config.dropout),
+                is_regression=is_regression,
+                is_graph_level_task=is_graph_level_task,
+                pe_type=hp.get('pe_type', self.config.pe_type),
+                pe_dim=hp.get('pe_dim', self.config.max_pe_dim)
+            )
+        elif model_name == 'rf':
+            return SklearnModel(
+                input_dim=input_dim,
+                output_dim=output_dim,
+                is_regression=is_regression
+            )
+        elif model_name == 'neural_sheaf':
+            return SheafDiffusionModel(
+                input_dim=input_dim,
+                hidden_dim=hp.get('hidden_dim', self.config.hidden_dim),
+                output_dim=output_dim,
+                d=self.config.sheaf_d,
+                num_layers=hp.get('num_layers', self.config.num_layers),
+                sheaf_type=self.config.sheaf_type,
+                dropout=hp.get('dropout', self.config.dropout),
+                is_regression=is_regression,
+                is_graph_level_task=is_graph_level_task,
+                pe_type=hp.get('pe_type', self.config.pe_type),
+                pe_dim=hp.get('pe_dim', self.config.max_pe_dim)
+            )
+        else:
+            raise ValueError(f"Unknown model type: {model_name}")
     
     def save_results(self) -> None:
         """Save results in clean format."""

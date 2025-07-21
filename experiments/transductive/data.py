@@ -13,166 +13,96 @@ from collections import defaultdict
 from graph_universe.model import GraphSample, GraphUniverse
 from graph_universe.feature_regimes import graphsample_to_pyg
 from utils.metapath_analysis import MetapathAnalyzer, UniverseMetapathSelector
+from experiments.inductive.data import PositionalEncodingComputer  # Import PE computer from inductive
 
 
 def prepare_transductive_data(
     graph_sample: GraphSample,
     config
-) -> Dict[str, Dict[str, Any]]:
+) -> Dict[str, Any]:
     """
-    Central function to prepare single graph data for transductive learning.
-    
-    Args:
-        graph_sample: Single GraphSample object  
-        config: Experiment configuration
-        
-    Returns:
-        Dictionary containing data for each task with train/val/test node splits
+    Central function to prepare multiple splits for transductive learning.
+    Returns a dict with a list of splits, each with train/val/test indices, but test split is constant.
     """
-    # Get universe from graph sample
     universe = graph_sample.universe
     if not universe:
         raise ValueError("No universe found in graph sample")
-    
-    # Get universe K
     universe_K = universe.K
-    print(f"\nUsing universe K: {universe_K}")
-    
-    # Calculate split sizes for nodes
     n_nodes = graph_sample.n_nodes
     n_train = int(n_nodes * config.train_ratio)
     n_val = int(n_nodes * config.val_ratio)
     n_test = n_nodes - n_train - n_val
-    
-    print(f"\nSplitting {n_nodes} nodes: {n_train} train, {n_val} val, {n_test} test")
-    
-    # Split nodes randomly
     np.random.seed(config.seed)
     indices = np.random.permutation(n_nodes)
-    
-    train_indices = indices[:n_train].tolist()
-    val_indices = indices[n_train:n_train + n_val].tolist()
+    # Constant test split
     test_indices = indices[n_train + n_val:].tolist()
-    
     # Convert to PyG format
     pyg_data = graphsample_to_pyg(graph_sample)
-    
-    # Add universe K to graph
+    # Add PE computation
+    pe_types = getattr(config, 'pe_types', ['laplacian', 'degree', 'rwse'])
+    max_pe_dim = getattr(config, 'max_pe_dim', 16)
+    from experiments.inductive.data import PositionalEncodingComputer
+    pe_computer = PositionalEncodingComputer(max_pe_dim=max_pe_dim, pe_types=pe_types)
+    pe_dict = pe_computer.compute_all_pe(pyg_data.edge_index, pyg_data.x.size(0))
+    for pe_name, pe_tensor in pe_dict.items():
+        setattr(pyg_data, pe_name, pe_tensor)
     pyg_data.universe_K = universe_K
-    
-    # Initialize results dictionary
-    transductive_data = {}
-    
-    # Generate metapath tasks if enabled
-    metapath_data = None
-    if hasattr(config, 'enable_metapath_tasks') and config.enable_metapath_tasks:
-        print("\nGenerating metapath tasks...")
-        metapath_data = generate_transductive_metapath_tasks(
-            graph_sample=graph_sample,
-            universe=universe,
-            train_indices=train_indices,
-            val_indices=val_indices,
-            test_indices=test_indices,
-            k_values=getattr(config, 'metapath_k_values', [3, 4, 5]),
-            require_loop=getattr(config, 'metapath_require_loop', False),
-            degree_weight=getattr(config, 'metapath_degree_weight', 0.3),
-            max_community_participation=getattr(config, 'max_community_participation', 1.0)
-        )
-    
-    # Process each task
-    for task in config.tasks:
-        print(f"\nPreparing transductive data for task: {task}")
-        
-        # Create base data structure
-        task_data = {
+    # Prepare splits
+    splits = []
+    for rep in range(config.n_repetitions):
+        # Reseed for reproducibility
+        split_seed = config.seed + rep
+        np.random.seed(split_seed)
+        indices = np.random.permutation(n_nodes)
+        train_indices = indices[:n_train].tolist()
+        val_indices = indices[n_train:n_train + n_val].tolist()
+        # test_indices is constant
+        split = {
             'features': pyg_data.x,
             'edge_index': pyg_data.edge_index,
+            'pyg_graph': pyg_data,
+            'labels': None,  # Set per task below
             'train_idx': torch.tensor(train_indices, dtype=torch.long),
             'val_idx': torch.tensor(val_indices, dtype=torch.long),
             'test_idx': torch.tensor(test_indices, dtype=torch.long),
-            'num_nodes': n_nodes
+            'num_nodes': n_nodes,
+            'metadata': {},
         }
-        
-        # Generate task-specific labels
-        if task == "community":
-            # Standard community prediction - use universe-indexed labels
-            task_data['labels'] = torch.tensor(graph_sample.community_labels_universe_level, dtype=torch.long)
-            
-        elif task == "k_hop_community_counts":
-            # K-hop community counting - already universe-indexed
-            community_counts = compute_khop_community_counts_universe_indexed(
-                graph_sample.graph,
-                graph_sample.community_labels,
-                graph_sample.community_id_mapping,
-                universe_K,
-                getattr(config, 'khop_community_counts_k', 2)
-            )
-            task_data['labels'] = community_counts
-            
-        elif task == "metapath" and metapath_data:
-            # Metapath task
-            task_info = list(metapath_data['tasks'].values())[0]
-            metapath_labels = task_info['labels']
-            if metapath_labels is not None:
-                binary_labels = (metapath_labels > 0).astype(int)
-                task_data['labels'] = torch.tensor(binary_labels, dtype=torch.long)
+        splits.append(split)
+    # Assign labels and metadata per task (for each split)
+    for split in splits:
+        for task in config.tasks:
+            if task == "community":
+                split['labels'] = torch.tensor(graph_sample.community_labels_universe_level, dtype=torch.long)
+                output_dim = universe_K
+                is_regression = config.is_regression.get(task, False)
+            elif task == "k_hop_community_counts":
+                community_counts = compute_khop_community_counts_universe_indexed(
+                    graph_sample.graph,
+                    graph_sample.community_labels,
+                    graph_sample.community_id_mapping,
+                    universe_K,
+                    getattr(config, 'khop_community_counts_k', 2)
+                )
+                split['labels'] = community_counts
+                output_dim = universe_K
+                is_regression = config.is_regression.get(task, False)
             else:
                 continue
-        
-        # Add task-specific metadata
-        is_regression = config.is_regression.get(task, False)
-        
-        # Calculate output dimension based on task type
-        if task == "community":
-            # For community prediction, use universe K
-            output_dim = universe_K
-            
-        elif task == "k_hop_community_counts":
-            # For k-hop counting, use universe K
-            output_dim = universe_K
-            
-        elif task == "metapath" and metapath_data:
-            # For metapath tasks, use binary classification
-            output_dim = 2
-        
-        task_data['metadata'] = {
-            'is_regression': is_regression,
-            'output_dim': output_dim,
-            'input_dim': pyg_data.x.shape[1],
-            'task_type': task,
-            'universe_K': universe_K,
-            'num_classes': output_dim  # For compatibility
-        }
-        
-        # Add task-specific metadata
-        if task == "k_hop_community_counts":
-            task_data['metadata'].update({
-                'k_value': getattr(config, 'khop_community_counts_k', 2),
-                'universe_K': universe_K
-            })
-            
-        elif task == "metapath" and metapath_data:
-            task_info = list(metapath_data['tasks'].values())[0]
-            task_data['metadata'].update({
-                'metapath': task_info['metapath'],
-                'universe_probability': task_info['universe_probability'],
-                'coverage': task_info['coverage'],
-                'avg_positive_rate': task_info['avg_positive_rate'],
-                'is_loop_task': task_info['is_loop_task']
-            })
-        
-        transductive_data[task] = task_data
-    
-    # Add metapath analysis if available
-    if metapath_data:
-        transductive_data['metapath_analysis'] = {
-            'evaluation_results': metapath_data['evaluation_results'],
-            'candidate_analysis': metapath_data['candidate_analysis'],
-            'universe_info': metapath_data['universe_info']
-        }
-    
-    return transductive_data
-
+            split['metadata'] = {
+                'is_regression': is_regression,
+                'output_dim': output_dim,
+                'input_dim': pyg_data.x.shape[1],
+                'task_type': task,
+                'universe_K': universe_K,
+                'num_classes': output_dim
+            }
+            if task == "k_hop_community_counts":
+                split['metadata'].update({
+                    'k_value': getattr(config, 'khop_community_counts_k', 2),
+                    'universe_K': universe_K
+                })
+    return {'splits': splits}
 
 def compute_khop_community_counts_universe_indexed(
     graph: nx.Graph,
@@ -182,75 +112,25 @@ def compute_khop_community_counts_universe_indexed(
     k: int
 ) -> torch.Tensor:
     """
-    Compute k-hop community counts with universe indexing.
-    
-    Args:
-        graph: NetworkX graph
-        community_labels: Node community labels
-        universe_communities: Mapping from local to universe community indices
-        universe_K: Number of communities in universe
-        k: Number of hops
-        
-    Returns:
-        Tensor of shape (n_nodes, universe_K) containing k-hop community counts
+    Compute k-hop community counts (only nodes at exactly k-hops) with universe indexing.
     """
     n_nodes = graph.number_of_nodes()
     counts = np.zeros((n_nodes, universe_K))
     
-    # For each node
     for node in range(n_nodes):
-        # Get k-hop neighborhood
-        neighbors = set([node])
-        for _ in range(k):
-            new_neighbors = set()
-            for n in neighbors:
-                new_neighbors.update(graph.neighbors(n))
-            neighbors.update(new_neighbors)
+        # Get nodes at exact distance k using single-source shortest path
+        sp_lengths = nx.single_source_shortest_path_length(graph, node, cutoff=k)
+        khop_nodes = [n for n, dist in sp_lengths.items() if dist == k]
         
-        # Count communities in neighborhood
-        for neighbor in neighbors:
+        for neighbor in khop_nodes:
             local_comm = community_labels[neighbor]
             if local_comm in universe_communities:
                 universe_comm = universe_communities[local_comm]
                 counts[node, universe_comm] += 1
             else:
-                raise ValueError(f"Community {local_comm} not found in universe communities")
+                raise ValueError(f"Community {local_comm} not in universe_communities")
     
     return torch.tensor(counts, dtype=torch.float)
-
-
-def generate_transductive_metapath_tasks(
-    graph_sample: GraphSample,
-    universe: 'GraphUniverse',
-    train_indices: List[int],
-    val_indices: List[int], 
-    test_indices: List[int],
-    k_values: List[int] = [3, 4, 5],
-    require_loop: bool = False,
-    degree_weight: float = 0.3,
-    max_community_participation: float = 1.0
-) -> Dict[str, Any]:
-    """
-    Generate metapath tasks for transductive learning on a single graph.
-    
-    Args:
-        graph_sample: Single graph sample
-        universe: Graph universe
-        train_indices: Training node indices
-        val_indices: Validation node indices
-        test_indices: Test node indices
-        k_values: List of k values for metapath length
-        require_loop: Whether to require loop in metapath
-        degree_weight: Weight for degree-based scoring
-        max_community_participation: Maximum community participation ratio
-        
-    Returns:
-        Dictionary containing metapath task data
-    """
-    # This would implement the metapath generation logic for single graph
-    # For now, return empty dict as placeholder
-    return {}
-
 
 def analyze_graph_properties(graph_sample: GraphSample) -> Dict[str, Any]:
     """
@@ -358,3 +238,15 @@ def validate_transductive_data(
         validation_results['task_info'][task] = task_info
     
     return validation_results
+
+# Add a function to re-split train/val/test indices for a given seed
+def resplit_transductive_indices(num_nodes, train_ratio, val_ratio, test_ratio, seed):
+    np.random.seed(seed)
+    indices = np.random.permutation(num_nodes)
+    n_train = int(num_nodes * train_ratio)
+    n_val = int(num_nodes * val_ratio)
+    n_test = num_nodes - n_train - n_val
+    train_idx = indices[:n_train]
+    val_idx = indices[n_train:n_train+n_val]
+    test_idx = indices[n_train+n_val:]
+    return train_idx, val_idx, test_idx

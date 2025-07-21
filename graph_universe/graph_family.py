@@ -310,7 +310,7 @@ class GraphFamilyGenerator:
         n_graphs: int,
         show_progress: bool = True,
         collect_stats: bool = True,
-        max_attempts_per_graph: int = 5,
+        max_attempts_per_graph: int = 10,
         timeout_minutes: float = 2.0,
         allowed_community_combinations: Optional[List[List[int]]] = None
     ) -> List[GraphSample]:

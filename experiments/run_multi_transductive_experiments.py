@@ -20,40 +20,17 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from experiments.transductive.config import TransductiveExperimentConfig
 from experiments.transductive.experiment import run_transductive_experiment
-from experiments.transductive.analysis import (
-    analyze_transductive_results, 
-    create_analysis_plots,
-    generate_experiment_report
-)
+from experiments.transductive.data import resplit_transductive_indices
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
 
 def parse_args():
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(description='Run multiple transductive graph learning experiments')
     
-    # Parameters to vary
-    parser.add_argument('--vary', type=str, nargs='+', default=['homophily'],
-                        choices=[
-                            'num_nodes',
-                            'num_communities',
-                            'universe_edge_density',
-                            'universe_homophily', 
-                            'universe_randomness_factor',
-                            'degree_heterogeneity',
-                            'edge_noise',
-                            'cluster_count_factor',
-                            'center_variance',
-                            'cluster_variance',
-                            'assignment_skewness',
-                            'community_exclusivity'
-                        ],
-                        help='Parameters to vary across experiments')
-    
     # Method selection
-    parser.add_argument('--use_dccc_sbm', action='store_true',
+    parser.add_argument('--use_dccc_sbm', action='store_true', default=True,
                         help='Use DCCC-SBM (for experiments)')
     parser.add_argument('--degree_distribution', type=str, default='power_law',
                         choices=['standard', 'power_law', 'exponential', 'uniform'],
@@ -78,7 +55,7 @@ def parse_args():
                         help='Metrics to compute for regression tasks')
     
     # Model selection and training parameters
-    parser.add_argument('--gnn_types', type=str, nargs='+', default=['gcn', 'sage', 'gat', 'fagcn'],
+    parser.add_argument('--gnn_types', type=str, nargs='+', default=['gcn'],
                         choices=['gcn', 'gat', 'sage', 'fagcn'],
                         help='Types of GNN models to run')
     parser.add_argument('--skip_gnn', action='store_true',
@@ -87,9 +64,9 @@ def parse_args():
                         help='Skip MLP model')
     parser.add_argument('--skip_rf', action='store_true',
                         help='Skip Random Forest model')
-    parser.add_argument('--patience', type=int, default=50,
+    parser.add_argument('--patience', type=int, default=100,
                         help='Patience for early stopping in neural models')
-    parser.add_argument('--epochs', type=int, default=200,
+    parser.add_argument('--epochs', type=int, default=500,
                         help='Maximum number of epochs for neural models')
     
     # Hyperparameter optimization parameters
@@ -128,33 +105,29 @@ def parse_args():
     parser.add_argument('--transformer_prenorm', action='store_true', default=True,
                         help='Use pre-normalization in transformers')
     
-    # Parameter ranges for sweep
-    parser.add_argument('--num_nodes_range', type=int, nargs=2, default=[80, 120],
-                        help='Range for num_nodes (min, max)')
-    parser.add_argument('--num_communities_range', type=int, nargs=2, default=[5, 6],
-                        help='Range for num_communities (min, max)')
-    parser.add_argument('--universe_edge_density_range', type=float, nargs=3, default=[0.05, 0.25, 0.20],
-                        help='Range for universe edge density (start, end, step)')
-    parser.add_argument('--universe_homophily_range', type=float, nargs=3, default=[0.0, 1.0, 0.2],
-                        help='Range for universe homophily (start, end, step)')
-    parser.add_argument('--universe_randomness_factor_range', type=float, nargs=2, default=[0.0, 1.0],
-                        help='Range for universe randomness factor (min, max)')
-    parser.add_argument('--degree_heterogeneity_range', type=float, nargs=2, default=[0.0, 1.0],
-                        help='Range for degree_heterogeneity (min, max)')
-    parser.add_argument('--edge_noise_range', type=float, nargs=2, default=[0.0, 0.3],
-                        help='Range for edge_noise (min, max)')
+    # Neural Sheaf Diffusion Model options
+    parser.add_argument('--run_neural_sheaf', action='store_true', help='Include neural sheaf diffusion model in experiments')
+    parser.add_argument('--sheaf_type', type=str, default='diagonal', choices=['diagonal', 'bundle', 'general'], help='Type of sheaf restriction map')
+    parser.add_argument('--sheaf_d', type=int, default=2, help='Stalk dimension for neural sheaf diffusion')
+    parser.add_argument('--pe_type', type=str, default='laplacian', choices=['laplacian', 'degree', 'rwse', 'none'], help='Type of positional encoding')
+    parser.add_argument('--max_pe_dim', type=int, default=8, help='Maximum positional encoding dimension')
     
-    # Universe parameter ranges
-    parser.add_argument('--cluster_count_factor_range', type=float, nargs=2, default=[0.5, 1.5],
-                        help='Range for cluster_count_factor (min, max)')
-    parser.add_argument('--center_variance_range', type=float, nargs=2, default=[0.01, 1.0],
-                        help='Range for center_variance (min, max)')
-    parser.add_argument('--cluster_variance_range', type=float, nargs=2, default=[0.05, 1.5],
-                        help='Range for cluster_variance (min, max)')
-    parser.add_argument('--assignment_skewness_range', type=float, nargs=2, default=[0.0, 0.5],
-                        help='Range for assignment_skewness (min, max)')
-    parser.add_argument('--community_exclusivity_range', type=float, nargs=2, default=[0.6, 1.0],
-                        help='Range for community_exclusivity (min, max)')
+    # Parameter ranges for sweep (only these three are ranges)
+    parser.add_argument('--homophily_range', type=float, nargs='+', default=[0.2, 0.8, 0.3], help='Range of homophily values to sweep (start, end, [step])')
+    parser.add_argument('--density_range', type=float, nargs='+', default=[0.1, 0.3, 0.15], help='Range of density values to sweep (start, end, [step])')
+    parser.add_argument('--num_nodes_range', type=int, nargs='+', default=[50, 150, 50], help='Range of num_nodes to sweep (start, end, [step])')
+    # All other parameters are fixed (single value)
+    parser.add_argument('--num_communities', type=int, default=6, help='Number of communities (fixed)')
+    parser.add_argument('--universe_feature_dim', type=int, default=16, help='Universe feature dimension (fixed)')
+    parser.add_argument('--universe_randomness_factor', type=float, default=1.0, help='Universe randomness factor (fixed)')
+    parser.add_argument('--degree_heterogeneity', type=float, default=1.0, help='Degree heterogeneity (fixed)')
+    parser.add_argument('--edge_noise', type=float, default=0.0, help='Edge noise (fixed)')
+    parser.add_argument('--cluster_count_factor', type=float, default=1.0, help='Cluster count factor (fixed)')
+    parser.add_argument('--center_variance', type=float, default=0.01, help='Center variance (fixed)')
+    parser.add_argument('--cluster_variance', type=float, default=0.05, help='Cluster variance (fixed)')
+    parser.add_argument('--assignment_skewness', type=float, default=0.0, help='Assignment skewness (fixed)')
+    parser.add_argument('--community_exclusivity', type=float, default=1.0, help='Community exclusivity (fixed)')
+    parser.add_argument('--degree_separation_range', type=float, nargs=2, default=[1.0, 1.0], help='List of degree_separation intervals to use (fixed, not swept)')
     
     # Experiment control
     parser.add_argument('--n_repeats', type=int, default=1,
@@ -184,41 +157,38 @@ def parse_args():
     # Ensure GNN types are properly set
     if args.run_gnn and not args.gnn_types:
         args.gnn_types = ['gcn']  # Default to GCN if no types specified
-    
     return args
 
-
-def generate_parameter_combinations(args) -> List[Dict[str, Any]]:
-    """Generate all parameter combinations to test."""
-    param_ranges = {}
-    
-    # Only vary homophily and edge density with steps
-    for param in ['universe_homophily', 'universe_edge_density']:
-        range_attr = f"{param}_range"
-        if hasattr(args, range_attr):
-            start, end, step = getattr(args, range_attr)
-            if isinstance(start, int):
-                values = list(range(start, end + 1, step))
+def generate_parameter_combinations(args) -> list:
+    # Only sweep over homophily, density, num_nodes
+    def get_range(val, is_int=False):
+        if len(val) == 3:
+            start, end, step = val
+            if is_int:
+                return list(range(int(start), int(end)+1, int(step)))
             else:
-                values = np.arange(start, end + step/2, step).tolist()  # Add step/2 to include end value
-            param_ranges[param] = values
-    
-    # Generate all combinations
-    param_names = list(param_ranges.keys())
-    param_values = list(param_ranges.values())
-    combinations = list(itertools.product(*param_values))
-    
-    # Convert to list of dictionaries
-    param_dicts = []
-    for combo in combinations:
-        param_dict = {name: value for name, value in zip(param_names, combo)}
-        param_dicts.append(param_dict)
-
-    # Print how many combinations are being tested
-    print(f"Running {len(param_dicts)} parameter combinations")
-    
-    return param_dicts
-
+                return list(np.arange(start, end+step/2, step))
+        elif len(val) == 2:
+            start, end = val
+            if is_int:
+                return list(range(int(start), int(end)+1))
+            else:
+                return list(np.linspace(start, end, num=3))
+        else:
+            return [val[0]]
+        
+    homophily_values = get_range(args.homophily_range, is_int=False)
+    density_values = get_range(args.density_range, is_int=False)
+    num_nodes_values = get_range(args.num_nodes_range, is_int=True)
+    combos = list(itertools.product(homophily_values, density_values, num_nodes_values))
+    param_combinations = []
+    for h, d, n in combos:
+        param_combinations.append({
+            'homophily': h,
+            'density': d,
+            'num_nodes': n
+        })
+    return param_combinations
 
 def run_experiments(args):
     """Run all experiments with different parameter combinations."""
@@ -235,20 +205,6 @@ def run_experiments(args):
     all_results = []
     failed_runs = []
     
-    # Get all possible parameters and their ranges for random sampling
-    all_param_ranges = {
-        'num_nodes': (args.num_nodes_range[0], args.num_nodes_range[1]),  # Only use min/max
-        'num_communities': (args.num_communities_range[0], args.num_communities_range[1]),
-        'universe_randomness_factor': (args.universe_randomness_factor_range[0], args.universe_randomness_factor_range[1]),
-        'degree_heterogeneity': (args.degree_heterogeneity_range[0], args.degree_heterogeneity_range[1]),
-        'edge_noise': (args.edge_noise_range[0], args.edge_noise_range[1]),
-        'cluster_count_factor': (args.cluster_count_factor_range[0], args.cluster_count_factor_range[1]),
-        'center_variance': (args.center_variance_range[0], args.center_variance_range[1]),
-        'cluster_variance': (args.cluster_variance_range[0], args.cluster_variance_range[1]),
-        'assignment_skewness': (args.assignment_skewness_range[0], args.assignment_skewness_range[1]),
-        'community_exclusivity': (args.community_exclusivity_range[0], args.community_exclusivity_range[1])
-    }
-    
     total_runs = len(param_combinations) * args.n_repeats
     successful_runs = 0
     failed_runs = []
@@ -260,39 +216,32 @@ def run_experiments(args):
     for param_dict in param_combinations:
         for repeat in range(args.n_repeats):
             try:
-                # Generate random values for other parameters
-                random_params = {}
-                for param, (min_val, max_val) in all_param_ranges.items():
-                    if isinstance(min_val, int):
-                        random_params[param] = np.random.randint(min_val, max_val + 1)
-                    else:
-                        random_params[param] = np.random.uniform(min_val, max_val)
 
                 print(f"\n🔄 Run {successful_runs + 1}/{total_runs}")
                 print(f"📊 Sweep parameters:")
                 for key, value in param_dict.items():
                     print(f"   {key}: {value}")
-                print(f"🎲 Random parameters:")
-                for key, value in random_params.items():
-                    print(f"   {key}: {value}")
                 
                 # Create experiment config
                 config = TransductiveExperimentConfig(
                     # Base parameters (varied)
-                    universe_edge_density=param_dict['universe_edge_density'],
-                    universe_homophily=param_dict['universe_homophily'],
+                    universe_edge_density=param_dict['density'],
+                    universe_homophily=param_dict['homophily'],
+
+                    universe_K=args.num_communities,
+                    universe_feature_dim=args.universe_feature_dim,
                     
                     # Random parameters
-                    num_nodes=random_params['num_nodes'],
-                    num_communities=random_params['num_communities'],
-                    universe_randomness_factor=random_params['universe_randomness_factor'],
-                    degree_heterogeneity=random_params['degree_heterogeneity'],
-                    edge_noise=random_params['edge_noise'],
-                    cluster_count_factor=random_params['cluster_count_factor'],
-                    center_variance=random_params['center_variance'],
-                    cluster_variance=random_params['cluster_variance'],
-                    assignment_skewness=random_params['assignment_skewness'],
-                    community_exclusivity=random_params['community_exclusivity'],
+                    num_nodes=param_dict['num_nodes'],
+                    num_communities=args.num_communities,
+                    universe_randomness_factor=args.universe_randomness_factor,
+                    degree_heterogeneity=args.degree_heterogeneity,
+                    edge_noise=args.edge_noise,
+                    cluster_count_factor=args.cluster_count_factor,
+                    center_variance=args.center_variance,
+                    cluster_variance=args.cluster_variance,
+                    assignment_skewness=args.assignment_skewness,
+                    community_exclusivity=args.community_exclusivity,
                     
                     # Method configuration
                     use_dccc_sbm=args.use_dccc_sbm,
@@ -322,6 +271,12 @@ def run_experiments(args):
                     global_model_type=args.global_model_type,
                     transformer_prenorm=getattr(args, 'transformer_prenorm', True),
                     
+                    # Neural Sheaf Diffusion Model options
+                    run_neural_sheaf=args.run_neural_sheaf,
+                    sheaf_type=args.sheaf_type,
+                    sheaf_d=args.sheaf_d,
+                    pe_type=args.pe_type,
+                    
                     # Training configuration
                     patience=args.patience,
                     epochs=args.epochs,
@@ -335,7 +290,8 @@ def run_experiments(args):
                     max_training_nodes=args.max_training_nodes,
                     
                     # Random seed
-                    seed=args.seed + repeat
+                    seed=args.seed + repeat,
+                    degree_separation_range=args.degree_separation_range
                 )
                 
                 # Create run directory
@@ -392,18 +348,12 @@ def run_experiments(args):
     with open(summary_path, 'w') as f:
         json.dump(summary, f, indent=2)
     
-    # Create analysis plots if requested
-    if args.create_plots and successful_runs > 0:
-        print("\nCreating analysis plots...")
-        create_analysis_plots(results_dir)
-        print(f"Analysis plots created in: {os.path.join(results_dir, 'plots')}")
     
     return {
         'results_dir': results_dir,
         'all_results': all_results,
         'summary': summary
     }
-
 
 def main():
     """Main function to run multi-experiments."""
@@ -412,17 +362,10 @@ def main():
     
     try:
         args = parse_args()
-        
-        # Handle analysis of existing results
-        if args.analyze_existing:
-            print(f"Analyzing existing results at: {args.analyze_existing}")
-            create_analysis_plots(args.analyze_existing)
-            print("Analysis complete!")
-            return 0
+
         
         # Print configuration summary
         print(f"\nMulti-Experiment Configuration:")
-        print(f"  Parameters to vary: {', '.join(args.vary)}")
         print(f"  Number of repeats: {args.n_repeats}")
         print(f"  Results directory: {args.results_dir}")
         print(f"  Base method: {'DCCC-SBM' if args.use_dccc_sbm else 'DC-SBM'}")
@@ -445,14 +388,27 @@ def main():
             print("  MLP: enabled")
         if args.run_rf:
             print("  Random Forest: enabled")
+        if args.run_neural_sheaf:
+            print("  Neural Sheaf Diffusion Model: enabled")
+            print(f"    Sheaf type: {args.sheaf_type}")
+            print(f"    Stalk dimension: {args.sheaf_d}")
+            print(f"    PE type: {args.pe_type}")
+            print(f"    Max PE dim: {args.max_pe_dim}")
         
         # Print parameter ranges
         print("\nParameter ranges:")
-        for param in args.vary:
+        for param in ['homophily', 'density', 'num_nodes']:
             range_attr = f"{param}_range"
             if hasattr(args, range_attr):
-                start, end, step = getattr(args, range_attr)
-                print(f"  {param}: {start} to {end} (step {step})")
+                range_val = getattr(args, range_attr)[:2]
+                if len(range_val) == 3:
+                    start, end, step = range_val
+                    print(f"  {param}: {start} to {end} (step {step})")
+                elif len(range_val) == 2:
+                    start, end = range_val
+                    print(f"  {param}: {start} to {end} (no step specified)")
+                else:
+                    print(f"  {param}: {range_val} (unexpected length)")
         
         # Run experiments
         print(f"\nStarting multi-experiment suite at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
@@ -480,7 +436,6 @@ def main():
         import traceback
         traceback.print_exc()
         return 1
-
 
 if __name__ == "__main__":
     import sys

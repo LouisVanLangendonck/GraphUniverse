@@ -1,19 +1,3 @@
-"""
-Mixed-Membership Stochastic Block Model (MMSB) with overlapping communities.
-
-This module implements a generative framework for creating graph instances
-sampled from subsets of a core "graph universe" defined by a master
-stochastic block model.
-
-The model supports:
-- Degree correction
-- Feature generation conditioned on community membership
-- Systematic sampling of subgraphs from a larger universe
-
-References:
-- Karrer & Newman (2011). Stochastic blockmodels and community structure in networks.
-"""
-
 import numpy as np
 import networkx as nx
 import scipy.sparse as sp
@@ -25,13 +9,9 @@ from graph_universe.feature_regimes import (
     FeatureClusterLabelGenerator
 )
 import time
-import matplotlib.pyplot as plt
-from sklearn.cluster import KMeans, SpectralClustering
-from sklearn.mixture import GaussianMixture
 from sklearn.metrics import normalized_mutual_info_score, adjusted_rand_score
 from sklearn.naive_bayes import GaussianNB
 from sklearn.model_selection import cross_val_score, StratifiedKFold
-import community as community_louvain
 import warnings
 from itertools import combinations
 

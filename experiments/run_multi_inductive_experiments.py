@@ -25,7 +25,6 @@ from experiments.inductive.multi_config import (
     ParameterRange,
 )
 from experiments.inductive.multi_experiment import run_clean_multi_experiments, create_analysis_plots
-from experiments.models import SheafDiffusionModel
 
 
 def parse_args():
@@ -58,8 +57,8 @@ def parse_args():
     
     # Task configuration
     parser.add_argument('--tasks', type=str, nargs='+',     
-                        default=['triangle_count'],
-                        choices=['community', 'k_hop_community_counts_k1', 'k_hop_community_counts_k2', 'k_hop_community_counts_k3', 'triangle_count'],
+                        default=['community'],
+                        choices=['community', 'k_hop_community_counts_k1', 'k_hop_community_counts_k2', 'k_hop_community_counts_k3'],
                         help='Learning tasks to run')
     
     # Base experiment settings
@@ -130,7 +129,7 @@ def parse_args():
     # Transformer configuration
     parser.add_argument('--transformer_types', type=str, nargs='+', 
                         default=['graphgps'], 
-                        choices=['graphormer', 'graphgps'],
+                        choices=['graphgps'],
                         help='Types of Graph Transformer models to run')
     parser.add_argument('--run_transformers', action='store_true',
                         help='Run Graph Transformer models')

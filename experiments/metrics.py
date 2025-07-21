@@ -702,6 +702,14 @@ def compute_metrics_gpu(
                     per_label_metrics[f'r2_label_{i}'] = 0.0
                     
             metrics.update(per_label_metrics)
+        # Else we are doing graph-level regression. Take mean over length of y_true
+        else:
+            metrics['mse'] = metrics['mse'] / y_true.shape[0]
+            metrics['mae'] = metrics['mae'] / y_true.shape[0]
+            metrics['rmse'] = metrics['rmse'] / y_true.shape[0]
+            metrics['relative_error'] = metrics['relative_error'] / y_true.shape[0]
+            metrics['r2'] = metrics['r2'] / y_true.shape[0]
+            
     else:
         # Classification metrics - computed on GPU where possible
         # Handle case where predictions might be probabilities

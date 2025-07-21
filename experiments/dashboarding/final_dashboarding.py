@@ -10,6 +10,7 @@ from pathlib import Path
 from sklearn.linear_model import LinearRegression
 from sklearn.preprocessing import PolynomialFeatures
 from scipy import stats
+import numpy as np
 
 # Page config
 st.set_page_config(
@@ -23,23 +24,6 @@ st.markdown("---")
 
 class DataLoader:
     """Handles loading and processing experiment data."""
-    
-    @staticmethod
-    @st.cache_data
-    def get_result_family_properties(multi_inductive_experiment_dir, run_sample):
-        """Extract family properties from results.json for a given run."""
-        run = run_sample['data_files']['inductive_data'].split("/")[0]
-        run_path = os.path.join(multi_inductive_experiment_dir, run)
-        
-        for dir_name in os.listdir(run_path):
-            dir_path = os.path.join(run_path, dir_name)
-            if os.path.isdir(dir_path) and dir_name != "" and dir_name != "data_analysis_report.txt":
-                results_file = os.path.join(dir_path, "results.json")
-                if os.path.exists(results_file):
-                    with open(results_file, 'r') as f:
-                        results = json.load(f)
-                    return results['family_properties']
-        return None
 
     @staticmethod
     @st.cache_data
@@ -54,16 +38,17 @@ class DataLoader:
             with open(final_results_path, 'r') as f:
                 data = json.load(f)
             
-            results_list_with_family_properties = []
-            for run_sample in data['all_results']:
-                family_properties = DataLoader.get_result_family_properties(
-                    multi_inductive_experiment_dir, run_sample
-                )
-                if family_properties:
-                    run_sample['family_properties'] = family_properties
-                results_list_with_family_properties.append(run_sample)
+            # Debug: Check the structure of loaded data
+            st.write(f"Loaded data type: {type(data)}")
+            if isinstance(data, dict):
+                st.write(f"Data keys: {list(data.keys())}")
+                if 'all_results' in data:
+                    st.write(f"Number of results: {len(data['all_results'])}")
+                    if data['all_results']:
+                        st.write(f"First result type: {type(data['all_results'][0])}")
             
-            return results_list_with_family_properties, None
+            return data, None
+        
         except Exception as e:
             return None, str(e)
 
@@ -96,7 +81,18 @@ class DataProcessor:
         is_regression = DataProcessor.is_regression_task(experiment_dir) if experiment_dir else False
         mean_density = None
         if is_regression and family_properties:
-            mean_density = family_properties.get('densities_mean')
+            # Handle new nested structure: family_properties[task_name][split_name]
+            if isinstance(family_properties, dict):
+                # Look for train split density in any task
+                for task_name, task_properties in family_properties.items():
+                    if isinstance(task_properties, dict) and 'train' in task_properties:
+                        train_properties = task_properties['train']
+                        if isinstance(train_properties, dict) and 'densities_mean' in train_properties:
+                            mean_density = train_properties['densities_mean']
+                            break
+                # Fallback to flat structure for backward compatibility
+                if mean_density is None:
+                    mean_density = family_properties.get('densities_mean')
 
         for task_name, task_results in model_results.items():
             if isinstance(task_results, dict):
@@ -203,7 +199,17 @@ class DataProcessor:
         """Convert results list to pandas DataFrame."""
         df_data = []
         
-        for run_sample in results_list:
+        # Debug: Check the structure of results_list
+        if not isinstance(results_list, list):
+            st.error(f"Expected results_list to be a list, got {type(results_list)}")
+            return pd.DataFrame()
+        
+        for i, run_sample in enumerate(results_list):
+            # Debug: Check each run_sample
+            if not isinstance(run_sample, dict):
+                st.error(f"Expected run_sample {i} to be a dict, got {type(run_sample)}: {run_sample}")
+                continue
+                
             row = {}
             
             # Add basic run information
@@ -215,29 +221,43 @@ class DataProcessor:
             # Add sweep parameters
             if 'sweep_parameters' in run_sample:
                 for key, value in run_sample['sweep_parameters'].items():
-                    row[f"sweep_{key}"] = value
+                    # Convert lists/dicts to JSON strings, others to str
+                    if isinstance(value, (list, dict)):
+                        row[f"sweep_{key}"] = json.dumps(value)
+                    else:
+                        row[f"sweep_{key}"] = str(value)
             
             # Add all parameters
             if 'all_parameters' in run_sample:
+                print(run_sample['all_parameters'])
                 for key, value in run_sample['all_parameters'].items():
-                    row[f"param_{key}"] = value
+                    # Convert lists/dicts to JSON strings, others to str
+                    print(key, value)
+                    if isinstance(value, (list, dict)):
+                        row[f"param_{key}"] = json.dumps(value)
+                    else:
+                        row[f"param_{key}"] = str(value)
             
-            # Add family properties
+            # Add family properties (now organized by task and split)
             if 'family_properties' in run_sample:
                 fp = run_sample['family_properties']
-                for key, value in fp.items():
-                    if key.endswith(('_mean', '_std', '_min', '_max')):
-                        row[f"family_{key}"] = value
-            
-            # Add model results
-            if 'model_results' in run_sample:
-                family_properties = run_sample.get('family_properties', {})
-                model_metrics = DataProcessor.extract_model_metrics(
-                    run_sample['model_results'], experiment_dir, family_properties
-                )
-                for key, value in model_metrics.items():
-                    row[key] = value
-            
+                for task_name, task_properties in fp.items():
+                    if isinstance(task_properties, dict):
+                        for split_name, split_properties in task_properties.items():
+                            if isinstance(split_properties, dict):
+                                for key, value in split_properties.items():
+                                    if key.endswith(('_mean', '_std', '_min', '_max')):
+                                        row[f"family_{task_name}_{split_name}_{key}"] = value
+                                    else:
+                                        # Also include non-statistical properties
+                                        row[f"family_{task_name}_{split_name}_{key}"] = value
+                    else:
+                        # Handle flat structure for backward compatibility
+                        if isinstance(task_properties, dict):
+                            for key, value in task_properties.items():
+                                if key.endswith(('_mean', '_std', '_min', '_max')):
+                                    row[f"family_{key}"] = value
+                        
             # Add community signals
             if 'community_signals' in run_sample:
                 for signal_type, signal_data in run_sample['community_signals'].items():
@@ -257,6 +277,16 @@ class DataProcessor:
             if 'unseen_community_combination_score' in run_sample:
                 row['unseen_community_combination_score'] = run_sample['unseen_community_combination_score']
             
+            # Add model results
+            if 'model_results' in run_sample:
+                family_properties = run_sample.get('family_properties', {})
+                model_metrics = DataProcessor.extract_model_metrics(
+                    run_sample['model_results'], experiment_dir, family_properties
+                )
+                for key, value in model_metrics.items():
+                    row[key] = value
+
+
             df_data.append(row)
         
         return pd.DataFrame(df_data)
@@ -995,31 +1025,44 @@ class Dashboard:
         multi_inductive_experiment_dir = st.sidebar.selectbox(
             "Experiment Directory",
             options=[
+                'multi_results/semi_community_detect',
                 "multi_results/community_detect",
-                "multi_results/final_k1_hop"
+                # "multi_results/final_k1_hop"
             ],
-            index=1,
+            index=0,
             help="Select the experiment directory to analyze"
         )
-        
+        # Add page selection
+        page = st.sidebar.radio("Select Page", ["Main Dashboard", "X-metric vs X-metric"])
         # Load data button
         if st.sidebar.button("🔄 Load Experiment Data"):
             with st.spinner("Loading experiment data..."):
-                results_list, error = DataLoader.load_experiment_data(multi_inductive_experiment_dir)
+                data, error = DataLoader.load_experiment_data(multi_inductive_experiment_dir)
                 
                 if error:
                     st.error(f"Error loading data: {error}")
                 else:
+                    # Handle different data structures
+                    if isinstance(data, dict) and 'all_results' in data:
+                        results_list = data['all_results']
+                    elif isinstance(data, list):
+                        results_list = data
+                    else:
+                        st.error(f"Unexpected data structure: {type(data)}")
+                        return
+                    
                     st.session_state.results_list = results_list
                     st.session_state.df = DataProcessor.create_dataframe_from_results(
                         results_list, multi_inductive_experiment_dir
                     )
                     st.session_state.experiment_dir = multi_inductive_experiment_dir
                     st.success(f"Successfully loaded {len(results_list)} experiment runs!")
-        
         # Main content
         if 'df' in st.session_state and st.session_state.df is not None:
-            self._show_main_content()
+            if page == "Main Dashboard":
+                self._show_main_content()
+            elif page == "X-metric vs X-metric":
+                self._show_x_vs_x_page()
         else:
             self._show_initial_content()
     
@@ -1046,6 +1089,7 @@ class Dashboard:
         # Get column options
         numeric_columns = df.select_dtypes(include=[np.number]).columns.tolist()
         param_columns = [col for col in df.columns if col.startswith(('sweep_', 'param_'))]
+        # print(param_columns)
         
         # Parameter selection
         col1, col2 = st.columns(2)
@@ -1196,7 +1240,7 @@ class Dashboard:
         fig = make_subplots(
             rows=n_rows, 
             cols=n_cols,
-            subplot_titles=[f"{second_param}={value}" for value in unique_values],
+            subplot_titles=[str(value) for value in unique_values],  # Only show the value
             vertical_spacing=0.1,
             horizontal_spacing=0.1,
             shared_yaxes=True,
@@ -1266,7 +1310,7 @@ class Dashboard:
         
         fig.update_layout(
             title=dict(
-                text=f"{plot_style}: {selected_metric.replace('_', ' ').replace('-', ' ').title()} vs {x_axis.replace('_', ' ').replace('-', ' ').title()} by {second_param.replace('_', ' ').replace('-', ' ').title()}",
+                text=f"{plot_style}: {selected_metric.replace('_', ' ').replace('-', ' ').title()} vs {x_axis.replace('_', ' ').replace('-', ' ').title()}<br>by {second_param.replace('_', ' ').replace('-', ' ').title()}",
                 x=0.5, xanchor='center', font=dict(size=16, color='black')
             ),
             legend=dict(
@@ -1282,7 +1326,7 @@ class Dashboard:
         for i in range(1, n_rows + 1):
             for j in range(1, n_cols + 1):
                 fig.update_xaxes(
-                    title=dict(text=x_axis.replace('_', ' ').replace('-', ' ').title(), font=dict(size=12)),
+                    title='',
                     showgrid=True, gridwidth=1, gridcolor='lightgray',
                     zeroline=True, zerolinewidth=1, zerolinecolor='black',
                     row=i, col=j
@@ -1293,6 +1337,22 @@ class Dashboard:
                     zeroline=True, zerolinewidth=1, zerolinecolor='black',
                     range=y_range, row=i, col=j
                 )
+        # Add a global x-axis label centered below all subplots
+        fig.update_layout(
+            annotations=[
+                dict(
+                    text=x_axis.replace('_', ' ').replace('-', ' ').title(),
+                    x=0.5,
+                    y=-0.12,
+                    xref='paper',
+                    yref='paper',
+                    showarrow=False,
+                    font=dict(size=16),
+                    xanchor='center',
+                    yanchor='top'
+                )
+            ]
+        )
         
         return fig
     
@@ -1476,6 +1536,7 @@ class Dashboard:
         )
         
         if columns_to_show:
+            display_df = df[columns_to_show].astype(str)
             st.dataframe(df[columns_to_show], use_container_width=True)
     
     def _show_export_options(self, df):
@@ -1509,6 +1570,62 @@ main_dir/
 │               └── some_experiment_dir/
 │                   └── results.json
         """, language="text")
+
+    def _show_x_vs_x_page(self):
+        import plotly.graph_objects as go
+        import numpy as np
+        from sklearn.linear_model import LinearRegression
+        from sklearn.preprocessing import PolynomialFeatures
+        st.header("📈 X-metric vs X-metric Analysis (per Graph Family)")
+        df = st.session_state.df
+        # Only use columns that are numeric and not model metrics
+        numeric_columns = [col for col in df.select_dtypes(include=[np.number]).columns if not col.startswith('model.')]
+        if len(numeric_columns) < 2:
+            st.warning("Not enough numeric columns to plot.")
+            return
+        x_col = st.selectbox("X-axis metric", options=numeric_columns, index=0)
+        y_col = st.selectbox("Y-axis metric", options=numeric_columns, index=1 if len(numeric_columns) > 1 else 0)
+        fit_type = st.selectbox("Fit Type", ["None", "Linear", "Polynomial"])
+        poly_degree = 2
+        if fit_type == "Polynomial":
+            poly_degree = st.number_input("Polynomial Degree", min_value=2, max_value=5, value=2)
+        plot_df = df.dropna(subset=[x_col, y_col])
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(
+            x=plot_df[x_col],
+            y=plot_df[y_col],
+            mode='markers',
+            marker=dict(size=8, color='#1f77b4', line=dict(width=1, color='white')),
+            name='Graph Family'
+        ))
+        # Fit line if requested
+        if fit_type in ["Linear", "Polynomial"] and len(plot_df) >= (3 if fit_type == 'Linear' else poly_degree + 2):
+            x = plot_df[x_col].values
+            y = plot_df[y_col].values
+            x_pred = np.linspace(x.min(), x.max(), 100)
+            if fit_type == "Linear":
+                reg = LinearRegression().fit(x.reshape(-1, 1), y)
+                y_pred = reg.predict(x_pred.reshape(-1, 1))
+                fig.add_trace(go.Scatter(
+                    x=x_pred, y=y_pred, mode='lines', name='Linear Fit', line=dict(color='red', dash='dash')
+                ))
+                st.write(f"Slope: {reg.coef_[0]:.3f}, Intercept: {reg.intercept_:.3f}, R²: {reg.score(x.reshape(-1, 1), y):.3f}")
+            else:
+                poly = PolynomialFeatures(degree=poly_degree, include_bias=False)
+                x_poly = poly.fit_transform(x.reshape(-1, 1))
+                reg = LinearRegression().fit(x_poly, y)
+                x_pred_poly = poly.transform(x_pred.reshape(-1, 1))
+                y_pred = reg.predict(x_pred_poly)
+                fig.add_trace(go.Scatter(
+                    x=x_pred, y=y_pred, mode='lines', name=f'Poly Fit (deg {poly_degree})', line=dict(color='green', dash='dot')
+                ))
+                st.write(f"R²: {reg.score(x_poly, y):.3f}")
+        fig.update_layout(
+            xaxis_title=x_col.replace('_', ' ').title(),
+            yaxis_title=y_col.replace('_', ' ').title(),
+            plot_bgcolor='white', paper_bgcolor='white'
+        )
+        st.plotly_chart(fig, use_container_width=True)
 
 # Main execution
 if __name__ == "__main__":
