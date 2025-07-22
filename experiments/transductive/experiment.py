@@ -11,6 +11,7 @@ from typing import Dict, List, Optional, Union, Any, Tuple
 from datetime import datetime
 import numpy as np
 import torch
+import types  # <-- Add this import
 
 from graph_universe.model import GraphUniverse
 from graph_universe.graph_family import GraphFamilyGenerator
@@ -19,7 +20,7 @@ from experiments.transductive.data import (
     analyze_graph_properties,
     validate_transductive_data
 )
-from experiments.transductive.training import train_and_evaluate_transductive
+from experiments.transductive.training import train_and_evaluate_transductive, train_and_evaluate_transductive_gpu_resident, tune_hyperparameters_transductive, tune_hyperparameters_transductive_gpu_resident
 from experiments.models import GNNModel, MLPModel, SklearnModel, GraphTransformerModel, SheafDiffusionModel
 from experiments.transductive.config import TransductiveExperimentConfig
 
@@ -193,24 +194,44 @@ class TransductiveExperiment:
             return {}
     
     def prepare_data(self) -> Dict[str, Any]:
-        """Prepare data for transductive learning."""
+        """Prepare data for transductive learning with GPU-resident data by default."""
         print("\n" + "="*60)
         print("PREPARING TRANSDUCTIVE DATA")
         print("="*60)
         if self.graph_sample is None:
             raise ValueError("Must generate graph before preparing data")
-        # Prepare transductive data (now returns {'splits': [...]})
-        transductive_data = prepare_transductive_data(self.graph_sample, self.config)
+        
+        # Use GPU-resident data preparation by default for better performance
+        # Can be overridden by setting config.use_gpu_resident_data = False
+        use_gpu_resident = getattr(self.config, 'use_gpu_resident_data', True)
+        
+        if use_gpu_resident:
+            print("Using GPU-resident data preparation...")
+            from experiments.transductive.data import prepare_transductive_data_gpu_resident, verify_transductive_gpu_data
+            
+            transductive_data = prepare_transductive_data_gpu_resident(self.graph_sample, self.config, self.device)
+            
+            # Verify data is properly loaded to GPU
+            for split in transductive_data['splits']:
+                if not verify_transductive_gpu_data(split, self.device):
+                    raise RuntimeError("Failed to load transductive data to GPU properly")
+        else:
+            print("Using original data preparation...")
+            from experiments.transductive.data import prepare_transductive_data
+            
+            transductive_data = prepare_transductive_data(self.graph_sample, self.config)
+        
         self.transductive_data = transductive_data
         return transductive_data
 
     def run_experiments(self) -> Dict[str, Any]:
-        """Run transductive experiments on single graph with multiple splits."""
+        """Run transductive experiments on single graph with multiple splits using GPU-resident data."""
         print("\n" + "="*60)
-        print("RUNNING TRANSDUCTIVE EXPERIMENTS")
+        print("RUNNING TRANSDUCTIVE EXPERIMENTS (GPU-RESIDENT)")
         print("="*60)
         if not hasattr(self, 'transductive_data'):
             raise ValueError("Must prepare data before running experiments")
+        import copy
         all_results = {}
         splits = self.transductive_data['splits']
         n_reps = len(splits)
@@ -222,7 +243,7 @@ class TransductiveExperiment:
             split0 = splits[0]
             is_regression = task != 'community'
             is_graph_level_task = False
-            input_dim = split0['features'].shape[1]
+            input_dim = split0['input_dim']
             output_dim = self.config.universe_K
             print(f"Model configuration:")
             print(f"  Input dim: {input_dim}")
@@ -244,30 +265,53 @@ class TransductiveExperiment:
                 try:
                     # 1. Hyperparameter optimization on split0
                     model = self._instantiate_model(model_name, input_dim, output_dim, is_regression, is_graph_level_task)
-                    hyperopt_result = train_and_evaluate_transductive(
-                        model=model,
-                        task_data=split0,
-                        config=self.config,
-                        task=task,
-                        device=self.device,
-                        optimize_hyperparams=True,
-                        model_name=model_name
-                    )
-                    best_hyperparams = hyperopt_result.get('optimal_hyperparams', {})
+                    use_gpu_resident = getattr(self.config, 'use_gpu_resident_training', True)
+                    if use_gpu_resident:
+                        best_hyperparams = tune_hyperparameters_transductive_gpu_resident(
+                            model=model,
+                            task_data=split0,
+                            config=self.config,
+                            task=task,
+                            device=self.device,
+                            model_name=model_name,
+                            model_creator=self._instantiate_model
+                        )
+                    else:
+                        best_hyperparams = tune_hyperparameters_transductive(
+                            model=model,
+                            task_data=split0,
+                            config=self.config,
+                            task=task,
+                            device=self.device,
+                            model_name=model_name,
+                            model_creator=self._instantiate_model
+                        )
                     # 2. Final evaluation on all splits
                     rep_results = []
                     for split in splits:
                         model = self._instantiate_model(model_name, input_dim, output_dim, is_regression, is_graph_level_task, best_hyperparams)
-                        result = train_and_evaluate_transductive(
-                            model=model,
-                            task_data=split,
-                            config=self.config,
-                            task=task,
-                            device=self.device,
-                            optimize_hyperparams=False,
-                            model_name=model_name,
-                            hyperparams=best_hyperparams
-                        )
+                        if use_gpu_resident:
+                            result = train_and_evaluate_transductive_gpu_resident(
+                                model=model,
+                                task_data=split,
+                                config=self.config,
+                                task=task,
+                                device=self.device,
+                                model_name=model_name,
+                                hyperparams=best_hyperparams,
+                                model_creator=self._instantiate_model
+                            )
+                        else:
+                            result = train_and_evaluate_transductive(
+                                model=model,
+                                task_data=split,
+                                config=self.config,
+                                task=task,
+                                device=self.device,
+                                model_name=model_name,
+                                hyperparams=best_hyperparams,
+                                model_creator=self._instantiate_model
+                            )
                         rep_results.append(result)
                     # Aggregate metrics
                     metrics_keys = rep_results[0]['test_metrics'].keys()
@@ -292,10 +336,11 @@ class TransductiveExperiment:
                     logger.error(error_msg, exc_info=True)
                     task_results[model_name] = {
                         'error': error_msg,
-                        'test_metrics': {}
+                        'test_metrics': {},
+                        'train_time': 0.0,
+                        'training_history': []
                     }
             all_results[task] = task_results
-        self.results = all_results
         return all_results
 
     def _instantiate_model(self, model_name, input_dim, output_dim, is_regression, is_graph_level_task, hyperparams=None):
@@ -328,13 +373,7 @@ class TransductiveExperiment:
                 is_regression=is_regression,
                 is_graph_level_task=is_graph_level_task,
                 num_heads=hp.get('num_heads', self.config.transformer_num_heads),
-                max_nodes=self.config.transformer_max_nodes,
-                max_path_length=self.config.transformer_max_path_length,
-                precompute_encodings=self.config.transformer_precompute_encodings,
-                cache_encodings=self.config.transformer_cache_encodings,
                 local_gnn_type=self.config.local_gnn_type,
-                global_model_type=self.config.global_model_type,
-                prenorm=self.config.transformer_prenorm,
                 pe_type=hp.get('pe_type', self.config.pe_type),
                 pe_dim=hp.get('pe_dim', self.config.max_pe_dim)
             )
@@ -359,11 +398,11 @@ class TransductiveExperiment:
         elif model_name == 'neural_sheaf':
             return SheafDiffusionModel(
                 input_dim=input_dim,
+                sheaf_type=hp.get('sheaf_type', self.config.sheaf_type),
                 hidden_dim=hp.get('hidden_dim', self.config.hidden_dim),
                 output_dim=output_dim,
-                d=self.config.sheaf_d,
+                d=hp.get('d', self.config.sheaf_d),
                 num_layers=hp.get('num_layers', self.config.num_layers),
-                sheaf_type=self.config.sheaf_type,
                 dropout=hp.get('dropout', self.config.dropout),
                 is_regression=is_regression,
                 is_graph_level_task=is_graph_level_task,
@@ -480,6 +519,8 @@ class TransductiveExperiment:
             return obj.item()
         elif isinstance(obj, np.ndarray):
             return obj.tolist()
+        elif isinstance(obj, types.MappingProxyType):  # <-- Handle mappingproxy
+            return self._make_json_serializable(dict(obj))
         elif hasattr(obj, '__dict__'):
             try:
                 return self._make_json_serializable(obj.__dict__)
@@ -491,63 +532,57 @@ class TransductiveExperiment:
             return obj
     
     def run(self) -> Dict[str, Any]:
-        """Run complete transductive learning experiment pipeline."""
+        """Run complete transductive experiment."""
+        print("\n" + "="*60)
+        print("STARTING TRANSDUCTIVE EXPERIMENT")
+        print("="*60)
+        
         try:
-            print("Starting transductive learning experiment...")
-            experiment_start = time.time()
+            # Generate graph
+            self.generate_graph()
             
-            # Generate single graph
-            graph_sample = self.generate_graph()
-            
-            # Calculate community signals
-            graph_signals = self.calculate_graph_signals()
+            # Calculate graph signals
+            self.calculate_graph_signals()
             
             # Prepare data
-            transductive_data = self.prepare_data()
+            self.prepare_data()
             
             # Run experiments
             results = self.run_experiments()
             
+            # Store results
+            self.results = results
+            
             # Save results
             self.save_results()
             
-            # Generate summary report
-            summary_report = self.generate_summary_report()
+            # Clean up GPU memory
+            self._cleanup_gpu_memory()
             
-            with open(os.path.join(self.output_dir, "summary.txt"), 'w') as f:
-                f.write(summary_report)
-            
-            print("\n" + summary_report)
-            
-            total_time = time.time() - experiment_start
-            print(f"\nExperiment completed in {total_time:.2f} seconds")
-            
-            # Only return serializable data
-            return {
-                'graph_properties': self._get_graph_properties(),
-                'graph_signals': graph_signals,
-                'results': self._clean_model_results(),
-                'split_info': self._get_split_info(),
-                'config': self.config.to_dict(),
-                'summary_report': summary_report,
-                'total_time': total_time
-            }
+            return results
             
         except Exception as e:
-            logger.error(f"Error in transductive experiment: {str(e)}", exc_info=True)
-            
-            # Save error information
-            error_info = {
-                'error': str(e),
-                'timestamp': datetime.now().strftime("%Y%m%d_%H%M%S"),
-                'config': self.config.to_dict()
-            }
-            
-            error_file = os.path.join(self.output_dir, "error.json")
-            with open(error_file, 'w') as f:
-                json.dump(error_info, f, indent=2)
-            
+            error_msg = f"Error in transductive experiment: {str(e)}"
+            print(f"✗ {error_msg}")
+            logger.error(error_msg, exc_info=True)
             raise
+    
+    def _cleanup_gpu_memory(self):
+        """Clean up GPU memory after experiments."""
+        if hasattr(self, 'transductive_data') and self.transductive_data:
+            from experiments.transductive.data import cleanup_transductive_gpu_data
+            
+            print("\n🧹 Cleaning up GPU memory...")
+            for split in self.transductive_data['splits']:
+                cleanup_transductive_gpu_data(split, self.device)
+            
+            # Force GPU memory cleanup
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                import gc
+                gc.collect()
+            
+            print("✅ GPU memory cleanup completed")
     
     def generate_summary_report(self) -> str:
         """Generate comprehensive summary report."""
@@ -612,6 +647,27 @@ class TransductiveExperiment:
                     
                     lines.append(f"  {model_name.upper()}:")
                     lines.append(f"    {primary_metric.upper()}: {score:.4f}")
+                    
+                    # Display all comprehensive metrics
+                    if is_regression:
+                        if 'mae' in test_metrics:
+                            lines.append(f"    MAE: {test_metrics['mae']:.4f}")
+                        if 'mse' in test_metrics:
+                            lines.append(f"    MSE: {test_metrics['mse']:.4f}")
+                        if 'r2' in test_metrics:
+                            lines.append(f"    R²: {test_metrics['r2']:.4f}")
+                    else:
+                        if 'accuracy' in test_metrics:
+                            lines.append(f"    Accuracy: {test_metrics['accuracy']:.4f}")
+                        if 'precision_macro' in test_metrics:
+                            lines.append(f"    Precision (macro): {test_metrics['precision_macro']:.4f}")
+                        if 'recall_macro' in test_metrics:
+                            lines.append(f"    Recall (macro): {test_metrics['recall_macro']:.4f}")
+                        if 'f1_weighted' in test_metrics:
+                            lines.append(f"    F1 (weighted): {test_metrics['f1_weighted']:.4f}")
+                        if 'roc_auc' in test_metrics:
+                            lines.append(f"    ROC-AUC: {test_metrics['roc_auc']:.4f}")
+                    
                     lines.append(f"    Training time: {train_time:.2f}s")
                     
                     if (is_regression and score > best_score) or (not is_regression and score > best_score):

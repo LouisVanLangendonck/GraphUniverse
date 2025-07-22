@@ -811,6 +811,52 @@ def compute_metrics_gpu(
     return metrics
 
 
+def compute_simple_metrics_gpu(
+    y_true: torch.Tensor,
+    y_pred: torch.Tensor,
+    is_regression: bool = False
+) -> Dict[str, float]:
+    """
+    Compute only essential metrics on GPU for training efficiency.
+    This avoids the overhead of complex metric computations during training.
+    
+    Args:
+        y_true: True labels (on GPU)
+        y_pred: Predicted labels or values (on GPU)
+        is_regression: Whether this is a regression task
+        
+    Returns:
+        Dictionary with only essential metrics
+    """
+    metrics = {}
+    
+    if is_regression:
+        # Only compute MAE and MSE - the most important for training
+        mae = torch.nn.functional.l1_loss(y_pred, y_true)
+        mse = torch.nn.functional.mse_loss(y_pred, y_true)
+        
+        metrics['mae'] = mae.item()
+        metrics['mse'] = mse.item()
+        
+    else:
+        # Only compute accuracy - the most important for training
+        if len(y_pred.shape) > 1 and y_pred.shape[1] > 1:
+            y_pred_classes = torch.argmax(y_pred, dim=1)
+        else:
+            y_pred_classes = y_pred
+        
+        # Ensure both tensors are 1D
+        y_true = y_true.flatten()
+        y_pred_classes = y_pred_classes.flatten()
+        
+        # Basic accuracy on GPU
+        correct = torch.sum(y_true == y_pred_classes)
+        total = y_true.numel()
+        metrics['accuracy'] = (correct / total).item()
+    
+    return metrics
+
+
 def compare_metrics_performance(
     y_true: torch.Tensor,
     y_pred: torch.Tensor,

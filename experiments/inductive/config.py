@@ -351,11 +351,11 @@ class PreTrainingConfig:
     edge_noise: float = 0.1
     max_parameter_search_attempts: int = 20
     parameter_search_range: float = 0.5
-    max_retries: int = 10
+    max_retries: int = 20
     min_edge_density: float = 0.005
     disable_deviation_limiting: bool = False
-    max_mean_community_deviation: float = 0.20
-    max_max_community_deviation: float = 0.35
+    max_mean_community_deviation: float = 0.15
+    max_max_community_deviation: float = 0.15
     min_component_size: int = 10
     homophily_range: Tuple[float, float] = (0.0, 0.2)
     density_range: Tuple[float, float] = (0.0, 0.1)

@@ -311,7 +311,7 @@ class GraphFamilyGenerator:
         show_progress: bool = True,
         collect_stats: bool = True,
         max_attempts_per_graph: int = 10,
-        timeout_minutes: float = 2.0,
+        timeout_minutes: float = 5.0,
         allowed_community_combinations: Optional[List[List[int]]] = None
     ) -> List[GraphSample]:
         """

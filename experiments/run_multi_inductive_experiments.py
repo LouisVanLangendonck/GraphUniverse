@@ -64,13 +64,13 @@ def parse_args():
     # Base experiment settings
     parser.add_argument('--n_graphs', type=int, default=100,
                         help='Number of graphs per family')
-    parser.add_argument('--min_n_nodes', type=int, default=70,
+    parser.add_argument('--min_n_nodes', type=int, default=80,
                         help='Minimum nodes per graph')
-    parser.add_argument('--max_n_nodes', type=int, default=110,
+    parser.add_argument('--max_n_nodes', type=int, default=120,
                         help='Maximum nodes per graph')
     parser.add_argument('--universe_K', type=int, default=15,
                         help='Number of communities in universe')
-    parser.add_argument('--min_communities', type=int, default=3,
+    parser.add_argument('--min_communities', type=int, default=4,
                         help='Minimum number of communities')
     parser.add_argument('--max_communities', type=int, default=8,
                         help='Maximum number of communities')
@@ -176,7 +176,7 @@ def parse_args():
     
     # Combined sweep parameter for homophily and density ranges
     parser.add_argument('--homophily_density_combinations', type=str, nargs='+',
-                        default=['0.00,0.00', '0.00,0.1'],
+                        default=['0.00,0.00', '0.2,0.0', '0.0,0.1'],
                         help='Combinations of (homophily_range_max, density_range_max) as comma-separated pairs. Format: "homophily_max,density_max"')
     
     # Fixed parameter values (previously random)
@@ -200,7 +200,7 @@ def parse_args():
     # DCCC-specific fixed parameters
     parser.add_argument('--community_imbalance_range_width', type=float, default=0.1,
                         help='Community imbalance range width (DCCC-SBM only)')
-    parser.add_argument('--degree_separation_range_width', type=float, default=0.8,
+    parser.add_argument('--degree_separation_range_width', type=float, default=0.4,
                         help='Degree separation range width (DCCC-SBM only)')
     
     # Random seed
@@ -316,14 +316,14 @@ def create_custom_experiment(args) -> CleanMultiExperimentConfig:
     # Define sweep parameters
     sweep_parameters = {
         'universe_homophily': ParameterRange(
-            min_val=0.5,
-            max_val=0.5,
+            min_val=0.2,
+            max_val=0.8,
             step=0.3,
             is_sweep=True
         ),
         'universe_edge_density': ParameterRange(
-            min_val=0.10,
-            max_val=0.40,
+            min_val=0.15,
+            max_val=0.30,
             step=0.15,
             is_sweep=True
         ),
@@ -353,10 +353,10 @@ def create_custom_experiment(args) -> CleanMultiExperimentConfig:
                 (False, None, True),  # No distributional shift (baseline)
                 # (True, 'homophily', True),  # Homophily shift, test only
                 # (True, 'homophily', False),  # Homophily shift, val + test
-                (True, 'density', True),  # Density shift, test only
-                (True, 'density', False),  # Density shift, val + test
-                (True, 'n_nodes', True),  # N_nodes shift, test only
-                (True, 'n_nodes', False)  # N_nodes shift, val + test
+                # (True, 'density', True),  # Density shift, test only
+                # (True, 'density', False),  # Density shift, val + test
+                # (True, 'n_nodes', True),  # N_nodes shift, test only
+                # (True, 'n_nodes', False)  # N_nodes shift, val + test
             ]
         )
     }

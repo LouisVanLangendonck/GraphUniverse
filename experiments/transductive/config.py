@@ -18,7 +18,7 @@ class TransductiveExperimentConfig:
     seed: int = 42
     device_id: int = 0
     force_cpu: bool = False
-    n_repetitions: int = 3  # Number of random seed repetitions for single-graph splits
+    k_fold: int = 3  # Number of folds for cross-validation
 
     # === GRAPH GENERATION ===
     num_nodes: int = 100
@@ -33,8 +33,8 @@ class TransductiveExperimentConfig:
     
     # === FEATURE GENERATION ===
     cluster_count_factor: float = 1.0
-    center_variance: float = 1.0
-    cluster_variance: float = 0.1
+    center_variance: float = 0.1
+    cluster_variance: float = 0.5
     assignment_skewness: float = 0.0
     community_exclusivity: float = 1.0
     degree_center_method: str = "linear"  # "linear", "random", "shuffled"
@@ -71,10 +71,12 @@ class TransductiveExperimentConfig:
     min_component_size: int = 4
     
     # === TRANSDUCTIVE DATA SPLITS ===
+    n_val: Optional[int] = None
+    n_test: Optional[int] = None
+    # Fallback options:
     train_ratio: float = 0.6
     val_ratio: float = 0.2
     test_ratio: float = 0.2
-    max_training_nodes: Optional[int] = None  # Maximum number of nodes to use for training
     
     # === TASKS ===
     tasks: List[str] = field(default_factory=lambda: ['community', 'k_hop_community_counts_k1', 'k_hop_community_counts_k2'])
@@ -127,7 +129,7 @@ class TransductiveExperimentConfig:
     learning_rate: float = 0.01
     weight_decay: float = 5e-4
     epochs: int = 200
-    patience: int = 50
+    patience: int = 100
     batch_size: int = 32  # Not used in transductive but kept for compatibility
     hidden_dim: int = 64
     num_layers: int = 2
@@ -215,9 +217,16 @@ class TransductiveExperimentConfig:
     
     def get_splits(self) -> Tuple[int, int, int]:
         """Calculate number of nodes for each split."""
-        n_train = int(self.num_nodes * self.train_ratio)
-        n_val = int(self.num_nodes * self.val_ratio)
-        n_test = self.num_nodes - n_train - n_val
+        if self.n_val is not None and self.n_test is not None:
+            n_val = self.n_val
+            n_test = self.n_test
+            n_train = self.num_nodes - n_val - n_test
+        else:
+            n_train = int(self.num_nodes * self.train_ratio)
+            n_val = int(self.num_nodes * self.val_ratio)
+            n_test = self.num_nodes - n_train - n_val
+
+        print(f"n_train: {n_train}, n_val: {n_val}, n_test: {n_test}")
         return n_train, n_val, n_test
     
     def to_dict(self) -> Dict[str, Any]:

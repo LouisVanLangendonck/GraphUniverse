@@ -55,14 +55,14 @@ def parse_args():
                         help='Metrics to compute for regression tasks')
     
     # Model selection and training parameters
-    parser.add_argument('--gnn_types', type=str, nargs='+', default=['gcn'],
+    parser.add_argument('--gnn_types', type=str, nargs='+', default=['gcn'],#, 'sage', 'gat', 'gin'],
                         choices=['gcn', 'gat', 'sage', 'fagcn'],
                         help='Types of GNN models to run')
     parser.add_argument('--skip_gnn', action='store_true',
                         help='Skip GNN models')
     parser.add_argument('--skip_mlp', action='store_true',
                         help='Skip MLP model')
-    parser.add_argument('--skip_rf', action='store_true',
+    parser.add_argument('--skip_rf', action='store_true', default=True,
                         help='Skip Random Forest model')
     parser.add_argument('--patience', type=int, default=100,
                         help='Patience for early stopping in neural models')
@@ -79,8 +79,8 @@ def parse_args():
     
     # Transformer configuration
     parser.add_argument('--transformer_types', type=str, nargs='+', 
-                        default=['graphormer', 'graphgps'], 
-                        choices=['graphormer', 'graphgps'],
+                        default=['graphgps'], 
+                        choices=['graphgps'],
                         help='Types of Graph Transformer models to run')
     parser.add_argument('--run_transformers', action='store_true',
                         help='Run Graph Transformer models')
@@ -114,28 +114,34 @@ def parse_args():
     
     # Parameter ranges for sweep (only these three are ranges)
     parser.add_argument('--homophily_range', type=float, nargs='+', default=[0.2, 0.8, 0.3], help='Range of homophily values to sweep (start, end, [step])')
-    parser.add_argument('--density_range', type=float, nargs='+', default=[0.1, 0.3, 0.15], help='Range of density values to sweep (start, end, [step])')
-    parser.add_argument('--num_nodes_range', type=int, nargs='+', default=[50, 150, 50], help='Range of num_nodes to sweep (start, end, [step])')
+    parser.add_argument('--density_range', type=float, nargs='+', default=[0.1, 0.3, 0.2], help='Range of density values to sweep (start, end, [step])')
+    parser.add_argument('--num_nodes_range', type=int, nargs='+', default=[100, 150, 50], help='Range of num_nodes to sweep (start, end, [step])')
+    parser.add_argument('--degree_separation_values', type=float, nargs='+', default=[0.0, 1.0, 0.5], help='List of degree_separation to sweep (start, end, [step])')
+
     # All other parameters are fixed (single value)
-    parser.add_argument('--num_communities', type=int, default=6, help='Number of communities (fixed)')
+    parser.add_argument('--num_communities', type=int, default=8, help='Number of communities (fixed)')
     parser.add_argument('--universe_feature_dim', type=int, default=16, help='Universe feature dimension (fixed)')
     parser.add_argument('--universe_randomness_factor', type=float, default=1.0, help='Universe randomness factor (fixed)')
     parser.add_argument('--degree_heterogeneity', type=float, default=1.0, help='Degree heterogeneity (fixed)')
     parser.add_argument('--edge_noise', type=float, default=0.0, help='Edge noise (fixed)')
     parser.add_argument('--cluster_count_factor', type=float, default=1.0, help='Cluster count factor (fixed)')
-    parser.add_argument('--center_variance', type=float, default=0.01, help='Center variance (fixed)')
-    parser.add_argument('--cluster_variance', type=float, default=0.05, help='Cluster variance (fixed)')
+    parser.add_argument('--center_variance', type=float, default=0.1, help='Center variance (fixed)')
+    parser.add_argument('--cluster_variance', type=float, default=0.5, help='Cluster variance (fixed)')
     parser.add_argument('--assignment_skewness', type=float, default=0.0, help='Assignment skewness (fixed)')
     parser.add_argument('--community_exclusivity', type=float, default=1.0, help='Community exclusivity (fixed)')
-    parser.add_argument('--degree_separation_range', type=float, nargs=2, default=[1.0, 1.0], help='List of degree_separation intervals to use (fixed, not swept)')
+    
+    
+    # Data split sizes
+    parser.add_argument('--n_val', type=int, default=20, help='Number of validation nodes (overrides val_ratio)')
+    parser.add_argument('--n_test', type=int, default=20, help='Number of test nodes (overrides test_ratio)')
     
     # Experiment control
     parser.add_argument('--n_repeats', type=int, default=1,
                         help='Number of times to repeat each parameter combination')
+    parser.add_argument('--k_fold', type=int, default=3,
+                        help='Number of folds for cross-validation')
     parser.add_argument('--results_dir', type=str, default='multi_transductive_results',
                         help='Directory to save all experiment results')
-    parser.add_argument('--max_training_nodes', type=int, default=20,
-                        help='Maximum number of nodes to use for training')
     
     # Random seed
     parser.add_argument('--seed', type=int, default=42,
@@ -180,13 +186,16 @@ def generate_parameter_combinations(args) -> list:
     homophily_values = get_range(args.homophily_range, is_int=False)
     density_values = get_range(args.density_range, is_int=False)
     num_nodes_values = get_range(args.num_nodes_range, is_int=True)
-    combos = list(itertools.product(homophily_values, density_values, num_nodes_values))
+    degree_separation_values = get_range(args.degree_separation_values, is_int=False)
+
+    combos = list(itertools.product(homophily_values, density_values, num_nodes_values, degree_separation_values))
     param_combinations = []
-    for h, d, n in combos:
+    for h, d, n, ds in combos:
         param_combinations.append({
             'homophily': h,
             'density': d,
-            'num_nodes': n
+            'num_nodes': n,
+            'degree_separation': ds
         })
     return param_combinations
 
@@ -280,18 +289,20 @@ def run_experiments(args):
                     # Training configuration
                     patience=args.patience,
                     epochs=args.epochs,
+                    k_fold=args.k_fold,
                     
                     # Hyperparameter optimization
                     optimize_hyperparams=args.optimize_hyperparams,
                     n_trials=args.n_trials,
                     optimization_timeout=args.opt_timeout,
                     
-                    # Node limit
-                    max_training_nodes=args.max_training_nodes,
+                    # Data split sizes
+                    n_val=args.n_val,
+                    n_test=args.n_test,
                     
                     # Random seed
                     seed=args.seed + repeat,
-                    degree_separation_range=args.degree_separation_range
+                    degree_separation_range=(param_dict['degree_separation'], param_dict['degree_separation'])
                 )
                 
                 # Create run directory
