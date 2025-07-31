@@ -17,6 +17,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from scipy.stats import spearmanr, pearsonr
 from itertools import combinations
+import networkx as nx
 
 class GraphFamilyGenerator:
     """
@@ -32,37 +33,35 @@ class GraphFamilyGenerator:
         min_communities: int = 2,
         max_communities: int = None,
         min_component_size: int = 10,
-        feature_regime_balance: float = 0.5,
-        homophily_range: Tuple[float, float] = (0.0, 0.2),  # Range around universe homophily
-        density_range: Tuple[float, float] = (0.0, 0.2),    # Range around universe density
+        homophily_range: Tuple[float, float] = (0.0, 0.4),  # Homophily range
+        avg_degree_range: Tuple[float, float] = (1.0, 3.0),    # Average degree range
+        # density_range: Tuple[float, float] = (0.1, 0.15),    # Density range
+
+        # Whether to use DCCC-SBM or standard DC-SBM
         use_dccc_sbm: bool = False,
-        community_imbalance_range: Tuple[float, float] = (0.0, 0.0),  # Range for community imbalance
-        degree_separation_range: Tuple[float, float] = (0.5, 0.5),    # Range for degree separation
-        degree_method: str = "standard",
-        # Community density variation
-        community_density_variation: float = 0.0,
+        
         # Community co-occurrence homogeneity
         community_cooccurrence_homogeneity: float = 1.0,
+
         # Deviation limiting
         disable_deviation_limiting: bool = False,
-        max_mean_community_deviation: float = 0.15,
-        max_max_community_deviation: float = 0.3,
+        max_mean_community_deviation: float = 0.10,
+        max_max_community_deviation: float = 0.15,
         min_edge_density: float = 0.005,
+
         # DCCC distribution-specific parameter ranges
         degree_distribution: str = "standard",
         power_law_exponent_range: Tuple[float, float] = (2.0, 3.5),
         exponential_rate_range: Tuple[float, float] = (0.3, 1.0),
         uniform_min_factor_range: Tuple[float, float] = (0.3, 0.7),
         uniform_max_factor_range: Tuple[float, float] = (1.3, 2.0),
-        # Triangle density parameters
-        triangle_density: float = 0.0,
-        triangle_community_relation_homogeneity: float = 1.0,
-        # Fixed parameters for all graphs in family
+        degree_separation_range: Tuple[float, float] = (0.5, 0.5),    # Range for degree separation
+        degree_signal_calc_method: str = "standard", # How to calculate degree signal
+
+        # Standard DC-SBM parameters (so if use_dccc_sbm is False, this is used)
         degree_heterogeneity: float = 0.5,
-        edge_noise: float = 0.1,
-        target_avg_degree: Optional[float] = None,
-        max_parameter_search_attempts: int = 20,
-        parameter_search_range: float = 0.5,
+
+        # Fixed parameters for all graphs in family
         max_retries: int = 5,
         seed: Optional[int] = None
     ):
@@ -77,13 +76,15 @@ class GraphFamilyGenerator:
             min_communities: Minimum number of communities per graph
             max_communities: Maximum number of communities per graph (defaults to universe.K)
             min_component_size: Minimum size for connected components
-            feature_regime_balance: Feature regime balance parameter
-            homophily_range: Tuple of (min_offset, max_offset) around universe homophily
-            density_range: Tuple of (min_offset, max_offset) around universe density
+            homophily_range: Tuple of (min_homophily, max_homophily) in graph family
+            density_range: Tuple of (min_density, max_density) in graph family
+
+            # Whether to use DCCC-SBM or standard DC-SBM
             use_dccc_sbm: Whether to use DCCC-SBM model
-            community_imbalance_range: Range for community size imbalance (min, max)
+
+            # DCCC distribution-specific parameters
             degree_separation_range: Range for degree distribution separation (min, max)
-            degree_method: Degree generation method
+            degree_signal_calc_method: How to calculate degree signal
             disable_deviation_limiting: Whether to disable deviation checks
             max_mean_community_deviation: Maximum allowed mean community deviation
             max_max_community_deviation: Maximum allowed max community deviation
@@ -93,11 +94,11 @@ class GraphFamilyGenerator:
             exponential_rate_range: Range for exponential distribution rate (min, max)
             uniform_min_factor_range: Range for uniform distribution min factor (min, max)
             uniform_max_factor_range: Range for uniform distribution max factor (min, max)
+            
+            # Standard DC-SBM parameters (so if use_dccc_sbm is False, this is used)
             degree_heterogeneity: Fixed degree heterogeneity for all graphs
-            edge_noise: Fixed edge noise level for all graphs
-            target_avg_degree: Target average degree
-            max_parameter_search_attempts: Max attempts for parameter search
-            parameter_search_range: Range for parameter search
+
+            # Fixed parameters for all graphs in family
             max_retries: Maximum retries for graph generation
             seed: Random seed for reproducibility
         """
@@ -107,21 +108,19 @@ class GraphFamilyGenerator:
         self.min_communities = min_communities
         self.max_communities = max_communities if max_communities is not None else universe.K
         self.min_component_size = min_component_size
-        self.feature_regime_balance = feature_regime_balance
         self.homophily_range = homophily_range
-        self.density_range = density_range
+        self.avg_degree_range = avg_degree_range
+        # self.density_range = density_range
+
+        # Whether to use DCCC-SBM or standard DC-SBM
         self.use_dccc_sbm = use_dccc_sbm
-        self.community_imbalance_range = community_imbalance_range
-        self.degree_separation_range = degree_separation_range
-        self.degree_method = degree_method
-        # Community density variation
-        self.community_density_variation = community_density_variation
+
+        # DCCC distribution-specific parameters
+        self.degree_separation_range = degree_separation_range # Range for degree separation
+        self.degree_signal_calc_method = degree_signal_calc_method # How to calculate degree signal
+        
         # Community co-occurrence homogeneity
         self.community_cooccurrence_homogeneity = community_cooccurrence_homogeneity
-        # Triangle density
-        self.triangle_density = triangle_density
-        # Triangle community relation homogeneity
-        self.triangle_community_relation_homogeneity = triangle_community_relation_homogeneity
 
         # Deviation limiting
         self.disable_deviation_limiting = disable_deviation_limiting
@@ -135,13 +134,11 @@ class GraphFamilyGenerator:
         self.exponential_rate_range = exponential_rate_range
         self.uniform_min_factor_range = uniform_min_factor_range
         self.uniform_max_factor_range = uniform_max_factor_range
+
+        # Standard DC-SBM parameters (so if use_dccc_sbm is False, this is used)
+        self.degree_heterogeneity = degree_heterogeneity
         
         # Fixed parameters for all graphs
-        self.degree_heterogeneity = degree_heterogeneity
-        self.edge_noise = edge_noise
-        self.target_avg_degree = target_avg_degree
-        self.max_parameter_search_attempts = max_parameter_search_attempts
-        self.parameter_search_range = parameter_search_range
         self.max_retries = max_retries
         
         # Set random seed
@@ -155,155 +152,6 @@ class GraphFamilyGenerator:
         self.graphs: List[GraphSample] = []
         self.generation_metadata: List[Dict[str, Any]] = []
         self.generation_stats: Dict[str, Any] = {}
-    
-    def _validate_parameters(self) -> None:
-        """Validate initialization parameters."""
-        if self.min_n_nodes <= 0:
-            raise ValueError("min_n_nodes must be positive")
-        if self.max_n_nodes < self.min_n_nodes:
-            raise ValueError("max_n_nodes must be >= min_n_nodes")
-        if self.min_communities < 1:
-            raise ValueError("min_communities must be >= 1")
-        if self.max_communities > self.universe.K:
-            raise ValueError(f"max_communities cannot exceed universe size ({self.universe.K})")
-        if self.max_communities < self.min_communities:
-            raise ValueError("max_communities must be >= min_communities")
-        
-        # Validate ranges
-        if len(self.homophily_range) != 2 or self.homophily_range[0] > self.homophily_range[1]:
-            raise ValueError("homophily_range must be a tuple (min, max) with min <= max")
-        if len(self.density_range) != 2 or self.density_range[0] > self.density_range[1]:
-            raise ValueError("density_range must be a tuple (min, max) with min <= max")
-        if len(self.community_imbalance_range) != 2 or self.community_imbalance_range[0] > self.community_imbalance_range[1]:
-            raise ValueError("community_imbalance_range must be a tuple (min, max) with min <= max")
-        if len(self.degree_separation_range) != 2 or self.degree_separation_range[0] > self.degree_separation_range[1]:
-            raise ValueError("degree_separation_range must be a tuple (min, max) with min <= max")
-        
-        # Validate DCCC distribution parameter ranges
-        if len(self.power_law_exponent_range) != 2 or self.power_law_exponent_range[0] > self.power_law_exponent_range[1]:
-            raise ValueError("power_law_exponent_range must be a tuple (min, max) with min <= max")
-        if len(self.exponential_rate_range) != 2 or self.exponential_rate_range[0] > self.exponential_rate_range[1]:
-            raise ValueError("exponential_rate_range must be a tuple (min, max) with min <= max")
-        if len(self.uniform_min_factor_range) != 2 or self.uniform_min_factor_range[0] > self.uniform_min_factor_range[1]:
-            raise ValueError("uniform_min_factor_range must be a tuple (min, max) with min <= max")
-        if len(self.uniform_max_factor_range) != 2 or self.uniform_max_factor_range[0] > self.uniform_max_factor_range[1]:
-            raise ValueError("uniform_max_factor_range must be a tuple (min, max) with min <= max")
-        
-        # Validate that distribution ranges make sense
-        if self.power_law_exponent_range[0] <= 1.0:
-            raise ValueError("power_law_exponent_range values must be > 1.0")
-        if self.exponential_rate_range[0] <= 0.0:
-            raise ValueError("exponential_rate_range values must be > 0.0")
-        if self.uniform_min_factor_range[0] <= 0.0:
-            raise ValueError("uniform_min_factor_range values must be > 0.0")
-        if self.uniform_max_factor_range[0] <= 0.0:
-            raise ValueError("uniform_max_factor_range values must be > 0.0")
-    
-    def _sample_graph_parameters(self) -> Dict[str, Any]:
-        """
-        Sample parameters for a single graph within the specified ranges.
-        
-        Returns:
-            Dictionary of sampled parameters
-        """
-        # Sample number of nodes
-        n_nodes = np.random.randint(self.min_n_nodes, self.max_n_nodes + 1)
-        
-        # Sample number of communities
-        n_communities = np.random.randint(self.min_communities, self.max_communities + 1)
-        
-        # Sample target homophily (relative to universe homophily)
-        homophily_offset = np.random.uniform(self.homophily_range[0], self.homophily_range[1])
-        pos_or_neg = np.random.choice([-1, 1])
-        target_homophily = np.clip(
-            self.universe.homophily + homophily_offset*pos_or_neg,
-            0.0, 1.0
-        )
-        
-        # Sample target density (relative to universe density)
-        density_offset = np.random.uniform(self.density_range[0], self.density_range[1])
-        pos_or_neg = np.random.choice([-1, 1])
-        target_density = np.clip(
-            self.universe.edge_density + density_offset*pos_or_neg,
-            0.05, 1.0
-        )
-        
-        # Sample DCCC parameters if using DCCC-SBM
-        dccc_params = {}
-        if self.use_dccc_sbm:
-            # Sample community imbalance
-            community_imbalance = np.random.uniform(
-                self.community_imbalance_range[0], 
-                self.community_imbalance_range[1]
-            )
-            
-            # Sample degree separation
-            degree_separation = np.random.uniform(
-                self.degree_separation_range[0], 
-                self.degree_separation_range[1]
-            )
-            
-            # Sample distribution-specific parameters
-            distribution_params = {}
-            if self.degree_distribution == "power_law":
-                power_law_exponent = np.random.uniform(
-                    self.power_law_exponent_range[0],
-                    self.power_law_exponent_range[1]
-                )
-                distribution_params = {
-                    "exponent": power_law_exponent,
-                    "x_min": 1.0
-                }
-            elif self.degree_distribution == "exponential":
-                rate = np.random.uniform(
-                    self.exponential_rate_range[0],
-                    self.exponential_rate_range[1]
-                )
-                distribution_params = {"rate": rate}
-            elif self.degree_distribution == "uniform":
-                min_factor = np.random.uniform(
-                    self.uniform_min_factor_range[0],
-                    self.uniform_min_factor_range[1]
-                )
-                max_factor = np.random.uniform(
-                    self.uniform_max_factor_range[0],
-                    self.uniform_max_factor_range[1]
-                )
-                # Ensure max_factor > min_factor
-                if max_factor <= min_factor:
-                    max_factor = min_factor + 0.1
-                distribution_params = {
-                    "min_degree": min_factor,
-                    "max_degree": max_factor
-                }
-            
-            dccc_params = {
-                "community_imbalance": community_imbalance,
-                "degree_separation": degree_separation,
-                "dccc_global_degree_params": distribution_params,
-                "power_law_exponent": distribution_params.get("exponent", None)
-            }
-        
-        # # Sample community subset
-        # communities = self.universe.sample_connected_community_subset(
-        #     size=n_communities,
-        #     existing_communities=None
-        # )
-        
-        # Combine all parameters
-        params = {
-            'n_nodes': n_nodes,
-            'target_homophily': target_homophily,
-            'target_density': target_density,
-            'n_communities': n_communities,
-            'homophily_offset': homophily_offset,
-            'density_offset': density_offset
-        }
-        
-        # Add DCCC parameters
-        params.update(dccc_params)
-        
-        return params
     
     def generate_family(
         self,
@@ -355,6 +203,10 @@ class GraphFamilyGenerator:
                 attempts += 1
                 
                 try:
+
+                    # Get a random seed for this graph
+                    graph_seed = np.random.randint(0, 1000000)
+
                     # Sample parameters for this graph
                     params = self._sample_graph_parameters()
 
@@ -364,31 +216,35 @@ class GraphFamilyGenerator:
                     
                     # Create graph sample
                     graph_sample = GraphSample(
+                        # Give GraphUniverse object to sample from
                         universe=self.universe,
+
+                        # Graph Sample specific parameters
                         num_communities=params['n_communities'],
                         n_nodes=params['n_nodes'],
                         min_component_size=self.min_component_size,
-                        degree_heterogeneity=self.degree_heterogeneity,
-                        edge_noise=self.edge_noise,
-                        feature_regime_balance=self.feature_regime_balance,
                         target_homophily=params['target_homophily'],
-                        target_density=params['target_density'],
-                        use_configuration_model=False,  # Not allowing config models for now
+                        target_average_degree=params['target_average_degree'],
                         degree_distribution=self.degree_distribution,
                         power_law_exponent=params.get('power_law_exponent', None),
-                        target_avg_degree=self.target_avg_degree,
                         max_mean_community_deviation=self.max_mean_community_deviation,
                         max_max_community_deviation=self.max_max_community_deviation,
-                        max_parameter_search_attempts=self.max_parameter_search_attempts,
-                        parameter_search_range=self.parameter_search_range,
                         min_edge_density=self.min_edge_density,
-                        max_retries=self.max_retries,
+                        max_retries=self.max_retries, # Retries of single graph generation
+
+                        # Standard DC-SBM parameters (so if use_dccc_sbm is False, this is used)
+                        degree_heterogeneity=self.degree_heterogeneity,
+
+                        # DCCC-SBM parameters
                         use_dccc_sbm=self.use_dccc_sbm,
-                        community_imbalance=params.get('community_imbalance', 0.0),
                         degree_separation=params.get('degree_separation', 0.5),
                         dccc_global_degree_params=params.get('dccc_global_degree_params', {}),
-                        degree_method=self.degree_method,
+                        degree_signal_calc_method=self.degree_signal_calc_method, # How to calculate degree signal
                         disable_deviation_limiting=self.disable_deviation_limiting,
+
+                        # Random seed
+                        seed=graph_seed,
+
                         # Optional Parameter for user-defined communites to be sampled (Such that NO unseen communities are sampled for val or test)
                         user_defined_communities=sampled_community_combination if allowed_community_combinations is not None else None
                     )
@@ -444,6 +300,225 @@ class GraphFamilyGenerator:
         
         return self.graphs
 
+    def _validate_parameters(self) -> None:
+        """Validate initialization parameters."""
+        if self.min_n_nodes <= 0:
+            raise ValueError("min_n_nodes must be positive")
+        if self.max_n_nodes < self.min_n_nodes:
+            raise ValueError("max_n_nodes must be >= min_n_nodes")
+        if self.min_communities < 1:
+            raise ValueError("min_communities must be >= 1")
+        if self.max_communities > self.universe.K:
+            raise ValueError(f"max_communities cannot exceed universe size ({self.universe.K})")
+        if self.max_communities < self.min_communities:
+            raise ValueError("max_communities must be >= min_communities")
+        
+        # Validate ranges
+        if len(self.homophily_range) != 2 or self.homophily_range[0] > self.homophily_range[1]:
+            raise ValueError("homophily_range must be a tuple (min, max) with min <= max")
+        if self.homophily_range[0] < 0.0 or self.homophily_range[1] > 1.0:
+            raise ValueError("homophily_range values must be between 0.0 and 1.0")
+        if len(self.avg_degree_range) != 2 or self.avg_degree_range[0] > self.avg_degree_range[1]:
+            raise ValueError("avg_degree_range must be a tuple (min, max) with min <= max")
+        if self.avg_degree_range[0] < 0.0 or self.avg_degree_range[1] > 100.0:
+            raise ValueError("avg_degree_range values must be between 0.0 and 100.0")
+        if len(self.degree_separation_range) != 2 or self.degree_separation_range[0] > self.degree_separation_range[1]:
+            raise ValueError("degree_separation_range must be a tuple (min, max) with min <= max")
+        
+        # Validate DCCC distribution parameter ranges
+        if len(self.power_law_exponent_range) != 2 or self.power_law_exponent_range[0] > self.power_law_exponent_range[1]:
+            raise ValueError("power_law_exponent_range must be a tuple (min, max) with min <= max")
+        if len(self.exponential_rate_range) != 2 or self.exponential_rate_range[0] > self.exponential_rate_range[1]:
+            raise ValueError("exponential_rate_range must be a tuple (min, max) with min <= max")
+        if len(self.uniform_min_factor_range) != 2 or self.uniform_min_factor_range[0] > self.uniform_min_factor_range[1]:
+            raise ValueError("uniform_min_factor_range must be a tuple (min, max) with min <= max")
+        if len(self.uniform_max_factor_range) != 2 or self.uniform_max_factor_range[0] > self.uniform_max_factor_range[1]:
+            raise ValueError("uniform_max_factor_range must be a tuple (min, max) with min <= max")
+        
+        # Validate that distribution ranges make sense
+        if self.power_law_exponent_range[0] <= 1.0:
+            raise ValueError("power_law_exponent_range values must be > 1.0")
+        if self.exponential_rate_range[0] <= 0.0:
+            raise ValueError("exponential_rate_range values must be > 0.0")
+        if self.uniform_min_factor_range[0] <= 0.0:
+            raise ValueError("uniform_min_factor_range values must be > 0.0")
+        if self.uniform_max_factor_range[0] <= 0.0:
+            raise ValueError("uniform_max_factor_range values must be > 0.0")
+    
+    def _sample_graph_parameters(self) -> Dict[str, Any]:
+        """
+        Sample parameters for a single graph within the specified ranges.
+        
+        Returns:
+            Dictionary of sampled parameters
+        """
+        # Sample number of nodes
+        n_nodes = np.random.randint(self.min_n_nodes, self.max_n_nodes + 1)
+        
+        # Sample number of communities
+        n_communities = np.random.randint(self.min_communities, self.max_communities + 1)
+        
+        # Sample target homophily
+        target_homophily = np.random.uniform(self.homophily_range[0], self.homophily_range[1])
+
+        # Sample target average degree
+        target_average_degree = np.random.uniform(self.avg_degree_range[0], self.avg_degree_range[1])
+        
+        # # Sample target density
+        # target_density = np.random.uniform(self.density_range[0], self.density_range[1])
+        
+        # Sample DCCC parameters if using DCCC-SBM
+        dccc_params = {}
+        if self.use_dccc_sbm:
+            # Sample degree separation
+            degree_separation = np.random.uniform(
+                self.degree_separation_range[0], 
+                self.degree_separation_range[1]
+            )
+            
+            # Sample distribution-specific parameters
+            distribution_params = {}
+            if self.degree_distribution == "power_law":
+                power_law_exponent = np.random.uniform(
+                    self.power_law_exponent_range[0],
+                    self.power_law_exponent_range[1]
+                )
+                distribution_params = {
+                    "exponent": power_law_exponent,
+                    "x_min": 1.0
+                }
+            elif self.degree_distribution == "exponential":
+                rate = np.random.uniform(
+                    self.exponential_rate_range[0],
+                    self.exponential_rate_range[1]
+                )
+                distribution_params = {"rate": rate}
+            elif self.degree_distribution == "uniform":
+                min_factor = np.random.uniform(
+                    self.uniform_min_factor_range[0],
+                    self.uniform_min_factor_range[1]
+                )
+                max_factor = np.random.uniform(
+                    self.uniform_max_factor_range[0],
+                    self.uniform_max_factor_range[1]
+                )
+                # Ensure max_factor > min_factor
+                if max_factor <= min_factor:
+                    max_factor = min_factor + 0.1
+                distribution_params = {
+                    "min_degree": min_factor,
+                    "max_degree": max_factor
+                }
+            
+            dccc_params = {
+                "degree_separation": degree_separation,
+                "dccc_global_degree_params": distribution_params,
+                "power_law_exponent": distribution_params.get("exponent", None)
+            }
+        
+        # Combine all parameters
+        params = {
+            'n_nodes': n_nodes,
+            'target_homophily': target_homophily,
+            'target_average_degree': target_average_degree,
+            'n_communities': n_communities,
+        }
+        
+        # Add DCCC parameters
+        params.update(dccc_params)
+        
+        return params
+    
+    def _generate_single_graph(
+        self,
+        max_attempts: int = 10,
+        timeout_minutes: float = 5.0
+    ) -> GraphSample:
+        """
+        Generate a single graph with progress tracking.
+        
+        Args:
+            max_attempts: Maximum attempts per graph before giving up
+            timeout_minutes: Maximum time in minutes to spend generating this graph
+            
+        Returns:
+            Generated GraphSample object
+            
+        Raises:
+            Exception: If graph generation fails after max_attempts
+        """
+        start_time = time.time()
+        timeout_seconds = timeout_minutes * 60
+        attempts = 0
+        
+        while attempts < max_attempts:
+            attempts += 1
+            
+            # Check for timeout
+            if time.time() - start_time > timeout_seconds:
+                raise Exception(f"Timeout reached after {timeout_minutes} minutes")
+            
+            try:
+                # Get a random seed for this graph
+                graph_seed = np.random.randint(0, 1000000)
+                
+                # Sample parameters for this graph
+                params = self._sample_graph_parameters()
+                
+                # Debug: Print parameters being used
+                print(f"Attempt {attempts}: Generating graph with params: {params}")
+                
+                # Create graph sample
+                print(f"Attempt {attempts}: Starting GraphSample initialization...")
+                
+                try:
+                    graph_sample = GraphSample(
+                        # Give GraphUniverse object to sample from
+                        universe=self.universe,
+
+                        # Graph Sample specific parameters
+                        num_communities=params['n_communities'],
+                        n_nodes=params['n_nodes'],
+                        min_component_size=self.min_component_size,
+                        target_homophily=params['target_homophily'],
+                        target_average_degree=params['target_average_degree'],
+                        degree_distribution=self.degree_distribution,
+                        power_law_exponent=params.get('power_law_exponent', None),
+                        max_mean_community_deviation=self.max_mean_community_deviation,
+                        max_max_community_deviation=self.max_max_community_deviation,
+                        min_edge_density=self.min_edge_density,
+                        max_retries=self.max_retries, # Retries of single graph generation
+
+                        # Standard DC-SBM parameters (so if use_dccc_sbm is False, this is used)
+                        degree_heterogeneity=self.degree_heterogeneity,
+
+                        # DCCC-SBM parameters
+                        use_dccc_sbm=self.use_dccc_sbm,
+                        degree_separation=params.get('degree_separation', 0.5),
+                        dccc_global_degree_params=params.get('dccc_global_degree_params', {}),
+                        degree_signal_calc_method=self.degree_signal_calc_method, # How to calculate degree signal
+                        disable_deviation_limiting=self.disable_deviation_limiting,
+
+                        # Random seed
+                        seed=graph_seed,
+
+                        # Optional Parameter for user-defined communites to be sampled
+                        user_defined_communities=None
+                    )
+                    print(f"Attempt {attempts}: GraphSample initialization completed successfully")
+                except Exception as e:
+                    print(f"Attempt {attempts}: GraphSample initialization failed: {str(e)}")
+                    raise e
+                
+                print(f"Successfully generated graph with {graph_sample.n_nodes} nodes")
+                return graph_sample
+                
+            except Exception as e:
+                print(f"Attempt {attempts} failed: {str(e)}")
+                if attempts == max_attempts:
+                    raise Exception(f"Failed to generate graph after {attempts} attempts: {e}")
+                # Continue to next attempt
+ 
     def _collect_generation_stats(self, start_time: float, failed_graphs: int, n_graphs: int) -> None:
         """Collect statistics about the generation process."""
         total_time = time.time() - start_time
@@ -494,92 +569,6 @@ class GraphFamilyGenerator:
                 }
             })
     
-    def get_family_summary(self) -> pd.DataFrame:
-        """
-        Get a summary DataFrame of the generated graph family.
-        
-        Returns:
-            DataFrame with graph properties and metadata
-        """
-        if not self.graphs:
-            return pd.DataFrame()
-        
-        # Extract data for DataFrame
-        data = []
-        for i, (graph, metadata) in enumerate(zip(self.graphs, self.generation_metadata)):
-            if metadata.get('failed', False):
-                continue
-                
-            row = {
-                'graph_id': i,
-                'n_nodes': graph.n_nodes,
-                'n_edges': graph.graph.number_of_edges(),
-                'n_communities': len(graph.communities),
-                'density': metadata['actual_density'],
-                'target_homophily': metadata.get('target_homophily', None),
-                'target_density': metadata.get('target_density', None),
-                'homophily_offset': metadata.get('homophily_offset', None),
-                'density_offset': metadata.get('density_offset', None),
-                'generation_method': metadata.get('generation_method', 'unknown'),
-                'attempts': metadata.get('attempts', 1),
-                'total_generation_time': metadata.get('timing_info', {}).get('total', None)
-            }
-            
-            # Add community-specific information
-            community_sizes = np.bincount(graph.community_labels)
-            row.update({
-                'min_community_size': np.min(community_sizes),
-                'max_community_size': np.max(community_sizes),
-                'community_size_std': np.std(community_sizes)
-            })
-            
-            data.append(row)
-        
-        return pd.DataFrame(data)
-    
-    def analyze_family_diversity(self) -> Dict[str, Any]:
-        """
-        Analyze the diversity of the generated graph family.
-        
-        Returns:
-            Dictionary with diversity metrics
-        """
-        if not self.graphs:
-            return {}
-        
-        # Collect graph properties
-        node_counts = [g.n_nodes for g in self.graphs]
-        edge_counts = [g.graph.number_of_edges() for g in self.graphs]
-        community_counts = [len(g.communities) for g in self.graphs]
-        
-        # Calculate diversity metrics
-        diversity_metrics = {
-            'node_count_range': (min(node_counts), max(node_counts)),
-            'edge_count_range': (min(edge_counts), max(edge_counts)),
-            'community_count_range': (min(community_counts), max(community_counts)),
-            'node_count_cv': np.std(node_counts) / np.mean(node_counts) if np.mean(node_counts) > 0 else 0,
-            'edge_count_cv': np.std(edge_counts) / np.mean(edge_counts) if np.mean(edge_counts) > 0 else 0,
-            'community_count_cv': np.std(community_counts) / np.mean(community_counts) if np.mean(community_counts) > 0 else 0
-        }
-        
-        # Community overlap analysis
-        all_communities = set()
-        for graph in self.graphs:
-            all_communities.update(graph.communities)
-        
-        community_usage = {}
-        for comm in all_communities:
-            community_usage[comm] = sum(1 for graph in self.graphs if comm in graph.communities)
-        
-        diversity_metrics.update({
-            'total_unique_communities': len(all_communities),
-            'community_usage_distribution': community_usage,
-            'avg_communities_per_graph': np.mean(community_counts),
-            'community_reuse_rate': np.mean(list(community_usage.values())) / len(self.graphs) if self.graphs else 0
-        })
-        
-        return diversity_metrics
-    
     def save_family(self, filepath: str, include_graphs: bool = True, n_graphs: int = 0) -> None:
         """
         Save the graph family to file.
@@ -602,7 +591,6 @@ class GraphFamilyGenerator:
                 'homophily_range': self.homophily_range,
                 'density_range': self.density_range,
                 'use_dccc_sbm': self.use_dccc_sbm,
-                'community_imbalance_range': self.community_imbalance_range,
                 'degree_separation_range': self.degree_separation_range,
                 'degree_distribution': self.degree_distribution,
                 'power_law_exponent_range': self.power_law_exponent_range,
@@ -629,6 +617,227 @@ class GraphFamilyGenerator:
     def __iter__(self):
         """Iterate over graphs in the family."""
         return iter(self.graphs)
+    
+    def analyze_graph_family_properties(self) -> Dict[str, Any]:
+        """Analyze the properties of the graph family once generated."""
+        if self.graphs is None:
+            raise ValueError("No graphs in family. Please generate family first before analyzing properties.")
+        
+        properties = {
+            'n_graphs': len(self.graphs),
+            'node_counts': [],
+            'edge_counts': [],
+            'densities': [],
+            'avg_degrees': [],
+            'clustering_coefficients': [],
+            'community_counts': [],
+            'homophily_levels': [],
+            'nr_of_triangles': [],
+            'generation_methods': []
+        }
+        
+        for graph in self.graphs:
+            properties['node_counts'].append(graph.n_nodes)
+            properties['edge_counts'].append(graph.graph.number_of_edges())
+            
+            if graph.n_nodes > 1:
+                density = graph.graph.number_of_edges() / (graph.n_nodes * (graph.n_nodes - 1) / 2)
+                properties['densities'].append(density)
+            else:
+                properties['densities'].append(0.0)
+            
+            if graph.n_nodes > 0:
+                avg_degree = sum(dict(graph.graph.degree()).values()) / graph.n_nodes
+                properties['avg_degrees'].append(avg_degree)
+            else:
+                properties['avg_degrees'].append(0.0)
+            
+            try:
+                clustering = nx.average_clustering(graph.graph)
+                properties['clustering_coefficients'].append(clustering)
+            except:
+                properties['clustering_coefficients'].append(0.0)
+            
+            properties['community_counts'].append(len(np.unique(graph.community_labels)))
+            
+            # Calculate homophily level
+            if graph.n_nodes > 0 and graph.graph.number_of_edges() > 0:
+                # Count edges between nodes of same community
+                same_community_edges = 0
+                for u, v in graph.graph.edges():
+                    if graph.community_labels[u] == graph.community_labels[v]:
+                        same_community_edges += 1
+                homophily = same_community_edges / graph.graph.number_of_edges()
+                properties['homophily_levels'].append(homophily)
+            else:
+                properties['homophily_levels'].append(0.0)
+            
+            # Calculate number of triangles
+            if graph.n_nodes > 0:
+                triangle_values = list(nx.triangles(graph.graph).values())
+                properties['nr_of_triangles'].append(np.sum(triangle_values)/3)
+            else:
+                properties['nr_of_triangles'].append(0.0)
+            
+            # Track generation method
+            if hasattr(graph, 'generation_method'):
+                properties['generation_methods'].append(graph.generation_method)
+        
+        # Calculate statistics and convert to native Python types
+        for key in ['node_counts', 'edge_counts', 'densities', 'avg_degrees', 'clustering_coefficients', 'community_counts', 'homophily_levels', 'nr_of_triangles']:
+            values = properties[key]
+            if values:
+                properties[f'{key}_mean'] = float(np.mean(values))
+                properties[f'{key}_std'] = float(np.std(values))
+                properties[f'{key}_min'] = float(np.min(values))
+                properties[f'{key}_max'] = float(np.max(values))
+            else:
+                properties[f'{key}_mean'] = 0.0
+                properties[f'{key}_std'] = 0.0
+                properties[f'{key}_min'] = 0.0
+                properties[f'{key}_max'] = 0.0
+        
+        # Add generation method summary
+        if properties['generation_methods']:
+            from collections import Counter
+            method_counts = Counter(properties['generation_methods'])
+            properties['generation_method_distribution'] = dict(method_counts)
+        
+        return properties
+   
+    def analyze_graph_family_learning_signals(self) -> Dict[str, Any]:
+        """Analyze the learning signals of the graph family."""
+        if not self.graphs:
+            raise ValueError("No graphs in family. Please generate family first before analyzing learning signals.")
+        
+        # Calculate the learning signals
+        results = {}
+        
+        # 1. Pattern preservation (do communities RELATIVELY connect more to the communities they are supposed to connect to?)
+        try:
+            pattern_corrs = self._calculate_pattern_consistency()
+            results['pattern_preservation'] = pattern_corrs
+
+        except Exception as e:
+            results['pattern_preservation'] = []
+
+        # 2. Generation fidelity (do graphs match their scaled probability targets (P_sub)?)
+        try:
+            generation_fidelity = self._calculate_generation_fidelity()
+            results['generation_fidelity'] = generation_fidelity
+        except Exception as e:
+            results['generation_fidelity'] = []
+
+        # 3. Degree consistency (do actual node degrees correlate with universe degree centers?)
+        try:
+            degree_consistency = self._calculate_degree_consistency()
+            results['degree_consistency'] = degree_consistency
+        except Exception as e:
+            results['degree_consistency'] = []
+
+        return results
+
+    def _calculate_pattern_consistency(self) -> List[float]:
+        """
+        Measure whether relative community connection patterns are preserved.
+        Uses rank correlation to focus on structural patterns rather than absolute values.
+        """
+        pattern_correlations = []
+        universe_P = self.universe.P
+
+        for graph in self.graphs:
+            try:
+                # Extract relevant submatrix from universe
+                P_sub = graph.P_sub
+                
+                # Get actual connections
+                actual_edge_probabilities, community_sizes, connection_counts = graph.calculate_actual_probability_matrix()
+
+                # Calculate rank correlation per row comparing the expected and actual edge probabilities and average them
+                if len(P_sub) > 1 and np.std(P_sub) > 0 and np.std(actual_edge_probabilities) > 0:
+                    correlations = []
+                    for i in range(len(P_sub)):
+                        correlation, _ = spearmanr(P_sub[i], actual_edge_probabilities[i])
+                        if not np.isnan(correlation):
+                            correlations.append(correlation)
+                    pattern_correlations.append(np.mean(correlations))
+            except Exception as e:
+                warnings.warn(f"Error in pattern consistency calculation for graph: {e}")
+                continue
+        
+        return pattern_correlations
+
+    def _calculate_generation_fidelity(self) -> List[float]:
+            """
+            Measure how well graphs match their scaled probability targets (P_sub).
+            """
+            fidelity_scores = []
+            
+            for graph in self.graphs:
+                try:
+                    # Use the graph's own scaled P_sub as reference
+                    expected_matrix = graph.P_sub
+                    
+                    # Get actual connections
+                    actual_analysis = graph.analyze_community_connections()
+                    actual_matrix = actual_analysis['actual_matrix']
+                    
+                    # Calculate correlation between expected and actual
+                    expected_flat = expected_matrix.flatten()
+                    actual_flat = actual_matrix.flatten()
+                    
+                    if len(expected_flat) > 1:
+                        if np.std(expected_flat) > 0 and np.std(actual_flat) > 0:
+                            correlation, _ = pearsonr(expected_flat, actual_flat)
+                            if not np.isnan(correlation):
+                                fidelity_scores.append(correlation)
+                except Exception as e:
+                    warnings.warn(f"Error in generation fidelity calculation for graph: {e}")
+                    continue
+            
+            if not fidelity_scores:
+                return []
+            
+            return fidelity_scores
+    
+    def _calculate_degree_consistency(self) -> List[float]:
+        """
+        Compare actual node degrees to expected degrees based on universe degree centers.
+        """
+        consistency_scores = []
+        
+        degree_centers = self.universe.degree_centers
+        for graph in self.graphs:
+            try:
+                # Get actual degrees per community
+                actual_degrees_per_community = np.zeros(len(graph.communities))
+
+                for node_idx in range(graph.n_nodes):
+                    community_id = graph.community_labels[node_idx]
+                    degree = graph.graph.degree[node_idx]
+
+                    actual_degrees_per_community[community_id] += degree
+                    
+                
+                # Get ranking of actual degrees per community
+                actual_degrees_per_community_ranking = np.argsort(actual_degrees_per_community)
+                
+                # Get expected ranking according to degree centers
+                expected_ranking = np.argsort(degree_centers[graph.communities])
+                
+                # Calculate correlation between actual and expected rankings
+                correlation, _ = spearmanr(actual_degrees_per_community_ranking, expected_ranking)
+                consistency_scores.append(correlation)
+
+            except Exception as e:
+                warnings.warn(f"Error in degree consistency calculation for graph: {e}")
+                continue
+        
+        if not consistency_scores:
+            return []
+        
+        return consistency_scores
+
 
 class FamilyConsistencyAnalyzer:
     """
@@ -703,20 +912,6 @@ class FamilyConsistencyAnalyzer:
         except Exception as e:
             results['degree_consistency'] = {'error': str(e)}
         
-        # 4. Triangle consistency
-        try:
-            triangle_analysis = self.calculate_triangle_signal_strength()
-            if 'triangle_signal_strength' in triangle_analysis:
-                results['triangle_consistency'] = {
-                    'score': triangle_analysis['triangle_signal_strength'],
-                    'mean_correlation': triangle_analysis['mean_correlation'],
-                    'mean_triangle_density': triangle_analysis['mean_triangle_density'],
-                    'std': triangle_analysis['std_correlation'],
-                    'interpretation': self._interpret_score(triangle_analysis['triangle_signal_strength'], 'triangle'),
-                    'description': 'How well triangle patterns are preserved across the family'
-                }
-        except Exception as e:
-            results['triangle_consistency'] = {'error': str(e)}
         
         # 5. Co-occurrence consistency
         try:
@@ -861,59 +1056,7 @@ class FamilyConsistencyAnalyzer:
             return 0.0, []
         
         return np.mean(consistency_scores), consistency_scores
-    
-    def calculate_triangle_signal_strength(self) -> Dict[str, Any]:
-        """
-        Calculate triangle signal strength for the graph family.
-        
-        Returns:
-            Dictionary with triangle signal strength score and basic metrics
-        """
-        if not self.family_graphs:
-            return {"error": "No graphs in family"}
-        
-        correlations = []
-        triangle_densities = []
-        
-        for graph in self.family_graphs:
-            try:
-                # Get triangle analysis
-                triangle_analysis = graph.analyze_triangles()
-                
-                # Store correlation if valid
-                correlation = triangle_analysis.get("triangle_propensity_correlation", 0.0)
-                if not np.isnan(correlation):
-                    correlations.append(correlation)
-                
-                # Calculate triangle density
-                total_triangles = triangle_analysis.get("total_triangles", 0)
-                n_nodes = graph.n_nodes
-                max_possible = n_nodes * (n_nodes - 1) * (n_nodes - 2) // 6 if n_nodes >= 3 else 1
-                triangle_density = total_triangles / max_possible
-                triangle_densities.append(triangle_density)
-                
-            except Exception:
-                continue
-        
-        if not correlations or not triangle_densities:
-            return {"error": "No valid triangle data"}
-        
-        # Calculate main score: average correlation weighted by triangle presence
-        mean_correlation = np.mean(correlations)
-        mean_density = np.mean(triangle_densities)
-        
-        # Triangle signal strength = correlation quality * density presence
-        density_factor = min(1.0, mean_density * 1000)  # Scale up small densities
-        triangle_signal_strength = max(0.0, mean_correlation) * density_factor
-        
-        return {
-            "triangle_signal_strength": float(triangle_signal_strength),
-            "mean_correlation": float(mean_correlation),
-            "mean_triangle_density": float(mean_density),
-            "std_correlation": float(np.std(correlations)),
-            "n_graphs": len(correlations)
-        }
-
+ 
     def _calculate_overall_consistency(self, results: Dict) -> float:
         """Calculate weighted average of all successful consistency metrics."""
         scores = []
@@ -924,7 +1067,6 @@ class FamilyConsistencyAnalyzer:
             'pattern_preservation': 0.3,
             'generation_fidelity': 0.3,
             'degree_consistency': 0.15,
-            'triangle_consistency': 0.15,
             'cooccurrence_consistency': 0.1
         }
         
@@ -1005,13 +1147,6 @@ class FamilyConsistencyAnalyzer:
                 0.4: "Weak degree-community relationship - limited correlation with centers",
                 0.2: "Very weak degree-community relationship - little correlation with centers",
                 0.0: "No degree-community relationship - no correlation with centers"
-            },
-            'triangle': {
-                0.8: "Strong triangle pattern preservation - triangle structures well maintained",
-                0.6: "Good triangle pattern preservation - triangle structures mostly maintained",
-                0.4: "Moderate triangle pattern preservation - some triangle patterns preserved",
-                0.2: "Weak triangle pattern preservation - limited triangle pattern preservation",
-                0.0: "Very weak triangle pattern preservation - little triangle structure preserved"
             },
             'cooccurrence': {
                 0.8: "Strong co-occurrence pattern preservation - community relationships well maintained",
@@ -1345,3 +1480,513 @@ class FamilyConsistencyAnalyzer:
                 report += f"  Interpretation: {result['interpretation']}\n\n"
         
         return report
+
+    def analyze_family_overview(self) -> Dict[str, Any]:
+        """
+        Comprehensive analysis of the graph family providing overview of properties.
+        
+        Returns:
+            Dictionary with overview analysis including ranges, distributions, and statistics
+        """
+        if not self.graphs:
+            return {'error': 'No graphs available for analysis'}
+        
+        # Use existing analysis function
+        try:
+            from experiments.inductive.data import analyze_graph_family_properties
+            properties = analyze_graph_family_properties(self.graphs)
+        except ImportError:
+            # Fallback if the import fails
+            properties = self._analyze_graph_family_properties_fallback()
+        
+        # Add additional analysis
+        overview = {
+            'basic_stats': properties,
+            'property_ranges': {},
+            'distributions': {},
+            'correlations': {},
+            'generation_metadata': self.generation_metadata if hasattr(self, 'generation_metadata') else []
+        }
+        
+        # Calculate property ranges
+        for key in ['node_counts', 'edge_counts', 'densities', 'avg_degrees', 'clustering_coefficients', 'community_counts', 'homophily_levels']:
+            if key in properties and properties[key]:
+                values = properties[key]
+                overview['property_ranges'][key] = {
+                    'min': float(np.min(values)),
+                    'max': float(np.max(values)),
+                    'mean': float(np.mean(values)),
+                    'std': float(np.std(values)),
+                    'median': float(np.median(values)),
+                    'q25': float(np.percentile(values, 25)),
+                    'q75': float(np.percentile(values, 75))
+                }
+        
+        # Analyze target vs actual properties
+        if self.generation_metadata:
+            target_vs_actual = self._analyze_target_vs_actual()
+            overview['target_vs_actual'] = target_vs_actual
+        
+        # Analyze community coverage
+        community_analysis = self._analyze_community_coverage()
+        overview['community_analysis'] = community_analysis
+        
+        return overview
+    
+    def _analyze_graph_family_properties_fallback(self) -> Dict[str, Any]:
+        """Fallback method to analyze graph family properties when the import fails."""
+        if not self.graphs:
+            return {}
+        
+        properties = {
+            'node_counts': [],
+            'edge_counts': [],
+            'densities': [],
+            'avg_degrees': [],
+            'clustering_coefficients': [],
+            'community_counts': [],
+            'homophily_levels': [],
+            'generation_method_distribution': {}
+        }
+        
+        for graph in self.graphs:
+            # Node count
+            properties['node_counts'].append(graph.n_nodes)
+            
+            # Edge count
+            edge_count = graph.graph.number_of_edges()
+            properties['edge_counts'].append(edge_count)
+            
+            # Density
+            if graph.n_nodes > 1:
+                density = edge_count / (graph.n_nodes * (graph.n_nodes - 1) / 2)
+            else:
+                density = 0.0
+            properties['densities'].append(density)
+            
+            # Average degree
+            if graph.n_nodes > 0:
+                avg_degree = 2 * edge_count / graph.n_nodes
+            else:
+                avg_degree = 0.0
+            properties['avg_degrees'].append(avg_degree)
+            
+            # Clustering coefficient (simplified)
+            try:
+                clustering = nx.average_clustering(graph.graph)
+            except:
+                clustering = 0.0
+            properties['clustering_coefficients'].append(clustering)
+            
+            # Community count
+            properties['community_counts'].append(len(graph.communities))
+            
+            # Homophily level (simplified calculation)
+            try:
+                homophily = self._calculate_simple_homophily(graph)
+            except:
+                homophily = 0.0
+            properties['homophily_levels'].append(homophily)
+            
+            # Generation method
+            method = getattr(graph, 'generation_method', 'unknown')
+            properties['generation_method_distribution'][method] = properties['generation_method_distribution'].get(method, 0) + 1
+        
+        # Calculate summary statistics
+        for key in ['node_counts', 'edge_counts', 'densities', 'avg_degrees', 'clustering_coefficients', 'community_counts', 'homophily_levels']:
+            if properties[key]:
+                values = properties[key]
+                properties[f'{key}_mean'] = float(np.mean(values))
+                properties[f'{key}_std'] = float(np.std(values))
+                properties[f'{key}_min'] = float(np.min(values))
+                properties[f'{key}_max'] = float(np.max(values))
+        
+        return properties
+    
+    def _calculate_simple_homophily(self, graph) -> float:
+        """Calculate a simple homophily measure for a graph."""
+        try:
+            # Count edges within communities vs between communities
+            within_edges = 0
+            total_edges = graph.graph.number_of_edges()
+            
+            for edge in graph.graph.edges():
+                node1, node2 = edge
+                comm1 = graph.community_labels[node1]
+                comm2 = graph.community_labels[node2]
+                if comm1 == comm2:
+                    within_edges += 1
+            
+            if total_edges > 0:
+                return within_edges / total_edges
+            else:
+                return 0.0
+        except:
+            return 0.0
+    
+    def _analyze_target_vs_actual(self) -> Dict[str, Any]:
+        """Analyze how well graphs match their target parameters."""
+        if not self.generation_metadata:
+            return {}
+        
+        analysis = {
+            'homophily': {'targets': [], 'actuals': [], 'differences': []},
+            'density': {'targets': [], 'actuals': [], 'differences': []},
+            'communities': {'targets': [], 'actuals': [], 'differences': []}
+        }
+        
+        for i, metadata in enumerate(self.generation_metadata):
+            if metadata.get('failed', False):
+                continue
+                
+            # Homophily analysis
+            if 'target_homophily' in metadata and 'homophily_levels' in self.analyze_family_overview()['basic_stats']:
+                target_hom = metadata['target_homophily']
+                actual_hom = self.analyze_family_overview()['basic_stats']['homophily_levels'][i]
+                analysis['homophily']['targets'].append(target_hom)
+                analysis['homophily']['actuals'].append(actual_hom)
+                analysis['homophily']['differences'].append(abs(target_hom - actual_hom))
+            
+            # Density analysis
+            if 'target_density' in metadata and 'densities' in self.analyze_family_overview()['basic_stats']:
+                target_den = metadata['target_density']
+                actual_den = self.analyze_family_overview()['basic_stats']['densities'][i]
+                analysis['density']['targets'].append(target_den)
+                analysis['density']['actuals'].append(actual_den)
+                analysis['density']['differences'].append(abs(target_den - actual_den))
+            
+            # Community count analysis
+            if 'n_communities' in metadata and 'community_counts' in self.analyze_family_overview()['basic_stats']:
+                target_comm = metadata['n_communities']
+                actual_comm = self.analyze_family_overview()['basic_stats']['community_counts'][i]
+                analysis['communities']['targets'].append(target_comm)
+                analysis['communities']['actuals'].append(actual_comm)
+                analysis['communities']['differences'].append(abs(target_comm - actual_comm))
+        
+        # Calculate summary statistics
+        for property_name in analysis:
+            if analysis[property_name]['differences']:
+                analysis[property_name]['mean_difference'] = float(np.mean(analysis[property_name]['differences']))
+                analysis[property_name]['std_difference'] = float(np.std(analysis[property_name]['differences']))
+                analysis[property_name]['max_difference'] = float(np.max(analysis[property_name]['differences']))
+                analysis[property_name]['correlation'] = float(np.corrcoef(analysis[property_name]['targets'], analysis[property_name]['actuals'])[0, 1]) if len(analysis[property_name]['targets']) > 1 else 0.0
+        
+        return analysis
+    
+    def _analyze_community_coverage(self) -> Dict[str, Any]:
+        """Analyze community coverage across the family."""
+        if not self.graphs:
+            return {}
+        
+        # Count community usage
+        community_usage = {}
+        all_communities = set()
+        
+        for graph in self.graphs:
+            all_communities.update(graph.communities)
+            for comm in graph.communities:
+                comm_key = int(comm)
+                community_usage[comm_key] = community_usage.get(comm_key, 0) + 1
+        
+        total_graphs = len(self.graphs)
+        universe_communities = self.universe.K if hasattr(self, 'universe') else len(all_communities)
+        
+        return {
+            'total_unique_communities': int(len(all_communities)),
+            'universe_communities': int(universe_communities),
+            'coverage_fraction': float(len(all_communities) / universe_communities),
+            'community_usage': community_usage,
+            'avg_usage_per_community': float(np.mean(list(community_usage.values())) if community_usage else 0),
+            'usage_std': float(np.std(list(community_usage.values())) if community_usage else 0),
+            'min_usage': int(min(community_usage.values()) if community_usage else 0),
+            'max_usage': int(max(community_usage.values()) if community_usage else 0),
+            'communities_in_all_graphs': [int(comm) for comm, count in community_usage.items() if count == total_graphs],
+            'rarely_used_communities': [int(comm) for comm, count in community_usage.items() if count == 1]
+        }
+    
+    def create_family_overview_dashboard(self, figsize: Tuple[int, int] = (20, 15)) -> plt.Figure:
+        """
+        Create a comprehensive dashboard showing family overview.
+        
+        Args:
+            figsize: Figure size for the dashboard
+            
+        Returns:
+            Matplotlib figure object
+        """
+        if not self.graphs:
+            # Create empty figure with message
+            fig = plt.figure(figsize=figsize)
+            plt.text(0.5, 0.5, 'No graphs available for analysis',
+                    horizontalalignment='center',
+                    verticalalignment='center',
+                    transform=plt.gca().transAxes,
+                    fontsize=16)
+            return fig
+        
+        overview = self.analyze_family_overview()
+        
+        # Create figure with grid layout
+        fig = plt.figure(figsize=figsize)
+        gs = fig.add_gridspec(3, 3, hspace=0.3, wspace=0.3)
+        
+        # 1. Property ranges overview (top left)
+        ax1 = fig.add_subplot(gs[0, 0])
+        self._plot_property_ranges(ax1, overview)
+        
+        # 2. Homophily vs Density scatter (top middle)
+        ax2 = fig.add_subplot(gs[0, 1])
+        self._plot_homophily_density_scatter(ax2, overview)
+        
+        # 3. Node count vs Edge count scatter (top right)
+        ax3 = fig.add_subplot(gs[0, 2])
+        self._plot_node_edge_scatter(ax3, overview)
+        
+        # 4. Target vs Actual analysis (middle left)
+        ax4 = fig.add_subplot(gs[1, 0])
+        self._plot_target_vs_actual(ax4, overview)
+        
+        # 5. Community coverage (middle middle)
+        ax5 = fig.add_subplot(gs[1, 1])
+        self._plot_community_coverage(ax5, overview)
+        
+        # 6. Property distributions (middle right)
+        ax6 = fig.add_subplot(gs[1, 2])
+        self._plot_property_distributions(ax6, overview)
+        
+        # 7. Generation method distribution (bottom left)
+        ax7 = fig.add_subplot(gs[2, 0])
+        self._plot_generation_methods(ax7, overview)
+        
+        # 8. Clustering coefficient vs Community count (bottom middle)
+        ax8 = fig.add_subplot(gs[2, 1])
+        self._plot_clustering_communities(ax8, overview)
+        
+        # 9. Summary statistics table (bottom right)
+        ax9 = fig.add_subplot(gs[2, 2])
+        self._plot_summary_table(ax9, overview)
+        
+        plt.suptitle('Graph Family Overview Dashboard', fontsize=16, fontweight='bold')
+        
+        return fig
+    
+    def _plot_property_ranges(self, ax, overview):
+        """Plot property ranges as box plots."""
+        if 'property_ranges' not in overview:
+            ax.text(0.5, 0.5, 'No property data', ha='center', va='center', transform=ax.transAxes)
+            return
+        
+        # Select key properties to plot
+        key_properties = ['node_counts', 'edge_counts', 'densities', 'homophily_levels', 'avg_degrees']
+        available_properties = [p for p in key_properties if p in overview['basic_stats']]
+        
+        if not available_properties:
+            ax.text(0.5, 0.5, 'No property data available', ha='center', va='center', transform=ax.transAxes)
+            return
+        
+        # Create box plot data
+        data = []
+        labels = []
+        for prop in available_properties:
+            if prop in overview['basic_stats'] and overview['basic_stats'][prop]:
+                data.append(overview['basic_stats'][prop])
+                labels.append(prop.replace('_', ' ').title())
+        
+        if data:
+            bp = ax.boxplot(data, labels=labels, patch_artist=True)
+            colors = ['lightblue', 'lightgreen', 'lightcoral', 'lightyellow', 'lightpink']
+            for patch, color in zip(bp['boxes'], colors[:len(bp['boxes'])]):
+                patch.set_facecolor(color)
+            
+            ax.set_title('Property Ranges')
+            ax.tick_params(axis='x', rotation=45)
+            ax.grid(True, alpha=0.3)
+        else:
+            ax.text(0.5, 0.5, 'No data available', ha='center', va='center', transform=ax.transAxes)
+    
+    def _plot_homophily_density_scatter(self, ax, overview):
+        """Plot homophily vs density scatter plot."""
+        if 'homophily_levels' in overview['basic_stats'] and 'densities' in overview['basic_stats']:
+            homophily = overview['basic_stats']['homophily_levels']
+            densities = overview['basic_stats']['densities']
+            
+            if homophily and densities:
+                ax.scatter(homophily, densities, alpha=0.7, s=50)
+                ax.set_xlabel('Homophily')
+                ax.set_ylabel('Density')
+                ax.set_title('Homophily vs Density')
+                ax.grid(True, alpha=0.3)
+                
+                # Add trend line
+                if len(homophily) > 1:
+                    z = np.polyfit(homophily, densities, 1)
+                    p = np.poly1d(z)
+                    ax.plot(homophily, p(homophily), "r--", alpha=0.8)
+        else:
+            ax.text(0.5, 0.5, 'No homophily/density data', ha='center', va='center', transform=ax.transAxes)
+    
+    def _plot_node_edge_scatter(self, ax, overview):
+        """Plot node count vs edge count scatter plot."""
+        if 'node_counts' in overview['basic_stats'] and 'edge_counts' in overview['basic_stats']:
+            nodes = overview['basic_stats']['node_counts']
+            edges = overview['basic_stats']['edge_counts']
+            
+            if nodes and edges:
+                ax.scatter(nodes, edges, alpha=0.7, s=50)
+                ax.set_xlabel('Node Count')
+                ax.set_ylabel('Edge Count')
+                ax.set_title('Nodes vs Edges')
+                ax.grid(True, alpha=0.3)
+                
+                # Add trend line
+                if len(nodes) > 1:
+                    z = np.polyfit(nodes, edges, 1)
+                    p = np.poly1d(z)
+                    ax.plot(nodes, p(nodes), "r--", alpha=0.8)
+        else:
+            ax.text(0.5, 0.5, 'No node/edge data', ha='center', va='center', transform=ax.transAxes)
+    
+    def _plot_target_vs_actual(self, ax, overview):
+        """Plot target vs actual parameter comparison."""
+        if 'target_vs_actual' not in overview:
+            ax.text(0.5, 0.5, 'No target vs actual data', ha='center', va='center', transform=ax.transAxes)
+            return
+        
+        target_vs_actual = overview['target_vs_actual']
+        
+        # Plot homophily comparison
+        if 'homophily' in target_vs_actual and target_vs_actual['homophily']['targets']:
+            targets = target_vs_actual['homophily']['targets']
+            actuals = target_vs_actual['homophily']['actuals']
+            
+            ax.scatter(targets, actuals, alpha=0.7, s=50, label='Homophily')
+            
+            # Add perfect correlation line
+            min_val = min(min(targets), min(actuals))
+            max_val = max(max(targets), max(actuals))
+            ax.plot([min_val, max_val], [min_val, max_val], 'r--', alpha=0.5, label='Perfect')
+            
+            ax.set_xlabel('Target')
+            ax.set_ylabel('Actual')
+            ax.set_title('Target vs Actual Parameters')
+            ax.legend()
+            ax.grid(True, alpha=0.3)
+        else:
+            ax.text(0.5, 0.5, 'No target vs actual data', ha='center', va='center', transform=ax.transAxes)
+    
+    def _plot_community_coverage(self, ax, overview):
+        """Plot community coverage analysis."""
+        if 'community_analysis' not in overview:
+            ax.text(0.5, 0.5, 'No community data', ha='center', va='center', transform=ax.transAxes)
+            return
+        
+        community_analysis = overview['community_analysis']
+        
+        if 'community_usage' in community_analysis:
+            usage_counts = list(community_analysis['community_usage'].values())
+            if usage_counts:
+                ax.hist(usage_counts, bins=min(10, len(set(usage_counts))), alpha=0.7, edgecolor='black')
+                ax.set_xlabel('Usage Count')
+                ax.set_ylabel('Number of Communities')
+                ax.set_title('Community Usage Distribution')
+                ax.grid(True, alpha=0.3)
+            else:
+                ax.text(0.5, 0.5, 'No community usage data', ha='center', va='center', transform=ax.transAxes)
+        else:
+            ax.text(0.5, 0.5, 'No community data', ha='center', va='center', transform=ax.transAxes)
+    
+    def _plot_property_distributions(self, ax, overview):
+        """Plot distributions of key properties."""
+        if 'basic_stats' not in overview:
+            ax.text(0.5, 0.5, 'No property data', ha='center', va='center', transform=ax.transAxes)
+            return
+        
+        # Plot density distribution
+        if 'densities' in overview['basic_stats'] and overview['basic_stats']['densities']:
+            densities = overview['basic_stats']['densities']
+            ax.hist(densities, bins=min(10, len(set(densities))), alpha=0.7, edgecolor='black')
+            ax.set_xlabel('Density')
+            ax.set_ylabel('Frequency')
+            ax.set_title('Density Distribution')
+            ax.grid(True, alpha=0.3)
+        else:
+            ax.text(0.5, 0.5, 'No density data', ha='center', va='center', transform=ax.transAxes)
+    
+    def _plot_generation_methods(self, ax, overview):
+        """Plot generation method distribution."""
+        if 'basic_stats' in overview and 'generation_method_distribution' in overview['basic_stats']:
+            method_dist = overview['basic_stats']['generation_method_distribution']
+            if method_dist:
+                methods = list(method_dist.keys())
+                counts = list(method_dist.values())
+                
+                bars = ax.bar(methods, counts, alpha=0.7)
+                ax.set_xlabel('Generation Method')
+                ax.set_ylabel('Count')
+                ax.set_title('Generation Method Distribution')
+                ax.tick_params(axis='x', rotation=45)
+                
+                # Add value labels on bars
+                for bar, count in zip(bars, counts):
+                    height = bar.get_height()
+                    ax.text(bar.get_x() + bar.get_width()/2, height + 0.1,
+                           str(count), ha='center', va='bottom')
+            else:
+                ax.text(0.5, 0.5, 'No generation method data', ha='center', va='center', transform=ax.transAxes)
+        else:
+            ax.text(0.5, 0.5, 'No generation method data', ha='center', va='center', transform=ax.transAxes)
+    
+    def _plot_clustering_communities(self, ax, overview):
+        """Plot clustering coefficient vs community count."""
+        if ('clustering_coefficients' in overview['basic_stats'] and 
+            'community_counts' in overview['basic_stats']):
+            clustering = overview['basic_stats']['clustering_coefficients']
+            communities = overview['basic_stats']['community_counts']
+            
+            if clustering and communities:
+                ax.scatter(communities, clustering, alpha=0.7, s=50)
+                ax.set_xlabel('Community Count')
+                ax.set_ylabel('Clustering Coefficient')
+                ax.set_title('Clustering vs Communities')
+                ax.grid(True, alpha=0.3)
+        else:
+            ax.text(0.5, 0.5, 'No clustering/community data', ha='center', va='center', transform=ax.transAxes)
+    
+    def _plot_summary_table(self, ax, overview):
+        """Plot summary statistics table."""
+        ax.axis('tight')
+        ax.axis('off')
+        
+        if 'basic_stats' in overview:
+            stats = overview['basic_stats']
+            
+            # Create table data
+            table_data = []
+            table_data.append(['Metric', 'Mean', 'Std', 'Min', 'Max'])
+            
+            key_metrics = ['node_counts', 'edge_counts', 'densities', 'homophily_levels', 'avg_degrees']
+            for metric in key_metrics:
+                if f'{metric}_mean' in stats:
+                    table_data.append([
+                        metric.replace('_', ' ').title(),
+                        f"{stats[f'{metric}_mean']:.3f}",
+                        f"{stats[f'{metric}_std']:.3f}",
+                        f"{stats[f'{metric}_min']:.3f}",
+                        f"{stats[f'{metric}_max']:.3f}"
+                    ])
+            
+            if len(table_data) > 1:
+                table = ax.table(cellText=table_data, cellLoc='center', loc='center')
+                table.auto_set_font_size(False)
+                table.set_fontsize(9)
+                table.scale(1.2, 1.5)
+                
+                # Color header row
+                for i in range(len(table_data[0])):
+                    table[(0, i)].set_facecolor('#4CAF50')
+                    table[(0, i)].set_text_props(weight='bold', color='white')
+            else:
+                ax.text(0.5, 0.5, 'No summary data', ha='center', va='center', transform=ax.transAxes)
+        else:
+            ax.text(0.5, 0.5, 'No summary data', ha='center', va='center', transform=ax.transAxes)
+    

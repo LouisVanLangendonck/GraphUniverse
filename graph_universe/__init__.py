@@ -1,5 +1,5 @@
 """
-Mixed-Membership Stochastic Block Model (MMSB) package.
+GraphUniverse: Multi-graph Generation package.
 """
 
 from .model import GraphUniverse, GraphSample

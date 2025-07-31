@@ -14,11 +14,12 @@ from sklearn.naive_bayes import GaussianNB
 from sklearn.model_selection import cross_val_score, StratifiedKFold
 import warnings
 from itertools import combinations
+import signal
 
 class GraphUniverse:
     """
-    Represents a generative universe for graph instances sampled from a master stochastic block model.
-    Each instance is a subgraph of the universe, with its own community structure and features.
+    Represents a generative universe for graph instances sampled from a master "pseudo" stochastic block model.
+    The GraphSample class will randomly sub-sample from these global universe properties.
     """
     
     def __init__(
@@ -26,27 +27,21 @@ class GraphUniverse:
         K: int,
         P: Optional[np.ndarray] = None,
         feature_dim: int = 0,
-        block_structure: str = "assortative",
-        edge_density: float = 0.1,
-        homophily: float = 0.8,
-        randomness_factor: float = 0.0,
+        inter_community_variance: float = 0.0,
+
         # Feature generation parameters
         cluster_count_factor: float = 1.0,  # Number of clusters relative to communities
         center_variance: float = 1.0,       # Separation between cluster centers
         cluster_variance: float = 0.1,      # Spread within each cluster
         assignment_skewness: float = 0.0,   # If some clusters are used more frequently
         community_exclusivity: float = 1.0, # How exclusively clusters map to communities
+
         # Degree center parameters
         degree_center_method: str = "linear",  # How to generate degree centers ("linear", "random", "shuffled")
         seed: Optional[int] = None,
-        # Community density parameters
-        community_density_variation: float = 0.0,      # 0-1: amount of density variation
+
         # Community co-occurrence homogeneity
         community_cooccurrence_homogeneity: float = 1.0,  # 0-1: how homogeneous the co-occurrence of communities is
-
-        # Triangle density parameters
-        triangle_density: float = 0.0,
-        triangle_community_relation_homogeneity: float = 1.0,
     ):
         """
         Initialize a graph universe with K communities and optional feature generation.
@@ -55,17 +50,13 @@ class GraphUniverse:
             K: Number of communities
             P: Optional probability matrix (if None, will be generated)
             feature_dim: Dimension of node features
-            block_structure: Type of block structure ("assortative", "disassortative", "mixed")
-            edge_density: Base edge density
-            homophily: Strength of community-based edge formation
-            randomness_factor: Amount of randomness in edge formation
+            inter_community_variance: Amount of variance in the inter-community probabilities
             cluster_count_factor: Number of clusters relative to communities (0.1 to 4.0)
             center_variance: Separation between cluster centers
             cluster_variance: Spread within each cluster
             assignment_skewness: If some clusters are used more frequently (0.0 to 1.0)
             community_exclusivity: How exclusively clusters map to communities (0.0 to 1.0)
             degree_center_method: How to generate degree centers ("linear", "random", "shuffled")
-            community_density_variation: Amount of density variation (automatically coupled to degree centers. So higher density variation means higher densities for nodes with higher degree variation)
             community_cooccurrence_homogeneity: Controls community co-occurrence patterns (0-1)
                 1.0 = homogeneous (all communities equally likely to co-occur)
                 0.0 = heterogeneous (some communities prefer to co-occur with specific others)
@@ -80,8 +71,8 @@ class GraphUniverse:
             
         # Generate or use provided probability matrix
         if P is None:
-            self.P = self._generate_probability_matrix(
-                K, block_structure, edge_density, homophily, randomness_factor
+            self.P = self._generate_inter_community_variance_matrix(
+                K, inter_community_variance
             )
         else:
             self.P = P
@@ -102,18 +93,12 @@ class GraphUniverse:
             self.feature_generator = None
         
         # Store parameters
-        self.edge_density = edge_density
-        self.homophily = homophily
-        self.block_structure = block_structure
-        self.randomness_factor = randomness_factor
+        self.inter_community_variance = inter_community_variance
         self.feature_variance = 0.1
         self.feature_similarity_matrix = None
         # Store regime parameters
         self.intra_community_regime_similarity = 0.8
         self.inter_community_regime_similarity = 0.2
-
-        # Store community density parameters
-        self.community_density_variation = community_density_variation
 
         # Generate degree centers based on method
         if degree_center_method == "linear":
@@ -128,71 +113,41 @@ class GraphUniverse:
             np.random.shuffle(self.degree_centers)
         else:
             raise ValueError(f"Unknown degree center method: {degree_center_method}")
-    
-        # Apply community density variations if requested
-        if community_density_variation > 0:
-            self.P = self._apply_community_density_variation(
-                self.P, 
-                community_density_variation,
-            )
-        
+            
         # Generate community co-occurrence matrix
         self.community_cooccurrence_homogeneity = community_cooccurrence_homogeneity
         self.community_cooccurrence_matrix = self._generate_cooccurrence_matrix(K, community_cooccurrence_homogeneity, seed)
 
-        # Triangle density parameters
-        self.triangle_density = triangle_density
-        self.triangle_community_relation_homogeneity = triangle_community_relation_homogeneity
-
-        # Generate community triangle propensities
-        self.community_triangle_propensities = self._generate_community_triangle_propensities()
-
-    def _generate_probability_matrix(
+    def _generate_inter_community_variance_matrix(
         self, 
         K: int, 
-        structure: str, 
-        edge_density: float,
-        homophily: float = 0.8,
-        randomness_factor: float = 0.0
+        inter_community_variance: float = 0.0
     ) -> np.ndarray:
         """
-        Generate an assortative probability matrix based on edge density and homophily parameters.
+        Generate a pseudo-probability matrix that gives the RELATIVE probabilities BETWEEN different communities (the intra-community prob / homophily is decided by the GraphFamily object and scaled accordingly in a GraphSample object)
         
         Args:
             K: Number of communities
-            structure: Must be "assortative" (other structures not supported)
-            edge_density: Overall edge density
-            homophily: Strength of within-community connections (0=random, 1=maximum homophily)
-            randomness_factor: Amount of random noise in edge probabilities
+            inter_community_variance: Amount of variance in the inter-community probabilities
             
         Returns:
             K × K probability matrix
         """
-        if structure != "assortative":
-            raise ValueError("Only assortative structure is currently supported")
             
-        P = np.zeros((K, K))
+        P = np.ones((K, K))
         
-        # Calculate inter-community probability
-        if homophily < 1.0:
-            q = edge_density * K / ((K-1)*(1-homophily) + homophily*K)
-            p = homophily * q * (K-1) / (1-homophily)
-        else:
-            # Maximum homophily - all edges within communities
-            p = edge_density * K
-            q = 0.0
-        
-        # Set probabilities WITHOUT capping - keep theoretical values
-        np.fill_diagonal(P, p)
-        P[~np.eye(K, dtype=bool)] = q
-        
-        # Add randomness if requested, but only clip negative values to zero (do not clip to one)
-        if randomness_factor > 0:
-            min_val = min(p, q)
-            noise = np.random.normal(0, randomness_factor * min_val, size=(K, K))
+        # Add the inter-community variance if requested
+        if inter_community_variance > 0:
+            noise = np.random.normal(0, inter_community_variance*2, size=(K, K))
             P = P + noise
-            # Only clip negative values to zero
+            # Clip to be between 0 and 2
             P[P < 0.0] = 0.0
+            P[P > 2.0] = 2.0
+
+        # Have the P to be symmetric (just set all values of lower triangle to be the same as the upper triangle)
+        for i in range(K):
+            for j in range(i+1, K):
+                P[i, j] = P[j, i]
 
         return P
     
@@ -300,8 +255,14 @@ class GraphUniverse:
         size = min(size, K)
         
         if not use_cooccurrence or self.community_cooccurrence_homogeneity == 1.0:
-            # Random sampling
-            return np.random.choice(self.K, size=size, replace=False).tolist()
+            # Sample community one by one and always check for a new candidate that is has a non-zero probabilty connection to the existing communities
+            result = [np.random.choice(self.K)]
+            while len(result) < size:
+                new_community = np.random.choice(self.K)
+                # Check if self.P[new_community, result] is non-zero
+                if np.sum(self.P[new_community, result]) > 0 and new_community not in result:
+                    result.append(new_community)
+            return result
         
         # Start with a random seed community
         first_community = np.random.choice(K)
@@ -310,6 +271,7 @@ class GraphUniverse:
         
         # Iteratively add communities based on co-occurrence probabilities
         while remaining_size > 0 and len(result) < K:
+            
             # Calculate sampling probabilities based on co-occurrence with existing communities
             remaining_communities = list(set(range(K)) - result)
             if not remaining_communities:
@@ -340,55 +302,6 @@ class GraphUniverse:
         
         return list(result)
     
-    def _apply_community_density_variation(
-        self,
-        P: np.ndarray,
-        community_density_variation: float = 0.0
-    ) -> np.ndarray:
-        """
-        Apply degree-coupled community density variations to the universe P matrix.
-        Communities with higher degree centers get higher overall connection probabilities.
-        
-        Args:
-            P: Universe probability matrix (K x K)
-            community_density_variation: Amount of variation (0-1)
-            
-        Returns:
-            Modified probability matrix with community density variations
-        """
-        if community_density_variation == 0.0:
-            return P
-        
-        K = P.shape[0]
-        
-        # Generate density multipliers based on degree center hierarchy
-        if np.std(self.degree_centers) > 0:
-            # Normalize degree centers to [-1, 1] range
-            normalized_centers = (self.degree_centers - np.mean(self.degree_centers)) / np.std(self.degree_centers)
-            normalized_centers = np.clip(normalized_centers, -1, 1)
-            
-            # Create multipliers: high degree centers → high density
-            density_multipliers = 1.0 + community_density_variation * normalized_centers
-        else:
-            # If all degree centers are the same, no variation
-            density_multipliers = np.ones(K)
-        
-        # Ensure multipliers are positive and reasonable
-        density_multipliers = np.clip(density_multipliers, 0.3, 2.0)
-        
-        # Apply multipliers to each community's row (outgoing connections)
-        P_modified = P.copy()
-        for i in range(K):
-            P_modified[i, :] *= density_multipliers[i]
-        
-        # Store the multipliers for analysis
-        self.community_density_multipliers = density_multipliers
-        
-        # DON'T clip to [0,1] here - let GraphSample handle that during scaling
-        # This preserves the relative differences in the signal
-        
-        return P_modified
-
     def _generate_cooccurrence_matrix(self, K: int, homogeneity: float, seed: Optional[int] = None) -> np.ndarray:
         """
         Generate symmetric community co-occurrence matrix.
@@ -438,18 +351,6 @@ class GraphUniverse:
         
         return matrix
 
-    def _generate_community_triangle_propensities(self) -> np.ndarray:
-        """Generate triangle propensity for each community."""
-        if self.triangle_community_relation_homogeneity == 1.0:
-            # Homogeneous: all communities equally likely
-            return np.ones(self.K)
-        else:
-            # Heterogeneous: some communities much more triangle-prone
-            # Use Dirichlet to create skewed distribution
-            alpha = self.triangle_community_relation_homogeneity * 10 + 0.1
-            propensities = np.random.dirichlet(np.ones(self.K) * alpha) * self.K
-            return propensities
-    
 class GraphSample:
     """
     Represents a single graph instance sampled from the GraphUniverse.
@@ -460,50 +361,48 @@ class GraphSample:
     
     def __init__(
         self,
+        # Give GraphUniverse object to sample from
         universe: GraphUniverse,
+
+        # Graph Sample specific parameters
         num_communities: int,
         n_nodes: int,
         min_component_size: int,
-        degree_heterogeneity: float,
-        edge_noise: float,
-        feature_regime_balance: float,
-        target_homophily: Optional[float],
-        target_density: Optional[float],
-        use_configuration_model: bool,
+        target_homophily: float,
+        target_average_degree: float,
+        # target_density: float,
         degree_distribution: str,
         power_law_exponent: Optional[float],
-        target_avg_degree: Optional[float],
         max_mean_community_deviation: float,
         max_max_community_deviation: float,
-        max_parameter_search_attempts: int,
-        parameter_search_range: float,
         min_edge_density: float,
         max_retries: int,
-        seed: Optional[int] = None,
-        exact_filtered_graph: Optional[Dict[str, Any]] = None,
-        config_model_params: Optional[dict] = None,
+
+        # Standard DC-SBM parameters (so if use_dccc_sbm is False, this is used)
+        degree_heterogeneity: float,
+
         # DCCC-SBM parameters
-        use_dccc_sbm: bool = False,
-        community_imbalance: float = 0.0,
+        use_dccc_sbm: bool = True,
         degree_separation: float = 0.5,
         dccc_global_degree_params: Optional[dict] = None,
-        degree_method: str = "standard",
+        degree_signal_calc_method: str = "standard",
         disable_deviation_limiting: bool = False,
+
+        # Random seed
+        seed: Optional[int] = None,
+
         # Optional Parameter for user-defined communuties to be sampled
         user_defined_communities: Optional[List[int]] = None
     ):
         """
-        Initialize and generate a graph sample.
-        
-        Added DCCC-SBM parameters:
-        - use_dccc_sbm: Whether to use the Distribution-Community-Coupled Corrected SBM
-        - community_imbalance: Controls how imbalanced community sizes are (0-1)
-        - degree_distribution_overlap: Controls how much degree distributions overlap (0-1)
-        - dccc_global_degree_params: Parameters for the global degree distribution
+        Initialize and generate a graph sample from the GraphUniverse.
         """
+
+        # Store the GraphUniverse object
+        self.universe = universe
+
         # Store additional DCCC-SBM parameters
         self.use_dccc_sbm = use_dccc_sbm
-        self.community_imbalance = community_imbalance
         self.degree_separation = degree_separation
         self.dccc_global_degree_params = dccc_global_degree_params or {}
         self.disable_deviation_limiting = disable_deviation_limiting  # Store the parameter
@@ -511,325 +410,293 @@ class GraphSample:
         # Original initialization code with modifications...
         self.timing_info = {}
         total_start = time.time()
-
-        self.universe = universe
-
-        # Sample communities from universe
-        if user_defined_communities is not None:
-            self.communities = user_defined_communities
-        else:
-            self.communities = universe.sample_connected_community_subset(
-                num_communities,
-                seed=seed,
-                use_cooccurrence=True
-            )
         
-        self.original_n_nodes = n_nodes
-        self.min_component_size = min_component_size
+        # Add timeout mechanism
+        TIMEOUT_SECONDS = 60
         
-        # Store feature generation parameters
-        self.feature_regime_balance = feature_regime_balance
+        def check_timeout():
+            if time.time() - total_start > TIMEOUT_SECONDS:
+                raise TimeoutError(f"GraphSample initialization timed out after {TIMEOUT_SECONDS} seconds")
         
-        # Store target parameters (use universe values if not specified)
-        self.target_homophily = target_homophily if target_homophily is not None else universe.homophily
-        self.target_density = target_density if target_density is not None else universe.edge_density
-        
-        # Store configuration model parameters
-        self.use_configuration_model = use_configuration_model
-        self.degree_distribution = degree_distribution
-        self.power_law_exponent = power_law_exponent
-        self.target_avg_degree = target_avg_degree
+        try:
+            # Sample communities from universe or use user-defined communities
+            if user_defined_communities is not None:
+                self.communities = user_defined_communities
+            else:
+                check_timeout()
+                self.communities = universe.sample_connected_community_subset(
+                    num_communities,
+                    seed=seed,
+                    use_cooccurrence=True
+                )
+            
+            # Store the number of nodes
+            self.original_n_nodes = n_nodes
+            self.min_component_size = min_component_size # Minimum size of a connected component
+            
+            # Store target parameters
+            self.target_homophily = target_homophily
+            # self.target_density = target_density
+            self.target_average_degree = target_average_degree
+            
+            # Degree distribution parameters
+            self.degree_distribution = degree_distribution
+            self.power_law_exponent = power_law_exponent
 
-        # Store community deviation parameters as instance attributes
-        self.max_mean_community_deviation = max_mean_community_deviation
-        self.max_max_community_deviation = max_max_community_deviation
-        self.min_edge_density = min_edge_density
-        self.max_retries = max_retries
+            # Store community deviation parameters as instance attributes
+            self.max_mean_community_deviation = max_mean_community_deviation
+            self.max_max_community_deviation = max_max_community_deviation
+            self.min_edge_density = min_edge_density
+            self.max_retries = max_retries
 
-        # Create mapping between local community indices and universe community IDs
-        self.community_id_mapping = {i: comm_id for i, comm_id in enumerate(sorted(self.communities))}
-        self.reverse_community_id_mapping = {comm_id: i for i, comm_id in self.community_id_mapping.items()}
+            # Create mapping between local community indices and universe community IDs
+            self.community_id_mapping = {i: comm_id for i, comm_id in enumerate(self.communities)}
+            self.reverse_community_id_mapping = {comm_id: i for i, comm_id in self.community_id_mapping.items()}
 
-        # Initialize generation method and parameters
-        self.generation_method = "standard"
-        self.generation_params = {
-            "degree_heterogeneity": degree_heterogeneity,
-            "edge_noise": edge_noise,
-            "max_mean_community_deviation": max_mean_community_deviation,
-            "max_max_community_deviation": max_max_community_deviation
-        }
-        
-        # If DCCC-SBM is enabled, update generation method
-        if use_dccc_sbm:
-            self.generation_method = "dccc_sbm"
-            self.generation_params.update({
-                "community_imbalance": community_imbalance,
-                "degree_separation": degree_separation,
-                "degree_distribution_type": degree_distribution,
-            })
-            if degree_distribution == "power_law":
-                self.generation_params["power_law_exponent"] = power_law_exponent
+            # Initialize generation method and parameters
+            self.generation_method = "standard"
+            self.generation_params = {
+                "degree_heterogeneity": degree_heterogeneity,
+                "max_mean_community_deviation": max_mean_community_deviation,
+                "max_max_community_deviation": max_max_community_deviation
+            }
+            
+            # If DCCC-SBM is enabled, update generation method
+            if self.use_dccc_sbm:
+                self.generation_method = "dccc_sbm"
+                self.generation_params.update({
+                    "degree_separation": degree_separation,
+                    "degree_distribution_type": degree_distribution,
+                })
+                if degree_distribution == "power_law":
+                    self.generation_params["power_law_exponent"] = power_law_exponent
                 
-        elif use_configuration_model and degree_distribution in ["power_law", "exponential", "uniform"]:
-            self.generation_method = degree_distribution
-            if degree_distribution == "power_law":
-                self.generation_params = {
-                    "power_law_exponent": power_law_exponent,
-                    "target_avg_degree": target_avg_degree,
-                    "max_mean_community_deviation": max_mean_community_deviation,
-                    "max_max_community_deviation": max_max_community_deviation
-                }
-            elif degree_distribution == "exponential":
-                self.generation_params = {
-                    "rate": getattr(self, 'rate', 0.5),  # This one can have a default as it's method-specific
-                    "target_avg_degree": target_avg_degree,
-                    "max_mean_community_deviation": max_mean_community_deviation,
-                    "max_max_community_deviation": max_max_community_deviation
-                }
-            elif degree_distribution == "uniform":
-                self.generation_params = {
-                    "min_factor": getattr(self, 'min_factor', 0.5),  # This one can have a default as it's method-specific
-                    "max_factor": getattr(self, 'max_factor', 1.5),  # This one can have a default as it's method-specific
-                    "target_avg_degree": target_avg_degree,
-                    "max_mean_community_deviation": max_mean_community_deviation,
-                    "max_max_community_deviation": max_max_community_deviation
-                }
 
-        # Set random seed if provided
-        if seed is not None:
-            np.random.seed(seed)
-        
-        # Time: Extract and scale probability matrix
-        start = time.time()
-        # Extract the submatrix of the probability matrix for these communities
-        K_sub = len(self.communities)
-        self.P_sub = np.zeros((K_sub, K_sub))
-        for i, ci in enumerate(sorted(self.communities)):
-            for j, cj in enumerate(sorted(self.communities)):
-                self.P_sub[i, j] = universe.P[ci, cj]
+            # Set random seed if provided
+            if seed is not None:
+                np.random.seed(seed)
+            
+            check_timeout()
+            
+            # Time: Extract and scale probability matrix
+            start = time.time()
 
-        # Scale the probability matrix
-        self.P_sub = self._scale_probability_matrix(
-            self.P_sub, 
-            self.target_density,
-            self.target_homophily
-        )
-        self.timing_info['probability_matrix'] = time.time() - start
-        
-        # Time: Generate memberships
-        start = time.time()
-        if self.use_dccc_sbm:
-            # For DCCC-SBM, use the imbalanced membership generation
-            self.community_labels = self._generate_memberships_with_imbalance(
-                n_nodes, K_sub, self.community_imbalance)
-        else:
-            # Standard membership generation
+            # Extract the submatrix of the probability matrix for these communities
+            K_sub = len(self.communities) # Number of communities in the sample
+            self.P_sub = np.zeros((K_sub, K_sub)) # Initialize the probability matrix for the sample
+            for i, ci in enumerate(sorted(self.communities)):
+                for j, cj in enumerate(sorted(self.communities)):
+                    self.P_sub[i, j] = universe.P[ci, cj]
+
+            # Scale the probability matrix
+            self.P_sub = self._scale_probability_matrix(
+                self.P_sub, 
+                self.target_average_degree,
+                self.target_homophily,
+                self.original_n_nodes
+            )
+            self.timing_info['probability_matrix'] = time.time() - start
+            
+            check_timeout()
+            
+            # Time: Generate memberships
+            start = time.time()
+
+            # Uniform membership generation
             self.community_labels = self._generate_memberships(n_nodes, K_sub)  # Now returns 1D array
 
-        # Create a new array that maps the community labels to the universe community IDs
-        self.community_labels_universe_level = np.array([self.community_id_mapping[idx] for idx in self.community_labels])
-        
-        self.timing_info['memberships'] = time.time() - start
-        
-        # Time: Generate degree factors
-        start = time.time()
-        if self.use_dccc_sbm:
-            # For DCCC-SBM, generate community-coupled degree factors
-            global_degree_params = {}
-            if degree_distribution == "power_law":
-                global_degree_params = {
-                    "exponent": power_law_exponent,
-                    "x_min": 1.0
-                }
-            elif degree_distribution == "exponential":
-                global_degree_params = {
-                    "rate": getattr(self, 'rate', 0.5)
-                }
-            elif degree_distribution == "uniform":
-                global_degree_params = {
-                    "min_degree": getattr(self, 'min_factor', 0.5),
-                    "max_degree": getattr(self, 'max_factor', 1.5)
-                }
-                
-            # Update with any user-provided parameters
-            if dccc_global_degree_params:
-                global_degree_params.update(dccc_global_degree_params)
-                
-            # Store the degree method
-            self.degree_method = degree_method
+            # Create a new array that maps the community labels to the universe community IDs
+            self.community_labels_universe_level = np.array([self.community_id_mapping[idx] for idx in self.community_labels])
             
-            # Generate community-specific degree factors using improved method
-            self.degree_factors = self._generate_community_degree_factors_improved(
-                self.community_labels,
-                degree_distribution,
-                degree_separation,  # Changed from degree_distribution_overlap
-                global_degree_params
-            )
-            edge_noise = 0.0
-        elif self.use_configuration_model:
-            self.degree_factors = self._generate_degree_factors_configuration(
-                n_nodes,
-                None,  # degree_heterogeneity not used in configuration model
-                self.degree_distribution,
-                self.power_law_exponent,
-                self.target_avg_degree
-            )
-        else:
-            self.degree_factors = self._generate_degree_factors(n_nodes, degree_heterogeneity)
-        self.timing_info['degree_factors'] = time.time() - start
-        
-        # Time: Generate edges
-        start = time.time()
-        if self.use_configuration_model:
-            self.adjacency = self._generate_edges_configuration(
-                self.community_labels,
-                self.P_sub,
-                self.degree_factors,
-                edge_noise,
-                min_edge_density=self.min_edge_density,
-                max_retries=self.max_retries,
-                max_mean_community_deviation=self.max_mean_community_deviation,
-                max_max_community_deviation=self.max_max_community_deviation,
-                max_parameter_search_attempts=self.max_parameter_search_attempts,
-                parameter_search_range=self.parameter_search_range
-            )
-        else:
-            # Standard DC-SBM edge generation
+            # Store membership generation time
+            self.timing_info['memberships'] = time.time() - start
+            
+            check_timeout()
+            
+            # Time: Generate degree factors
+            start = time.time()
+            if self.use_dccc_sbm:
+                # For DCCC-SBM, generate community-coupled degree factors
+                global_degree_params = {}
+                if degree_distribution == "power_law":
+                    global_degree_params = {
+                        "exponent": power_law_exponent,
+                        "x_min": 1.0
+                    }
+                elif degree_distribution == "exponential":
+                    global_degree_params = {
+                        "rate": getattr(self, 'rate', 0.5)
+                    }
+                elif degree_distribution == "uniform":
+                    global_degree_params = {
+                        "min_degree": getattr(self, 'min_factor', 0.5),
+                        "max_degree": getattr(self, 'max_factor', 1.5)
+                    }
+                    
+                # Update with any user-provided parameters
+                if dccc_global_degree_params:
+                    global_degree_params.update(dccc_global_degree_params)
+                    
+                # Store the degree method
+                self.degree_signal_calc_method = degree_signal_calc_method
+                
+                # Generate community-specific degree factors using improved method
+                self.degree_factors = self._generate_community_degree_factors_improved(
+                    self.community_labels,
+                    degree_distribution,
+                    degree_separation,
+                    global_degree_params
+                )
+
+            else:
+                self.degree_factors = self._generate_degree_factors(n_nodes, degree_heterogeneity)
+            self.timing_info['degree_factors'] = time.time() - start
+            
+            check_timeout()
+            
+            # Time: Generate edges
+            start = time.time()
             self.adjacency = self._generate_edges(
                 self.community_labels,
                 self.P_sub,
                 self.degree_factors,
-                edge_noise
             )
-        self.timing_info['edge_generation'] = time.time() - start
+            self.timing_info['edge_generation'] = time.time() - start
 
-        # Time: Generate triangles
-        if self.universe.triangle_density > 0:
+            check_timeout()
+
+            # Create initial NetworkX graph
+            temp_graph = nx.from_scipy_sparse_array(self.adjacency)
+            
+            # Time: Component filtering
             start = time.time()
-            self._enhance_triangles()
-            self.timing_info['triangle_enhancement'] = time.time() - start
-
-        # Create initial NetworkX graph
-        temp_graph = nx.from_scipy_sparse_array(self.adjacency)
-        
-        # Time: Component filtering
-        start = time.time()
-        # Find connected components
-        components = list(nx.connected_components(temp_graph))
-        components.sort(key=len, reverse=True)
-        
-        # Track deleted components
-        self.deleted_components = []
-        self.deleted_node_types = {}
-        
-        # Filter components based on size
-        if min_component_size > 0:
-            kept_components = []
-            for comp in components:
-                if len(comp) >= min_component_size:
-                    kept_components.append(comp)
-                else:
-                    self.deleted_components.append(comp)
-                    # Track community distribution of deleted nodes
-                    for node in comp:
-                        primary_comm = self.communities[self.community_labels[node]]
-                        if primary_comm not in self.deleted_node_types:
-                            self.deleted_node_types[primary_comm] = 0
-                        self.deleted_node_types[primary_comm] += 1
-        else:
-            kept_components = components
-        self.timing_info['component_filtering'] = time.time() - start
-        
-        # Time: Graph reconstruction
-        start = time.time()
-        if kept_components:
-            # Create union of all kept components
-            kept_nodes = sorted(list(set().union(*kept_components)))
+            # Find connected components
+            components = list(nx.connected_components(temp_graph))
+            components.sort(key=len, reverse=True)
             
-            # Create mapping from old to new indices
-            self.node_map = {old: new for new, old in enumerate(kept_nodes)}
-            self.reverse_node_map = {new: old for old, new in self.node_map.items()}
+            # Track deleted components
+            self.deleted_components = []
+            self.deleted_node_types = {}
             
-            # Create new graph with remapped nodes
-            self.graph = nx.Graph()
-            self.graph.add_nodes_from(range(len(kept_nodes)))
-            
-            # Add edges with remapped indices
-            for comp in kept_components:
-                for u, v in temp_graph.subgraph(comp).edges():
-                    self.graph.add_edge(self.node_map[u], self.node_map[v])
-            
-            # Update node count
-            self.n_nodes = self.graph.number_of_nodes()
-            
-            # Update community labels and degree factors with new indices
-            self.community_labels = self.community_labels[kept_nodes]
-            self.degree_factors = self.degree_factors[kept_nodes]
-
-            # Update community labels at universe level
-            self.community_labels_universe_level = np.array([self.community_id_mapping[idx] for idx in self.community_labels])
-            
-            # Update adjacency matrix
-            self.adjacency = nx.adjacency_matrix(self.graph)
-            
-            # Now check deviations after all filtering and reconstruction is done
-            if self.n_nodes > 0:  # Only check if we have nodes
-                deviations = self._calculate_community_deviations(
-                    self.graph,
-                    self.community_labels,
-                    self.P_sub
-                )
-                mean_deviation = deviations["mean_deviation"]
-                max_deviation = deviations["max_deviation"]
-                
-                if not self.disable_deviation_limiting:
-                    if mean_deviation > self.max_mean_community_deviation:
-                        raise ValueError(f"Graph exceeds mean community deviation limit: {mean_deviation:.4f} > {self.max_mean_community_deviation:.4f}")
-                    if max_deviation > self.max_max_community_deviation:
-                        raise ValueError(f"Graph exceeds maximum community deviation limit: {max_deviation:.4f} > {self.max_max_community_deviation:.4f}")
+            # Filter components based on size and have a maximum of num_communities unique components
+            if min_component_size > 0:
+                kept_components = []
+                for comp in components:
+                    if len(comp) >= min_component_size:
+                        kept_components.append(comp)
+                    else:
+                        self.deleted_components.append(comp)
+                        # Track community distribution of deleted nodes
+                        for node in comp:
+                            primary_comm = self.communities[self.community_labels[node]]
+                            if primary_comm not in self.deleted_node_types:
+                                self.deleted_node_types[primary_comm] = 0
+                            self.deleted_node_types[primary_comm] += 1
             else:
-                # If no components meet the size threshold, keep an empty graph
+                kept_components = components
+
+            if len(kept_components) > num_communities:
+                raise ValueError(f"Number of unique components exceeds number of communities: {len(kept_components)} > {num_communities}.")
+
+            self.timing_info['component_filtering'] = time.time() - start
+            
+            check_timeout()
+            
+            # Time: Graph reconstruction
+            start = time.time()
+            if kept_components:
+                # Create union of all kept components
+                kept_nodes = sorted(list(set().union(*kept_components)))
+                
+                # Create mapping from old to new indices
+                self.node_map = {old: new for new, old in enumerate(kept_nodes)}
+                self.reverse_node_map = {new: old for old, new in self.node_map.items()}
+                
+                # Create new graph with remapped nodes
                 self.graph = nx.Graph()
-                self.n_nodes = 0
-                self.community_labels = np.array([], dtype=int)
-                self.degree_factors = np.zeros(0)
-                self.adjacency = sp.csr_matrix((0, 0))
-                self.features = None if universe.feature_dim > 0 else None
-                self.node_map = {}
-                self.reverse_node_map = {}
-                self.node_labels = np.zeros(0, dtype=int)
+                self.graph.add_nodes_from(range(len(kept_nodes)))
+                
+                # Add edges with remapped indices
+                for comp in kept_components:
+                    for u, v in temp_graph.subgraph(comp).edges():
+                        self.graph.add_edge(self.node_map[u], self.node_map[v])
+                
+                # Update node count
+                self.n_nodes = self.graph.number_of_nodes()
+                
+                # Update community labels and degree factors with new indices
+                self.community_labels = self.community_labels[kept_nodes]
+                self.degree_factors = self.degree_factors[kept_nodes]
+
+                # Update community labels at universe level
+                self.community_labels_universe_level = np.array([self.community_id_mapping[idx] for idx in self.community_labels])
+                
+                # Update adjacency matrix
+                self.adjacency = nx.adjacency_matrix(self.graph)
+                
+                # Now check deviations after all filtering and reconstruction is done
+                if self.n_nodes > 0:  # Only check if we have nodes
+                    deviations = self._calculate_community_deviations(
+                        self.graph,
+                        self.community_labels,
+                        self.P_sub
+                    )
+                    mean_deviation = deviations["mean_deviation"]
+                    max_deviation = deviations["max_deviation"]
+                    
+                    if not self.disable_deviation_limiting:
+                        if mean_deviation > self.max_mean_community_deviation:
+                            raise ValueError(f"Graph exceeds mean community deviation limit: {mean_deviation:.4f} > {self.max_mean_community_deviation:.4f}")
+                        if max_deviation > self.max_max_community_deviation:
+                            raise ValueError(f"Graph exceeds maximum community deviation limit: {max_deviation:.4f} > {self.max_max_community_deviation:.4f}")
+                else:
+                    # If no components meet the size threshold, keep an empty graph
+                    self.graph = nx.Graph()
+                    self.n_nodes = 0
+                    self.community_labels = np.array([], dtype=int)
+                    self.degree_factors = np.zeros(0)
+                    self.adjacency = sp.csr_matrix((0, 0))
+                    self.features = None if universe.feature_dim > 0 else None
+                    self.node_map = {}
+                    self.reverse_node_map = {}
+                    self.node_labels = np.zeros(0, dtype=int)
+                    self.node_clusters = None
+                    self.neighborhood_analyzer = None
+                    self.label_generator = None
+            self.timing_info['graph_reconstruction'] = time.time() - start
+            
+            check_timeout()
+            
+            # Time: Feature generation
+            start = time.time()
+            if universe.feature_dim > 0:
+                # Get community assignments and map to universe community IDs
+                local_community_assignments = self.community_labels
+                universe_community_assignments = np.array(self.community_labels_universe_level)
+                
+                # Generate node clusters based on universe community assignments
+                self.node_clusters = universe.feature_generator.assign_node_clusters(universe_community_assignments)
+                
+                # Generate features based on node clusters
+                self.features = universe.feature_generator.generate_node_features(self.node_clusters)
+                
+                # Initialize these as None - they will be computed on demand
+                self.neighborhood_analyzer = None
+                self.label_generator = None
+                self.node_labels = None
+            else:
+                self.features = None
                 self.node_clusters = None
                 self.neighborhood_analyzer = None
                 self.label_generator = None
-        self.timing_info['graph_reconstruction'] = time.time() - start
-        
-        # Time: Feature generation
-        start = time.time()
-        if universe.feature_dim > 0:
-            # Get community assignments and map to universe community IDs
-            local_community_assignments = self.community_labels
-            universe_community_assignments = np.array(self.community_labels_universe_level)
+                self.node_labels = None
+            self.timing_info['feature_generation'] = time.time() - start
             
-            # Generate node clusters based on universe community assignments
-            self.node_clusters = universe.feature_generator.assign_node_clusters(universe_community_assignments)
-            
-            # Generate features based on node clusters
-            self.features = universe.feature_generator.generate_node_features(self.node_clusters)
-            
-            # Initialize these as None - they will be computed on demand
-            self.neighborhood_analyzer = None
-            self.label_generator = None
-            self.node_labels = None
-        else:
-            self.features = None
-            self.node_clusters = None
-            self.neighborhood_analyzer = None
-            self.label_generator = None
-            self.node_labels = None
-        self.timing_info['feature_generation'] = time.time() - start
-        
-        # Store total time
-        self.timing_info['total'] = time.time() - total_start
+            # Store total time
+            self.timing_info['total'] = time.time() - total_start
+
+        except TimeoutError:
+            raise TimeoutError("GraphSample initialization timed out")
 
     def _add_node_attributes(self):
         """Add node attributes to the graph."""
@@ -888,35 +755,6 @@ class GraphSample:
         # Directly assign each node to a random community
         return np.random.choice(K_sub, size=n_nodes)
 
-    def _generate_memberships_with_imbalance(
-        self, n_nodes: int, K_sub: int, community_imbalance: float = 0.0
-    ) -> np.ndarray:
-        """
-        Generate community assignments with controlled imbalance.
-        
-        Args:
-            n_nodes: Number of nodes
-            K_sub: Number of communities
-            community_imbalance: Controls how imbalanced communities are (0-1)
-                0 = perfectly balanced, 1 = maximally imbalanced
-                
-        Returns:
-            Array of community labels
-        """
-        if community_imbalance == 0.0:
-            # Balanced communities - equal probability
-            probs = np.ones(K_sub) / K_sub
-        else:
-            # Generate imbalanced distribution using Dirichlet with concentration parameter
-            # Lower alpha = more imbalanced
-            alpha = max(0.01, (1.0 - community_imbalance) * 10)  # Map 0-1 to 10-0.01
-            probs = np.random.dirichlet(np.ones(K_sub) * alpha)
-        
-        # Sample from categorical distribution
-        labels = np.random.choice(K_sub, size=n_nodes, p=probs)
-        
-        return labels
-
     def _generate_degree_factors(self, n_nodes: int, heterogeneity: float) -> np.ndarray:
         """
         Generate degree correction factors for nodes.
@@ -944,6 +782,93 @@ class GraphSample:
         
         return factors
     
+    # def _generate_community_degree_factors_improved(
+    #     self,
+    #     community_labels: np.ndarray,
+    #     degree_distribution_type: str,
+    #     degree_separation: float,
+    #     global_degree_params: dict,
+    # ) -> np.ndarray:
+    #     n_nodes = len(community_labels)
+    #     degree_factors = np.zeros(n_nodes)
+
+    #     # 1. Sample global degree distribution
+    #     if degree_distribution_type == "power_law":
+    #         exponent = global_degree_params.get("exponent", 2.5)
+    #         raw_degrees = np.random.pareto(exponent, size=n_nodes) + 1
+    #     elif degree_distribution_type == "exponential":
+    #         rate = global_degree_params.get("rate", 1.0)
+    #         raw_degrees = np.random.exponential(scale=1/rate, size=n_nodes)
+    #     elif degree_distribution_type == "uniform":
+    #         low = global_degree_params.get("min_degree", 1.0)
+    #         high = global_degree_params.get("max_degree", 10.0)
+    #         raw_degrees = np.random.uniform(low, high, size=n_nodes)
+    #     else:
+    #         raise ValueError("Unknown distribution type")
+
+    #     sorted_degrees = np.sort(raw_degrees)
+    #     assigned_indices = np.zeros(n_nodes, dtype=bool)
+
+    #     # Get unique communities and their universe IDs
+    #     local_comm_ids = np.unique(community_labels)
+    #     K = len(local_comm_ids)
+    #     total_nodes = n_nodes
+
+    #     # Get universe degree centers for our communities
+    #     universe_degree_centers = np.array([
+    #         self.universe.degree_centers[self.community_id_mapping[local_comm_id]]
+    #         for local_comm_id in local_comm_ids
+    #     ])
+
+    #     # Order communities by universe degree center (lowest to highest)
+    #     comm_order = np.argsort(universe_degree_centers)
+    #     ordered_comms = local_comm_ids[comm_order]
+
+    #     # Decide window width:
+    #     # At separation=0: full width; at 1: just enough for community size
+    #     min_window_fraction = 1.0 / K  # Minimum window size (just fits community size)
+    #     window_fraction = min_window_fraction + (1.0 - min_window_fraction) * (1 - degree_separation)
+    #     window_width = int(np.round(window_fraction * total_nodes))
+
+    #     # Center positions along the degree spectrum (spread equally between 0 and n_nodes-1)
+    #     if K == 1:
+    #         centers = [total_nodes // 2]
+    #     else:
+    #         centers = np.linspace(window_width // 2, total_nodes - window_width // 2, K, dtype=int)
+
+    #     # For each community, assign its nodes to available degree indices within its window
+    #     for comm_idx, comm in enumerate(ordered_comms):
+    #         nodes = np.where(community_labels == comm)[0]
+    #         n_comm = len(nodes)
+
+    #         # Determine window bounds
+    #         c = centers[comm_idx]
+    #         window_start = max(0, c - window_width // 2)
+    #         window_end = min(total_nodes, c + window_width // 2)
+    #         available_in_window = [i for i in range(window_start, window_end) if not assigned_indices[i]]
+
+    #         # If not enough available in window (can happen with large overlap/small separation), expand outwards
+    #         if len(available_in_window) < n_comm:
+    #             extras_needed = n_comm - len(available_in_window)
+    #             # Pick random from the rest
+    #             extra_indices = [i for i in range(total_nodes) if not assigned_indices[i] and i not in available_in_window]
+    #             if extras_needed > 0 and len(extra_indices) >= extras_needed:
+    #                 available_in_window += list(np.random.choice(extra_indices, size=extras_needed, replace=False))
+    #             else:
+    #                 # Fallback: take whatever is left, even if fewer
+    #                 available_in_window += extra_indices
+
+    #         # Randomly assign indices in window to nodes
+    #         chosen_indices = np.random.choice(available_in_window, size=n_comm, replace=False)
+    #         for node, deg_idx in zip(nodes, chosen_indices):
+    #             degree_factors[node] = sorted_degrees[deg_idx]
+    #             assigned_indices[deg_idx] = True
+
+    #     # Normalize to mean 1 to not influence the edge density -> just the degree difference matters
+    #     degree_factors = degree_factors / degree_factors.mean()
+
+    #     return degree_factors
+    
     def _generate_community_degree_factors_improved(
         self,
         community_labels: np.ndarray,
@@ -952,8 +877,7 @@ class GraphSample:
         global_degree_params: dict,
     ) -> np.ndarray:
         n_nodes = len(community_labels)
-        degree_factors = np.zeros(n_nodes)
-
+        
         # 1. Sample global degree distribution
         if degree_distribution_type == "power_law":
             exponent = global_degree_params.get("exponent", 2.5)
@@ -968,66 +892,91 @@ class GraphSample:
         else:
             raise ValueError("Unknown distribution type")
 
+        # 2. Sort degrees
         sorted_degrees = np.sort(raw_degrees)
-        assigned_indices = np.zeros(n_nodes, dtype=bool)
-
-        # Get unique communities and their universe IDs
-        local_comm_ids = np.unique(community_labels)
-        K = len(local_comm_ids)
-        total_nodes = n_nodes
-
-        # Get universe degree centers for our communities
+        
+        # 3. Get universe degree centers for our communities
+        K = len(self.communities)
         universe_degree_centers = np.array([
             self.universe.degree_centers[self.community_id_mapping[local_comm_id]]
-            for local_comm_id in local_comm_ids
+            for local_comm_id in range(K)
         ])
-
-        # Order communities by universe degree center (lowest to highest)
+        
+        # 4. Order communities by universe degree center (lowest to highest)
         comm_order = np.argsort(universe_degree_centers)
-        ordered_comms = local_comm_ids[comm_order]
-
-        # Decide window width:
-        # At separation=0: full width; at 1: just enough for community size
-        min_window_fraction = 1.0 / K  # Minimum window size (just fits community size)
-        window_fraction = min_window_fraction + (1.0 - min_window_fraction) * (1 - degree_separation)
-        window_width = int(np.round(window_fraction * total_nodes))
-
-        # Center positions along the degree spectrum (spread equally between 0 and n_nodes-1)
+        ordered_degree_centers = universe_degree_centers[comm_order]
+        
+        # 5. Map universe degree centers to positions preserving relative distances
         if K == 1:
-            centers = [total_nodes // 2]
+            community_means = [n_nodes // 2]
         else:
-            centers = np.linspace(window_width // 2, total_nodes - window_width // 2, K, dtype=int)
-
-        # For each community, assign its nodes to available degree indices within its window
-        for comm_idx, comm in enumerate(ordered_comms):
-            nodes = np.where(community_labels == comm)[0]
-            n_comm = len(nodes)
-
-            # Determine window bounds
-            c = centers[comm_idx]
-            window_start = max(0, c - window_width // 2)
-            window_end = min(total_nodes, c + window_width // 2)
-            available_in_window = [i for i in range(window_start, window_end) if not assigned_indices[i]]
-
-            # If not enough available in window (can happen with large overlap/small separation), expand outwards
-            if len(available_in_window) < n_comm:
-                extras_needed = n_comm - len(available_in_window)
-                # Pick random from the rest
-                extra_indices = [i for i in range(total_nodes) if not assigned_indices[i] and i not in available_in_window]
-                if extras_needed > 0 and len(extra_indices) >= extras_needed:
-                    available_in_window += list(np.random.choice(extra_indices, size=extras_needed, replace=False))
-                else:
-                    # Fallback: take whatever is left, even if fewer
-                    available_in_window += extra_indices
-
-            # Randomly assign indices in window to nodes
-            chosen_indices = np.random.choice(available_in_window, size=n_comm, replace=False)
-            for node, deg_idx in zip(nodes, chosen_indices):
-                degree_factors[node] = sorted_degrees[deg_idx]
-                assigned_indices[deg_idx] = True
-
-        # Normalize to mean 1 for consistency
+            # Scale the actual degree center values to [0, n_nodes-1] range
+            min_center = np.min(ordered_degree_centers)
+            max_center = np.max(ordered_degree_centers)
+            
+            if max_center == min_center:
+                # All centers are the same, spread evenly
+                community_means = np.linspace(0, n_nodes - 1, K)
+            else:
+                # Scale preserving relative distances
+                scaled_centers = (ordered_degree_centers - min_center) / (max_center - min_center)
+                community_means = scaled_centers * (n_nodes - 1)
+        
+        # 6. Calculate standard deviation based on degree_separation
+        if degree_separation == 1.0:
+            # For perfect separation, make std tight enough to avoid overlap
+            if K > 1:
+                min_distance = np.min(np.diff(community_means))
+                community_std = max(1.0, min_distance / 6)  # 3*std = half the minimum distance
+            else:
+                community_std = 1.0
+        else:
+            # Linear interpolation between tight and wide
+            max_std = n_nodes / 3  # Wide case
+            min_std = 1.0 if K == 1 else max(1.0, np.min(np.diff(community_means)) / 6)  # Tight case
+            community_std = min_std + (1 - degree_separation) * (max_std - min_std)
+        
+        # 7. Create available positions array and sample for each node
+        available_positions = list(range(n_nodes))
+        degree_factors = np.zeros(n_nodes)
+        
+        # 8. For each node, sample from its community's truncated normal distribution
+        for node_idx in range(n_nodes):
+            community_local_idx = community_labels[node_idx]
+            community_rank = np.where(comm_order == community_local_idx)[0][0]
+            
+            # Get the mean for this community's distribution
+            mean_pos = community_means[community_rank]
+            std_pos = community_std
+            
+            if not available_positions:
+                # This shouldn't happen, but fallback
+                degree_factors[node_idx] = sorted_degrees[node_idx % n_nodes]
+                continue
+            
+            # Sample from truncated normal distribution over available positions
+            if len(available_positions) == 1:
+                # Only one position left, take it
+                chosen_pos = available_positions[0]
+            else:
+                # Calculate probabilities for each available position based on normal distribution
+                probabilities = np.array([
+                    np.exp(-0.5 * ((pos - mean_pos) / std_pos) ** 2)
+                    for pos in available_positions
+                ])
+                probabilities = probabilities / np.sum(probabilities)  # Normalize
+                
+                # Sample from available positions based on probabilities
+                chosen_idx = np.random.choice(len(available_positions), p=probabilities)
+                chosen_pos = available_positions[chosen_idx]
+            
+            # Assign the degree and remove position from available
+            degree_factors[node_idx] = sorted_degrees[chosen_pos]
+            available_positions.remove(chosen_pos)
+        
+        # 9. Normalize to mean 1 to not influence edge density
         degree_factors = degree_factors / degree_factors.mean()
+        
         return degree_factors
 
     def _generate_edges(
@@ -1035,8 +984,7 @@ class GraphSample:
         community_labels: np.ndarray,
         P_sub: np.ndarray,
         degree_factors: np.ndarray,
-        noise: float = 0.0,
-        min_edge_density: float = 0.005,
+        min_edge_density: float = 0.001,
         max_retries: int = 5
     ) -> sp.spmatrix:
         """
@@ -1047,7 +995,6 @@ class GraphSample:
             community_labels: Node community assignments (indices)
             P_sub: Community-community probability matrix
             degree_factors: Node degree factors
-            noise: Edge noise level
             min_edge_density: Minimum acceptable edge density
             max_retries: Maximum number of retries if graph is too sparse
             
@@ -1069,11 +1016,6 @@ class GraphSample:
             
             # Apply degree correction
             edge_probs *= degree_factors[i_nodes] * degree_factors[j_nodes]
-            
-            # Add noise if specified
-            if noise > 0:
-                edge_probs *= (1 + np.random.uniform(-noise, noise, size=len(edge_probs)))
-                edge_probs = np.clip(edge_probs, 0, 1)
             
             # Sample edges
             edges = np.random.random(len(edge_probs)) < edge_probs
@@ -1100,7 +1042,6 @@ class GraphSample:
             if attempt < max_retries - 1:
                 print(f"Attempt {attempt + 1}: Graph too sparse (density={actual_density:.4f}). Retrying with adjusted probabilities...")
                 P_sub = P_sub * 2  # Double the connection probabilities
-                noise = noise * 0.5  # Reduce noise to maintain signal
             else:
                 print(f"Warning: Could not achieve minimum edge density after {max_retries} attempts.")
                 print(f"Final density: {actual_density:.4f}")
@@ -1111,19 +1052,23 @@ class GraphSample:
     def _scale_probability_matrix(
         self, 
         P_sub: np.ndarray, 
-        target_density: Optional[float] = None, 
-        target_homophily: Optional[float] = None
+        target_avg_degree: Optional[float] = None, 
+        target_homophily: Optional[float] = None,
+        n_nodes: Optional[int] = None
     ) -> np.ndarray:
-        """
-        Scale a probability matrix to achieve target density and homophily
-        while preserving relative probabilities within communities.
-        """
         n = P_sub.shape[0]
         P_scaled = P_sub.copy()
         
         # Use instance target values if not specified
-        target_density = target_density if target_density is not None else self.target_density
+        target_avg_degree = target_avg_degree if target_avg_degree is not None else self.target_average_degree
         target_homophily = target_homophily if target_homophily is not None else self.target_homophily
+        n_nodes = n_nodes if n_nodes is not None else self.n_nodes
+        
+        # Convert target average degree to equivalent density
+        # avg_degree = 2 * edges / n_nodes
+        # density = edges / (n_nodes * (n_nodes - 1) / 2)
+        # Therefore: density = avg_degree / (n_nodes - 1)
+        target_density = target_avg_degree / (n_nodes - 1)
         
         # Create masks for diagonal and off-diagonal elements
         diagonal_mask = np.eye(n, dtype=bool)
@@ -1169,18 +1114,92 @@ class GraphSample:
         # NOW ensure all probabilities are in [0, 1] for actual graph generation
         P_scaled = np.clip(P_scaled, 0, 1)
         
-        # Recalculate actual values after clipping
-        actual_diagonal_sum = np.sum(P_scaled[diagonal_mask])
-        actual_total_sum = np.sum(P_scaled)
+        # # Recalculate actual values after clipping
+        # actual_diagonal_sum = np.sum(P_scaled[diagonal_mask])
+        # actual_total_sum = np.sum(P_scaled)
         
-        # If clipping significantly affected our targets, do one final density adjustment
-        actual_density = actual_total_sum / (n * n)
-        if abs(actual_density - target_density) > 1e-3:
-            density_correction = target_density / actual_density
-            P_scaled = P_scaled * density_correction
-            P_scaled = np.clip(P_scaled, 0, 1)  # Clip again after final adjustment
+        # # If clipping significantly affected our targets, do one final density adjustment
+        # actual_density = actual_total_sum / (n * n)
+        # if abs(actual_density - target_density) > 1e-3:
+        #     density_correction = target_density / actual_density
+        #     P_scaled = P_scaled * density_correction
+        #     P_scaled = np.clip(P_scaled, 0, 1)  # Clip again after final adjustment
         
         return P_scaled
+
+    # def _scale_probability_matrix(
+    #     self, 
+    #     P_sub: np.ndarray, 
+    #     target_density: Optional[float] = None, 
+    #     target_homophily: Optional[float] = None
+    # ) -> np.ndarray:
+    #     """
+    #     Scale a probability matrix to achieve target density and homophily
+    #     while preserving relative probabilities within communities.
+    #     """
+    #     n = P_sub.shape[0]
+    #     P_scaled = P_sub.copy()
+        
+    #     # Use instance target values if not specified
+    #     target_density = target_density if target_density is not None else self.target_density
+    #     target_homophily = target_homophily if target_homophily is not None else self.target_homophily
+        
+    #     # Create masks for diagonal and off-diagonal elements
+    #     diagonal_mask = np.eye(n, dtype=bool)
+    #     off_diagonal_mask = ~diagonal_mask
+        
+    #     # Get current values - no clipping yet
+    #     diagonal_elements = P_sub[diagonal_mask]
+    #     off_diagonal_elements = P_sub[off_diagonal_mask]
+        
+    #     # Calculate current sums
+    #     diagonal_sum = np.sum(diagonal_elements)
+    #     off_diagonal_sum = np.sum(off_diagonal_elements)
+    #     total_sum = diagonal_sum + off_diagonal_sum
+        
+    #     # Calculate target sums
+    #     target_total_sum = target_density * n * n  # Total probability mass
+    #     target_diagonal_sum = target_homophily * target_total_sum
+    #     target_off_diagonal_sum = target_total_sum - target_diagonal_sum
+        
+    #     # Calculate scaling factors
+    #     diagonal_scale = 1.0
+    #     off_diagonal_scale = 1.0
+        
+    #     if diagonal_sum > 0:
+    #         diagonal_scale = target_diagonal_sum / diagonal_sum
+        
+    #     if off_diagonal_sum > 0:
+    #         off_diagonal_scale = target_off_diagonal_sum / off_diagonal_sum
+        
+    #     # Apply scaling
+    #     P_scaled[diagonal_mask] *= diagonal_scale
+    #     P_scaled[off_diagonal_mask] *= off_diagonal_scale
+        
+    #     # Handle special cases where there are no diagonal or off-diagonal elements
+    #     if diagonal_sum == 0 and target_diagonal_sum > 0:
+    #         # No existing diagonal elements, but we need some
+    #         P_scaled[diagonal_mask] = target_diagonal_sum / n
+        
+    #     if off_diagonal_sum == 0 and target_off_diagonal_sum > 0:
+    #         # No existing off-diagonal elements, but we need some
+    #         P_scaled[off_diagonal_mask] = target_off_diagonal_sum / (n * n - n)
+        
+    #     # NOW ensure all probabilities are in [0, 1] for actual graph generation
+    #     P_scaled = np.clip(P_scaled, 0, 1)
+        
+    #     # Recalculate actual values after clipping
+    #     actual_diagonal_sum = np.sum(P_scaled[diagonal_mask])
+    #     actual_total_sum = np.sum(P_scaled)
+        
+    #     # If clipping significantly affected our targets, do one final density adjustment
+    #     actual_density = actual_total_sum / (n * n)
+    #     if abs(actual_density - target_density) > 1e-3:
+    #         density_correction = target_density / actual_density
+    #         P_scaled = P_scaled * density_correction
+    #         P_scaled = np.clip(P_scaled, 0, 1)  # Clip again after final adjustment
+        
+    #     return P_scaled
 
     def _generate_features(
         self,
@@ -1432,313 +1451,9 @@ class GraphSample:
             if hasattr(self, 'timing_info'):
                 self.timing_info['label_generation'] = time.time() - start
 
-    def _generate_degree_factors_configuration(
-        self,
-        n_nodes: int,
-        heterogeneity: float,  # Keep parameter for compatibility but don't use it
-        distribution: str,
-        power_law_exponent: float,
-        target_avg_degree: Optional[float]
-    ) -> np.ndarray:
+    def calculate_actual_probability_matrix(self) -> np.ndarray:
         """
-        Generate degree factors for configuration model with specified distribution.
-        """
-        if target_avg_degree is None:
-            # Calculate from target density
-            target_avg_degree = self.target_density * (n_nodes - 1)
-        if distribution == "power_law":
-            # Generate from power law distribution
-            # Use power_law_exponent directly without heterogeneity adjustment
-            exponent = self.config_model_params.get('power_law_exponent', power_law_exponent)
-            factors = np.random.pareto(exponent - 1, size=n_nodes) + 1
-        elif distribution == "exponential":
-            # Generate from exponential distribution
-            rate = self.config_model_params.get('rate', 0.5)
-            factors = np.random.exponential(1/rate, size=n_nodes) + 1  # Add 1 to ensure minimum degree of 1
-        elif distribution == "uniform":
-            # Generate from uniform distribution
-            min_factor = self.config_model_params.get('min_factor', 0.5)
-            max_factor = self.config_model_params.get('max_factor', 1.5)
-            factors = np.random.uniform(min_factor, max_factor, size=n_nodes)
-        else:
-            raise ValueError(f"Unknown degree distribution: {distribution}")
-        # Normalize to match target average degree
-        factors = factors / factors.mean() * target_avg_degree
-        # Ensure minimum degree of 1
-        factors = np.maximum(factors, 1)
-        return factors
-
-    def _generate_edges_configuration(
-        self,
-        community_labels: np.ndarray,
-        P_sub: np.ndarray,
-        degree_factors: np.ndarray,
-        noise: float = 0.0,
-        min_edge_density: float = None,  # Remove default values
-        max_retries: int = None,
-        max_mean_community_deviation: float = None,  # Remove default values
-        max_max_community_deviation: float = None,
-        max_parameter_search_attempts: int = None,
-        parameter_search_range: float = None
-    ) -> Optional[sp.spmatrix]:
-        """
-        Generate edges using the configuration model approach.
-        """
-        # ... existing code until deviation check ...
-
-        # 3. NOW check deviations on filtered graph
-        if not self.disable_deviation_limiting:
-            deviations = self._calculate_community_deviations(
-                filtered_graph,
-                filtered_labels,
-                P_sub
-            )
-            mean_deviation = deviations["mean_deviation"]
-            max_deviation = deviations["max_deviation"]
-            
-            # 4. If deviations are within limits, we've found a valid graph
-            if mean_deviation <= max_mean_community_deviation and max_deviation <= max_max_community_deviation:
-                # Store the EXACT graph and all its properties
-                self.graph = filtered_graph.copy()  # Make a deep copy
-                self.community_labels = filtered_labels.copy()
-                self.degree_factors = adjusted_factors[kept_nodes].copy()
-                self.adjacency = nx.adjacency_matrix(filtered_graph)
-                self.generation_method = self.degree_distribution
-                self.generation_params = current_params.copy()
-                self.node_map = node_map.copy()
-                self.reverse_node_map = {new: old for old, new in node_map.items()}
-                
-                return self.adjacency
-        else:
-            # Skip deviation check and accept the graph
-            self.graph = filtered_graph.copy()  # Make a deep copy
-            self.community_labels = filtered_labels.copy()
-            self.degree_factors = adjusted_factors[kept_nodes].copy()
-            self.adjacency = nx.adjacency_matrix(filtered_graph)
-            self.generation_method = self.degree_distribution
-            self.generation_params = current_params.copy()
-            self.node_map = node_map.copy()
-            self.reverse_node_map = {new: old for old, new in node_map.items()}
-            
-            return self.adjacency
-
-    def _generate_edges_configuration_single(
-        self,
-        community_labels: np.ndarray,
-        P_sub: np.ndarray,
-        degree_factors: np.ndarray,
-        noise: float = 0.0,
-        min_edge_density: float = None,  # Remove default value
-        max_retries: int = None  # Remove default value
-    ) -> Optional[sp.spmatrix]:
-        """
-        Single attempt at generating edges using configuration model.
-        Uses global parameters from instance for constraints.
-        """
-        # Use instance parameters instead of defaults
-        min_edge_density = self.min_edge_density if min_edge_density is None else min_edge_density
-        max_retries = self.max_retries if max_retries is None else max_retries
-
-        # Calculate target degrees based on degree factors
-        target_degrees = np.round(degree_factors).astype(int)
-        
-        # Ensure even sum of degrees
-        if np.sum(target_degrees) % 2 == 1:
-            target_degrees[np.random.randint(0, len(target_degrees))] += 1
-        
-        # Initialize edge list and remaining degrees
-        edges = []
-        remaining_degrees = target_degrees.copy()
-        
-        # Calculate connection probabilities between all node pairs
-        conn_probs = np.zeros((len(target_degrees), len(target_degrees)))
-        for i in range(len(target_degrees)):
-            for j in range(i+1, len(target_degrees)):
-                # Calculate community-based probability
-                comm_i = community_labels[i]
-                comm_j = community_labels[j]
-                prob = P_sub[comm_i, comm_j]
-                
-                # Add noise if specified
-                if noise > 0:
-                    prob *= (1 + np.random.uniform(-noise, noise))
-                    prob = np.clip(prob, 0, 1)
-                
-                conn_probs[i, j] = conn_probs[j, i] = prob
-        
-        # While there are nodes with remaining degree
-        while np.sum(remaining_degrees) > 1:
-            # Choose node with highest remaining degree
-            node_i = np.argmax(remaining_degrees)
-            
-            if remaining_degrees[node_i] == 0:
-                break
-            
-            # Calculate sampling probabilities for potential partners
-            # Only consider nodes with remaining degree
-            valid_partners = remaining_degrees > 0
-            valid_partners[node_i] = False  # No self-loops
-            
-            if not np.any(valid_partners):
-                break
-                
-            sampling_probs = conn_probs[node_i] * valid_partners
-            total_prob = np.sum(sampling_probs)
-            if total_prob == 0:
-                # Fallback: choose a valid partner uniformly at random
-                sampling_probs = valid_partners.astype(float)
-                sampling_probs = sampling_probs / np.sum(sampling_probs)
-            else:
-                sampling_probs = sampling_probs / total_prob
-            
-           
-            # Sample partner node
-            node_j = np.random.choice(len(target_degrees), p=sampling_probs)
-            
-            # Add edge
-            edges.append((node_i, node_j))
-            
-            # Update remaining degrees
-            remaining_degrees[node_i] -= 1
-            remaining_degrees[node_j] -= 1
-        
-        # Create sparse adjacency matrix
-        if edges:
-            rows, cols = zip(*edges)
-            data = np.ones(len(edges))
-            adj = sp.csr_matrix((data, (rows, cols)), shape=(len(target_degrees), len(target_degrees)))
-            
-            # Make symmetric (undirected graph)
-            adj = adj + adj.T
-            adj.data = np.ones_like(adj.data)  # Ensure no double edges
-            
-            # Calculate actual edge density
-            actual_density = adj.nnz / (len(target_degrees) * (len(target_degrees) - 1))
-            
-            # If density is too low, try again with adjusted probabilities
-            if actual_density < min_edge_density and max_retries > 0:
-                return self._generate_edges_configuration_single(
-                    community_labels,
-                    P_sub * 2,  # Double the connection probabilities
-                    degree_factors,
-                    noise * 0.5,  # Reduce noise to maintain signal
-                    min_edge_density,
-                    max_retries - 1
-                )
-            
-            return adj
-        
-        return None
-
-    def _enhance_triangles(self) -> None:
-        """Enhance triangle formation through probabilistic edge addition."""
-        if self.universe.triangle_density == 0:
-            return
-        
-        # Store initial adjacency matrix before triangle enhancement
-        self.initial_adjacency = self.adjacency.copy()
-        
-        # Get community triangle propensities for our communities
-        community_propensities = np.array([
-            self.universe.community_triangle_propensities[comm_id] 
-            for comm_id in self.communities
-        ])
-        
-        # Use vectorized version that does EXACTLY the same thing
-        self._add_triangles_vectorized(community_propensities)
-
-    def _add_triangles_vectorized(self, community_propensities: np.ndarray) -> None:
-        """Vectorized version of the original triangle enhancement logic."""
-        
-        adj_dense = self.adjacency.toarray()
-        n_nodes = len(self.community_labels)
-        
-        # Generate ALL possible triangles at once
-        triangles = np.array(list(combinations(range(n_nodes), 3)))
-        
-        if len(triangles) == 0:
-            return
-        
-        # Extract indices for vectorized operations
-        i_indices = triangles[:, 0]
-        j_indices = triangles[:, 1] 
-        k_indices = triangles[:, 2]
-        
-        # Check existing edges for all triangles at once
-        edge_ij = adj_dense[i_indices, j_indices]
-        edge_jk = adj_dense[j_indices, k_indices]
-        edge_ik = adj_dense[i_indices, k_indices]
-        
-        # Count existing edges per triangle
-        edges_exist = edge_ij + edge_jk + edge_ik
-        
-        # Filter: only triangles that are not complete (< 3 edges) but have 2-paths (>= 2 edges)
-        valid_mask = (edges_exist >= 2) & (edges_exist < 3)
-        valid_triangles = triangles[valid_mask]
-        
-        if len(valid_triangles) == 0:
-            return
-        
-        # Extract communities for valid triangles
-        valid_i = valid_triangles[:, 0]
-        valid_j = valid_triangles[:, 1]
-        valid_k = valid_triangles[:, 2]
-        
-        comm_i = self.community_labels[valid_i]
-        comm_j = self.community_labels[valid_j]
-        comm_k = self.community_labels[valid_k]
-        
-        # Calculate average propensities vectorized
-        propensities_i = community_propensities[comm_i]
-        propensities_j = community_propensities[comm_j]
-        propensities_k = community_propensities[comm_k]
-        
-        avg_propensities = (propensities_i + propensities_j + propensities_k) / 3
-        
-        # Calculate triangle probabilities
-        triangle_probs = self.universe.triangle_density * avg_propensities / len(self.communities)
-        
-        # Sample which triangles to complete
-        random_vals = np.random.random(len(triangle_probs))
-        selected_mask = random_vals < triangle_probs
-        selected_triangles = valid_triangles[selected_mask]
-        
-        if len(selected_triangles) == 0:
-            return
-        
-        # For selected triangles, add missing edges
-        for triangle in selected_triangles:
-            i, j, k = triangle
-            comm_i = self.community_labels[i]
-            comm_j = self.community_labels[j]
-            comm_k = self.community_labels[k]
-            
-            # Add missing edges (same logic as original)
-            if adj_dense[i, j] == 0:
-                if self._should_connect_communities(comm_i, comm_j):
-                    adj_dense[i, j] = adj_dense[j, i] = 1
-            
-            if adj_dense[j, k] == 0:
-                if self._should_connect_communities(comm_j, comm_k):
-                    adj_dense[j, k] = adj_dense[k, j] = 1
-            
-            if adj_dense[i, k] == 0:
-                if self._should_connect_communities(comm_i, comm_k):
-                    adj_dense[i, k] = adj_dense[k, i] = 1
-        
-        # Convert back to sparse
-        self.adjacency = sp.csr_matrix(adj_dense)
-
-    def _should_connect_communities(self, comm_a: int, comm_b: int) -> bool:
-        """Simple check if communities should be connected."""
-        return self.P_sub[comm_a, comm_b] > 0.01
-
-    def analyze_community_connections(self) -> Dict[str, Any]:
-        """
-        Analyze community connection patterns and deviations from expected probabilities.
-        
-        Returns:
-            Dictionary with analysis results
+        Calculate the actual probability matrix for the graph.
         """
         n_communities = len(self.communities)
         actual_matrix = np.zeros((n_communities, n_communities))
@@ -1771,6 +1486,18 @@ class GraphSample:
                     n1, n2 = community_sizes[i], community_sizes[j]
                     if n1 > 0 and n2 > 0:
                         actual_matrix[i, j] = actual_matrix[i, j] / (n1 * n2)
+        
+        return actual_matrix, community_sizes, connection_counts
+
+    def analyze_community_connections(self) -> Dict[str, Any]:
+        """
+        Analyze community connection patterns and deviations from expected probabilities.
+        
+        Returns:
+            Dictionary with analysis results
+        """
+        n_communities = len(self.communities)
+        actual_matrix, community_sizes, connection_counts = self.calculate_actual_probability_matrix()
         
         # Calculate deviations
         deviation_matrix = np.abs(actual_matrix - self.P_sub)
@@ -2245,7 +1972,7 @@ class GraphSample:
 
     def calculate_community_signals(self,
                                 structure_metric: str = 'kl',
-                                degree_method: str = "naive_bayes",
+                                degree_signal_calc_method: str = "naive_bayes",
                                 degree_metric: str = "accuracy",
                                 cv_folds: int = 5,
                                 random_state: int = 42) -> Dict[str, Any]:
@@ -2254,7 +1981,7 @@ class GraphSample:
         
         Args:
             structure_metric: Divergence metric for structure signal ('kl', 'js', 'cosine')
-            degree_method: Method for degree signal ("naive_bayes", "quantile_binning")
+            degree_signal_calc_method: Method for degree signal ("naive_bayes", "quantile_binning")
             degree_metric: Evaluation metric for degree signal ("accuracy", "nmi", "ari")
             cv_folds: Number of cross-validation folds for degree signal
             random_state: Random seed for reproducibility
@@ -2292,7 +2019,7 @@ class GraphSample:
         # Degree signal
         try:
             degree_signal = self.calculate_degree_signal(
-                method=degree_method,
+                method=degree_signal_calc_method,
                 metric=degree_metric,
                 cv_folds=cv_folds,
                 random_state=random_state
@@ -2321,7 +2048,7 @@ class GraphSample:
         # Add metadata
         signals['method_info'] = {
             'structure_metric': structure_metric,
-            'degree_method': degree_method,
+            'degree_signal_calc_method': degree_signal_calc_method,
             'degree_metric': degree_metric,
             'triangle_signal': triangle_signal,
             'cv_folds': cv_folds
@@ -2417,79 +2144,3 @@ class GraphSample:
         # Update node attributes in the graph
         for i in range(self.n_nodes):
             self.graph.nodes[i]['features'] = self.features[i].tolist()
-
-    def analyze_triangles(self) -> Dict[str, Any]:
-        """Analyze triangles in the graph.
-        
-        Returns:
-            Dict containing:
-            - total_triangles: Total number of triangles in the graph
-            - triangles_per_community: Dict mapping community ID to number of triangles
-            - additional_triangles_per_community: Dict mapping community ID to number of additionally created triangles
-            - triangle_propensity_correlation: Correlation between community triangle counts and propensities
-        """
-        # Convert to dense for easier manipulation
-        adj_dense = self.adjacency.toarray()
-        n_nodes = len(self.community_labels)
-        
-        # Count triangles per community (using universe community IDs)
-        triangles_per_community = {comm: 0 for comm in self.communities}
-        additional_triangles_per_community = {comm: 0 for comm in self.communities}
-        total_triangles = 0
-        total_additional_triangles = 0
-        
-        # Get community propensities for triangle assignment
-        # Map universe community IDs to their propensities
-        community_propensities = {
-            comm_id: self.universe.community_triangle_propensities[comm_id]
-            for comm_id in self.communities
-        }
-        
-        # For each potential triangle (i, j, k)
-        for i in range(n_nodes):
-            for j in range(i + 1, n_nodes):
-                for k in range(j + 1, n_nodes):
-                    # Check if triangle exists in final graph
-                    if adj_dense[i, j] and adj_dense[j, k] and adj_dense[i, k]:
-                        total_triangles += 1
-                        
-                        # Get communities involved (using universe community IDs)
-                        comm_i = self.community_labels_universe_level[i]
-                        comm_j = self.community_labels_universe_level[j]
-                        comm_k = self.community_labels_universe_level[k]
-                        
-                        # Find the community with highest propensity among the three
-                        comm_props = [
-                            (comm_i, community_propensities[comm_i]),
-                            (comm_j, community_propensities[comm_j]),
-                            (comm_k, community_propensities[comm_k])
-                        ]
-                        primary_comm = max(comm_props, key=lambda x: x[1])[0]
-                        
-                        # Count triangle only for the primary community
-                        triangles_per_community[primary_comm] += 1
-                        
-                        # Check if this was an additional triangle
-                        if hasattr(self, 'initial_adjacency'):
-                            initial_adj_dense = self.initial_adjacency.toarray()
-                            if not (initial_adj_dense[i, j] and initial_adj_dense[j, k] and initial_adj_dense[i, k]):
-                                total_additional_triangles += 1
-                                additional_triangles_per_community[primary_comm] += 1
-        
-        # Get community propensities for our communities
-        community_propensities_array = np.array([
-            self.universe.community_triangle_propensities[comm_id] 
-            for comm_id in self.communities
-        ])
-        
-        # Calculate correlation between triangle counts and propensities
-        triangle_counts = np.array([triangles_per_community[comm] for comm in self.communities])
-        correlation = np.corrcoef(triangle_counts, community_propensities_array)[0, 1]
-        
-        return {
-            "total_triangles": total_triangles,
-            "total_additional_triangles": total_additional_triangles,
-            "triangles_per_community": triangles_per_community,
-            "additional_triangles_per_community": additional_triangles_per_community,
-            "triangle_propensity_correlation": correlation
-        }
