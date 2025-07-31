@@ -1,5 +1,0 @@
-dataset_name,num_graphs,parameters,date_analyzed
-PPI,24,"homophily,avg_degree,clustering_coefficient,power_law_exponent,density,triangle_density,node_count,avg_communities_per_node",2025-05-07 12:35:02
-Twitch,1,"homophily,avg_degree,clustering_coefficient,power_law_exponent,density,triangle_density,node_count,avg_communities_per_node",2025-05-07 12:35:03
-MUTAG,135,"homophily,avg_degree,clustering_coefficient,power_law_exponent,density,triangle_density,node_count,avg_communities_per_node",2025-05-07 12:35:03
-ENZYMES,595,"homophily,avg_degree,clustering_coefficient,power_law_exponent,density,triangle_density,node_count,avg_communities_per_node",2025-05-07 12:35:03

@@ -270,6 +270,7 @@ class GraphFamilyGenerator:
                         pbar.update(1)
                     
                 except Exception as e:
+                    print(f"Failed to generate graph after {attempts} attempts: {e}")
                     if attempts == max_attempts_per_graph:
                         warnings.warn(f"Failed to generate graph after {attempts} attempts: {e}")
                         failed_graphs += 1
@@ -633,7 +634,8 @@ class GraphFamilyGenerator:
             'community_counts': [],
             'homophily_levels': [],
             'nr_of_triangles': [],
-            'generation_methods': []
+            'generation_methods': [],
+            'degree_distributions': []
         }
         
         for graph in self.graphs:
@@ -682,6 +684,13 @@ class GraphFamilyGenerator:
             # Track generation method
             if hasattr(graph, 'generation_method'):
                 properties['generation_methods'].append(graph.generation_method)
+            
+            # Extract degree distribution
+            if graph.n_nodes > 0:
+                degrees = list(dict(graph.graph.degree()).values())
+                properties['degree_distributions'].append(degrees)
+            else:
+                properties['degree_distributions'].append([])
         
         # Calculate statistics and convert to native Python types
         for key in ['node_counts', 'edge_counts', 'densities', 'avg_degrees', 'clustering_coefficients', 'community_counts', 'homophily_levels', 'nr_of_triangles']:
@@ -705,12 +714,33 @@ class GraphFamilyGenerator:
         
         return properties
    
-    def analyze_graph_family_learning_signals(self) -> Dict[str, Any]:
-        """Analyze the learning signals of the graph family."""
+    def analyze_graph_family_signals(self) -> Dict[str, Any]:
+        """Analyze the signals of the graph family."""
         if not self.graphs:
-            raise ValueError("No graphs in family. Please generate family first before analyzing learning signals.")
+            raise ValueError("No graphs in family. Please generate family first before analyzing signals.")
         
-        # Calculate the learning signals
+        # Calculate the signals
+        signals = {
+            'feature_signal': [],
+            'degree_signal': [],
+            'triangle_signal': [],
+            'structure_signal': []
+        }
+        
+        for graph in self.graphs:
+            signals['feature_signal'].append(graph.calculate_feature_signal())
+            signals['degree_signal'].append(graph.calculate_degree_signal())
+            signals['triangle_signal'].append(graph.calculate_triangle_community_signal())
+            signals['structure_signal'].append(graph.calculate_structure_signal())
+        
+        return signals
+
+    def analyze_graph_family_consistency(self) -> Dict[str, Any]:
+        """Analyze the consistency of the graph family."""
+        if not self.graphs:
+            raise ValueError("No graphs in family. Please generate family first before analyzing consistency.")
+        
+        # Calculate the consistency
         results = {}
         
         # 1. Pattern preservation (do communities RELATIVELY connect more to the communities they are supposed to connect to?)
@@ -734,6 +764,13 @@ class GraphFamilyGenerator:
             results['degree_consistency'] = degree_consistency
         except Exception as e:
             results['degree_consistency'] = []
+
+        # 4. Co-occurrence consistency (do communities co-occur in the family as expected?)
+        try:
+            cooccurrence_consistency = self._calculate_cooccurrence_consistency()
+            results['cooccurrence_consistency'] = cooccurrence_consistency
+        except Exception as e:
+            results['cooccurrence_consistency'] = 0.0
 
         return results
 
@@ -838,6 +875,26 @@ class GraphFamilyGenerator:
         
         return consistency_scores
 
+    def _calculate_cooccurrence_consistency(self) -> List[float]:
+        """
+        Measure how well community co-occurrence patterns are preserved.
+        """        
+        # Calculate how often communities co-occur in the family
+        cooccurrence_counts_matrix = np.zeros((self.universe.K, self.universe.K))
+        for graph in self.graphs:
+            for i in range(len(graph.communities)):
+                for j in range(i+1, len(graph.communities)):
+                    cooccurrence_counts_matrix[graph.community_id_mapping[i], graph.community_id_mapping[j]] += 1
+                    cooccurrence_counts_matrix[graph.community_id_mapping[j], graph.community_id_mapping[i]] += 1
+
+        print(cooccurrence_counts_matrix)
+        print(self.universe.community_cooccurrence_matrix)
+
+        # Calculate how correlated the cooccurrence counts are with the universe cooccurrence matrix
+        correlation, _ = pearsonr(cooccurrence_counts_matrix.flatten(), self.universe.community_cooccurrence_matrix.flatten())
+        
+        return correlation
+        
 
 class FamilyConsistencyAnalyzer:
     """

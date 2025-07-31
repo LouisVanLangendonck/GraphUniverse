@@ -346,6 +346,15 @@ class TransductiveExperiment:
     def _instantiate_model(self, model_name, input_dim, output_dim, is_regression, is_graph_level_task, hyperparams=None):
         # Helper to instantiate a model with given hyperparameters
         hp = hyperparams or {}
+        # --- GAT divisibility logic ---
+        if model_name == 'gat' and hp.get('concat_heads', True):
+            heads = hp.get('heads', 1)
+            hidden_dim = hp.get('hidden_dim', self.config.hidden_dim)
+            # Adjust hidden_dim to be divisible by heads
+            hp['hidden_dim'] = (hidden_dim // heads) * heads
+            if hp['hidden_dim'] < heads:
+                hp['hidden_dim'] = heads
+        # --- end GAT logic ---
         if model_name in self.config.gnn_types:
             return GNNModel(
                 input_dim=input_dim,

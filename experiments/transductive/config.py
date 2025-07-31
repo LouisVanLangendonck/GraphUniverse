@@ -54,7 +54,7 @@ class TransductiveExperimentConfig:
     degree_distribution: str = "power_law"  # "power_law", "exponential", "uniform", "standard"
     
     # Degree distribution specific parameters
-    power_law_exponent_range: Tuple[float, float] = (2.0, 3.5)
+    power_law_exponent_range: Tuple[float, float] = (2.0, 2.0)
     power_law_x_min: float = 1.0
     exponential_rate_range: Tuple[float, float] = (0.3, 1.0)
     uniform_min_factor_range: Tuple[float, float] = (0.3, 0.7)

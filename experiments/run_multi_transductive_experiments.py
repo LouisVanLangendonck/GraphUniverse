@@ -55,7 +55,7 @@ def parse_args():
                         help='Metrics to compute for regression tasks')
     
     # Model selection and training parameters
-    parser.add_argument('--gnn_types', type=str, nargs='+', default=['gcn'],#, 'sage', 'gat', 'gin'],
+    parser.add_argument('--gnn_types', type=str, nargs='+', default=['gcn', 'sage', 'gat', 'gin'],
                         choices=['gcn', 'gat', 'sage', 'fagcn'],
                         help='Types of GNN models to run')
     parser.add_argument('--skip_gnn', action='store_true',
@@ -115,8 +115,8 @@ def parse_args():
     # Parameter ranges for sweep (only these three are ranges)
     parser.add_argument('--homophily_range', type=float, nargs='+', default=[0.2, 0.8, 0.3], help='Range of homophily values to sweep (start, end, [step])')
     parser.add_argument('--density_range', type=float, nargs='+', default=[0.1, 0.3, 0.2], help='Range of density values to sweep (start, end, [step])')
-    parser.add_argument('--num_nodes_range', type=int, nargs='+', default=[100, 150, 50], help='Range of num_nodes to sweep (start, end, [step])')
-    parser.add_argument('--degree_separation_values', type=float, nargs='+', default=[0.0, 1.0, 0.5], help='List of degree_separation to sweep (start, end, [step])')
+    parser.add_argument('--num_nodes_range', type=int, nargs='+', default=[150, 150, 50], help='Range of num_nodes to sweep (start, end, [step])')
+    parser.add_argument('--degree_separation_values', type=float, nargs='+', default=[0.5, 0.5, 0.5], help='List of degree_separation to sweep (start, end, [step])')
 
     # All other parameters are fixed (single value)
     parser.add_argument('--num_communities', type=int, default=8, help='Number of communities (fixed)')
@@ -126,7 +126,7 @@ def parse_args():
     parser.add_argument('--edge_noise', type=float, default=0.0, help='Edge noise (fixed)')
     parser.add_argument('--cluster_count_factor', type=float, default=1.0, help='Cluster count factor (fixed)')
     parser.add_argument('--center_variance', type=float, default=0.1, help='Center variance (fixed)')
-    parser.add_argument('--cluster_variance', type=float, default=0.5, help='Cluster variance (fixed)')
+    parser.add_argument('--cluster_variance', type=float, default=1.0, help='Cluster variance (fixed)')
     parser.add_argument('--assignment_skewness', type=float, default=0.0, help='Assignment skewness (fixed)')
     parser.add_argument('--community_exclusivity', type=float, default=1.0, help='Community exclusivity (fixed)')
     

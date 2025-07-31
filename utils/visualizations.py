@@ -43,7 +43,10 @@ __all__ = [
     'create_dccc_sbm_dashboard',
     'plot_degree_community_interaction',
     'add_dccc_visualization_to_app',
-    'visualize_community_cluster_assignments'
+    'visualize_community_cluster_assignments',
+    'plot_universe_cooccurrence_matrix',
+    'plot_universe_degree_centers',
+    'plot_universe_summary'
 ]
 
 def visualize_graph_generation_process(
@@ -2745,4 +2748,181 @@ def visualize_community_cluster_assignments(
     fig.suptitle(title, fontsize=14)
     fig.tight_layout(rect=[0, 0, 1, 0.96])  # Make room for suptitle
     
+    return fig
+
+def plot_universe_cooccurrence_matrix(
+    universe: 'GraphUniverse',
+    figsize: Tuple[int, int] = (10, 8),
+    cmap: str = "viridis",
+    title: str = "Universe Community Co-occurrence Matrix",
+    ax: Optional[plt.Axes] = None
+) -> plt.Figure:
+    """
+    Plot the universe's community co-occurrence matrix.
+    
+    Args:
+        universe: GraphUniverse instance
+        figsize: Figure size
+        cmap: Colormap for the heatmap
+        title: Figure title
+        ax: Optional axes to plot on
+        
+    Returns:
+        Matplotlib figure
+    """
+    if ax is None:
+        fig, ax = plt.subplots(figsize=figsize)
+    else:
+        fig = ax.figure
+    
+    # Get the co-occurrence matrix
+    cooccurrence_matrix = universe.community_cooccurrence_matrix
+    K = universe.K
+    
+    # Create heatmap
+    im = ax.imshow(cooccurrence_matrix, cmap=cmap, aspect='auto')
+    
+    # Add colorbar
+    cbar = plt.colorbar(im, ax=ax)
+    cbar.set_label("Co-occurrence Probability")
+    
+    # Set labels
+    ax.set_xticks(np.arange(K))
+    ax.set_yticks(np.arange(K))
+    ax.set_xticklabels([f"C{i}" for i in range(K)], rotation=45)
+    ax.set_yticklabels([f"C{i}" for i in range(K)])
+    ax.set_xlabel("Community ID")
+    ax.set_ylabel("Community ID")
+    
+    # Add text annotations
+    for i in range(K):
+        for j in range(K):
+            text = ax.text(j, i, f"{cooccurrence_matrix[i, j]:.2f}",
+                          ha="center", va="center", color="white" if cooccurrence_matrix[i, j] > 0.5 else "black")
+    
+    if title:
+        ax.set_title(title)
+    
+    fig.tight_layout()
+    return fig
+
+def plot_universe_degree_centers(
+    universe: 'GraphUniverse',
+    figsize: Tuple[int, int] = (12, 6),
+    color: str = "blue",
+    title: str = "Universe Degree Centers",
+    ax: Optional[plt.Axes] = None
+) -> plt.Figure:
+    """
+    Plot the universe's degree centers.
+    
+    Args:
+        universe: GraphUniverse instance
+        figsize: Figure size
+        color: Color for the bars
+        title: Figure title
+        ax: Optional axes to plot on
+        
+    Returns:
+        Matplotlib figure
+    """
+    if ax is None:
+        fig, ax = plt.subplots(figsize=figsize)
+    else:
+        fig = ax.figure
+    
+    # Get the degree centers
+    degree_centers = universe.degree_centers
+    K = universe.K
+    
+    # Create bar plot
+    bars = ax.bar(range(K), degree_centers, color=color, alpha=0.7, edgecolor='black')
+    
+    # Add value labels on bars
+    for i, (bar, value) in enumerate(zip(bars, degree_centers)):
+        ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.02,
+               f"{value:.2f}", ha="center", va="bottom", fontweight='bold')
+    
+    # Set labels
+    ax.set_xlabel("Community ID")
+    ax.set_ylabel("Degree Center Value")
+    ax.set_xticks(range(K))
+    ax.set_xticklabels([f"C{i}" for i in range(K)])
+    
+    # Add grid
+    ax.grid(True, alpha=0.3)
+    
+    # Add horizontal line at y=0
+    ax.axhline(y=0, color='black', linestyle='-', alpha=0.3)
+    
+    if title:
+        ax.set_title(title)
+    
+    fig.tight_layout()
+    return fig
+
+def plot_universe_summary(
+    universe: 'GraphUniverse',
+    figsize: Tuple[int, int] = (15, 10),
+    cmap: str = "viridis"
+) -> plt.Figure:
+    """
+    Create a comprehensive visualization of the universe properties.
+    
+    Args:
+        universe: GraphUniverse instance
+        figsize: Figure size
+        cmap: Colormap for the heatmap
+        
+    Returns:
+        Matplotlib figure with multiple subplots
+    """
+    fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=figsize)
+    
+    # 1. Inter-community probability matrix
+    im1 = ax1.imshow(universe.P, cmap=cmap, aspect='auto')
+    plt.colorbar(im1, ax=ax1, label="Edge Probability")
+    ax1.set_title("Inter-Community Probability Matrix")
+    ax1.set_xticks(np.arange(universe.K))
+    ax1.set_yticks(np.arange(universe.K))
+    ax1.set_xticklabels([f"C{i}" for i in range(universe.K)], rotation=45)
+    ax1.set_yticklabels([f"C{i}" for i in range(universe.K)])
+    
+    # 2. Co-occurrence matrix
+    im2 = ax2.imshow(universe.community_cooccurrence_matrix, cmap=cmap, aspect='auto')
+    plt.colorbar(im2, ax=ax2, label="Co-occurrence Probability")
+    ax2.set_title("Community Co-occurrence Matrix")
+    ax2.set_xticks(np.arange(universe.K))
+    ax2.set_yticks(np.arange(universe.K))
+    ax2.set_xticklabels([f"C{i}" for i in range(universe.K)], rotation=45)
+    ax2.set_yticklabels([f"C{i}" for i in range(universe.K)])
+    
+    # 3. Degree centers
+    bars = ax3.bar(range(universe.K), universe.degree_centers, color='blue', alpha=0.7, edgecolor='black')
+    for i, (bar, value) in enumerate(zip(bars, universe.degree_centers)):
+        ax3.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.02,
+                f"{value:.2f}", ha="center", va="bottom", fontweight='bold')
+    ax3.set_title("Degree Centers")
+    ax3.set_xlabel("Community ID")
+    ax3.set_ylabel("Degree Center Value")
+    ax3.set_xticks(range(universe.K))
+    ax3.set_xticklabels([f"C{i}" for i in range(universe.K)])
+    ax3.grid(True, alpha=0.3)
+    ax3.axhline(y=0, color='black', linestyle='-', alpha=0.3)
+    
+    # 4. Universe parameters summary
+    ax4.axis('off')
+    summary_text = f"""
+    Universe Parameters:
+    • Number of Communities (K): {universe.K}
+    • Feature Dimension: {universe.feature_dim}
+    • Inter-Community Variance: {universe.inter_community_variance:.3f}
+    • Community Co-occurrence Homogeneity: {universe.community_cooccurrence_homogeneity:.3f}
+    • Degree Center Method: {getattr(universe, 'degree_center_method', 'N/A')}
+    """
+    ax4.text(0.1, 0.9, summary_text, transform=ax4.transAxes, fontsize=12,
+             verticalalignment='top', bbox=dict(boxstyle='round', facecolor='lightblue', alpha=0.5))
+    
+    fig.suptitle("Universe Summary", fontsize=16, fontweight='bold')
+    fig.tight_layout()
     return fig

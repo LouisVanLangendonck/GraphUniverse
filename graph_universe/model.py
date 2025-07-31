@@ -312,7 +312,7 @@ class GraphUniverse:
             seed: Random seed
             
         Returns:
-            Symmetric K x K co-occurrence probability matrix
+            Symmetric K x K co-occurrence probability matrix (diagonal is always 0)
         """
         if seed is not None:
             np.random.seed(seed)
@@ -320,7 +320,7 @@ class GraphUniverse:
         if homogeneity == 1.0:
             # Perfectly homogeneous - all pairs equally likely
             matrix = np.ones((K, K)) / K
-            np.fill_diagonal(matrix, 1.0)  # Self-occurrence is always 1
+            np.fill_diagonal(matrix, 0.0)  # Self-occurrence is always 0
             return matrix
         
         # Generate heterogeneous matrix
@@ -337,8 +337,8 @@ class GraphUniverse:
         # Make it symmetric
         matrix = np.triu(upper_triangle, k=1) + np.triu(upper_triangle, k=1).T
         
-        # Set diagonal to 1.0 (self-occurrence)
-        np.fill_diagonal(matrix, 1.0)
+        # Set diagonal to 0.0 (self-occurrence is always 0)
+        np.fill_diagonal(matrix, 0.0)
         
         # Ensure all values are positive and reasonable
         matrix = np.clip(matrix, 0.01, 1.0)
@@ -348,6 +348,9 @@ class GraphUniverse:
         row_sums = np.sum(matrix, axis=1, keepdims=True)
         matrix = matrix / row_sums * K * base_prob * 2  # Scale to reasonable range
         matrix = np.clip(matrix, 0.01, 1.0)
+        
+        # Ensure diagonal stays at 0 after normalization
+        np.fill_diagonal(matrix, 0.0)
         
         return matrix
 
@@ -697,49 +700,7 @@ class GraphSample:
 
         except TimeoutError:
             raise TimeoutError("GraphSample initialization timed out")
-
-    def _add_node_attributes(self):
-        """Add node attributes to the graph."""
-        for i, node in enumerate(self.graph.nodes()):
-            # Get community label and map to universe community ID
-            local_comm_idx = self.community_labels[i]
-            universe_comm_id = self.community_id_mapping[local_comm_idx]
-            
-            # Create node attributes dictionary
-            node_attrs = {
-                "community": int(universe_comm_id),  # Store the actual universe community ID
-                "degree_factor": float(self.degree_factors[i])
-            }
-            
-            # Add features if available
-            if self.features is not None:
-                node_attrs["features"] = self.features[i].tolist()
-                
-            # Add cluster information if available
-            if self.node_clusters is not None:
-                node_attrs["feature_cluster"] = int(self.node_clusters[i])
-                
-            # Update node attributes
-            nx.set_node_attributes(self.graph, {node: node_attrs})
-    
-    def extract_parameters(self) -> Dict[str, float]:
-        """
-        Extract key parameters from this graph sample.
-        
-        Returns:
-            Dictionary of graph parameters
-        """
-        from utils.parameter_analysis import analyze_graph_parameters
-        
-        # Analyze parameters
-        params = analyze_graph_parameters(
-            self.graph,
-            self.community_labels,  # Pass community labels directly
-            self.communities
-        )
-        
-        return params
-
+  
     def _generate_memberships(self, n_nodes: int, K_sub: int) -> np.ndarray:
         """
         Generate community assignments for nodes.
@@ -781,93 +742,6 @@ class GraphSample:
         factors = factors / factors.mean()
         
         return factors
-    
-    # def _generate_community_degree_factors_improved(
-    #     self,
-    #     community_labels: np.ndarray,
-    #     degree_distribution_type: str,
-    #     degree_separation: float,
-    #     global_degree_params: dict,
-    # ) -> np.ndarray:
-    #     n_nodes = len(community_labels)
-    #     degree_factors = np.zeros(n_nodes)
-
-    #     # 1. Sample global degree distribution
-    #     if degree_distribution_type == "power_law":
-    #         exponent = global_degree_params.get("exponent", 2.5)
-    #         raw_degrees = np.random.pareto(exponent, size=n_nodes) + 1
-    #     elif degree_distribution_type == "exponential":
-    #         rate = global_degree_params.get("rate", 1.0)
-    #         raw_degrees = np.random.exponential(scale=1/rate, size=n_nodes)
-    #     elif degree_distribution_type == "uniform":
-    #         low = global_degree_params.get("min_degree", 1.0)
-    #         high = global_degree_params.get("max_degree", 10.0)
-    #         raw_degrees = np.random.uniform(low, high, size=n_nodes)
-    #     else:
-    #         raise ValueError("Unknown distribution type")
-
-    #     sorted_degrees = np.sort(raw_degrees)
-    #     assigned_indices = np.zeros(n_nodes, dtype=bool)
-
-    #     # Get unique communities and their universe IDs
-    #     local_comm_ids = np.unique(community_labels)
-    #     K = len(local_comm_ids)
-    #     total_nodes = n_nodes
-
-    #     # Get universe degree centers for our communities
-    #     universe_degree_centers = np.array([
-    #         self.universe.degree_centers[self.community_id_mapping[local_comm_id]]
-    #         for local_comm_id in local_comm_ids
-    #     ])
-
-    #     # Order communities by universe degree center (lowest to highest)
-    #     comm_order = np.argsort(universe_degree_centers)
-    #     ordered_comms = local_comm_ids[comm_order]
-
-    #     # Decide window width:
-    #     # At separation=0: full width; at 1: just enough for community size
-    #     min_window_fraction = 1.0 / K  # Minimum window size (just fits community size)
-    #     window_fraction = min_window_fraction + (1.0 - min_window_fraction) * (1 - degree_separation)
-    #     window_width = int(np.round(window_fraction * total_nodes))
-
-    #     # Center positions along the degree spectrum (spread equally between 0 and n_nodes-1)
-    #     if K == 1:
-    #         centers = [total_nodes // 2]
-    #     else:
-    #         centers = np.linspace(window_width // 2, total_nodes - window_width // 2, K, dtype=int)
-
-    #     # For each community, assign its nodes to available degree indices within its window
-    #     for comm_idx, comm in enumerate(ordered_comms):
-    #         nodes = np.where(community_labels == comm)[0]
-    #         n_comm = len(nodes)
-
-    #         # Determine window bounds
-    #         c = centers[comm_idx]
-    #         window_start = max(0, c - window_width // 2)
-    #         window_end = min(total_nodes, c + window_width // 2)
-    #         available_in_window = [i for i in range(window_start, window_end) if not assigned_indices[i]]
-
-    #         # If not enough available in window (can happen with large overlap/small separation), expand outwards
-    #         if len(available_in_window) < n_comm:
-    #             extras_needed = n_comm - len(available_in_window)
-    #             # Pick random from the rest
-    #             extra_indices = [i for i in range(total_nodes) if not assigned_indices[i] and i not in available_in_window]
-    #             if extras_needed > 0 and len(extra_indices) >= extras_needed:
-    #                 available_in_window += list(np.random.choice(extra_indices, size=extras_needed, replace=False))
-    #             else:
-    #                 # Fallback: take whatever is left, even if fewer
-    #                 available_in_window += extra_indices
-
-    #         # Randomly assign indices in window to nodes
-    #         chosen_indices = np.random.choice(available_in_window, size=n_comm, replace=False)
-    #         for node, deg_idx in zip(nodes, chosen_indices):
-    #             degree_factors[node] = sorted_degrees[deg_idx]
-    #             assigned_indices[deg_idx] = True
-
-    #     # Normalize to mean 1 to not influence the edge density -> just the degree difference matters
-    #     degree_factors = degree_factors / degree_factors.mean()
-
-    #     return degree_factors
     
     def _generate_community_degree_factors_improved(
         self,
@@ -1127,330 +1001,6 @@ class GraphSample:
         
         return P_scaled
 
-    # def _scale_probability_matrix(
-    #     self, 
-    #     P_sub: np.ndarray, 
-    #     target_density: Optional[float] = None, 
-    #     target_homophily: Optional[float] = None
-    # ) -> np.ndarray:
-    #     """
-    #     Scale a probability matrix to achieve target density and homophily
-    #     while preserving relative probabilities within communities.
-    #     """
-    #     n = P_sub.shape[0]
-    #     P_scaled = P_sub.copy()
-        
-    #     # Use instance target values if not specified
-    #     target_density = target_density if target_density is not None else self.target_density
-    #     target_homophily = target_homophily if target_homophily is not None else self.target_homophily
-        
-    #     # Create masks for diagonal and off-diagonal elements
-    #     diagonal_mask = np.eye(n, dtype=bool)
-    #     off_diagonal_mask = ~diagonal_mask
-        
-    #     # Get current values - no clipping yet
-    #     diagonal_elements = P_sub[diagonal_mask]
-    #     off_diagonal_elements = P_sub[off_diagonal_mask]
-        
-    #     # Calculate current sums
-    #     diagonal_sum = np.sum(diagonal_elements)
-    #     off_diagonal_sum = np.sum(off_diagonal_elements)
-    #     total_sum = diagonal_sum + off_diagonal_sum
-        
-    #     # Calculate target sums
-    #     target_total_sum = target_density * n * n  # Total probability mass
-    #     target_diagonal_sum = target_homophily * target_total_sum
-    #     target_off_diagonal_sum = target_total_sum - target_diagonal_sum
-        
-    #     # Calculate scaling factors
-    #     diagonal_scale = 1.0
-    #     off_diagonal_scale = 1.0
-        
-    #     if diagonal_sum > 0:
-    #         diagonal_scale = target_diagonal_sum / diagonal_sum
-        
-    #     if off_diagonal_sum > 0:
-    #         off_diagonal_scale = target_off_diagonal_sum / off_diagonal_sum
-        
-    #     # Apply scaling
-    #     P_scaled[diagonal_mask] *= diagonal_scale
-    #     P_scaled[off_diagonal_mask] *= off_diagonal_scale
-        
-    #     # Handle special cases where there are no diagonal or off-diagonal elements
-    #     if diagonal_sum == 0 and target_diagonal_sum > 0:
-    #         # No existing diagonal elements, but we need some
-    #         P_scaled[diagonal_mask] = target_diagonal_sum / n
-        
-    #     if off_diagonal_sum == 0 and target_off_diagonal_sum > 0:
-    #         # No existing off-diagonal elements, but we need some
-    #         P_scaled[off_diagonal_mask] = target_off_diagonal_sum / (n * n - n)
-        
-    #     # NOW ensure all probabilities are in [0, 1] for actual graph generation
-    #     P_scaled = np.clip(P_scaled, 0, 1)
-        
-    #     # Recalculate actual values after clipping
-    #     actual_diagonal_sum = np.sum(P_scaled[diagonal_mask])
-    #     actual_total_sum = np.sum(P_scaled)
-        
-    #     # If clipping significantly affected our targets, do one final density adjustment
-    #     actual_density = actual_total_sum / (n * n)
-    #     if abs(actual_density - target_density) > 1e-3:
-    #         density_correction = target_density / actual_density
-    #         P_scaled = P_scaled * density_correction
-    #         P_scaled = np.clip(P_scaled, 0, 1)  # Clip again after final adjustment
-        
-    #     return P_scaled
-
-    def _generate_features(
-        self,
-        memberships: np.ndarray,
-        prototypes: np.ndarray,
-        feature_signal: float,
-    ) -> np.ndarray:
-        """
-        Generate node features using the new SimplifiedFeatureGenerator.
-        
-        Args:
-            memberships: Node community assignments
-            prototypes: Not used in new implementation
-            feature_signal: Not used in new implementation
-            
-        Returns:
-            np.ndarray: Node features
-        """
-        if self.universe.feature_generator is None:
-            return np.zeros((len(memberships), 0))
-            
-        # Get community assignments for each node
-        community_assignments = np.argmax(memberships, axis=1)
-        
-        # Generate node clusters based on community assignments
-        node_clusters = self.universe.feature_generator.assign_node_clusters(community_assignments)
-        
-        # Generate features based on node clusters
-        features = self.universe.feature_generator.generate_node_features(node_clusters)
-        
-        return features
-
-    def _create_networkx_graph(self) -> nx.Graph:
-        """
-        Create a NetworkX graph representation.
-        
-        Returns:
-            NetworkX graph with node attributes
-        """
-        # Convert adjacency matrix to NetworkX graph
-        G = nx.from_scipy_sparse_array(self.adjacency)
-        
-        # Add node attributes
-        for i in range(self.n_nodes):
-            node_attrs = {
-                "community": int(self.community_labels[i]),  # Store the actual community ID
-                "degree_factor": float(self.degree_factors[i])
-            }
-            
-            # Add features if available
-            if self.features is not None:
-                node_attrs["features"] = self.features[i].tolist()
-                
-            # Update node attributes
-            nx.set_node_attributes(G, {i: node_attrs})
-            
-        return G
-
-    def generate_feature_regimes(
-        self,
-        n_regimes: int,
-        regime_strength: Optional[float] = None,
-        regime_overlap: Optional[float] = None,
-        seed: Optional[int] = None
-    ) -> Dict[str, np.ndarray]:
-        """
-        Generate feature regimes for the graph.
-        
-        Args:
-            n_regimes: Number of feature regimes to generate
-            regime_strength: How strongly features correlate with regime membership (0=random, 1=perfect)
-            regime_overlap: How much overlap between regimes (0=no overlap, 1=complete overlap)
-            seed: Random seed for reproducibility
-            
-        Returns:
-            Dictionary containing:
-            - regime_assignments: Node-regime membership matrix
-            - regime_features: Feature prototypes for each regime
-            - regime_correlation: Correlation matrix between regimes
-        """
-        if seed is not None:
-            np.random.seed(seed)
-            
-        # Use instance parameters if not specified
-        regime_strength = regime_strength if regime_strength is not None else self.feature_regime_strength
-        regime_overlap = regime_overlap if regime_overlap is not None else self.feature_regime_overlap
-        
-        # Generate regime prototypes
-        feature_dim = self.features.shape[1]
-        regime_features = np.random.normal(0, 1, size=(n_regimes, feature_dim))
-        regime_features = regime_features / np.linalg.norm(regime_features, axis=1, keepdims=True)
-        
-        # Generate regime assignments
-        regime_assignments = np.random.dirichlet(
-            np.ones(n_regimes) * (1 - regime_overlap) + regime_overlap,
-            size=self.n_nodes
-        )
-        
-        # Generate regime correlation matrix
-        regime_correlation = np.eye(n_regimes) * (1 - regime_overlap) + regime_overlap
-        
-        return {
-            "regime_assignments": regime_assignments,
-            "regime_features": regime_features,
-            "regime_correlation": regime_correlation
-        }
-
-    def analyze_neighborhood_features(
-        self,
-        hop_distance: int = 1,
-        feature_aggregation: str = "mean",
-        include_self: bool = True
-    ) -> Dict[str, np.ndarray]:
-        """
-        Analyze feature regimes in k-hop neighborhoods.
-        
-        Args:
-            hop_distance: Number of hops to consider
-            feature_aggregation: How to aggregate features ("mean", "max", "min")
-            include_self: Whether to include the node itself in the analysis
-            
-        Returns:
-            Dictionary containing:
-            - frequency_vectors: Matrix of regime frequencies in neighborhoods
-            - feature_vectors: Matrix of aggregated feature vectors
-        """
-        if self.neighborhood_analyzer is None:
-            raise ValueError("Feature regimes not enabled for this graph")
-            
-        # Get frequency vectors
-        frequency_vectors = self.neighborhood_analyzer.get_all_frequency_vectors(hop_distance)
-        
-        # Get feature vectors
-        feature_vectors = np.zeros((self.n_nodes, self.universe.feature_dim))
-        
-        for node in range(self.n_nodes):
-            # Get k-hop neighbors
-            neighbors = self.neighborhood_analyzer.neighborhoods[hop_distance][node]
-            
-            if include_self:
-                neighbors = [node] + neighbors
-                
-            if not neighbors:
-                continue
-                
-            # Get features for neighbors
-            neighbor_features = self.features[neighbors]
-            
-            # Aggregate based on method
-            if feature_aggregation == "mean":
-                feature_vectors[node] = np.mean(neighbor_features, axis=0)
-            elif feature_aggregation == "max":
-                feature_vectors[node] = np.max(neighbor_features, axis=0)
-            elif feature_aggregation == "min":
-                feature_vectors[node] = np.min(neighbor_features, axis=0)
-            else:
-                raise ValueError(f"Unknown aggregation method: {feature_aggregation}")
-        
-        return {
-            "frequency_vectors": frequency_vectors,
-            "feature_vectors": feature_vectors
-        }
-    
-    def generate_balanced_labels(
-        self,
-        n_classes: int,
-        balance_ratio: float = 0.5,
-        feature_influence: float = 0.7,
-        seed: Optional[int] = None
-    ) -> np.ndarray:
-        """
-        Generate balanced node labels based on neighborhood feature regimes.
-        
-        Args:
-            n_classes: Number of label classes to generate
-            balance_ratio: Target balance ratio between classes
-            feature_influence: How much to weight feature information vs. topology
-            seed: Random seed
-            
-        Returns:
-            Array of node labels
-        """
-        if self.neighborhood_analyzer is None:
-            raise ValueError("Feature regimes not enabled for this graph")
-            
-        # Get frequency vectors
-        frequency_vectors = self.neighborhood_analyzer.get_all_frequency_vectors(1)
-        
-        # Create label generator
-        label_generator = FeatureClusterLabelGenerator(
-            frequency_vectors=frequency_vectors,
-            n_labels=n_classes,
-            balance_tolerance=1.0 - balance_ratio,
-            seed=seed
-        )
-        
-        # Get labels
-        labels = label_generator.get_node_labels()
-        
-        # Update node attributes
-        for i, node in enumerate(self.graph.nodes()):
-            self.graph.nodes[node]["label"] = int(labels[i])
-        
-        return labels
-
-    def compute_neighborhood_features(self, max_hops: int = 3) -> None:
-        """
-        Compute neighborhood features on demand.
-        This is separated from initialization to make graph generation faster.
-        
-        Args:
-            max_hops: Maximum number of hops to analyze
-        """
-        if self.universe.feature_dim > 0 and self.neighborhood_analyzer is None:
-            start = time.time()
-            self.neighborhood_analyzer = NeighborhoodFeatureAnalyzer(
-                graph=self.graph,
-                node_regimes=self.node_clusters,  # Use node_clusters instead of node_regimes
-                total_regimes=len(self.communities) * self.universe.regimes_per_community,
-                max_hops=max_hops
-            )
-            if hasattr(self, 'timing_info'):
-                self.timing_info['neighborhood_analysis'] = time.time() - start
-
-    def compute_node_labels(self, balance_tolerance: float = 0.1) -> None:
-        """
-        Compute node labels on demand.
-        This is separated from initialization to make graph generation faster.
-        
-        Args:
-            balance_tolerance: Maximum allowed class imbalance (0-1)
-        """
-        if self.universe.feature_dim > 0 and self.label_generator is None:
-            # Ensure neighborhood features are computed
-            if self.neighborhood_analyzer is None:
-                self.compute_neighborhood_features()
-            
-            start = time.time()
-            # Generate balanced labels based on neighborhood features
-            self.label_generator = FeatureClusterLabelGenerator(
-                frequency_vectors=self.neighborhood_analyzer.get_all_frequency_vectors(1),
-                n_labels=len(self.communities),
-                balance_tolerance=balance_tolerance,
-                seed=None  # Use current random state
-            )
-            
-            # Get node labels
-            self.node_labels = self.label_generator.get_node_labels()
-            if hasattr(self, 'timing_info'):
-                self.timing_info['label_generation'] = time.time() - start
-
     def calculate_actual_probability_matrix(self) -> np.ndarray:
         """
         Calculate the actual probability matrix for the graph.
@@ -1549,110 +1099,6 @@ class GraphSample:
             "avg_degrees": avg_degrees,  # Add average degrees per community
             "densities": densities  # Add community densities
         }
-
-    def _calculate_community_deviation(
-        self,
-        graph: nx.Graph,
-        community_labels: np.ndarray,
-        P_sub: np.ndarray
-    ) -> float:
-        """
-        Calculate mean absolute deviation between actual and expected community connection patterns.
-        This represents the average deviation across all community pairs.
-        """
-        n_communities = P_sub.shape[0]  # Use P_sub shape instead of self.communities
-        actual_matrix = np.zeros((n_communities, n_communities))
-        community_sizes = np.zeros(n_communities, dtype=int)
-        
-        # Count nodes in each community
-        for label in community_labels:
-            if 0 <= label < n_communities:  # Add bounds check
-                community_sizes[label] += 1
-            else:
-                raise ValueError(f"Invalid community label {label} for {n_communities} communities")
-        
-        # Count edges between communities
-        for i, j in graph.edges():
-            comm_i = community_labels[i]
-            comm_j = community_labels[j]
-            if 0 <= comm_i < n_communities and 0 <= comm_j < n_communities:  # Add bounds check
-                actual_matrix[comm_i, comm_j] += 1
-                actual_matrix[comm_j, comm_i] += 1  # Undirected graph
-            else:
-                raise ValueError(f"Invalid community labels {comm_i}, {comm_j} for {n_communities} communities")
-        
-        # Calculate actual probabilities
-        for i in range(n_communities):
-            for j in range(n_communities):
-                if i == j:
-                    # Within community: divide by n(n-1)/2
-                    n = community_sizes[i]
-                    if n > 1:
-                        actual_matrix[i, j] = actual_matrix[i, j] / (n * (n - 1))
-                else:
-                    # Between communities: divide by n1*n2
-                    n1, n2 = community_sizes[i], community_sizes[j]
-                    if n1 > 0 and n2 > 0:  # Add check for zero community sizes
-                        actual_matrix[i, j] = actual_matrix[i, j] / (n1 * n2)
-        
-        # Calculate deviations
-        deviation_matrix = np.abs(actual_matrix - P_sub)
-        mean_deviation = np.mean(deviation_matrix)
-        max_deviation = np.max(deviation_matrix)
-        
-        return {
-            "mean_deviation": mean_deviation,
-            "max_deviation": max_deviation
-        }
-
-    def _calculate_max_community_deviation(
-        self,
-        graph: nx.Graph,
-        community_labels: np.ndarray,
-        P_sub: np.ndarray
-    ) -> float:
-        """
-        Calculate maximum absolute deviation between actual and expected community connection patterns.
-        This represents the worst-case deviation for any community pair.
-        """
-        n_communities = P_sub.shape[0]  # Use P_sub shape instead of self.communities
-        actual_matrix = np.zeros((n_communities, n_communities))
-        community_sizes = np.zeros(n_communities, dtype=int)
-        
-        # Count nodes in each community
-        for label in community_labels:
-            if 0 <= label < n_communities:  # Add bounds check
-                community_sizes[label] += 1
-            else:
-                raise ValueError(f"Invalid community label {label} for {n_communities} communities")
-        
-        # Count edges between communities
-        for i, j in graph.edges():
-            comm_i = community_labels[i]
-            comm_j = community_labels[j]
-            if 0 <= comm_i < n_communities and 0 <= comm_j < n_communities:  # Add bounds check
-                actual_matrix[comm_i, comm_j] += 1
-                actual_matrix[comm_j, comm_i] += 1  # Undirected graph
-            else:
-                raise ValueError(f"Invalid community labels {comm_i}, {comm_j} for {n_communities} communities")
-        
-        # Calculate actual probabilities
-        for i in range(n_communities):
-            for j in range(n_communities):
-                if i == j:
-                    # Within community: divide by n(n-1)/2
-                    n = community_sizes[i]
-                    if n > 1:
-                        actual_matrix[i, j] = actual_matrix[i, j] / (n * (n - 1))
-                else:
-                    # Between communities: divide by n1*n2
-                    n1, n2 = community_sizes[i], community_sizes[j]
-                    if n1 > 0 and n2 > 0:  # Add check for zero community sizes
-                        actual_matrix[i, j] = actual_matrix[i, j] / (n1 * n2)
-        
-        # Calculate maximum deviation
-        deviation_matrix = np.abs(actual_matrix - P_sub)
-        return np.max(deviation_matrix)
 
     def _calculate_community_deviations(
         self,
@@ -1763,121 +1209,84 @@ class GraphSample:
         
         return float(f1)
 
-    def calculate_structure_signal(self, divergence_metric='kl'):
+    def calculate_structure_signal(self, random_state: int = 42) -> float:
         """
-        Calculate Structure Signal: Edge Probability Row Divergence
-        
-        Args:
-            divergence_metric: Divergence metric to use ('kl', 'js', or 'cosine')
-            
-        Returns:
-            Dictionary mapping community index to structure signal
+        Calculate Structure Signal using RF classifier by using as input of node the community label counts of its 1-hop neighbors, concatted by 2-hop neighbors and 3-hop neighbors.
         """
-        import numpy as np
-        from scipy.spatial.distance import cosine
-        from scipy.special import kl_div, rel_entr
+        from sklearn.ensemble import RandomForestClassifier
+        from sklearn.model_selection import train_test_split
+        from sklearn.metrics import f1_score
+        from collections import Counter
         
-        # Get unique communities and create a mapping from label to index
-        unique_communities = np.unique(self.community_labels)
-        n_communities = len(unique_communities)
-        label_to_index = {label: idx for idx, label in enumerate(unique_communities)}
+        # For each node, get the community label counts of its 1-hop neighbors
+        node_structural_features = []
+        labels = []
+        n_communities = len(self.communities)
         
-        # Initialize community-community edge probability matrix
-        edge_probs = np.zeros((n_communities, n_communities))
-        
-        # Count nodes in each community
-        community_sizes = np.zeros(n_communities, dtype=int)
-        for label in self.community_labels:
-            community_sizes[label_to_index[label]] += 1
-        
-        # Count edges between communities
-        for i, j in self.graph.edges():
-            comm_i = label_to_index[self.community_labels[i]]
-            comm_j = label_to_index[self.community_labels[j]]
-            edge_probs[comm_i, comm_j] += 1
-            edge_probs[comm_j, comm_i] += 1  # Undirected graph
-        
-        # Calculate actual probabilities
-        for i in range(n_communities):
-            for j in range(n_communities):
-                if i == j:
-                    # Within community: divide by n(n-1)/2
-                    n = community_sizes[i]
-                    if n > 1:
-                        edge_probs[i, j] = edge_probs[i, j] / (n * (n - 1))
-                else:
-                    # Between communities: divide by n1*n2
-                    n1, n2 = community_sizes[i], community_sizes[j]
-                    if n1 > 0 and n2 > 0:
-                        edge_probs[i, j] = edge_probs[i, j] / (n1 * n2)
-        
-        # Normalize rows to form distributions
-        row_sums = np.sum(edge_probs, axis=1, keepdims=True)
-        row_sums[row_sums == 0] = 1.0  # Avoid division by zero
-        normalized_probs = edge_probs / row_sums
-        
-        # Initialize results
-        structure_signals = {}
-        
-        # Define JS divergence function
-        def js_divergence(p, q):
-            # Add small epsilon to avoid log(0)
-            p = p + 1e-10
-            q = q + 1e-10
-            # Normalize
-            p = p / np.sum(p)
-            q = q / np.sum(q)
-            m = 0.5 * (p + q)
-            return 0.5 * np.sum(rel_entr(p, m)) + 0.5 * np.sum(rel_entr(q, m))
-        
-        # For each community
-        for i in range(n_communities):
-            if community_sizes[i] <= 1:  # Skip if only one node or none
-                continue
-                
-            # Initialize minimum divergence as infinity
-            min_divergence = float('inf')
-            
-            # For each other community
-            for j in range(n_communities):
-                if i == j or community_sizes[j] <= 1:
-                    continue
-                    
-                # Calculate divergence based on specified metric
-                if divergence_metric == 'kl':
-                    # KL divergence (with small epsilon to avoid division by zero)
-                    p = normalized_probs[i] + 1e-10
-                    q = normalized_probs[j] + 1e-10
-                    divergence = np.sum(rel_entr(p, q))
-                elif divergence_metric == 'js':
-                    # JS divergence
-                    divergence = js_divergence(normalized_probs[i], normalized_probs[j])
-                else:  # cosine
-                    # Cosine distance
-                    divergence = cosine(normalized_probs[i], normalized_probs[j])
-                
-                # Update minimum divergence
-                min_divergence = min(min_divergence, divergence)
-            
-            # Store structure signal for this community (if valid)
-            if min_divergence != float('inf'):
-                structure_signals[int(unique_communities[i])] = float(min_divergence)
-            else:
-                structure_signals[int(unique_communities[i])] = 0.0
-        
-        return structure_signals
+        for node in range(self.graph.number_of_nodes()):
+            # Get nodes at exact distance 1 using single-source shortest path
+            sp_lengths = nx.single_source_shortest_path_length(self.graph, node, cutoff=1)
+            one_hop_nodes = [n for n, dist in sp_lengths.items() if dist == 1]
+            one_hop_community_labels = [self.community_labels[n] for n in one_hop_nodes]
 
-    def calculate_degree_signal(self,
-                            method: str = "naive_bayes",
-                            metric: str = "accuracy", 
-                            cv_folds: int = 5,
-                            random_state: int = 42) -> float:
+            # Get nodes at exact distance 2 using single-source shortest path
+            sp_lengths = nx.single_source_shortest_path_length(self.graph, node, cutoff=2)
+            two_hop_nodes = [n for n, dist in sp_lengths.items() if dist == 2]
+            two_hop_community_labels = [self.community_labels[n] for n in two_hop_nodes]
+
+            # Get nodes at exact distance 3 using single-source shortest path
+            sp_lengths = nx.single_source_shortest_path_length(self.graph, node, cutoff=3)
+            three_hop_nodes = [n for n, dist in sp_lengths.items() if dist == 3]
+            three_hop_community_labels = [self.community_labels[n] for n in three_hop_nodes]
+
+            # Count community labels for each hop distance
+            one_hop_counts = Counter(one_hop_community_labels)
+            two_hop_counts = Counter(two_hop_community_labels)
+            three_hop_counts = Counter(three_hop_community_labels)
+            
+            # Create feature vector with counts for each community at each hop distance
+            feature_vector = []
+            for comm in range(n_communities):
+                feature_vector.append(one_hop_counts.get(comm, 0))
+            for comm in range(n_communities):
+                feature_vector.append(two_hop_counts.get(comm, 0))
+            for comm in range(n_communities):
+                feature_vector.append(three_hop_counts.get(comm, 0))
+            
+            node_structural_features.append(feature_vector)
+            labels.append(self.community_labels[node])
+
+        # Split data ensuring all communities are represented in both splits
+        X_train, X_test, y_train, y_test = train_test_split(
+            node_structural_features,
+            labels,
+            test_size=0.3,
+            stratify=labels,
+            random_state=random_state
+        )
+
+        # Train Random Forest classifier
+        clf = RandomForestClassifier(
+            n_estimators=100,
+            max_depth=None,
+            min_samples_split=2,
+            min_samples_leaf=1,
+            random_state=random_state
+        )
+
+        # Fit and predict
+        clf.fit(X_train, y_train)
+        y_pred = clf.predict(X_test)
+        
+        # Calculate f1 score
+        f1 = f1_score(y_test, y_pred, average='macro')
+        return float(f1)
+
+    def calculate_degree_signal(self, random_state: int = 42) -> float:
         """
         Calculate Degree Signal using degree-based classification.
         
         Args:
-            method: Classification method ("naive_bayes", "quantile_binning")
-            metric: Evaluation metric ("accuracy", "nmi", "ari")
             cv_folds: Number of cross-validation folds
             random_state: Random seed
             
@@ -1887,103 +1296,92 @@ class GraphSample:
         if self.graph.number_of_nodes() == 0:
             return 0.0
         
-        # Get node degrees - ensure proper ordering
+        from sklearn.ensemble import RandomForestClassifier
+        from sklearn.model_selection import train_test_split
+        from sklearn.metrics import f1_score
+        
+        # Get node degrees and community labels and use RF classifier to calculate degree signal
         degrees = np.array([self.graph.degree(i) for i in range(self.graph.number_of_nodes())])
+        community_labels = self.community_labels
         
-        # Ensure we have the right number of community labels
-        min_len = min(len(degrees), len(self.community_labels))
-        degrees = degrees[:min_len]
-        ground_truth = self.community_labels[:min_len]
+        # Reshape degrees to 2D array for sklearn (n_samples, n_features)
+        degrees_2d = degrees.reshape(-1, 1)
         
-        # Reshape degrees for sklearn
-        degrees_reshaped = degrees.reshape(-1, 1)
-        
-        if method == "naive_bayes":
-            classifier = GaussianNB()
-            
-            if metric == "accuracy":
-                scores = cross_val_score(
-                    classifier, degrees_reshaped, ground_truth, 
-                    cv=cv_folds, scoring='accuracy'
-                )
-                return np.mean(scores)
-            else:
-                # For NMI/ARI, use cross-validation with custom scoring
-                scores = []
-                skf = StratifiedKFold(n_splits=cv_folds, shuffle=True, random_state=random_state)
-                
-                for train_idx, test_idx in skf.split(degrees_reshaped, ground_truth):
-                    classifier.fit(degrees_reshaped[train_idx], ground_truth[train_idx])
-                    predicted = classifier.predict(degrees_reshaped[test_idx])
-                    
-                    if metric == "nmi":
-                        score = normalized_mutual_info_score(ground_truth[test_idx], predicted)
-                    elif metric == "ari":
-                        score = adjusted_rand_score(ground_truth[test_idx], predicted)
-                    
-                    scores.append(score)
-                
-                return np.mean(scores)
-        
-        elif method == "quantile_binning":
-            n_communities = len(np.unique(ground_truth))
-            
-            # Create quantile bins based on degree distribution
-            quantiles = np.linspace(0, 1, n_communities + 1)
-            bin_edges = np.quantile(degrees, quantiles)
-            
-            # Handle edge case where all degrees are the same
-            if len(np.unique(bin_edges)) == 1:
-                return 0.0
-            
-            # Assign degrees to bins
-            predicted_bins = np.digitize(degrees, bin_edges) - 1
-            predicted_bins = np.clip(predicted_bins, 0, n_communities - 1)
-            
-            if metric == "accuracy":
-                return self._calculate_best_accuracy(ground_truth, predicted_bins)
-            elif metric == "nmi":
-                return normalized_mutual_info_score(ground_truth, predicted_bins)
-            elif metric == "ari":
-                return adjusted_rand_score(ground_truth, predicted_bins)
-        
-        else:
-            raise ValueError(f"Unknown degree classification method: {method}")
+        # Split data ensuring all communities are represented in both splits
+        X_train, X_test, y_train, y_test = train_test_split(
+            degrees_2d,
+            community_labels,
+            test_size=0.3,
+            stratify=community_labels,
+            random_state=random_state
+        )
 
-    def calculate_triangle_community_signal(self) -> float:
-        """Measure correlation between community and triangle participation."""
+        # Train Random Forest classifier
+        clf = RandomForestClassifier(
+            n_estimators=100,
+            max_depth=None,
+            min_samples_split=2,
+            min_samples_leaf=1,
+            random_state=random_state
+        )
+
+        # Fit and predict
+        clf.fit(X_train, y_train)
+        y_pred = clf.predict(X_test)
+        
+        # Calculate f1 score
+        f1 = f1_score(y_test, y_pred, average='macro')
+        return float(f1)
+
+    def calculate_triangle_community_signal(self, random_state: int = 42) -> float:
+        """Measure how well we can predict triangle participation based on community labels using RF classifier."""
+        from sklearn.ensemble import RandomForestClassifier
+        from sklearn.model_selection import train_test_split
+        from sklearn.metrics import f1_score
+        
+        # Get triangle counts and community labels
         triangle_counts = []
         community_labels = []
+
+        # Use nx.triangles to get triangle counts
+        triangle_counts = list(nx.triangles(self.graph).values())
+        community_labels = self.community_labels
         
-        for node in self.graph.nodes():
-            # Count triangles involving this node
-            triangles = 0
-            neighbors = list(self.graph.neighbors(node))
-            for i, neighbor1 in enumerate(neighbors):
-                for neighbor2 in neighbors[i+1:]:
-                    if self.graph.has_edge(neighbor1, neighbor2):
-                        triangles += 1
-            
-            triangle_counts.append(triangles)
-            community_labels.append(self.community_labels[node])
+        # Reshape triangle counts to 2D array for sklearn (n_samples, n_features)
+        triangle_counts_2d = np.array(triangle_counts).reshape(-1, 1)
         
-        # Correlation between community and triangle participation
-        return np.corrcoef(community_labels, triangle_counts)[0, 1]
+        # Split data ensuring all communities are represented in both splits
+        X_train, X_test, y_train, y_test = train_test_split(
+            triangle_counts_2d,
+            community_labels,
+            test_size=0.3,
+            stratify=community_labels,
+            random_state=random_state
+        )
+
+        # Train Random Forest classifier
+        clf = RandomForestClassifier(
+            n_estimators=100,
+            max_depth=None,
+            min_samples_split=2,
+            min_samples_leaf=1,
+            random_state=random_state
+        )
+
+        # Fit and predict
+        clf.fit(X_train, y_train)
+        y_pred = clf.predict(X_test)
+        
+        # Calculate f1 score
+        f1 = f1_score(y_test, y_pred, average='macro')
+        return float(f1)
 
     def calculate_community_signals(self,
-                                structure_metric: str = 'kl',
-                                degree_signal_calc_method: str = "naive_bayes",
-                                degree_metric: str = "accuracy",
-                                cv_folds: int = 5,
                                 random_state: int = 42) -> Dict[str, Any]:
         """
         Calculate all community-related signal metrics using the unified approach.
         
         Args:
-            structure_metric: Divergence metric for structure signal ('kl', 'js', 'cosine')
-            degree_signal_calc_method: Method for degree signal ("naive_bayes", "quantile_binning")
-            degree_metric: Evaluation metric for degree signal ("accuracy", "nmi", "ari")
-            cv_folds: Number of cross-validation folds for degree signal
             random_state: Random seed for reproducibility
             
         Returns:
@@ -1993,17 +1391,11 @@ class GraphSample:
         
         # Structure signal
         try:
-            structure_signals = self.calculate_structure_signal(divergence_metric=structure_metric)
-            signals['structure_signal'] = structure_signals
-            signals['mean_structure_signal'] = float(np.mean(list(structure_signals.values())))
-            signals['min_structure_signal'] = float(np.min(list(structure_signals.values())))
-            signals['max_structure_signal'] = float(np.max(list(structure_signals.values())))
+            structure_signal = self.calculate_structure_signal(random_state=random_state)
+            signals['structure_signal'] = structure_signal
         except Exception as e:
             warnings.warn(f"Failed to calculate structure signal: {e}")
             signals['structure_signal'] = 0.0
-            signals['mean_structure_signal'] = 0.0
-            signals['min_structure_signal'] = 0.0
-            signals['max_structure_signal'] = 0.0
         
         # Feature signal (only if features are available)
         if self.features is not None and len(self.features) > 0:
@@ -2019,9 +1411,6 @@ class GraphSample:
         # Degree signal
         try:
             degree_signal = self.calculate_degree_signal(
-                method=degree_signal_calc_method,
-                metric=degree_metric,
-                cv_folds=cv_folds,
                 random_state=random_state
             )
             signals['degree_signal'] = degree_signal
@@ -2031,116 +1420,10 @@ class GraphSample:
         
         # Triangle signal
         try:
-            triangle_signal = self.calculate_triangle_community_signal()
+            triangle_signal = self.calculate_triangle_community_signal(random_state=random_state)
             signals['triangle_signal'] = triangle_signal
         except Exception as e:
             warnings.warn(f"Failed to calculate triangle signal: {e}")
             signals['triangle_signal'] = 0.0
-
-        # Calculate summary statistics (excluding None values)
-        valid_signals = [v for v in [signals.get('feature_signal'), signals.get('degree_signal')] if v is not None]
-        if valid_signals:
-            signals['mean_signal'] = float(np.mean(valid_signals))
-            signals['min_signal'] = float(np.min(valid_signals))
-            signals['max_signal'] = float(np.max(valid_signals))
-            signals['std_signal'] = float(np.std(valid_signals))
-        
-        # Add metadata
-        signals['method_info'] = {
-            'structure_metric': structure_metric,
-            'degree_signal_calc_method': degree_signal_calc_method,
-            'degree_metric': degree_metric,
-            'triangle_signal': triangle_signal,
-            'cv_folds': cv_folds
-        }
         
         return signals
-
-    def _calculate_best_accuracy(self, true_labels: np.ndarray, predicted_labels: np.ndarray) -> float:
-        """
-        Helper method: Calculate best possible accuracy by finding optimal label mapping.
-        
-        Args:
-            true_labels: Ground truth labels
-            predicted_labels: Predicted labels
-            
-        Returns:
-            Best achievable accuracy ∈ [0, 1]
-        """
-        from scipy.optimize import linear_sum_assignment
-        
-        # Get unique labels
-        true_unique = np.unique(true_labels)
-        pred_unique = np.unique(predicted_labels)
-        
-        # Create confusion matrix
-        confusion_matrix = np.zeros((len(pred_unique), len(true_unique)))
-        
-        for i, pred_label in enumerate(pred_unique):
-            for j, true_label in enumerate(true_unique):
-                confusion_matrix[i, j] = np.sum(
-                    (predicted_labels == pred_label) & (true_labels == true_label)
-                )
-        
-        # Find optimal assignment using Hungarian algorithm
-        row_idx, col_idx = linear_sum_assignment(-confusion_matrix)
-        
-        # Calculate accuracy with optimal mapping
-        correct_assignments = confusion_matrix[row_idx, col_idx].sum()
-        total_assignments = len(true_labels)
-        
-        return correct_assignments / total_assignments if total_assignments > 0 else 0.0
-
-    def update_feature_generator(
-        self,
-        cluster_count_factor: float = 1.0,
-        center_variance: float = 1.0,
-        cluster_variance: float = 0.1,
-        assignment_skewness: float = 0.0,
-        community_exclusivity: float = 1.0,
-        seed: Optional[int] = None
-    ) -> None:
-        """
-        Update the feature generator with new parameters.
-        
-        Args:
-            cluster_count_factor: Number of clusters relative to communities
-            center_variance: Separation between cluster centers
-            cluster_variance: Spread within each cluster
-            assignment_skewness: If some clusters are used more frequently
-            community_exclusivity: How exclusively clusters map to communities
-            seed: Random seed for reproducibility
-        """
-        if self.feature_dim > 0:
-            self.feature_generator = SimplifiedFeatureGenerator(
-                universe_K=self.K,
-                feature_dim=self.feature_dim,
-                cluster_count_factor=cluster_count_factor,
-                center_variance=center_variance,
-                cluster_variance=cluster_variance,
-                assignment_skewness=assignment_skewness,
-                community_exclusivity=community_exclusivity,
-                seed=seed
-            )
-
-    def regenerate_features(self) -> None:
-        """
-        Regenerate node features using the current feature generator parameters.
-        This should be called after updating feature generator parameters.
-        """
-        if self.universe.feature_generator is None:
-            return
-            
-        # Get community assignments and map to universe community IDs
-        local_community_assignments = self.community_labels
-        universe_community_assignments = np.array([self.community_id_mapping[idx] for idx in local_community_assignments])
-        
-        # Generate node clusters based on universe community assignments
-        self.node_clusters = self.universe.feature_generator.assign_node_clusters(universe_community_assignments)
-        
-        # Generate features based on node clusters
-        self.features = self.universe.feature_generator.generate_node_features(self.node_clusters)
-        
-        # Update node attributes in the graph
-        for i in range(self.n_nodes):
-            self.graph.nodes[i]['features'] = self.features[i].tolist()
