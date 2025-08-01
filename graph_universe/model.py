@@ -2,19 +2,14 @@ import numpy as np
 import networkx as nx
 import scipy.sparse as sp
 from typing import Dict, List, Optional, Tuple, Union, Callable, Any
-import pandas as pd
 from graph_universe.feature_regimes import (
-    SimplifiedFeatureGenerator,
-    NeighborhoodFeatureAnalyzer,
-    FeatureClusterLabelGenerator
+    SimplifiedFeatureGenerator
 )
 import time
-from sklearn.metrics import normalized_mutual_info_score, adjusted_rand_score
-from sklearn.naive_bayes import GaussianNB
-from sklearn.model_selection import cross_val_score, StratifiedKFold
 import warnings
+from scipy.stats import spearmanr, pearsonr
 from itertools import combinations
-import signal
+from tqdm import tqdm
 
 class GraphUniverse:
     """
@@ -24,20 +19,18 @@ class GraphUniverse:
     
     def __init__(
         self,
+        # Main Universe Parameters
         K: int,
         P: Optional[np.ndarray] = None,
-        feature_dim: int = 0,
-        inter_community_variance: float = 0.0,
+        inter_community_variance: float = 0.5, # 0-1: how much variance in the inter-community probabilities
 
         # Feature generation parameters
-        cluster_count_factor: float = 1.0,  # Number of clusters relative to communities
+        feature_dim: int = 0,
         center_variance: float = 1.0,       # Separation between cluster centers
         cluster_variance: float = 0.1,      # Spread within each cluster
-        assignment_skewness: float = 0.0,   # If some clusters are used more frequently
-        community_exclusivity: float = 1.0, # How exclusively clusters map to communities
 
         # Degree center parameters
-        degree_center_method: str = "linear",  # How to generate degree centers ("linear", "random", "shuffled")
+        degree_center_method: str = "linear",  # How to generate degree centers ("linear", "random", "constant")
         seed: Optional[int] = None,
 
         # Community co-occurrence homogeneity
@@ -49,14 +42,11 @@ class GraphUniverse:
         Args:
             K: Number of communities
             P: Optional probability matrix (if None, will be generated)
-            feature_dim: Dimension of node features
             inter_community_variance: Amount of variance in the inter-community probabilities
-            cluster_count_factor: Number of clusters relative to communities (0.1 to 4.0)
+            feature_dim: Dimension of node features
             center_variance: Separation between cluster centers
             cluster_variance: Spread within each cluster
-            assignment_skewness: If some clusters are used more frequently (0.0 to 1.0)
-            community_exclusivity: How exclusively clusters map to communities (0.0 to 1.0)
-            degree_center_method: How to generate degree centers ("linear", "random", "shuffled")
+            degree_center_method: How to generate degree centers ("linear", "random", "constant")
             community_cooccurrence_homogeneity: Controls community co-occurrence patterns (0-1)
                 1.0 = homogeneous (all communities equally likely to co-occur)
                 0.0 = heterogeneous (some communities prefer to co-occur with specific others)
@@ -82,11 +72,11 @@ class GraphUniverse:
             self.feature_generator = SimplifiedFeatureGenerator(
                 universe_K=K,
                 feature_dim=feature_dim,
-                cluster_count_factor=cluster_count_factor,
+                cluster_count_factor=1.0,
                 center_variance=center_variance,
                 cluster_variance=cluster_variance,
-                assignment_skewness=assignment_skewness,
-                community_exclusivity=community_exclusivity,
+                assignment_skewness=0.0,
+                community_exclusivity=1.0,
                 seed=seed
             )
         else:
@@ -107,10 +97,9 @@ class GraphUniverse:
         elif degree_center_method == "random":
             # Random uniform distribution
             self.degree_centers = np.random.uniform(-1, 1, K)
-        elif degree_center_method == "shuffled":
-            # Linear spacing but shuffled
-            self.degree_centers = np.linspace(-1, 1, K)
-            np.random.shuffle(self.degree_centers)
+        elif degree_center_method == "constant":
+            # Constant value
+            self.degree_centers = np.zeros(K)
         else:
             raise ValueError(f"Unknown degree center method: {degree_center_method}")
             
@@ -237,7 +226,7 @@ class GraphUniverse:
         use_cooccurrence: bool = True
     ) -> List[int]:
         """
-        Sample a subset of communities using co-occurrence patterns.
+        Sample a subset of communities using co-occurrence patterns if cooccurrence_homogeneity is not 1.0.
         
         Args:
             size: Number of communities to sample
@@ -354,6 +343,7 @@ class GraphUniverse:
         
         return matrix
 
+
 class GraphSample:
     """
     Represents a single graph instance sampled from the GraphUniverse.
@@ -370,10 +360,9 @@ class GraphSample:
         # Graph Sample specific parameters
         num_communities: int,
         n_nodes: int,
-        min_component_size: int,
         target_homophily: float,
         target_average_degree: float,
-        # target_density: float,
+        
         degree_distribution: str,
         power_law_exponent: Optional[float],
         max_mean_community_deviation: float,
@@ -435,11 +424,9 @@ class GraphSample:
             
             # Store the number of nodes
             self.original_n_nodes = n_nodes
-            self.min_component_size = min_component_size # Minimum size of a connected component
             
             # Store target parameters
             self.target_homophily = target_homophily
-            # self.target_density = target_density
             self.target_average_degree = target_average_degree
             
             # Degree distribution parameters
@@ -576,98 +563,28 @@ class GraphSample:
             # Find connected components
             components = list(nx.connected_components(temp_graph))
             components.sort(key=len, reverse=True)
-            
-            # Track deleted components
-            self.deleted_components = []
-            self.deleted_node_types = {}
-            
-            # Filter components based on size and have a maximum of num_communities unique components
-            if min_component_size > 0:
-                kept_components = []
-                for comp in components:
-                    if len(comp) >= min_component_size:
-                        kept_components.append(comp)
-                    else:
-                        self.deleted_components.append(comp)
-                        # Track community distribution of deleted nodes
-                        for node in comp:
-                            primary_comm = self.communities[self.community_labels[node]]
-                            if primary_comm not in self.deleted_node_types:
-                                self.deleted_node_types[primary_comm] = 0
-                            self.deleted_node_types[primary_comm] += 1
-            else:
-                kept_components = components
 
-            if len(kept_components) > num_communities:
-                raise ValueError(f"Number of unique components exceeds number of communities: {len(kept_components)} > {num_communities}.")
+            self.adjacency = self._connect_disconnected_components(components)
 
-            self.timing_info['component_filtering'] = time.time() - start
-            
-            check_timeout()
-            
-            # Time: Graph reconstruction
-            start = time.time()
-            if kept_components:
-                # Create union of all kept components
-                kept_nodes = sorted(list(set().union(*kept_components)))
-                
-                # Create mapping from old to new indices
-                self.node_map = {old: new for new, old in enumerate(kept_nodes)}
-                self.reverse_node_map = {new: old for old, new in self.node_map.items()}
-                
-                # Create new graph with remapped nodes
-                self.graph = nx.Graph()
-                self.graph.add_nodes_from(range(len(kept_nodes)))
-                
-                # Add edges with remapped indices
-                for comp in kept_components:
-                    for u, v in temp_graph.subgraph(comp).edges():
-                        self.graph.add_edge(self.node_map[u], self.node_map[v])
-                
-                # Update node count
-                self.n_nodes = self.graph.number_of_nodes()
-                
-                # Update community labels and degree factors with new indices
-                self.community_labels = self.community_labels[kept_nodes]
-                self.degree_factors = self.degree_factors[kept_nodes]
+            # Update the number of nodes
+            self.graph = nx.from_scipy_sparse_array(self.adjacency)
+            self.n_nodes = self.graph.number_of_nodes()
 
-                # Update community labels at universe level
-                self.community_labels_universe_level = np.array([self.community_id_mapping[idx] for idx in self.community_labels])
-                
-                # Update adjacency matrix
-                self.adjacency = nx.adjacency_matrix(self.graph)
-                
-                # Now check deviations after all filtering and reconstruction is done
-                if self.n_nodes > 0:  # Only check if we have nodes
-                    deviations = self._calculate_community_deviations(
-                        self.graph,
-                        self.community_labels,
-                        self.P_sub
-                    )
-                    mean_deviation = deviations["mean_deviation"]
-                    max_deviation = deviations["max_deviation"]
-                    
-                    if not self.disable_deviation_limiting:
-                        if mean_deviation > self.max_mean_community_deviation:
-                            raise ValueError(f"Graph exceeds mean community deviation limit: {mean_deviation:.4f} > {self.max_mean_community_deviation:.4f}")
-                        if max_deviation > self.max_max_community_deviation:
-                            raise ValueError(f"Graph exceeds maximum community deviation limit: {max_deviation:.4f} > {self.max_max_community_deviation:.4f}")
-                else:
-                    # If no components meet the size threshold, keep an empty graph
-                    self.graph = nx.Graph()
-                    self.n_nodes = 0
-                    self.community_labels = np.array([], dtype=int)
-                    self.degree_factors = np.zeros(0)
-                    self.adjacency = sp.csr_matrix((0, 0))
-                    self.features = None if universe.feature_dim > 0 else None
-                    self.node_map = {}
-                    self.reverse_node_map = {}
-                    self.node_labels = np.zeros(0, dtype=int)
-                    self.node_clusters = None
-                    self.neighborhood_analyzer = None
-                    self.label_generator = None
-            self.timing_info['graph_reconstruction'] = time.time() - start
+            deviations = self._calculate_community_deviations(
+                self.graph,
+                self.community_labels,
+                self.P_sub
+            )
+            mean_deviation = deviations["mean_deviation"]
+            max_deviation = deviations["max_deviation"]
             
+            if not self.disable_deviation_limiting:
+                if mean_deviation > self.max_mean_community_deviation:
+                    raise ValueError(f"Graph exceeds mean community deviation limit: {mean_deviation:.4f} > {self.max_mean_community_deviation:.4f}")
+                if max_deviation > self.max_max_community_deviation:
+                    raise ValueError(f"Graph exceeds maximum community deviation limit: {max_deviation:.4f} > {self.max_max_community_deviation:.4f}")
+
+    
             check_timeout()
             
             # Time: Feature generation
@@ -701,6 +618,176 @@ class GraphSample:
         except TimeoutError:
             raise TimeoutError("GraphSample initialization timed out")
   
+    def _connect_disconnected_components(self, components: list[set[int]]) -> None:
+        """
+        Connect disconnected components of the graph iteratively, starting with the smallest component.
+        Uses deviation analysis to find optimal connections that bring the actual probability matrix
+        closer to the expected P_sub matrix.
+        """
+        if len(components) <= 1:
+            return  # Already connected or empty graph
+        
+        # Create a copy of the graph to work with
+        temp_graph = nx.from_scipy_sparse_array(self.adjacency)
+        
+        # Sort components by size (smallest first)
+        components = sorted(components, key=len)
+        
+        while len(components) > 1:
+            # Get the smallest component
+            smallest_component = components[0]
+            other_components = components[1:]
+            
+            # Calculate current deviation matrix for the whole graph
+            current_analysis = self._calculate_community_deviations_with_matrix(temp_graph, self.community_labels, self.P_sub)
+            current_deviation_matrix = current_analysis['deviation_matrix']
+            current_actual_matrix = current_analysis['actual_matrix']
+            
+            # Find the best connection to make
+            best_connection = self._find_best_connection(
+                smallest_component, 
+                other_components, 
+                current_deviation_matrix, 
+                current_actual_matrix
+            )
+            
+            if best_connection is None:
+                # No valid connection found, remove the smallest component
+                components.pop(0)
+                continue
+            
+            # Make the connection
+            node_from, node_to = best_connection
+            temp_graph.add_edge(node_from, node_to)
+            
+            # Recalculate components
+            new_components = list(nx.connected_components(temp_graph))
+            components = sorted(new_components, key=len)
+        
+        # return the adjacency matrix of the connected graph
+        return nx.adjacency_matrix(temp_graph)
+        
+
+    def _calculate_community_deviations_with_matrix(self, graph: nx.Graph, community_labels: np.ndarray, P_sub: np.ndarray) -> Dict[str, np.ndarray]:
+        """
+        Calculate community deviations and return the actual and deviation matrices.
+        
+        Args:
+            graph: NetworkX graph
+            community_labels: Array of community labels
+            P_sub: Expected probability matrix
+            
+        Returns:
+            Dictionary with actual_matrix and deviation_matrix
+        """
+        n_communities = P_sub.shape[0]
+        actual_matrix = np.zeros((n_communities, n_communities))
+        community_sizes = np.zeros(n_communities, dtype=int)
+        
+        # Count nodes in each community
+        for label in community_labels:
+            if 0 <= label < n_communities:
+                community_sizes[label] += 1
+        
+        # Count edges between communities
+        for i, j in graph.edges():
+            comm_i = community_labels[i]
+            comm_j = community_labels[j]
+            if 0 <= comm_i < n_communities and 0 <= comm_j < n_communities:
+                actual_matrix[comm_i, comm_j] += 1
+                actual_matrix[comm_j, comm_i] += 1  # Undirected graph
+        
+        # Calculate actual probabilities
+        for i in range(n_communities):
+            for j in range(n_communities):
+                if i == j:
+                    # Within community: divide by n(n-1)/2
+                    n = community_sizes[i]
+                    if n > 1:
+                        actual_matrix[i, j] = actual_matrix[i, j] / (n * (n - 1))
+                else:
+                    # Between communities: divide by n1*n2
+                    n1, n2 = community_sizes[i], community_sizes[j]
+                    if n1 > 0 and n2 > 0:
+                        actual_matrix[i, j] = actual_matrix[i, j] / (n1 * n2)
+        
+        # Calculate deviation matrix
+        deviation_matrix = actual_matrix - P_sub
+        
+        return {
+            'actual_matrix': actual_matrix,
+            'deviation_matrix': deviation_matrix
+        }
+
+    def _find_best_connection(self, smallest_component: set[int], other_components: list[set[int]], 
+                             deviation_matrix: np.ndarray, actual_matrix: np.ndarray) -> Optional[Tuple[int, int]]:
+        """
+        Find the best connection between the smallest component and other components.
+        
+        Args:
+            smallest_component: Set of nodes in the smallest component
+            other_components: List of other component node sets
+            deviation_matrix: Current deviation matrix (actual - expected)
+            actual_matrix: Current actual probability matrix
+            
+        Returns:
+            Tuple of (node_from, node_to) for the best connection, or None if no valid connection
+        """
+        best_connection = None
+        best_score = float('-inf')
+        
+        # Get communities in the smallest component
+        smallest_communities = set(self.community_labels[node] for node in smallest_component)
+        
+        # Check all possible connections from smallest component to other components
+        for other_component in other_components:
+            other_communities = set(self.community_labels[node] for node in other_component)
+            
+            # Check all community pairs between smallest and other component
+            for comm_small in smallest_communities:
+                for comm_other in other_communities:
+                    # Skip if P_sub[comm_small, comm_other] is 0 (no connection allowed)
+                    if self.P_sub[comm_small, comm_other] <= 0:
+                        continue
+                    
+                    # Calculate potential improvement score
+                    current_deviation = deviation_matrix[comm_small, comm_other]
+                    
+                    # Prefer negative deviations (actual < expected) - these are good to increase
+                    if current_deviation < 0:
+                        score = -current_deviation  # Higher score for more negative deviation
+                    else:
+                        # For positive deviations, prefer smaller ones
+                        score = -abs(current_deviation)
+                    
+                    # If this is better than current best, update
+                    if score > best_score:
+                        best_score = score
+                        # Find a node from each community to connect
+                        node_from = self._find_node_in_community(smallest_component, comm_small)
+                        node_to = self._find_node_in_community(other_component, comm_other)
+                        
+                        if node_from is not None and node_to is not None:
+                            best_connection = (node_from, node_to)
+        
+        return best_connection
+
+    def _find_node_in_community(self, component: set[int], community: int) -> Optional[int]:
+        """
+        Find a node in the given component that belongs to the specified community.
+        
+        Args:
+            component: Set of node indices
+            community: Community label
+            
+        Returns:
+            Node index if found, None otherwise
+        """
+        for node in component:
+            if self.community_labels[node] == community:
+                return node
+        return None
+
     def _generate_memberships(self, n_nodes: int, K_sub: int) -> np.ndarray:
         """
         Generate community assignments for nodes.
@@ -755,7 +842,8 @@ class GraphSample:
         # 1. Sample global degree distribution
         if degree_distribution_type == "power_law":
             exponent = global_degree_params.get("exponent", 2.5)
-            raw_degrees = np.random.pareto(exponent, size=n_nodes) + 1
+            raw_degrees = (np.random.pareto(exponent, size=n_nodes) + 1) ** 1.5 # Slightly more skewed to balance normalization effect
+            # raw_degrees = np.random.pareto(exponent, size=n_nodes) + 1
         elif degree_distribution_type == "exponential":
             rate = global_degree_params.get("rate", 1.0)
             raw_degrees = np.random.exponential(scale=1/rate, size=n_nodes)
@@ -792,9 +880,12 @@ class GraphSample:
                 # All centers are the same, spread evenly
                 community_means = np.linspace(0, n_nodes - 1, K)
             else:
-                # Scale preserving relative distances
+                # Scale preserving relative distances - use ordered_degree_centers for scaling
                 scaled_centers = (ordered_degree_centers - min_center) / (max_center - min_center)
-                community_means = scaled_centers * (n_nodes - 1)
+                # Map back to original community order
+                community_means = np.zeros(K)
+                for i, comm_idx in enumerate(comm_order):
+                    community_means[comm_idx] = scaled_centers[i] * (n_nodes - 1)
         
         # 6. Calculate standard deviation based on degree_separation
         if degree_separation == 1.0:
@@ -817,16 +908,15 @@ class GraphSample:
         # 8. For each node, sample from its community's truncated normal distribution
         for node_idx in range(n_nodes):
             community_local_idx = community_labels[node_idx]
-            community_rank = np.where(comm_order == community_local_idx)[0][0]
             
-            # Get the mean for this community's distribution
-            mean_pos = community_means[community_rank]
+            # Get the mean for this community's distribution (use original community index)
+            mean_pos = community_means[community_local_idx]
             std_pos = community_std
             
-            if not available_positions:
-                # This shouldn't happen, but fallback
-                degree_factors[node_idx] = sorted_degrees[node_idx % n_nodes]
-                continue
+            # if not available_positions:
+            #     # This shouldn't happen, but fallback
+            #     degree_factors[node_idx] = sorted_degrees[node_idx % n_nodes]
+            #     continue
             
             # Sample from truncated normal distribution over available positions
             if len(available_positions) == 1:
@@ -847,7 +937,7 @@ class GraphSample:
             # Assign the degree and remove position from available
             degree_factors[node_idx] = sorted_degrees[chosen_pos]
             available_positions.remove(chosen_pos)
-        
+
         # 9. Normalize to mean 1 to not influence edge density
         degree_factors = degree_factors / degree_factors.mean()
         
@@ -887,7 +977,7 @@ class GraphSample:
             
             # Get base probabilities from P matrix
             edge_probs = P_sub[comm_i, comm_j]
-            
+
             # Apply degree correction
             edge_probs *= degree_factors[i_nodes] * degree_factors[j_nodes]
             
@@ -1427,3 +1517,967 @@ class GraphSample:
             signals['triangle_signal'] = 0.0
         
         return signals
+
+
+class GraphFamilyGenerator:
+    """
+    Generates families of graphs sampled from a graph universe.
+    Each graph in the family is a subgraph of the universe with its own community structure.
+    """
+    
+    def __init__(
+        self,
+        universe: GraphUniverse,
+        min_n_nodes: int,
+        max_n_nodes: int,
+        min_communities: int = 2,
+        max_communities: int = None,
+        homophily_range: Tuple[float, float] = (0.0, 0.4),  # Homophily range
+        avg_degree_range: Tuple[float, float] = (1.0, 3.0),    # Average degree range
+        # density_range: Tuple[float, float] = (0.1, 0.15),    # Density range
+
+        # Whether to use DCCC-SBM or standard DC-SBM
+        use_dccc_sbm: bool = False,
+        
+        # Community co-occurrence homogeneity
+        community_cooccurrence_homogeneity: float = 1.0,
+
+        # Deviation limiting
+        disable_deviation_limiting: bool = False,
+        max_mean_community_deviation: float = 0.10,
+        max_max_community_deviation: float = 0.15,
+        min_edge_density: float = 0.005,
+
+        # DCCC distribution-specific parameter ranges
+        degree_distribution: str = "standard",
+        power_law_exponent_range: Tuple[float, float] = (2.0, 3.5),
+        exponential_rate_range: Tuple[float, float] = (0.3, 1.0),
+        uniform_min_factor_range: Tuple[float, float] = (0.3, 0.7),
+        uniform_max_factor_range: Tuple[float, float] = (1.3, 2.0),
+        degree_separation_range: Tuple[float, float] = (0.5, 0.5),    # Range for degree separation
+        degree_signal_calc_method: str = "standard", # How to calculate degree signal
+
+        # Standard DC-SBM parameters (so if use_dccc_sbm is False, this is used)
+        degree_heterogeneity: float = 0.5,
+
+        # Fixed parameters for all graphs in family
+        max_retries: int = 5,
+        seed: Optional[int] = None
+    ):
+        """
+        Initialize the graph family generator.
+        
+        Args:
+            universe: GraphUniverse to sample from
+            n_graphs: Number of graphs to generate in the family
+            min_n_nodes: Minimum number of nodes per graph
+            max_n_nodes: Maximum number of nodes per graph
+            min_communities: Minimum number of communities per graph
+            max_communities: Maximum number of communities per graph (defaults to universe.K)
+            homophily_range: Tuple of (min_homophily, max_homophily) in graph family
+            density_range: Tuple of (min_density, max_density) in graph family
+
+            # Whether to use DCCC-SBM or standard DC-SBM
+            use_dccc_sbm: Whether to use DCCC-SBM model
+
+            # DCCC distribution-specific parameters
+            degree_separation_range: Range for degree distribution separation (min, max)
+            degree_signal_calc_method: How to calculate degree signal
+            disable_deviation_limiting: Whether to disable deviation checks
+            max_mean_community_deviation: Maximum allowed mean community deviation
+            max_max_community_deviation: Maximum allowed max community deviation
+            min_edge_density: Minimum edge density for graphs
+            degree_distribution: Degree distribution type ("standard", "power_law", "exponential", "uniform")
+            power_law_exponent_range: Range for power law exponent (min, max)
+            exponential_rate_range: Range for exponential distribution rate (min, max)
+            uniform_min_factor_range: Range for uniform distribution min factor (min, max)
+            uniform_max_factor_range: Range for uniform distribution max factor (min, max)
+            
+            # Standard DC-SBM parameters (so if use_dccc_sbm is False, this is used)
+            degree_heterogeneity: Fixed degree heterogeneity for all graphs
+
+            # Fixed parameters for all graphs in family
+            max_retries: Maximum retries for graph generation
+            seed: Random seed for reproducibility
+        """
+        self.universe = universe
+        self.min_n_nodes = min_n_nodes
+        self.max_n_nodes = max_n_nodes
+        self.min_communities = min_communities
+        self.max_communities = max_communities if max_communities is not None else universe.K
+        self.homophily_range = homophily_range
+        self.avg_degree_range = avg_degree_range
+        # self.density_range = density_range
+
+        # Whether to use DCCC-SBM or standard DC-SBM
+        self.use_dccc_sbm = use_dccc_sbm
+
+        # DCCC distribution-specific parameters
+        self.degree_separation_range = degree_separation_range # Range for degree separation
+        self.degree_signal_calc_method = degree_signal_calc_method # How to calculate degree signal
+        
+        # Community co-occurrence homogeneity
+        self.community_cooccurrence_homogeneity = community_cooccurrence_homogeneity
+
+        # Deviation limiting
+        self.disable_deviation_limiting = disable_deviation_limiting
+        self.max_mean_community_deviation = max_mean_community_deviation
+        self.max_max_community_deviation = max_max_community_deviation
+        self.min_edge_density = min_edge_density
+        
+        # DCCC distribution parameters
+        self.degree_distribution = degree_distribution
+        self.power_law_exponent_range = power_law_exponent_range
+        self.exponential_rate_range = exponential_rate_range
+        self.uniform_min_factor_range = uniform_min_factor_range
+        self.uniform_max_factor_range = uniform_max_factor_range
+
+        # Standard DC-SBM parameters (so if use_dccc_sbm is False, this is used)
+        self.degree_heterogeneity = degree_heterogeneity
+        
+        # Fixed parameters for all graphs
+        self.max_retries = max_retries
+        
+        # Set random seed
+        if seed is not None:
+            np.random.seed(seed)
+            
+        # Validate parameters
+        self._validate_parameters()
+        
+        # Storage for generated graphs and metadata
+        self.graphs: List[GraphSample] = []
+        self.generation_metadata: List[Dict[str, Any]] = []
+        self.generation_stats: Dict[str, Any] = {}
+    
+    def generate_family(
+        self,
+        n_graphs: int,
+        show_progress: bool = True,
+        collect_stats: bool = True,
+        max_attempts_per_graph: int = 10,
+        timeout_minutes: float = 5.0,
+        allowed_community_combinations: Optional[List[List[int]]] = None
+    ) -> List[GraphSample]:
+        """
+        Generate a family of graphs from the universe.
+        
+        Args:
+            show_progress: Whether to show progress bar
+            collect_stats: Whether to collect generation statistics
+            max_attempts_per_graph: Maximum attempts per graph before giving up
+            timeout_minutes: Maximum time in minutes to spend generating graphs
+            allowed_community_combinations: Optional list of lists of community indices to be sampled from the universe
+        Returns:
+            List of generated GraphSample objects
+        """
+        start_time = time.time()
+        timeout_seconds = timeout_minutes * 60
+        self.graphs = []
+        self.community_labels_per_graph = []
+        self.generation_metadata = []
+        failed_graphs = 0
+
+        # Every time this function is called we need to reset Seed
+        self.seed = np.random.randint(0, 1000000)
+        np.random.seed(self.seed)
+        
+        # Progress bar setup
+        if show_progress:
+            pbar = tqdm(total=n_graphs, desc="Generating graph family")
+
+        
+        while len(self.graphs) < n_graphs:
+            # Check for timeout
+            if time.time() - start_time > timeout_seconds:
+                warnings.warn(f"Timeout reached after {timeout_minutes} minutes. Generated {len(self.graphs)} graphs instead of {n_graphs}")
+                break
+                
+            graph_generated = False
+            attempts = 0
+            
+            while not graph_generated and attempts < max_attempts_per_graph:
+                attempts += 1
+                
+                try:
+
+                    # Get a random seed for this graph
+                    graph_seed = np.random.randint(0, 1000000)
+
+                    # Sample parameters for this graph
+                    params = self._sample_graph_parameters()
+
+                    if allowed_community_combinations is not None:
+                        sampled_community_combination_index = np.random.randint(0, len(allowed_community_combinations))
+                        sampled_community_combination = allowed_community_combinations[sampled_community_combination_index]
+                    
+                    # Create graph sample
+                    graph_sample = GraphSample(
+                        # Give GraphUniverse object to sample from
+                        universe=self.universe,
+
+                        # Graph Sample specific parameters
+                        num_communities=params['n_communities'],
+                        n_nodes=params['n_nodes'],
+                        target_homophily=params['target_homophily'],
+                        target_average_degree=params['target_average_degree'],
+                        degree_distribution=self.degree_distribution,
+                        power_law_exponent=params.get('power_law_exponent', None),
+                        max_mean_community_deviation=self.max_mean_community_deviation,
+                        max_max_community_deviation=self.max_max_community_deviation,
+                        min_edge_density=self.min_edge_density,
+                        max_retries=self.max_retries, # Retries of single graph generation
+
+                        # Standard DC-SBM parameters (so if use_dccc_sbm is False, this is used)
+                        degree_heterogeneity=self.degree_heterogeneity,
+
+                        # DCCC-SBM parameters
+                        use_dccc_sbm=self.use_dccc_sbm,
+                        degree_separation=params.get('degree_separation', 0.5),
+                        dccc_global_degree_params=params.get('dccc_global_degree_params', {}),
+                        degree_signal_calc_method=self.degree_signal_calc_method, # How to calculate degree signal
+                        disable_deviation_limiting=self.disable_deviation_limiting,
+
+                        # Random seed
+                        seed=graph_seed,
+
+                        # Optional Parameter for user-defined communites to be sampled (Such that NO unseen communities are sampled for val or test)
+                        user_defined_communities=sampled_community_combination if allowed_community_combinations is not None else None
+                    )
+                    
+                    # Store graph and metadata
+                    self.graphs.append(graph_sample)
+                    self.community_labels_per_graph.append(np.unique(graph_sample.community_labels_universe_level, axis=0))
+                    metadata = {
+                        'graph_id': len(self.graphs) - 1,
+                        'attempts': attempts,
+                        'final_n_nodes': graph_sample.n_nodes,
+                        'final_n_edges': graph_sample.graph.number_of_edges(),
+                        'actual_density': graph_sample.graph.number_of_edges() / (graph_sample.n_nodes * (graph_sample.n_nodes - 1) / 2) if graph_sample.n_nodes > 1 else 0,
+                        'generation_method': graph_sample.generation_method,
+                        'timing_info': graph_sample.timing_info.copy() if hasattr(graph_sample, 'timing_info') else {},
+                        **params  # Include sampled parameters
+                    }
+                    
+                    self.generation_metadata.append(metadata)
+                    graph_generated = True
+                    
+                    if show_progress:
+                        pbar.update(1)
+                    
+                except Exception as e:
+                    print(f"Failed to generate graph after {attempts} attempts: {e}")
+                    if attempts == max_attempts_per_graph:
+                        warnings.warn(f"Failed to generate graph after {attempts} attempts: {e}")
+                        failed_graphs += 1
+                        # Add empty metadata for failed graph
+                        self.generation_metadata.append({
+                            'graph_id': len(self.graphs),
+                            'attempts': attempts,
+                            'failed': True,
+                            'error': str(e)
+                        })
+                    # Continue to next attempt
+        
+        # Use set of sorted tuples for uniqueness
+        unique_set_of_community_combinations = {tuple(sorted(arr)) for arr in self.community_labels_per_graph}
+
+        # Convert back to list of lists
+        unique_list_of_community_combinations = [list(tup) for tup in unique_set_of_community_combinations]
+        self.seen_community_combinations = unique_list_of_community_combinations
+        
+        # print(f"Seen community combinations: {self.seen_community_combinations}")
+
+        if show_progress:
+            pbar.close()
+        
+        # Collect generation statistics
+        if collect_stats:
+            self._collect_generation_stats(start_time, failed_graphs, n_graphs)
+        
+        return self.graphs
+
+    def _validate_parameters(self) -> None:
+        """Validate initialization parameters."""
+        if self.min_n_nodes <= 0:
+            raise ValueError("min_n_nodes must be positive")
+        if self.max_n_nodes < self.min_n_nodes:
+            raise ValueError("max_n_nodes must be >= min_n_nodes")
+        if self.min_communities < 1:
+            raise ValueError("min_communities must be >= 1")
+        if self.max_communities > self.universe.K:
+            raise ValueError(f"max_communities cannot exceed universe size ({self.universe.K})")
+        if self.max_communities < self.min_communities:
+            raise ValueError("max_communities must be >= min_communities")
+        
+        # Validate ranges
+        if len(self.homophily_range) != 2 or self.homophily_range[0] > self.homophily_range[1]:
+            raise ValueError("homophily_range must be a tuple (min, max) with min <= max")
+        if self.homophily_range[0] < 0.0 or self.homophily_range[1] > 1.0:
+            raise ValueError("homophily_range values must be between 0.0 and 1.0")
+        if len(self.avg_degree_range) != 2 or self.avg_degree_range[0] > self.avg_degree_range[1]:
+            raise ValueError("avg_degree_range must be a tuple (min, max) with min <= max")
+        if self.avg_degree_range[0] < 0.0 or self.avg_degree_range[1] > 100.0:
+            raise ValueError("avg_degree_range values must be between 0.0 and 100.0")
+        if len(self.degree_separation_range) != 2 or self.degree_separation_range[0] > self.degree_separation_range[1]:
+            raise ValueError("degree_separation_range must be a tuple (min, max) with min <= max")
+        
+        # Validate DCCC distribution parameter ranges
+        if len(self.power_law_exponent_range) != 2 or self.power_law_exponent_range[0] > self.power_law_exponent_range[1]:
+            raise ValueError("power_law_exponent_range must be a tuple (min, max) with min <= max")
+        if len(self.exponential_rate_range) != 2 or self.exponential_rate_range[0] > self.exponential_rate_range[1]:
+            raise ValueError("exponential_rate_range must be a tuple (min, max) with min <= max")
+        if len(self.uniform_min_factor_range) != 2 or self.uniform_min_factor_range[0] > self.uniform_min_factor_range[1]:
+            raise ValueError("uniform_min_factor_range must be a tuple (min, max) with min <= max")
+        if len(self.uniform_max_factor_range) != 2 or self.uniform_max_factor_range[0] > self.uniform_max_factor_range[1]:
+            raise ValueError("uniform_max_factor_range must be a tuple (min, max) with min <= max")
+        
+        # Validate that distribution ranges make sense
+        if self.power_law_exponent_range[0] <= 1.0:
+            raise ValueError("power_law_exponent_range values must be > 1.0")
+        if self.exponential_rate_range[0] <= 0.0:
+            raise ValueError("exponential_rate_range values must be > 0.0")
+        if self.uniform_min_factor_range[0] <= 0.0:
+            raise ValueError("uniform_min_factor_range values must be > 0.0")
+        if self.uniform_max_factor_range[0] <= 0.0:
+            raise ValueError("uniform_max_factor_range values must be > 0.0")
+    
+    def _sample_graph_parameters(self) -> Dict[str, Any]:
+        """
+        Sample parameters for a single graph within the specified ranges.
+        
+        Returns:
+            Dictionary of sampled parameters
+        """
+        # Sample number of nodes
+        n_nodes = np.random.randint(self.min_n_nodes, self.max_n_nodes + 1)
+        
+        # Sample number of communities
+        n_communities = np.random.randint(self.min_communities, self.max_communities + 1)
+        
+        # Sample target homophily
+        target_homophily = np.random.uniform(self.homophily_range[0], self.homophily_range[1])
+
+        # Sample target average degree
+        target_average_degree = np.random.uniform(self.avg_degree_range[0], self.avg_degree_range[1])
+        
+        # # Sample target density
+        # target_density = np.random.uniform(self.density_range[0], self.density_range[1])
+        
+        # Sample DCCC parameters if using DCCC-SBM
+        dccc_params = {}
+        if self.use_dccc_sbm:
+            # Sample degree separation
+            degree_separation = np.random.uniform(
+                self.degree_separation_range[0], 
+                self.degree_separation_range[1]
+            )
+            
+            # Sample distribution-specific parameters
+            distribution_params = {}
+            if self.degree_distribution == "power_law":
+                power_law_exponent = np.random.uniform(
+                    self.power_law_exponent_range[0],
+                    self.power_law_exponent_range[1]
+                )
+                distribution_params = {
+                    "exponent": power_law_exponent,
+                    "x_min": 1.0
+                }
+            elif self.degree_distribution == "exponential":
+                rate = np.random.uniform(
+                    self.exponential_rate_range[0],
+                    self.exponential_rate_range[1]
+                )
+                distribution_params = {"rate": rate}
+            elif self.degree_distribution == "uniform":
+                min_factor = np.random.uniform(
+                    self.uniform_min_factor_range[0],
+                    self.uniform_min_factor_range[1]
+                )
+                max_factor = np.random.uniform(
+                    self.uniform_max_factor_range[0],
+                    self.uniform_max_factor_range[1]
+                )
+                # Ensure max_factor > min_factor
+                if max_factor <= min_factor:
+                    max_factor = min_factor + 0.1
+                distribution_params = {
+                    "min_degree": min_factor,
+                    "max_degree": max_factor
+                }
+            
+            dccc_params = {
+                "degree_separation": degree_separation,
+                "dccc_global_degree_params": distribution_params,
+                "power_law_exponent": distribution_params.get("exponent", None)
+            }
+        
+        # Combine all parameters
+        params = {
+            'n_nodes': n_nodes,
+            'target_homophily': target_homophily,
+            'target_average_degree': target_average_degree,
+            'n_communities': n_communities,
+        }
+        
+        # Add DCCC parameters
+        params.update(dccc_params)
+        
+        return params
+    
+    def _generate_single_graph(
+        self,
+        max_attempts: int = 10,
+        timeout_minutes: float = 5.0
+    ) -> GraphSample:
+        """
+        Generate a single graph with progress tracking.
+        
+        Args:
+            max_attempts: Maximum attempts per graph before giving up
+            timeout_minutes: Maximum time in minutes to spend generating this graph
+            
+        Returns:
+            Generated GraphSample object
+            
+        Raises:
+            Exception: If graph generation fails after max_attempts
+        """
+        start_time = time.time()
+        timeout_seconds = timeout_minutes * 60
+        attempts = 0
+        
+        while attempts < max_attempts:
+            attempts += 1
+            
+            # Check for timeout
+            if time.time() - start_time > timeout_seconds:
+                raise Exception(f"Timeout reached after {timeout_minutes} minutes")
+            
+            try:
+                # Get a random seed for this graph
+                graph_seed = np.random.randint(0, 1000000)
+                
+                # Sample parameters for this graph
+                params = self._sample_graph_parameters()
+                
+                # Debug: Print parameters being used
+                print(f"Attempt {attempts}: Generating graph with params: {params}")
+                
+                # Create graph sample
+                print(f"Attempt {attempts}: Starting GraphSample initialization...")
+                
+                try:
+                    graph_sample = GraphSample(
+                        # Give GraphUniverse object to sample from
+                        universe=self.universe,
+
+                        # Graph Sample specific parameters
+                        num_communities=params['n_communities'],
+                        n_nodes=params['n_nodes'],
+                        target_homophily=params['target_homophily'],
+                        target_average_degree=params['target_average_degree'],
+                        degree_distribution=self.degree_distribution,
+                        power_law_exponent=params.get('power_law_exponent', None),
+                        max_mean_community_deviation=self.max_mean_community_deviation,
+                        max_max_community_deviation=self.max_max_community_deviation,
+                        min_edge_density=self.min_edge_density,
+                        max_retries=self.max_retries, # Retries of single graph generation
+
+                        # Standard DC-SBM parameters (so if use_dccc_sbm is False, this is used)
+                        degree_heterogeneity=self.degree_heterogeneity,
+
+                        # DCCC-SBM parameters
+                        use_dccc_sbm=self.use_dccc_sbm,
+                        degree_separation=params.get('degree_separation', 0.5),
+                        dccc_global_degree_params=params.get('dccc_global_degree_params', {}),
+                        degree_signal_calc_method=self.degree_signal_calc_method, # How to calculate degree signal
+                        disable_deviation_limiting=self.disable_deviation_limiting,
+
+                        # Random seed
+                        seed=graph_seed,
+
+                        # Optional Parameter for user-defined communites to be sampled
+                        user_defined_communities=None
+                    )
+                    print(f"Attempt {attempts}: GraphSample initialization completed successfully")
+                except Exception as e:
+                    print(f"Attempt {attempts}: GraphSample initialization failed: {str(e)}")
+                    raise e
+                
+                print(f"Successfully generated graph with {graph_sample.n_nodes} nodes")
+                return graph_sample
+                
+            except Exception as e:
+                # print(f"Attempt {attempts} failed: {str(e)}")
+                if attempts == max_attempts:
+                    raise Exception(f"Failed to generate graph after {attempts} attempts: {e}")
+                # Continue to next attempt
+ 
+    def _collect_generation_stats(self, start_time: float, failed_graphs: int, n_graphs: int) -> None:
+        """Collect statistics about the generation process."""
+        total_time = time.time() - start_time
+        successful_graphs = len(self.graphs)
+        
+        # Basic stats
+        self.generation_stats = {
+            'total_time': total_time,
+            'successful_graphs': successful_graphs,
+            'failed_graphs': failed_graphs,
+            'success_rate': successful_graphs / n_graphs if n_graphs > 0 else 0,
+            'avg_time_per_graph': total_time / n_graphs if n_graphs > 0 else 0
+        }
+        
+        if successful_graphs > 0:
+            # Get statistics from successful graphs
+            successful_metadata = [m for m in self.generation_metadata if not m.get('failed', False)]
+            
+            node_counts = [m['final_n_nodes'] for m in successful_metadata]
+            edge_counts = [m['final_n_edges'] for m in successful_metadata]
+            densities = [m['actual_density'] for m in successful_metadata]
+            attempts = [m['attempts'] for m in successful_metadata]
+            
+            self.generation_stats.update({
+                'node_count_stats': {
+                    'mean': np.mean(node_counts),
+                    'std': np.std(node_counts),
+                    'min': np.min(node_counts),
+                    'max': np.max(node_counts)
+                },
+                'edge_count_stats': {
+                    'mean': np.mean(edge_counts),
+                    'std': np.std(edge_counts),
+                    'min': np.min(edge_counts),
+                    'max': np.max(edge_counts)
+                },
+                'density_stats': {
+                    'mean': np.mean(densities),
+                    'std': np.std(densities),
+                    'min': np.min(densities),
+                    'max': np.max(densities)
+                },
+                'attempts_stats': {
+                    'mean': np.mean(attempts),
+                    'std': np.std(attempts),
+                    'min': np.min(attempts),
+                    'max': np.max(attempts)
+                }
+            })
+    
+    def save_family(self, filepath: str, include_graphs: bool = True, n_graphs: int = 0) -> None:
+        """
+        Save the graph family to file.
+        
+        Args:
+            filepath: Path to save file
+            include_graphs: Whether to include graph objects (large files)
+        """
+        import pickle
+        
+        save_data = {
+            'generation_metadata': self.generation_metadata,
+            'generation_stats': self.generation_stats,
+            'parameters': {
+                'n_graphs': n_graphs,
+                'min_n_nodes': self.min_n_nodes,
+                'max_n_nodes': self.max_n_nodes,
+                'min_communities': self.min_communities,
+                'max_communities': self.max_communities,
+                'homophily_range': self.homophily_range,
+                'density_range': self.density_range,
+                'use_dccc_sbm': self.use_dccc_sbm,
+                'degree_separation_range': self.degree_separation_range,
+                'degree_distribution': self.degree_distribution,
+                'power_law_exponent_range': self.power_law_exponent_range,
+                'exponential_rate_range': self.exponential_rate_range,
+                'uniform_min_factor_range': self.uniform_min_factor_range,
+                'uniform_max_factor_range': self.uniform_max_factor_range
+            }
+        }
+        
+        if include_graphs:
+            save_data['graphs'] = self.graphs
+            
+        with open(filepath, 'wb') as f:
+            pickle.dump(save_data, f)
+    
+    def __len__(self) -> int:
+        """Return number of successfully generated graphs."""
+        return len(self.graphs)
+    
+    def __getitem__(self, index: int) -> GraphSample:
+        """Get a specific graph from the family."""
+        return self.graphs[index]
+    
+    def __iter__(self):
+        """Iterate over graphs in the family."""
+        return iter(self.graphs)
+    
+    def analyze_graph_family_properties(self) -> Dict[str, Any]:
+        """Analyze the properties of the graph family once generated."""
+        if self.graphs is None:
+            raise ValueError("No graphs in family. Please generate family first before analyzing properties.")
+        
+        properties = {
+            'n_graphs': len(self.graphs),
+            'node_counts': [],
+            'edge_counts': [],
+            'densities': [],
+            'avg_degrees': [],
+            'clustering_coefficients': [],
+            'community_counts': [],
+            'homophily_levels': [],
+            'nr_of_triangles': [],
+            'generation_methods': [],
+            'degree_distributions': [],
+            'degree_distribution_power_law_exponents': [],
+            'tail_ratio_95': [],
+            'tail_ratio_99': [],
+        }
+        
+        for graph in self.graphs:
+            properties['node_counts'].append(graph.n_nodes)
+            properties['edge_counts'].append(graph.graph.number_of_edges())
+            
+            if graph.n_nodes > 1:
+                density = graph.graph.number_of_edges() / (graph.n_nodes * (graph.n_nodes - 1) / 2)
+                properties['densities'].append(density)
+            else:
+                properties['densities'].append(0.0)
+            
+            if graph.n_nodes > 0:
+                avg_degree = sum(dict(graph.graph.degree()).values()) / graph.n_nodes
+                properties['avg_degrees'].append(avg_degree)
+            else:
+                properties['avg_degrees'].append(0.0)
+            
+            try:
+                clustering = nx.average_clustering(graph.graph)
+                properties['clustering_coefficients'].append(clustering)
+            except:
+                properties['clustering_coefficients'].append(0.0)
+            
+            properties['community_counts'].append(len(np.unique(graph.community_labels)))
+            
+            # Calculate homophily level
+            if graph.n_nodes > 0 and graph.graph.number_of_edges() > 0:
+                # Count edges between nodes of same community
+                same_community_edges = 0
+                for u, v in graph.graph.edges():
+                    if graph.community_labels[u] == graph.community_labels[v]:
+                        same_community_edges += 1
+                homophily = same_community_edges / graph.graph.number_of_edges()
+                properties['homophily_levels'].append(homophily)
+            else:
+                properties['homophily_levels'].append(0.0)
+            
+            # Calculate number of triangles
+            if graph.n_nodes > 0:
+                triangle_values = list(nx.triangles(graph.graph).values())
+                properties['nr_of_triangles'].append(np.sum(triangle_values)/3)
+            else:
+                properties['nr_of_triangles'].append(0.0)
+            
+            # Track generation method
+            if hasattr(graph, 'generation_method'):
+                properties['generation_methods'].append(graph.generation_method)
+            
+            # Extract degree distribution and fit power law exponent
+            if graph.n_nodes > 0:
+                degrees = list(dict(graph.graph.degree()).values())
+                # Fit power law exponent
+                power_law_exponent = self._fit_power_law_exponent(degrees)
+                tail_metrics = self._calculate_degree_tail_metrics(degrees)
+                properties['tail_ratio_95'].append(tail_metrics['tail_ratio_95'])
+                properties['tail_ratio_99'].append(tail_metrics['tail_ratio_99'])
+                properties['degree_distributions'].append(degrees)
+                properties['degree_distribution_power_law_exponents'].append(power_law_exponent)
+            else:
+                properties['degree_distributions'].append([])
+                properties['degree_distribution_power_law_exponents'].append(0.0)
+
+        
+        # Calculate statistics and convert to native Python types
+        for key in ['node_counts', 'edge_counts', 'densities', 'avg_degrees', 'clustering_coefficients', 'community_counts', 'homophily_levels', 'nr_of_triangles']:
+            values = properties[key]
+            if values:
+                properties[f'{key}_mean'] = float(np.mean(values))
+                properties[f'{key}_std'] = float(np.std(values))
+                properties[f'{key}_min'] = float(np.min(values))
+                properties[f'{key}_max'] = float(np.max(values))
+            else:
+                properties[f'{key}_mean'] = 0.0
+                properties[f'{key}_std'] = 0.0
+                properties[f'{key}_min'] = 0.0
+                properties[f'{key}_max'] = 0.0
+        
+        # Add generation method summary
+        if properties['generation_methods']:
+            from collections import Counter
+            method_counts = Counter(properties['generation_methods'])
+            properties['generation_method_distribution'] = dict(method_counts)
+        
+        return properties
+   
+    def analyze_graph_family_signals(self) -> Dict[str, Any]:
+        """Analyze the signals of the graph family."""
+        if not self.graphs:
+            raise ValueError("No graphs in family. Please generate family first before analyzing signals.")
+        
+        # Calculate the signals
+        signals = {
+            'feature_signal': [],
+            'degree_signal': [],
+            'triangle_signal': [],
+            'structure_signal': []
+        }
+        
+        for graph in self.graphs:
+            signals['feature_signal'].append(graph.calculate_feature_signal())
+            signals['degree_signal'].append(graph.calculate_degree_signal())
+            signals['triangle_signal'].append(graph.calculate_triangle_community_signal())
+            signals['structure_signal'].append(graph.calculate_structure_signal())
+        
+        return signals
+
+    def analyze_graph_family_consistency(self) -> Dict[str, Any]:
+        """Analyze the consistency of the graph family."""
+        if not self.graphs:
+            raise ValueError("No graphs in family. Please generate family first before analyzing consistency.")
+        
+        # Calculate the consistency
+        results = {}
+        
+        # 1. Pattern preservation (do communities RELATIVELY connect more to the communities they are supposed to connect to?)
+        try:
+            pattern_corrs = self._calculate_pattern_consistency()
+            results['pattern_preservation'] = pattern_corrs
+
+        except Exception as e:
+            results['pattern_preservation'] = []
+
+        # 2. Generation fidelity (do graphs match their scaled probability targets (P_sub)?)
+        try:
+            generation_fidelity = self._calculate_generation_fidelity()
+            results['generation_fidelity'] = generation_fidelity
+        except Exception as e:
+            results['generation_fidelity'] = []
+
+        # 3. Degree consistency (do actual node degrees correlate with universe degree centers?)
+        try:
+            degree_consistency = self._calculate_degree_consistency()
+            results['degree_consistency'] = degree_consistency
+        except Exception as e:
+            results['degree_consistency'] = []
+
+        # 4. Co-occurrence consistency (do communities co-occur in the family as expected?)
+        try:
+            cooccurrence_consistency = self._calculate_cooccurrence_consistency()
+            results['cooccurrence_consistency'] = cooccurrence_consistency
+        except Exception as e:
+            results['cooccurrence_consistency'] = 0.0
+
+        return results
+
+    def _calculate_pattern_consistency(self) -> List[float]:
+        """
+        Measure whether relative community connection patterns are preserved.
+        Uses rank correlation to focus on structural patterns rather than absolute values.
+        """
+        pattern_correlations = []
+        universe_P = self.universe.P
+
+        for graph in self.graphs:
+            try:
+                # Extract relevant submatrix from universe
+                P_sub = graph.P_sub
+                
+                # Get actual connections
+                actual_edge_probabilities, community_sizes, connection_counts = graph.calculate_actual_probability_matrix()
+
+                # Calculate rank correlation per row comparing the expected and actual edge probabilities and average them
+                if len(P_sub) > 1 and np.std(P_sub) > 0 and np.std(actual_edge_probabilities) > 0:
+                    correlations = []
+                    for i in range(len(P_sub)):
+                        correlation, _ = spearmanr(P_sub[i], actual_edge_probabilities[i])
+                        if not np.isnan(correlation):
+                            correlations.append(correlation)
+                    pattern_correlations.append(np.mean(correlations))
+            except Exception as e:
+                warnings.warn(f"Error in pattern consistency calculation for graph: {e}")
+                continue
+        
+        return pattern_correlations
+
+    def _calculate_generation_fidelity(self) -> List[float]:
+            """
+            Measure how well graphs match their scaled probability targets (P_sub).
+            """
+            fidelity_scores = []
+            
+            for graph in self.graphs:
+                try:
+                    # Use the graph's own scaled P_sub as reference
+                    expected_matrix = graph.P_sub
+                    
+                    # Get actual connections
+                    actual_analysis = graph.analyze_community_connections()
+                    actual_matrix = actual_analysis['actual_matrix']
+                    
+                    # Calculate correlation between expected and actual
+                    expected_flat = expected_matrix.flatten()
+                    actual_flat = actual_matrix.flatten()
+                    
+                    if len(expected_flat) > 1:
+                        if np.std(expected_flat) > 0 and np.std(actual_flat) > 0:
+                            correlation, _ = pearsonr(expected_flat, actual_flat)
+                            if not np.isnan(correlation):
+                                fidelity_scores.append(correlation)
+                except Exception as e:
+                    warnings.warn(f"Error in generation fidelity calculation for graph: {e}")
+                    continue
+            
+            if not fidelity_scores:
+                return []
+            
+            return fidelity_scores
+    
+    def _calculate_degree_consistency(self) -> List[float]:
+        """
+        Compare actual node degrees to expected degrees based on universe degree centers.
+        """
+        consistency_scores = []
+        
+        degree_centers = self.universe.degree_centers
+        for graph in self.graphs:
+            try:
+                # Get actual degrees per community
+                actual_degrees_per_community = np.zeros(len(graph.communities))
+
+                for node_idx in range(graph.n_nodes):
+                    community_id = graph.community_labels[node_idx]
+                    degree = graph.graph.degree[node_idx]
+
+                    actual_degrees_per_community[community_id] += degree
+
+                # Get the degree centers for the communities in the graph
+                community_degree_centers = degree_centers[graph.communities]
+
+                # Check if degree centers are constant (all same value)
+                if np.std(community_degree_centers) == 0:
+                    # For constant degree centers, measure degree homogeneity instead
+                    # Calculate coefficient of variation of actual degrees per community
+                    if np.mean(actual_degrees_per_community) > 0:
+                        cv = np.std(actual_degrees_per_community) / np.mean(actual_degrees_per_community)
+                        # Convert to a "consistency" score: lower CV = higher consistency
+                        # Use 1 / (1 + cv) to get a score between 0 and 1
+                        consistency_score = 1.0 / (1.0 + cv)
+                    else:
+                        consistency_score = 0.0
+                else:
+                    # Calculate the correlation between the actual degrees and the community degree centers
+                    correlation, _ = pearsonr(actual_degrees_per_community, community_degree_centers)
+                    consistency_score = correlation if not np.isnan(correlation) else 0.0
+                
+                consistency_scores.append(consistency_score)
+                    
+            except Exception as e:
+                warnings.warn(f"Error in degree consistency calculation for graph: {e}")
+                continue
+        
+        if not consistency_scores:
+            return []
+        
+        return consistency_scores
+
+    def _calculate_cooccurrence_consistency(self) -> List[float]:
+        """
+        Measure how well community co-occurrence patterns are preserved.
+        """        
+        # Calculate how often communities co-occur in the family
+        cooccurrence_counts_matrix = np.zeros((self.universe.K, self.universe.K))
+        for graph in self.graphs:
+            for i in range(len(graph.communities)):
+                for j in range(i+1, len(graph.communities)):
+                    cooccurrence_counts_matrix[graph.community_id_mapping[i], graph.community_id_mapping[j]] += 1
+                    cooccurrence_counts_matrix[graph.community_id_mapping[j], graph.community_id_mapping[i]] += 1
+
+        # Calculate how correlated the cooccurrence counts are with the universe cooccurrence matrix
+        correlation, _ = pearsonr(cooccurrence_counts_matrix.flatten(), self.universe.community_cooccurrence_matrix.flatten())
+        
+        return correlation
+        
+    def _fit_power_law_exponent(self, degrees: List[int]) -> float:
+        """
+        Fit a power law exponent to a degree distribution using discrete MLE.
+        This method is specifically designed for discrete network degrees.
+        
+        Args:
+            degrees: List of node degrees
+            
+        Returns:
+            float: Power law exponent alpha, or 0 if fitting fails or alpha not in [1, 20]
+        """
+        if not degrees or len(degrees) < 2:
+            return 0.0
+            
+        # Convert to numpy array and filter out zeros
+        degrees_array = np.array(degrees, dtype=int)
+        degrees_array = degrees_array[degrees_array > 0]
+        
+        if len(degrees_array) < 2:
+            return 0.0
+        
+        k_min = np.min(degrees_array)
+        n = len(degrees_array)
+        
+        def negative_log_likelihood(alpha):
+            if alpha <= 1.0:
+                return np.inf
+            try:
+                # For discrete power law, the log-likelihood is:
+                # L = -alpha * sum(log(k_i)) - n * log(zeta(alpha, k_min))
+                # We approximate zeta(alpha, k_min) for computational efficiency
+                
+                # Approximation: zeta(alpha, k_min) ≈ sum_{k=k_min}^{k_max} k^(-alpha)
+                k_max = max(100, np.max(degrees_array) * 2)  # Reasonable upper bound
+                k_range = np.arange(k_min, k_max + 1)
+                zeta_approx = np.sum(k_range**(-alpha))
+                
+                if zeta_approx <= 0:
+                    return np.inf
+                    
+                log_likelihood = -alpha * np.sum(np.log(degrees_array)) - n * np.log(zeta_approx)
+                return -log_likelihood  # Return negative for minimization
+                
+            except (OverflowError, ZeroDivisionError, ValueError):
+                return np.inf
+        
+        try:
+            # Find MLE estimate using bounded optimization
+            from scipy.optimize import minimize_scalar
+            result = minimize_scalar(negative_log_likelihood, bounds=(1.01, 10.0), method='bounded')
+            if result.success and 1.0 < result.x < 20.0:
+                return result.x
+            else:
+                return 0.0
+        except:
+            return 0.0
+
+    def _calculate_degree_tail_metrics(self, degrees: List[int]) -> Dict[str, float]:
+        """Calculate tail-based degree metrics instead of power law fitting"""        
+        if len(degrees) == 0:
+            return {'tail_ratio': 0.0, 'cv': 0.0}
+        
+        tail_95 = np.percentile(degrees, 95)
+        tail_99 = np.percentile(degrees, 99) 
+        mean_degree = np.mean(degrees)
+        
+        return {
+            'tail_ratio_95': tail_95 / mean_degree if mean_degree > 0 else 0.0,
+            'tail_ratio_99': tail_99 / mean_degree if mean_degree > 0 else 0.0,
+            'coefficient_variation': np.std(degrees) / mean_degree if mean_degree > 0 else 0.0,
+            'max_degree': np.max(degrees),
+            'mean_degree': mean_degree
+        }

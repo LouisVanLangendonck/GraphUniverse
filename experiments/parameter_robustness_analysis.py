@@ -2,6 +2,7 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
+import networkx as nx
 from typing import Dict, List, Tuple, Any, Optional
 import time
 import warnings
@@ -13,8 +14,7 @@ import json
 import os
 
 # Import the graph generation classes
-from graph_universe.model import GraphUniverse, GraphSample
-from graph_universe.graph_family import GraphFamilyGenerator
+from graph_universe.model import GraphUniverse, GraphSample, GraphFamilyGenerator
 
 warnings.filterwarnings('ignore')
 
@@ -87,7 +87,8 @@ class ParameterRobustnessAnalyzer:
         max_attempts_per_graph: int = 10,
         save_results: bool = True,
         results_dir: str = "parameter_robustness_results",
-        skip_signal_calculations: bool = False
+        skip_signal_calculations: bool = False,
+        save_detailed_data: bool = True
     ) -> Dict[str, Any]:
         """
         Run comprehensive parameter robustness analysis.
@@ -99,6 +100,7 @@ class ParameterRobustnessAnalyzer:
             save_results: Whether to save results to disk
             results_dir: Directory to save results
             skip_signal_calculations: Whether to skip signal calculations for faster runs
+            save_detailed_data: Whether to save detailed data for each graph family
             
         Returns:
             Dictionary with all analysis results
@@ -126,7 +128,8 @@ class ParameterRobustnessAnalyzer:
                 n_graphs_per_interval=n_graphs_per_interval,
                 timeout_minutes=timeout_minutes,
                 max_attempts_per_graph=max_attempts_per_graph,
-                skip_signal_calculations=skip_signal_calculations
+                skip_signal_calculations=skip_signal_calculations,
+                save_detailed_data=save_detailed_data
             )
             
             all_results[param_name] = param_results
@@ -138,9 +141,9 @@ class ParameterRobustnessAnalyzer:
         # Generate comprehensive summary
         summary = self._generate_comprehensive_summary(all_results, skip_signal_calculations)
         
-        # Create visualizations
+        # Save comprehensive results
         if save_results:
-            self._create_comprehensive_visualizations(all_results, results_dir, skip_signal_calculations)
+            self._save_comprehensive_results(all_results, summary, results_dir, skip_signal_calculations)
         
         total_time = time.time() - experiment_start
         print(f"\n✅ Analysis Complete! Total time: {total_time:.1f}s")
@@ -165,7 +168,8 @@ class ParameterRobustnessAnalyzer:
         n_graphs_per_interval: int,
         timeout_minutes: float,
         max_attempts_per_graph: int,
-        skip_signal_calculations: bool = False
+        skip_signal_calculations: bool = False,
+        save_detailed_data: bool = True
     ) -> Dict[str, Any]:
         """
         Analyze a single parameter across its intervals.
@@ -189,7 +193,8 @@ class ParameterRobustnessAnalyzer:
                 n_graphs_per_family=10,  # Generate 10 graphs per family
                 timeout_minutes=timeout_minutes,
                 max_attempts_per_graph=max_attempts_per_graph,
-                skip_signal_calculations=skip_signal_calculations
+                skip_signal_calculations=skip_signal_calculations,
+                save_detailed_data=save_detailed_data
             )
             
             results['intervals'].append({
@@ -218,7 +223,8 @@ class ParameterRobustnessAnalyzer:
         n_graphs_per_family: int,
         timeout_minutes: float,
         max_attempts_per_graph: int,
-        skip_signal_calculations: bool = False
+        skip_signal_calculations: bool = False,
+        save_detailed_data: bool = True
     ) -> Dict[str, Any]:
         """
         Test a single parameter interval with randomized other parameters.
@@ -228,24 +234,24 @@ class ParameterRobustnessAnalyzer:
         family_properties = []
         family_signals = []
         family_consistencies = []
+        detailed_family_data = []  # New: store detailed data for each family
         
         successful_generations = 0
         
         for family_idx in range(n_families):
             try:
                 # Generate random parameters for everything except the target parameter
-                params = self._generate_random_parameters(param_name, interval)
+                # Use family-specific seed to ensure independent randomization for each family
+                family_seed = self.base_seed + family_idx
+                params = self._generate_random_parameters(param_name, interval, seed=family_seed)
                 
                 # Create universe
                 universe = GraphUniverse(
                     K=params['K'],
                     feature_dim=params['feature_dim'],
                     inter_community_variance=params['inter_community_variance'],
-                    cluster_count_factor=params['cluster_count_factor'],
                     center_variance=params['center_variance'],
                     cluster_variance=params['cluster_variance'],
-                    assignment_skewness=params['assignment_skewness'],
-                    community_exclusivity=params['community_exclusivity'],
                     degree_center_method=params['degree_center_method'],
                     community_cooccurrence_homogeneity=params['community_cooccurrence_homogeneity'],
                     seed=self.base_seed + family_idx
@@ -312,6 +318,14 @@ class ParameterRobustnessAnalyzer:
                     print(f"     Warning: Failed to analyze family consistency for family {family_idx + 1}: {str(e)}")
                     family_consistencies.append({})
                 
+                # Collect detailed data for this family
+                if save_detailed_data:
+                    detailed_family_info = self._collect_detailed_family_data(
+                        family_generator, family_props, family_sigs if not skip_signal_calculations else {}, 
+                        family_consistency, params, param_name, interval, family_idx
+                    )
+                    detailed_family_data.append(detailed_family_info)
+                
                 families.append(family_generator)
                 successful_generations += 1
                 
@@ -333,101 +347,107 @@ class ParameterRobustnessAnalyzer:
             'family_properties': family_properties,
             'family_signals': family_signals,
             'family_consistencies': family_consistencies,
+            'detailed_family_data': detailed_family_data,  # New: include detailed data
             'actual_values': actual_values,
             'coverage_stats': coverage_stats,
             'success_rate': successful_generations / n_families
         }
     
-    def _generate_random_parameters(self, target_param: str, target_interval: Tuple[float, float]) -> Dict[str, Any]:
+    def _generate_random_parameters(self, target_param: str, target_interval: Tuple[float, float], seed: int = None) -> Dict[str, Any]:
         """
         Generate random parameters, fixing the target parameter to the specified interval.
+        
+        Args:
+            target_param: The parameter being tested
+            target_interval: The interval for the target parameter
+            seed: Optional seed for reproducible randomization
         """
+        # Set random seed for this parameter generation if provided
+        if seed is not None:
+            rng = np.random.RandomState(seed)
+        else:
+            rng = np.random
+        
         # Universe parameters - ensure K is large enough
-        K = np.random.randint(8, 15)  # Increased minimum to avoid max_communities issues
-        feature_dim = np.random.choice([5, 10, 20])
-        inter_community_variance = np.random.uniform(0.05, 1.0)
-        cluster_count_factor = np.random.uniform(1.0, 1.0)
-        center_variance = np.random.uniform(0.5, 2.0)
-        cluster_variance = np.random.uniform(0.05, 1.0)
-        assignment_skewness = np.random.uniform(0.0, 0.0)
-        community_exclusivity = np.random.uniform(1.0, 1.0)
-        degree_center_method = np.random.choice(['random'])
-        community_cooccurrence_homogeneity = np.random.uniform(0.0, 1.0)
+        K = rng.randint(10, 15)  # Increased minimum to avoid max_communities issues
+        feature_dim = rng.choice([5, 10, 20])
+        inter_community_variance = rng.uniform(0.0, 1.0)
+        center_variance = rng.uniform(0.5, 2.0)
+        cluster_variance = rng.uniform(0.05, 1.0)
+        degree_center_method = rng.choice(['random', 'constant'])
+        community_cooccurrence_homogeneity = rng.uniform(0.0, 1.0)
         
         # Graph family parameters - ensure max_communities <= K
-        min_n_nodes = np.random.randint(30, 100)
-        max_n_nodes = np.random.randint(min_n_nodes + 50, 300)
-        min_communities = np.random.randint(2, min(6, K-2))  # Ensure min_communities < K
-        max_communities = np.random.randint(min_communities + 1, min(10, K))  # Ensure max_communities <= K
-        min_component_size = np.random.randint(5, 20)
+        min_n_nodes = rng.randint(30, 100)
+        max_n_nodes = rng.randint(min_n_nodes + 50, 300)
+        min_communities = rng.randint(2, min(6, K-2))  # Ensure min_communities < K
+        max_communities = rng.randint(min_communities + 1, min(10, K))  # Ensure max_communities <= K
+        min_component_size = rng.randint(5, 20)
         
         # Set target parameter based on type
         if target_param == 'homophily':
             homophily_range = target_interval
-            avg_degree_range = (np.random.uniform(1.0, 3.0), np.random.uniform(3.0, 8.0))
+            avg_degree_range = (rng.uniform(1.0, 3.0), rng.uniform(3.0, 8.0))
         elif target_param == 'avg_degree':
-            homophily_range = (np.random.uniform(0.0, 0.3), np.random.uniform(0.3, 0.8))
+            homophily_range = (rng.uniform(0.0, 0.3), rng.uniform(0.3, 0.8))
             avg_degree_range = target_interval
         elif target_param == 'n_nodes':
-            homophily_range = (np.random.uniform(0.0, 0.3), np.random.uniform(0.3, 0.8))
-            avg_degree_range = (np.random.uniform(1.0, 3.0), np.random.uniform(3.0, 8.0))
+            homophily_range = (rng.uniform(0.0, 0.3), rng.uniform(0.3, 0.8))
+            avg_degree_range = (rng.uniform(1.0, 3.0), rng.uniform(3.0, 8.0))
             min_n_nodes, max_n_nodes = target_interval
         elif target_param == 'n_communities':
-            homophily_range = (np.random.uniform(0.0, 0.3), np.random.uniform(0.3, 0.8))
-            avg_degree_range = (np.random.uniform(1.0, 3.0), np.random.uniform(3.0, 8.0))
+            homophily_range = (rng.uniform(0.0, 0.3), rng.uniform(0.3, 0.8))
+            avg_degree_range = (rng.uniform(1.0, 3.0), rng.uniform(3.0, 8.0))
             min_communities, max_communities = target_interval
         elif target_param == 'power_law_exponent':
-            homophily_range = (np.random.uniform(0.0, 0.3), np.random.uniform(0.3, 0.8))
-            avg_degree_range = (np.random.uniform(1.0, 3.0), np.random.uniform(3.0, 8.0))
+            homophily_range = (rng.uniform(0.0, 0.3), rng.uniform(0.3, 0.8))
+            avg_degree_range = (rng.uniform(1.0, 3.0), rng.uniform(3.0, 8.0))
             power_law_exponent_range = target_interval
         elif target_param == 'degree_separation':
-            homophily_range = (np.random.uniform(0.0, 0.3), np.random.uniform(0.3, 0.8))
-            avg_degree_range = (np.random.uniform(1.0, 3.0), np.random.uniform(3.0, 8.0))
+            homophily_range = (rng.uniform(0.0, 0.3), rng.uniform(0.3, 0.8))
+            avg_degree_range = (rng.uniform(1.0, 3.0), rng.uniform(3.0, 8.0))
             degree_separation_range = target_interval
         else:
             # Default case
-            homophily_range = (np.random.uniform(0.0, 0.3), np.random.uniform(0.3, 0.8))
-            avg_degree_range = (np.random.uniform(1.0, 3.0), np.random.uniform(3.0, 8.0))
+            homophily_range = (rng.uniform(0.0, 0.3), rng.uniform(0.3, 0.8))
+            avg_degree_range = (rng.uniform(1.0, 3.0), rng.uniform(3.0, 8.0))
         
         # DCCC-SBM parameters
-        use_dccc_sbm = np.random.choice([True, False])
-        degree_distribution = np.random.choice(['power_law'])
+        use_dccc_sbm = rng.choice([True, False])
+        degree_distribution = rng.choice(['power_law'])
         
         if degree_distribution == 'power_law':
-            power_law_exponent_range = (np.random.uniform(2.0, 2.5), np.random.uniform(2.5, 3.5))
+            power_law_exponent_range = (rng.uniform(2.0, 2.5), rng.uniform(2.5, 3.5))
             exponential_rate_range = (0.5, 0.5)
             uniform_min_factor_range = (0.5, 0.5)
             uniform_max_factor_range = (1.5, 1.5)
         elif degree_distribution == 'exponential':
             power_law_exponent_range = (2.5, 2.5)
-            exponential_rate_range = (np.random.uniform(0.3, 0.7), np.random.uniform(0.7, 1.2))
+            exponential_rate_range = (rng.uniform(0.3, 0.7), rng.uniform(0.7, 1.2))
             uniform_min_factor_range = (0.5, 0.5)
             uniform_max_factor_range = (1.5, 1.5)
         else:  # uniform
             power_law_exponent_range = (2.5, 2.5)
             exponential_rate_range = (0.5, 0.5)
-            uniform_min_factor_range = (np.random.uniform(0.3, 0.5), np.random.uniform(0.5, 0.8))
-            uniform_max_factor_range = (np.random.uniform(1.2, 1.5), np.random.uniform(1.5, 2.0))
+            uniform_min_factor_range = (rng.uniform(0.3, 0.5), rng.uniform(0.5, 0.8))
+            uniform_max_factor_range = (rng.uniform(1.2, 1.5), rng.uniform(1.5, 2.0))
         
-        degree_separation_range = (np.random.uniform(0.0, 0.5), np.random.uniform(0.5, 1.0))
-        degree_heterogeneity = np.random.uniform(0.3, 0.8)
+        degree_separation_range = (rng.uniform(0.0, 0.5), rng.uniform(0.5, 1.0))
+        degree_heterogeneity = rng.uniform(0.3, 0.8)
         
         # Deviation limiting - more lenient for robustness testing
-        disable_deviation_limiting = np.random.choice([True, False], p=[0.7, 0.3])  # Prefer True
-        max_mean_community_deviation = np.random.uniform(0.15, 0.25)  # More lenient
-        max_max_community_deviation = np.random.uniform(0.20, 0.35)  # More lenient
-        min_edge_density = np.random.uniform(0.001, 0.005)  # Lower minimum
-        max_retries = np.random.randint(5, 12)  # More retries
+        disable_deviation_limiting = rng.choice([True, False], p=[0.7, 0.3])  # Prefer True
+        max_mean_community_deviation = rng.uniform(0.15, 0.25)  # More lenient
+        max_max_community_deviation = rng.uniform(0.20, 0.35)  # More lenient
+        min_edge_density = rng.uniform(0.001, 0.005)  # Lower minimum
+        max_retries = rng.randint(5, 12)  # More retries
         
         return {
             'K': K,
             'feature_dim': feature_dim,
             'inter_community_variance': inter_community_variance,
-            'cluster_count_factor': cluster_count_factor,
             'center_variance': center_variance,
             'cluster_variance': cluster_variance,
-            'assignment_skewness': assignment_skewness,
-            'community_exclusivity': community_exclusivity,
             'degree_center_method': degree_center_method,
             'community_cooccurrence_homogeneity': community_cooccurrence_homogeneity,
             'min_n_nodes': min_n_nodes,
@@ -454,7 +474,8 @@ class ParameterRobustnessAnalyzer:
     
     def _fit_power_law_exponent(self, degrees: List[int]) -> float:
         """
-        Fit power law exponent to degree distribution using maximum likelihood estimation.
+        Fit power law exponent to degree distribution using discrete MLE.
+        This method is specifically designed for discrete network degrees.
         
         Args:
             degrees: List of node degrees
@@ -462,48 +483,49 @@ class ParameterRobustnessAnalyzer:
         Returns:
             Fitted power law exponent
         """
-        if not degrees or len(degrees) < 10:
+        if not degrees or len(degrees) < 2:
             return 2.5  # Default value if insufficient data
         
+        # Convert to numpy array and filter out zeros
+        degrees_array = np.array(degrees, dtype=int)
+        degrees_array = degrees_array[degrees_array > 0]
+        
+        if len(degrees_array) < 2:
+            return 2.5
+        
+        k_min = np.min(degrees_array)
+        n = len(degrees_array)
+        
+        def negative_log_likelihood(alpha):
+            if alpha <= 1.0:
+                return np.inf
+            try:
+                # For discrete power law, the log-likelihood is:
+                # L = -alpha * sum(log(k_i)) - n * log(zeta(alpha, k_min))
+                # We approximate zeta(alpha, k_min) for computational efficiency
+                
+                # Approximation: zeta(alpha, k_min) ≈ sum_{k=k_min}^{k_max} k^(-alpha)
+                k_max = max(100, np.max(degrees_array) * 2)  # Reasonable upper bound
+                k_range = np.arange(k_min, k_max + 1)
+                zeta_approx = np.sum(k_range**(-alpha))
+                
+                if zeta_approx <= 0:
+                    return np.inf
+                    
+                log_likelihood = -alpha * np.sum(np.log(degrees_array)) - n * np.log(zeta_approx)
+                return -log_likelihood  # Return negative for minimization
+                
+            except (OverflowError, ZeroDivisionError, ValueError):
+                return np.inf
+        
         try:
-            # Filter out zero degrees and get unique degree counts
-            degree_counts = {}
-            for d in degrees:
-                if d > 0:
-                    degree_counts[d] = degree_counts.get(d, 0) + 1
-            
-            if len(degree_counts) < 3:
-                return 2.5
-            
-            # Convert to list of (degree, count) pairs
-            degree_data = list(degree_counts.items())
-            degrees_list = []
-            for degree, count in degree_data:
-                degrees_list.extend([degree] * count)
-            
-            # Sort degrees
-            degrees_list = sorted(degrees_list)
-            
-            # Use maximum likelihood estimation for power law
-            # For discrete power law: α = 1 + n / sum(ln(x_i / (x_min - 0.5)))
-            x_min = min(degrees_list)
-            n = len(degrees_list)
-            
-            if x_min <= 1:
-                return 2.5
-            
-            # Calculate MLE for discrete power law
-            log_sum = sum(np.log(d / (x_min - 0.5)) for d in degrees_list)
-            if log_sum <= 0:
-                return 2.5
-            
-            alpha = 1 + n / log_sum
-            
-            # Ensure reasonable bounds
-            alpha = max(1.5, min(5.0, alpha))
-            
-            return alpha
-            
+            # Find MLE estimate using bounded optimization
+            from scipy.optimize import minimize_scalar
+            result = minimize_scalar(negative_log_likelihood, bounds=(1.01, 10.0), method='bounded')
+            if result.success and 1.0 < result.x < 20.0:
+                return result.x
+            else:
+                return 2.5  # Default value if optimization fails
         except Exception as e:
             print(f"Warning: Failed to fit power law exponent: {e}")
             return 2.5
@@ -811,7 +833,20 @@ class ParameterRobustnessAnalyzer:
         Convert numpy arrays and other non-serializable objects to JSON-serializable format.
         """
         if isinstance(obj, dict):
-            return {key: self._make_json_serializable(value) for key, value in obj.items()}
+            # Handle numpy types as both keys and values
+            new_dict = {}
+            for key, value in obj.items():
+                # Convert numpy types in keys
+                if isinstance(key, np.integer):
+                    new_key = int(key)
+                elif isinstance(key, np.floating):
+                    new_key = float(key)
+                elif isinstance(key, np.bool_):
+                    new_key = bool(key)
+                else:
+                    new_key = key
+                new_dict[new_key] = self._make_json_serializable(value)
+            return new_dict
         elif isinstance(obj, list):
             return [self._make_json_serializable(item) for item in obj]
         elif isinstance(obj, np.ndarray):
@@ -820,6 +855,8 @@ class ParameterRobustnessAnalyzer:
             return int(obj)
         elif isinstance(obj, np.floating):
             return float(obj)
+        elif isinstance(obj, np.bool_):
+            return bool(obj)
         elif hasattr(obj, '__dataclass_fields__'):  # Handle dataclasses
             return {
                 'name': obj.name,
@@ -835,6 +872,163 @@ class ParameterRobustnessAnalyzer:
             return f"GraphFamilyGenerator(n_families={len(getattr(obj, 'graphs', []))})"
         else:
             return obj
+    
+    def _collect_detailed_family_data(
+        self,
+        family_generator,
+        family_props: Dict[str, Any],
+        family_signals: Dict[str, Any],
+        family_consistency: Dict[str, Any],
+        params: Dict[str, Any],
+        param_name: str,
+        interval: Tuple[float, float],
+        family_idx: int
+    ) -> Dict[str, Any]:
+        """
+        Collect detailed data for a single graph family.
+        """
+        detailed_data = {
+            'family_id': family_idx,
+            'target_parameter': param_name,
+            'target_interval': interval,
+            'generation_parameters': params,
+            'family_properties': family_props,
+            'family_signals': family_signals,
+            'family_consistency': family_consistency,
+            'individual_graphs': []
+        }
+        
+        # Collect data for each individual graph in the family
+        for graph_idx, graph in enumerate(family_generator.graphs):
+            graph_data = {
+                'graph_id': graph_idx,
+                'n_nodes': graph.n_nodes,
+                'n_edges': graph.graph.number_of_edges(),
+                'n_communities': len(set(graph.community_labels)),
+                'actual_homophily': self._calculate_actual_homophily(graph),
+                'actual_avg_degree': 2 * graph.graph.number_of_edges() / graph.n_nodes if graph.n_nodes > 0 else 0,
+                'community_labels': graph.community_labels.tolist() if hasattr(graph, 'community_labels') else [],
+                'degree_distribution': dict(zip(*np.unique([d for n, d in graph.graph.degree()], return_counts=True))) if graph.graph.number_of_edges() > 0 else {},
+                'edge_density': graph.graph.number_of_edges() / (graph.n_nodes * (graph.n_nodes - 1)) if graph.n_nodes > 1 else 0,
+                'is_connected': nx.is_connected(graph.graph) if graph.graph.number_of_edges() > 0 else False,
+                'largest_component_size': len(max(nx.connected_components(graph.graph), key=len)) if graph.graph.number_of_edges() > 0 else 0
+            }
+            
+            # Add feature information if available
+            if hasattr(graph, 'features') and graph.features is not None:
+                graph_data['feature_dim'] = graph.features.shape[1] if len(graph.features.shape) > 1 else 1
+                graph_data['feature_stats'] = {
+                    'mean': float(np.mean(graph.features)),
+                    'std': float(np.std(graph.features)),
+                    'min': float(np.min(graph.features)),
+                    'max': float(np.max(graph.features))
+                }
+            
+            detailed_data['individual_graphs'].append(graph_data)
+        
+        return detailed_data
+    
+    def _save_comprehensive_results(
+        self,
+        all_results: Dict[str, Any],
+        summary: Dict[str, Any],
+        results_dir: str,
+        skip_signal_calculations: bool
+    ):
+        """
+        Save comprehensive results in a structured JSON format.
+        """
+        print("\n💾 Saving comprehensive results...")
+        
+        # Create the comprehensive results structure
+        comprehensive_results = {
+            'experiment_metadata': {
+                'timestamp': time.strftime('%Y-%m-%d %H:%M:%S'),
+                'base_seed': self.base_seed,
+                'parameters_tested': list(self.parameter_intervals.keys()),
+                'signal_calculations_skipped': skip_signal_calculations,
+                'parameter_intervals': {
+                    name: {
+                        'intervals': config.intervals,
+                        'param_type': config.param_type,
+                        'description': config.description
+                    }
+                    for name, config in self.parameter_intervals.items()
+                }
+            },
+            'summary_statistics': summary,
+            'detailed_results': {}
+        }
+        
+        # Add detailed results for each parameter
+        for param_name, results in all_results.items():
+            param_detailed_results = {
+                'parameter_name': param_name,
+                'parameter_config': {
+                    'intervals': results['parameter_config'].intervals,
+                    'param_type': results['parameter_config'].param_type,
+                    'description': results['parameter_config'].description
+                },
+                'intervals': [],
+                'coverage_stats': results['coverage_stats'],
+                'signal_correlations': results.get('signal_correlations', {}),
+                'consistency_correlations': results.get('consistency_correlations', {}),
+                'actual_values': results.get('actual_values', [])
+            }
+            
+            # Add detailed data for each interval
+            for interval_idx, interval_data in enumerate(results['intervals']):
+                interval_detailed = {
+                    'interval_index': interval_idx,
+                    'target_interval': interval_data['interval'],
+                    'midpoint': interval_data['midpoint'],
+                    'coverage_stats': interval_data['results']['coverage_stats'],
+                    'success_rate': interval_data['results']['success_rate'],
+                    'actual_values': interval_data['results']['actual_values'],
+                    'detailed_family_data': interval_data['results'].get('detailed_family_data', [])
+                }
+                
+                param_detailed_results['intervals'].append(interval_detailed)
+            
+            comprehensive_results['detailed_results'][param_name] = param_detailed_results
+        
+        # Save the comprehensive results
+        comprehensive_file = os.path.join(results_dir, 'comprehensive_results.json')
+        
+        # Convert to JSON-serializable format
+        serializable_results = self._make_json_serializable(comprehensive_results)
+        
+        with open(comprehensive_file, 'w') as f:
+            json.dump(serializable_results, f, indent=2)
+        
+        print(f"✅ Comprehensive results saved to: {comprehensive_file}")
+        
+        # Also save a summary file for quick reference
+        summary_file = os.path.join(results_dir, 'summary_results.json')
+        summary_data = {
+            'experiment_metadata': comprehensive_results['experiment_metadata'],
+            'summary_statistics': summary,
+            'parameter_summaries': {}
+        }
+        
+        for param_name, results in all_results.items():
+            param_summary = {
+                'mean_coverage': summary['overall_coverage'][param_name]['mean_coverage'],
+                'std_coverage': summary['overall_coverage'][param_name]['std_coverage'],
+                'best_performing_rank': next((i for i, (p, _) in enumerate(summary['best_performing_parameters']) if p == param_name), -1),
+                'total_families': len(results['families']),
+                'total_graphs': len(results['families']) * 10  # Assuming 10 graphs per family
+            }
+            summary_data['parameter_summaries'][param_name] = param_summary
+        
+        with open(summary_file, 'w') as f:
+            json.dump(summary_data, f, indent=2)
+        
+        print(f"✅ Summary results saved to: {summary_file}")
+        
+        # Save individual parameter files (existing functionality)
+        for param_name, results in all_results.items():
+            self._save_parameter_results(param_name, results, results_dir)
     
     def _create_comprehensive_visualizations(self, all_results: Dict[str, Any], results_dir: str, skip_signal_calculations: bool):
         """
@@ -1168,7 +1362,8 @@ def main():
         max_attempts_per_graph=5,
         save_results=True,
         results_dir="parameter_robustness_results",
-        skip_signal_calculations=False  # Include signals by default
+        skip_signal_calculations=False,  # Include signals by default
+        save_detailed_data=True  # Save detailed data for each graph family
     )
     
     # Print summary
@@ -1210,6 +1405,11 @@ def main():
     print(f"🔬 Parameters Tested: {results['experiment_stats']['parameters_tested']}")
     if 'signal_calculations_skipped' in results['experiment_stats']:
         print(f"⚡ Signal Calculations: {'Skipped' if results['experiment_stats']['signal_calculations_skipped'] else 'Included'}")
+    
+    print(f"\n💾 Data saved in comprehensive JSON format:")
+    print(f"   - comprehensive_results.json: Complete detailed data")
+    print(f"   - summary_results.json: Quick summary statistics")
+    print(f"   - Individual parameter files for each tested parameter")
 
 if __name__ == "__main__":
     main() 

@@ -37,7 +37,8 @@ def run_quick_analysis():
         max_attempts_per_graph=5,  # Fewer attempts
         save_results=True,
         results_dir="quick_parameter_robustness_results",
-        skip_signal_calculations=True  # Skip signals for quick runs
+        skip_signal_calculations=True,  # Skip signals for quick runs
+        save_detailed_data=True  # Save detailed data
     )
     
     return results
@@ -55,7 +56,8 @@ def run_full_analysis():
         max_attempts_per_graph=10,  # More attempts
         save_results=True,
         results_dir="full_parameter_robustness_results",
-        skip_signal_calculations=True  # Include signals for full analysis
+        skip_signal_calculations=True,  # Include signals for full analysis
+        save_detailed_data=True  # Save detailed data
     )
     
     return results
@@ -76,6 +78,10 @@ def run_custom_analysis():
         skip_signals_input = input("Skip signal calculations for faster execution? (y/n, default: n): ").lower()
         skip_signals = skip_signals_input in ['y', 'yes']
         
+        # Ask about detailed data saving
+        save_detailed_input = input("Save detailed data for each graph family? (y/n, default: y): ").lower()
+        save_detailed = save_detailed_input not in ['n', 'no']
+        
     except ValueError:
         print("Invalid input, using defaults")
         n_graphs = 50
@@ -83,6 +89,7 @@ def run_custom_analysis():
         max_attempts = 5
         results_dir = "custom_parameter_robustness_results"
         skip_signals = False
+        save_detailed = True
     
     analyzer = ParameterRobustnessAnalyzer(base_seed=42)
     
@@ -92,7 +99,8 @@ def run_custom_analysis():
         max_attempts_per_graph=max_attempts,
         save_results=True,
         results_dir=results_dir,
-        skip_signal_calculations=skip_signals
+        skip_signal_calculations=skip_signals,
+        save_detailed_data=save_detailed
     )
     
     return results
@@ -193,7 +201,8 @@ Examples:
                 max_attempts_per_graph=10,
                 save_results=True,
                 results_dir="full_parameter_robustness_results",
-                skip_signal_calculations=True
+                skip_signal_calculations=True,
+                save_detailed_data=True
             )
         elif args.custom:
             # For custom, we'll use the user's choice but override if --skip-signals

@@ -6,11 +6,12 @@ import pandas as pd
 from typing import Dict, List, Optional, Tuple, Any
 import time
 import warnings
+from scipy.stats import ks_2samp
+from scipy.optimize import minimize_scalar
 warnings.filterwarnings('ignore')
 
 # Import the graph generation classes
-from graph_universe.model import GraphUniverse, GraphSample
-from graph_universe.graph_family import GraphFamilyGenerator, FamilyConsistencyAnalyzer
+from graph_universe.model import GraphUniverse, GraphSample, GraphFamilyGenerator
 from utils.visualizations import (
     plot_graph_communities, 
     create_dashboard,
@@ -18,6 +19,166 @@ from utils.visualizations import (
     plot_universe_degree_centers,
     plot_universe_summary
 )
+
+# Add function to generate theoretical power law distribution
+def generate_theoretical_power_law(n_nodes: int, exponent: float, x_min: float = 1.0) -> np.ndarray:
+    """
+    Generate theoretical power law distribution.
+    
+    Args:
+        n_nodes: Number of nodes
+        exponent: Power law exponent (alpha)
+        x_min: Minimum value for power law
+        
+    Returns:
+        Array of theoretical degrees
+    """
+    # Generate theoretical power law distribution
+    theoretical_degrees = np.random.pareto(exponent, size=n_nodes) + x_min
+    return theoretical_degrees
+
+def plot_probability_matrices_comparison(graph_sample, figsize: Tuple[int, int] = (15, 6)) -> plt.Figure:
+    """
+    Plot target (P_sub) and actual (P_real) probability matrices side by side with same color scale.
+    
+    Args:
+        graph_sample: GraphSample object
+        figsize: Figure size
+        
+    Returns:
+        matplotlib figure
+    """
+    # Get the target probability matrix (P_sub)
+    P_sub = graph_sample.P_sub
+    
+    # Get the actual probability matrix
+    P_real, community_sizes, connection_counts = graph_sample.calculate_actual_probability_matrix()
+    
+    # Create figure with two subplots side by side
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=figsize)
+    
+    # Find the global min and max for consistent color scaling
+    vmin = min(np.min(P_sub), np.min(P_real))
+    vmax = max(np.max(P_sub), np.max(P_real))
+    
+    # Plot target probability matrix (P_sub)
+    im1 = ax1.imshow(P_sub, cmap='viridis', vmin=vmin, vmax=vmax, aspect='auto')
+    ax1.set_title('Target Probability Matrix (P_sub)')
+    ax1.set_xlabel('Community')
+    ax1.set_ylabel('Community')
+    
+    # Add colorbar for the first plot
+    cbar1 = plt.colorbar(im1, ax=ax1, shrink=0.8)
+    cbar1.set_label('Probability')
+    
+    # Add text annotations to the first plot
+    for i in range(P_sub.shape[0]):
+        for j in range(P_sub.shape[1]):
+            # Adaptive text color based on background
+            value = P_sub[i, j]
+            text_color = "white" if value > (vmin + vmax) / 2 else "black"
+            text = ax1.text(j, i, f'{value:.3f}',
+                           ha="center", va="center", color=text_color, fontsize=8, fontweight='bold')
+    
+    # Plot actual probability matrix (P_real)
+    im2 = ax2.imshow(P_real, cmap='viridis', vmin=vmin, vmax=vmax, aspect='auto')
+    ax2.set_title('Actual Probability Matrix (P_real)')
+    ax2.set_xlabel('Community')
+    ax2.set_ylabel('Community')
+    
+    # Add colorbar for the second plot
+    cbar2 = plt.colorbar(im2, ax=ax2, shrink=0.8)
+    cbar2.set_label('Probability')
+    
+    # Add text annotations to the second plot
+    for i in range(P_real.shape[0]):
+        for j in range(P_real.shape[1]):
+            # Adaptive text color based on background
+            value = P_real[i, j]
+            text_color = "white" if value > (vmin + vmax) / 2 else "black"
+            text = ax2.text(j, i, f'{value:.3f}',
+                           ha="center", va="center", color=text_color, fontsize=8, fontweight='bold')
+    
+    # Set tick labels
+    n_communities = len(graph_sample.communities)
+    tick_labels = [f'C{i}' for i in range(n_communities)]
+    ax1.set_xticks(range(n_communities))
+    ax1.set_yticks(range(n_communities))
+    ax1.set_xticklabels(tick_labels)
+    ax1.set_yticklabels(tick_labels)
+    
+    ax2.set_xticks(range(n_communities))
+    ax2.set_yticks(range(n_communities))
+    ax2.set_xticklabels(tick_labels)
+    ax2.set_yticklabels(tick_labels)
+    
+    # Calculate and display statistics
+    deviation = np.abs(P_real - P_sub)
+    mean_deviation = np.mean(deviation)
+    max_deviation = np.max(deviation)
+    
+    # Add statistics as text
+    stats_text = f'Mean Deviation: {mean_deviation:.4f}\nMax Deviation: {max_deviation:.4f}'
+    fig.text(0.5, 0.02, stats_text, ha='center', va='bottom', fontsize=10, 
+             bbox=dict(boxstyle="round,pad=0.3", facecolor="lightgray", alpha=0.8))
+    
+    plt.tight_layout()
+    return fig
+
+def plot_degree_distribution_comparison(actual_degrees: np.ndarray, theoretical_degrees: np.ndarray, 
+                                      exponent: float, title: str = "Degree Distribution Comparison"):
+    """
+    Plot comparison between actual and theoretical degree distributions.
+    
+    Args:
+        actual_degrees: Actual degrees from the graph
+        theoretical_degrees: Theoretical degrees from power law
+        exponent: Power law exponent used
+        title: Plot title
+        
+    Returns:
+        matplotlib figure
+    """
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 6))
+    
+    # Plot 1: Histogram comparison
+    ax1.hist(actual_degrees, bins=30, alpha=0.7, label='Actual', density=True, color='blue')
+    ax1.hist(theoretical_degrees, bins=30, alpha=0.7, label='Theoretical', density=True, color='red')
+    ax1.set_xlabel('Degree')
+    ax1.set_ylabel('Density')
+    ax1.set_title(f'Degree Distribution Histogram (α={exponent:.2f})')
+    ax1.legend()
+    ax1.grid(True, alpha=0.3)
+    
+    # Plot 2: Log-log plot for power law verification
+    # Sort degrees for CCDF
+    actual_sorted = np.sort(actual_degrees)[::-1]  # Descending
+    theoretical_sorted = np.sort(theoretical_degrees)[::-1]  # Descending
+    
+    # Calculate CCDF (Complementary Cumulative Distribution Function)
+    n_actual = len(actual_sorted)
+    n_theoretical = len(theoretical_sorted)
+    
+    actual_ccdf = np.arange(1, n_actual + 1) / n_actual
+    theoretical_ccdf = np.arange(1, n_theoretical + 1) / n_theoretical
+    
+    ax2.loglog(actual_sorted, actual_ccdf, 'o-', label='Actual', alpha=0.7, markersize=4)
+    ax2.loglog(theoretical_sorted, theoretical_ccdf, 's-', label='Theoretical', alpha=0.7, markersize=4)
+    
+    # Add theoretical power law line
+    x_range = np.logspace(np.log10(min(actual_sorted.min(), theoretical_sorted.min())), 
+                          np.log10(max(actual_sorted.max(), theoretical_sorted.max())), 100)
+    ccdf_theoretical = (x_range / x_range.min()) ** (-exponent + 1)
+    ax2.loglog(x_range, ccdf_theoretical, '--', label=f'Theoretical α={exponent:.2f}', alpha=0.8)
+    
+    ax2.set_xlabel('Degree (log scale)')
+    ax2.set_ylabel('CCDF (log scale)')
+    ax2.set_title('Power Law Verification (Log-Log Plot)')
+    ax2.legend()
+    ax2.grid(True, alpha=0.3)
+    
+    plt.tight_layout()
+    return fig
 
 # Set page config
 st.set_page_config(
@@ -83,12 +244,6 @@ def main():
         if feature_dim > 0:
             st.markdown("#### Feature Generation Parameters")
             
-            cluster_count_factor = st.slider(
-                "Cluster Count Factor", 
-                0.1, 4.0, 1.0, 0.1,
-                help="Number of clusters relative to communities"
-            )
-            
             center_variance = st.slider(
                 "Center Variance", 
                 0.1, 5.0, 1.0, 0.1,
@@ -101,28 +256,14 @@ def main():
                 help="Spread within each cluster"
             )
             
-            assignment_skewness = st.slider(
-                "Assignment Skewness", 
-                0.0, 1.0, 0.0, 0.01,
-                help="If some clusters are used more frequently"
-            )
-            
-            community_exclusivity = st.slider(
-                "Community Exclusivity", 
-                0.0, 1.0, 1.0, 0.01,
-                help="How exclusively clusters map to communities"
-            )
         else:
-            cluster_count_factor = 1.0
             center_variance = 1.0
             cluster_variance = 0.1
-            assignment_skewness = 0.0
-            community_exclusivity = 1.0
         
         # Degree center parameters
         degree_center_method = st.selectbox(
             "Degree Center Method",
-            ["linear", "random", "shuffled"],
+            ["linear", "random", "constant"],
             help="How to generate degree centers"
         )
         
@@ -140,8 +281,6 @@ def main():
         
         min_communities = st.slider("Min Communities", 2, 10, 3, help="Minimum number of communities per graph")
         max_communities = st.slider("Max Communities", 3, 15, 8, help="Maximum number of communities per graph")
-        
-        min_component_size = st.slider("Min Component Size", 0, 50, 10, help="Minimum size of connected components")
         
         homophily_min, homophily_max = st.slider(
             "Homophily Range",
@@ -285,11 +424,8 @@ def main():
                 K=K,
                 feature_dim=feature_dim,
                 inter_community_variance=inter_community_variance,
-                cluster_count_factor=cluster_count_factor,
                 center_variance=center_variance,
                 cluster_variance=cluster_variance,
-                assignment_skewness=assignment_skewness,
-                community_exclusivity=community_exclusivity,
                 degree_center_method=degree_center_method,
                 community_cooccurrence_homogeneity=community_cooccurrence_homogeneity,
                 seed=seed
@@ -306,7 +442,6 @@ def main():
                 max_n_nodes=max_n_nodes,
                 min_communities=min_communities,
                 max_communities=max_communities,
-                min_component_size=min_component_size,
                 homophily_range=(homophily_min, homophily_max),
                 avg_degree_range=(avg_degree_min, avg_degree_max),
                 use_dccc_sbm=use_dccc_sbm,
@@ -337,7 +472,7 @@ def main():
             # Use the family generator's generate_family method
             graphs = family_generator.generate_family(
                 n_graphs=n_graphs,
-                show_progress=False,  # We'll handle progress manually
+                show_progress=True,  # We'll handle progress manually
                 collect_stats=True,
                 max_attempts_per_graph=max_attempts_per_graph,
                 timeout_minutes=timeout_minutes
@@ -520,6 +655,182 @@ def main():
             st.pyplot(fig)
             plt.close(fig)
         
+        # Theoretical vs Actual Power Law Distribution
+        if st.checkbox("Show Theoretical vs Actual Power Law Distribution"):
+            st.markdown('<h3 class="section-header">Theoretical vs Actual Power Law Distribution</h3>', unsafe_allow_html=True)
+            
+            # Get actual degrees from the graph
+            actual_degrees = np.array([d for _, d in selected_graph.graph.degree()])
+            
+            # Check if graph has nodes and edges
+            if len(actual_degrees) == 0:
+                st.warning("Graph has no nodes. Cannot analyze degree distribution.")
+                return
+            
+            # Check if all degrees are zero
+            if np.all(actual_degrees == 0):
+                st.warning("Graph has no edges. Cannot analyze degree distribution.")
+                return
+            
+            # Determine the power law exponent based on generation method and parameters
+            if selected_graph.generation_method == "dccc_sbm" and hasattr(selected_graph, 'generation_params'):
+                # Try to get the exponent from generation parameters
+                if 'power_law_exponent' in selected_graph.generation_params:
+                    exponent = selected_graph.generation_params['power_law_exponent']
+                elif 'dccc_global_degree_params' in selected_graph.generation_params:
+                    dccc_params = selected_graph.generation_params['dccc_global_degree_params']
+                    exponent = dccc_params.get('exponent', 2.5)
+                else:
+                    exponent = 2.5  # Default
+            else:
+                # For standard DC-SBM, estimate the exponent from actual degrees
+                 try:
+                     def negative_log_likelihood(alpha):
+                         if alpha <= 1.0:
+                             return np.inf
+                         try:
+                             degrees_array = actual_degrees[actual_degrees > 0]
+                             if len(degrees_array) < 2:
+                                 return np.inf
+                             
+                             k_min = np.min(degrees_array)
+                             n = len(degrees_array)
+                             
+                             # Approximation: zeta(alpha, k_min) ≈ sum_{k=k_min}^{k_max} k^(-alpha)
+                             k_max = max(100, np.max(degrees_array) * 2)
+                             k_range = np.arange(k_min, k_max + 1)
+                             zeta_approx = np.sum(k_range**(-alpha))
+                             
+                             if zeta_approx <= 0:
+                                 return np.inf
+                                 
+                             log_likelihood = -alpha * np.sum(np.log(degrees_array)) - n * np.log(zeta_approx)
+                             return -log_likelihood
+                             
+                         except (OverflowError, ZeroDivisionError, ValueError):
+                             return np.inf
+                     
+                     result = minimize_scalar(negative_log_likelihood, bounds=(1.01, 10.0), method='bounded')
+                     if result.success and 1.0 < result.x < 20.0:
+                         exponent = result.x
+                     else:
+                         exponent = 2.5
+                 except:
+                     exponent = 2.5
+            
+            # Generate theoretical power law distribution
+            theoretical_degrees = generate_theoretical_power_law(selected_graph.n_nodes, exponent)
+            
+            # Display exponent information
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("Power Law Exponent (α)", f"{exponent:.3f}")
+            with col2:
+                st.metric("Actual Min Degree", f"{np.min(actual_degrees):.1f}")
+            with col3:
+                st.metric("Actual Max Degree", f"{np.max(actual_degrees):.1f}")
+            
+            # Plot comparison
+            fig = plot_degree_distribution_comparison(
+                actual_degrees,
+                theoretical_degrees,
+                exponent,
+                title=f"Theoretical vs Actual Power Law Distribution (N={selected_graph.n_nodes})"
+            )
+            st.pyplot(fig)
+            plt.close(fig)
+            
+            # Additional statistics
+            st.markdown("#### Distribution Statistics")
+            col1, col2, col3, col4 = st.columns(4)
+            
+            with col1:
+                st.metric("Actual Mean", f"{np.mean(actual_degrees):.2f}")
+                st.metric("Theoretical Mean", f"{np.mean(theoretical_degrees):.2f}")
+            
+            with col2:
+                st.metric("Actual Std", f"{np.std(actual_degrees):.2f}")
+                st.metric("Theoretical Std", f"{np.std(theoretical_degrees):.2f}")
+            
+            with col3:
+                st.metric("Actual Median", f"{np.median(actual_degrees):.2f}")
+                st.metric("Theoretical Median", f"{np.median(theoretical_degrees):.2f}")
+            
+            with col4:
+                # Calculate Kolmogorov-Smirnov statistic
+                from scipy.stats import ks_2samp
+                ks_stat, ks_pvalue = ks_2samp(actual_degrees, theoretical_degrees)
+                st.metric("KS Statistic", f"{ks_stat:.3f}")
+                st.metric("KS p-value", f"{ks_pvalue:.3f}")
+
+        # Probability Matrices Comparison
+        if st.checkbox("Show Probability Matrices Comparison"):
+            st.markdown('<h3 class="section-header">Probability Matrices Comparison</h3>', unsafe_allow_html=True)
+            
+            # Check if selected_graph is a GraphSample
+            if isinstance(selected_graph, GraphSample):
+                # Get the matrices for detailed analysis
+                P_sub = selected_graph.P_sub
+                P_real, community_sizes, connection_counts = selected_graph.calculate_actual_probability_matrix()
+                
+                # Calculate deviation statistics
+                deviation = np.abs(P_real - P_sub)
+                mean_deviation = np.mean(deviation)
+                max_deviation = np.max(deviation)
+                std_deviation = np.std(deviation)
+                
+                # Display statistics
+                col1, col2, col3, col4 = st.columns(4)
+                with col1:
+                    st.metric("Mean Deviation", f"{mean_deviation:.4f}")
+                with col2:
+                    st.metric("Max Deviation", f"{max_deviation:.4f}")
+                with col3:
+                    st.metric("Std Deviation", f"{std_deviation:.4f}")
+                with col4:
+                    st.metric("Relative Error", f"{mean_deviation/np.mean(P_sub)*100:.2f}%")
+                
+                # Plot the matrices
+                fig = plot_probability_matrices_comparison(selected_graph)
+                st.pyplot(fig)
+                plt.close(fig)
+                
+                # Show detailed deviation matrix
+                if st.checkbox("Show Deviation Matrix"):
+                    st.markdown("#### Deviation Matrix (|P_real - P_sub|)")
+                    
+                    fig, ax = plt.subplots(figsize=(8, 6))
+                    im = ax.imshow(deviation, cmap='Reds', aspect='auto')
+                    ax.set_title('Deviation Matrix')
+                    ax.set_xlabel('Community')
+                    ax.set_ylabel('Community')
+                    
+                    # Add colorbar
+                    cbar = plt.colorbar(im, ax=ax, shrink=0.8)
+                    cbar.set_label('Absolute Deviation')
+                    
+                    # Add text annotations
+                    for i in range(deviation.shape[0]):
+                        for j in range(deviation.shape[1]):
+                            value = deviation[i, j]
+                            text_color = "white" if value > np.max(deviation) / 2 else "black"
+                            ax.text(j, i, f'{value:.4f}',
+                                   ha="center", va="center", color=text_color, fontsize=8, fontweight='bold')
+                    
+                    # Set tick labels
+                    n_communities = len(selected_graph.communities)
+                    tick_labels = [f'C{i}' for i in range(n_communities)]
+                    ax.set_xticks(range(n_communities))
+                    ax.set_yticks(range(n_communities))
+                    ax.set_xticklabels(tick_labels)
+                    ax.set_yticklabels(tick_labels)
+                    
+                    plt.tight_layout()
+                    st.pyplot(fig)
+                    plt.close(fig)
+            else:
+                st.warning("Selected graph is not a GraphSample object, so probability matrices cannot be displayed.")
+
         # Family summary
         if st.checkbox("Show Family Summary"):
             st.markdown('<h3 class="section-header">Family Summary</h3>', unsafe_allow_html=True)
@@ -528,7 +839,17 @@ def main():
             if 'family_generator' in st.session_state and st.session_state.family_generator is not None:
                 # Analyze basic properties
                 family_properties = st.session_state.family_generator.analyze_graph_family_properties()
-                st.write(family_properties)
+                for key, value in family_properties.items():
+                    if isinstance(value, list):
+                        # Check if the values are in the list are ints of floats else skip
+                        if all(isinstance(v, (int, float)) for v in value):
+                            st.metric(key, f"{np.mean(value):.3f} ± {np.std(value):.3f}")
+                        else:
+                            # Skip the metric
+                            continue
+                    else:
+                        # Skip the metric
+                        continue
             else:
                 st.warning("No graph family has been generated yet. Please generate a graph family first.")
 
