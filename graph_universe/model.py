@@ -22,7 +22,9 @@ class GraphUniverse:
         # Main Universe Parameters
         K: int,
         P: Optional[np.ndarray] = None,
-        inter_community_variance: float = 0.5, # 0-1: how much variance in the inter-community probabilities
+
+        # Only used if use_dccc_sbm is True
+        edge_probability_variance: float = 0.5, # 0-1: how much variance in the edge probabilities
 
         # Feature generation parameters
         feature_dim: int = 0,
@@ -42,7 +44,7 @@ class GraphUniverse:
         Args:
             K: Number of communities
             P: Optional probability matrix (if None, will be generated)
-            inter_community_variance: Amount of variance in the inter-community probabilities
+            edge_probability_variance: Amount of variance in the edge probabilities
             feature_dim: Dimension of node features
             center_variance: Separation between cluster centers
             cluster_variance: Spread within each cluster
@@ -61,8 +63,8 @@ class GraphUniverse:
             
         # Generate or use provided probability matrix
         if P is None:
-            self.P = self._generate_inter_community_variance_matrix(
-                K, inter_community_variance
+            self.P = self._generate_edge_probability_variance_matrix(
+                K, edge_probability_variance
             )
         else:
             self.P = P
@@ -83,7 +85,7 @@ class GraphUniverse:
             self.feature_generator = None
         
         # Store parameters
-        self.inter_community_variance = inter_community_variance
+        self.edge_probability_variance = edge_probability_variance
         self.feature_variance = 0.1
         self.feature_similarity_matrix = None
         # Store regime parameters
@@ -107,17 +109,17 @@ class GraphUniverse:
         self.community_cooccurrence_homogeneity = community_cooccurrence_homogeneity
         self.community_cooccurrence_matrix = self._generate_cooccurrence_matrix(K, community_cooccurrence_homogeneity, seed)
 
-    def _generate_inter_community_variance_matrix(
+    def _generate_edge_probability_variance_matrix(
         self, 
         K: int, 
-        inter_community_variance: float = 0.0
+        edge_probability_variance: float = 0.0
     ) -> np.ndarray:
         """
         Generate a pseudo-probability matrix that gives the RELATIVE probabilities BETWEEN different communities (the intra-community prob / homophily is decided by the GraphFamily object and scaled accordingly in a GraphSample object)
         
         Args:
             K: Number of communities
-            inter_community_variance: Amount of variance in the inter-community probabilities
+            edge_probability_variance: Amount of variance in the edge probabilities
             
         Returns:
             K × K probability matrix
@@ -125,9 +127,9 @@ class GraphUniverse:
             
         P = np.ones((K, K))
         
-        # Add the inter-community variance if requested
-        if inter_community_variance > 0:
-            noise = np.random.normal(0, inter_community_variance*2, size=(K, K))
+        # Add the edge probability variance if requested
+        if edge_probability_variance > 0:
+            noise = np.random.normal(0, edge_probability_variance*2, size=(K, K))
             P = P + noise
             # Clip to be between 0 and 2
             P[P < 0.0] = 0.0
@@ -366,7 +368,6 @@ class GraphSample:
         degree_distribution: str,
         power_law_exponent: Optional[float],
         max_mean_community_deviation: float,
-        max_max_community_deviation: float,
         min_edge_density: float,
         max_retries: int,
 
@@ -435,7 +436,6 @@ class GraphSample:
 
             # Store community deviation parameters as instance attributes
             self.max_mean_community_deviation = max_mean_community_deviation
-            self.max_max_community_deviation = max_max_community_deviation
             self.min_edge_density = min_edge_density
             self.max_retries = max_retries
 
@@ -448,7 +448,6 @@ class GraphSample:
             self.generation_params = {
                 "degree_heterogeneity": degree_heterogeneity,
                 "max_mean_community_deviation": max_mean_community_deviation,
-                "max_max_community_deviation": max_max_community_deviation
             }
             
             # If DCCC-SBM is enabled, update generation method
@@ -483,7 +482,8 @@ class GraphSample:
                 self.P_sub, 
                 self.target_average_degree,
                 self.target_homophily,
-                self.original_n_nodes
+                self.original_n_nodes,
+                self.use_dccc_sbm,
             )
             self.timing_info['probability_matrix'] = time.time() - start
             
@@ -581,8 +581,6 @@ class GraphSample:
             if not self.disable_deviation_limiting:
                 if mean_deviation > self.max_mean_community_deviation:
                     raise ValueError(f"Graph exceeds mean community deviation limit: {mean_deviation:.4f} > {self.max_mean_community_deviation:.4f}")
-                if max_deviation > self.max_max_community_deviation:
-                    raise ValueError(f"Graph exceeds maximum community deviation limit: {max_deviation:.4f} > {self.max_max_community_deviation:.4f}")
 
     
             check_timeout()
@@ -667,10 +665,10 @@ class GraphSample:
         # return the adjacency matrix of the connected graph
         return nx.adjacency_matrix(temp_graph)
         
-
     def _calculate_community_deviations_with_matrix(self, graph: nx.Graph, community_labels: np.ndarray, P_sub: np.ndarray) -> Dict[str, np.ndarray]:
         """
         Calculate community deviations and return the actual and deviation matrices.
+        Uses normalized actual probability matrix for more accurate deviation calculations.
         
         Args:
             graph: NetworkX graph
@@ -710,6 +708,15 @@ class GraphSample:
                     n1, n2 = community_sizes[i], community_sizes[j]
                     if n1 > 0 and n2 > 0:
                         actual_matrix[i, j] = actual_matrix[i, j] / (n1 * n2)
+        
+        # Normalize actual matrix to match P_sub total mass
+        p_sub_total_mass = np.sum(P_sub)
+        actual_total_mass = np.sum(actual_matrix)
+        
+        if actual_total_mass > 0 and p_sub_total_mass > 0:
+            # Scale actual matrix to match P_sub total mass
+            normalization_factor = p_sub_total_mass / actual_total_mass
+            actual_matrix = actual_matrix * normalization_factor
         
         # Calculate deviation matrix
         deviation_matrix = actual_matrix - P_sub
@@ -888,18 +895,18 @@ class GraphSample:
                     community_means[comm_idx] = scaled_centers[i] * (n_nodes - 1)
         
         # 6. Calculate standard deviation based on degree_separation
-        if degree_separation == 1.0:
-            # For perfect separation, make std tight enough to avoid overlap
-            if K > 1:
-                min_distance = np.min(np.diff(community_means))
-                community_std = max(1.0, min_distance / 6)  # 3*std = half the minimum distance
-            else:
-                community_std = 1.0
-        else:
-            # Linear interpolation between tight and wide
-            max_std = n_nodes / 3  # Wide case
-            min_std = 1.0 if K == 1 else max(1.0, np.min(np.diff(community_means)) / 6)  # Tight case
-            community_std = min_std + (1 - degree_separation) * (max_std - min_std)
+        # if degree_separation == 1.0:
+        #     # For perfect separation, make std tight enough to avoid overlap
+        #     if K > 1:
+        #         min_distance = np.min(np.diff(community_means))
+        #         community_std = max(1.0, min_distance / 6)  # 3*std = half the minimum distance
+        #     else:
+        #         community_std = 1.0
+        # else:
+        #     # Linear interpolation between tight and wide
+        max_std = n_nodes / 3  # Wide case
+        min_std = 1.0 if K == 1 else max(1.0, np.min(np.diff(community_means)) / 6)  # Tight case
+        community_std = min_std + max((1 - degree_separation), 0.1) * (max_std - min_std)
         
         # 7. Create available positions array and sample for each node
         available_positions = list(range(n_nodes))
@@ -1018,10 +1025,19 @@ class GraphSample:
         P_sub: np.ndarray, 
         target_avg_degree: Optional[float] = None, 
         target_homophily: Optional[float] = None,
-        n_nodes: Optional[int] = None
+        n_nodes: Optional[int] = None,
+        use_dccc_sbm: bool = True
     ) -> np.ndarray:
+        # Get the number of communities
         n = P_sub.shape[0]
+
+        # If using standard dc_sbm, the inter-community structure is FLAT (uniform). Set the P_sub to ones all and let it be scaled
+        if not use_dccc_sbm:
+            P_sub = np.ones((n, n))
+
+        # Make copy to avoid modifying the original matrix
         P_scaled = P_sub.copy()
+
         
         # Use instance target values if not specified
         target_avg_degree = target_avg_degree if target_avg_degree is not None else self.target_average_degree
@@ -1094,6 +1110,8 @@ class GraphSample:
     def calculate_actual_probability_matrix(self) -> np.ndarray:
         """
         Calculate the actual probability matrix for the graph.
+        Normalizes the actual matrix to match the total probability mass of P_sub
+        for more accurate deviation calculations.
         """
         n_communities = len(self.communities)
         actual_matrix = np.zeros((n_communities, n_communities))
@@ -1127,6 +1145,15 @@ class GraphSample:
                     if n1 > 0 and n2 > 0:
                         actual_matrix[i, j] = actual_matrix[i, j] / (n1 * n2)
         
+        # Normalize actual matrix to match P_sub total mass
+        p_sub_total_mass = np.sum(self.P_sub)
+        actual_total_mass = np.sum(actual_matrix)
+        
+        if actual_total_mass > 0 and p_sub_total_mass > 0:
+            # Scale actual matrix to match P_sub total mass
+            normalization_factor = p_sub_total_mass / actual_total_mass
+            actual_matrix = actual_matrix * normalization_factor
+        
         return actual_matrix, community_sizes, connection_counts
 
     def analyze_community_connections(self) -> Dict[str, Any]:
@@ -1142,52 +1169,17 @@ class GraphSample:
         # Calculate deviations
         deviation_matrix = np.abs(actual_matrix - self.P_sub)
         mean_deviation = np.mean(deviation_matrix)
-        max_deviation = np.max(deviation_matrix)
-        
-        # Calculate average degrees per community
-        avg_degrees = np.zeros(n_communities)
-        for i in range(n_communities):
-            community_nodes = np.where(self.community_labels == i)[0]
-            if len(community_nodes) > 0:
-                avg_degrees[i] = np.mean([self.graph.degree(n) for n in community_nodes])
-        
-        # Calculate community densities
-        densities = np.zeros(n_communities)
-        for i in range(n_communities):
-            n = community_sizes[i]
-            if n > 1:
-                densities[i] = actual_matrix[i, i]
-        
-        # Degree analysis
-        degree_analysis = {
-            "community_avg_degrees": avg_degrees.tolist(),
-            "community_densities": densities.tolist()
-        }
-        
-        if max_deviation > self.max_max_community_deviation:
-            # Keep this warning as it indicates a real problem if it ever occurs
-            print(f"\nWarning: Inconsistency detected - graph was generated with constraints but now exceeds them.")
-            print(f"This should not happen. Please report this as a bug.")
-            print(f"Current max deviation: {max_deviation:.4f}")
-            print(f"Original constraint: {self.max_max_community_deviation:.4f}")
-            print(f"Generation method: {self.generation_method}")
-            print(f"Generation parameters: {self.generation_params}")
         
         return {
             "actual_matrix": actual_matrix,
             "expected_matrix": self.P_sub,
             "deviation_matrix": deviation_matrix,
             "mean_deviation": float(mean_deviation),
-            "max_deviation": float(max_deviation),
             "community_sizes": community_sizes,
             "connection_counts": connection_counts,
-            "degree_analysis": degree_analysis,
             "constraints": {  # Keep constraints in output for verification
                 "max_mean_deviation": self.max_mean_community_deviation,
-                "max_max_deviation": self.max_max_community_deviation
-            },
-            "avg_degrees": avg_degrees,  # Add average degrees per community
-            "densities": densities  # Add community densities
+            }
         }
 
     def _calculate_community_deviations(
@@ -1198,6 +1190,7 @@ class GraphSample:
     ) -> Dict[str, float]:
         """
         Calculate community deviations for a given graph and community labels.
+        Uses normalized actual probability matrix for more accurate deviation calculations.
         
         Args:
             graph: NetworkX graph
@@ -1241,6 +1234,15 @@ class GraphSample:
                     n1, n2 = community_sizes[i], community_sizes[j]
                     if n1 > 0 and n2 > 0:  # Add check for zero community sizes
                         actual_matrix[i, j] = actual_matrix[i, j] / (n1 * n2)
+        
+        # Normalize actual matrix to match P_sub total mass
+        p_sub_total_mass = np.sum(P_sub)
+        actual_total_mass = np.sum(actual_matrix)
+        
+        if actual_total_mass > 0 and p_sub_total_mass > 0:
+            # Scale actual matrix to match P_sub total mass
+            normalization_factor = p_sub_total_mass / actual_total_mass
+            actual_matrix = actual_matrix * normalization_factor
         
         # Calculate deviations
         deviation_matrix = np.abs(actual_matrix - P_sub)
@@ -1545,7 +1547,6 @@ class GraphFamilyGenerator:
         # Deviation limiting
         disable_deviation_limiting: bool = False,
         max_mean_community_deviation: float = 0.10,
-        max_max_community_deviation: float = 0.15,
         min_edge_density: float = 0.005,
 
         # DCCC distribution-specific parameter ranges
@@ -1584,8 +1585,7 @@ class GraphFamilyGenerator:
             degree_separation_range: Range for degree distribution separation (min, max)
             degree_signal_calc_method: How to calculate degree signal
             disable_deviation_limiting: Whether to disable deviation checks
-            max_mean_community_deviation: Maximum allowed mean community deviation
-            max_max_community_deviation: Maximum allowed max community deviation
+            max_mean_community_deviation: Maximum allowed mean target scaled edge probability community deviation
             min_edge_density: Minimum edge density for graphs
             degree_distribution: Degree distribution type ("standard", "power_law", "exponential", "uniform")
             power_law_exponent_range: Range for power law exponent (min, max)
@@ -1622,7 +1622,6 @@ class GraphFamilyGenerator:
         # Deviation limiting
         self.disable_deviation_limiting = disable_deviation_limiting
         self.max_mean_community_deviation = max_mean_community_deviation
-        self.max_max_community_deviation = max_max_community_deviation
         self.min_edge_density = min_edge_density
         
         # DCCC distribution parameters
@@ -1672,10 +1671,12 @@ class GraphFamilyGenerator:
             List of generated GraphSample objects
         """
         start_time = time.time()
+        starting_time_new_graph = start_time
         timeout_seconds = timeout_minutes * 60
         self.graphs = []
         self.community_labels_per_graph = []
         self.generation_metadata = []
+        self.graph_generation_times = []
         failed_graphs = 0
 
         # Every time this function is called we need to reset Seed
@@ -1685,7 +1686,6 @@ class GraphFamilyGenerator:
         # Progress bar setup
         if show_progress:
             pbar = tqdm(total=n_graphs, desc="Generating graph family")
-
         
         while len(self.graphs) < n_graphs:
             # Check for timeout
@@ -1700,7 +1700,6 @@ class GraphFamilyGenerator:
                 attempts += 1
                 
                 try:
-
                     # Get a random seed for this graph
                     graph_seed = np.random.randint(0, 1000000)
 
@@ -1724,7 +1723,6 @@ class GraphFamilyGenerator:
                         degree_distribution=self.degree_distribution,
                         power_law_exponent=params.get('power_law_exponent', None),
                         max_mean_community_deviation=self.max_mean_community_deviation,
-                        max_max_community_deviation=self.max_max_community_deviation,
                         min_edge_density=self.min_edge_density,
                         max_retries=self.max_retries, # Retries of single graph generation
 
@@ -1761,6 +1759,10 @@ class GraphFamilyGenerator:
                     
                     self.generation_metadata.append(metadata)
                     graph_generated = True
+
+                    graph_generation_time = time.time() - starting_time_new_graph
+                    self.graph_generation_times.append(graph_generation_time)
+                    starting_time_new_graph = time.time()
                     
                     if show_progress:
                         pbar.update(1)
@@ -1778,15 +1780,13 @@ class GraphFamilyGenerator:
                             'error': str(e)
                         })
                     # Continue to next attempt
-        
+
         # Use set of sorted tuples for uniqueness
         unique_set_of_community_combinations = {tuple(sorted(arr)) for arr in self.community_labels_per_graph}
 
         # Convert back to list of lists
         unique_list_of_community_combinations = [list(tup) for tup in unique_set_of_community_combinations]
         self.seen_community_combinations = unique_list_of_community_combinations
-        
-        # print(f"Seen community combinations: {self.seen_community_combinations}")
 
         if show_progress:
             pbar.close()
@@ -1981,7 +1981,6 @@ class GraphFamilyGenerator:
                         degree_distribution=self.degree_distribution,
                         power_law_exponent=params.get('power_law_exponent', None),
                         max_mean_community_deviation=self.max_mean_community_deviation,
-                        max_max_community_deviation=self.max_max_community_deviation,
                         min_edge_density=self.min_edge_density,
                         max_retries=self.max_retries, # Retries of single graph generation
 
@@ -2134,6 +2133,7 @@ class GraphFamilyGenerator:
             'degree_distribution_power_law_exponents': [],
             'tail_ratio_95': [],
             'tail_ratio_99': [],
+            'graph_generation_times': self.graph_generation_times
         }
         
         for graph in self.graphs:
@@ -2197,9 +2197,8 @@ class GraphFamilyGenerator:
                 properties['degree_distributions'].append([])
                 properties['degree_distribution_power_law_exponents'].append(0.0)
 
-        
         # Calculate statistics and convert to native Python types
-        for key in ['node_counts', 'edge_counts', 'densities', 'avg_degrees', 'clustering_coefficients', 'community_counts', 'homophily_levels', 'nr_of_triangles']:
+        for key in ['node_counts', 'edge_counts', 'densities', 'avg_degrees', 'clustering_coefficients', 'community_counts', 'homophily_levels', 'nr_of_triangles', 'graph_generation_times']:
             values = properties[key]
             if values:
                 properties[f'{key}_mean'] = float(np.mean(values))

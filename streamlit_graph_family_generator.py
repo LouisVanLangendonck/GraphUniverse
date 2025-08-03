@@ -234,10 +234,10 @@ def main():
         
         feature_dim = st.slider("Feature Dimension", 0, 50, 10, help="Dimension of node features (0 for no features)")
         
-        inter_community_variance = st.slider(
-            "Inter-Community Variance", 
-            0.0, 1.0, 0.1, 0.01,
-            help="Amount of variance in inter-community probabilities"
+        edge_probability_variance = st.slider(
+            "Edge Probability Variance", 
+            0.0, 1.0, 0.5, 0.01,
+            help="Amount of variance in edge probabilities"
         )
         
         # Feature generation parameters
@@ -309,7 +309,7 @@ def main():
             if degree_distribution == "power_law":
                 power_law_min, power_law_max = st.slider(
                     "Power Law Exponent Range",
-                    1.5, 5.0, (2.0, 3.5),
+                    1.5, 5.0, (2.0, 2.5),
                     help="Range for power law exponent"
                 )
             else:
@@ -341,7 +341,7 @@ def main():
                 
             degree_separation_min, degree_separation_max = st.slider(
                 "Degree Separation Range",
-                0.0, 1.0, (0.5, 1.0),
+                0.0, 1.0, (0.7, 1.0),
                 help="Range for degree separation"
             )
         else:
@@ -364,19 +364,13 @@ def main():
         
         max_mean_community_deviation = st.slider(
             "Max Mean Community Deviation",
-            0.01, 0.5, 0.10,
+            0.01, 0.5, 0.05,
             help="Maximum allowed mean deviation from expected community patterns"
-        )
-        
-        max_max_community_deviation = st.slider(
-            "Max Max Community Deviation",
-            0.01, 0.5, 0.15,
-            help="Maximum allowed maximum deviation from expected community patterns"
         )
         
         min_edge_density = st.slider(
             "Min Edge Density",
-            0.001, 0.1, 0.001,
+            0.001, 0.1, 0.0005,
             help="Minimum acceptable edge density"
         )
         
@@ -385,7 +379,7 @@ def main():
         # Generation parameters
         st.markdown("### Generation Parameters")
         
-        n_graphs = st.slider("Number of Graphs", 1, 100, 5, help="Number of graphs to generate")
+        n_graphs = st.slider("Number of Graphs", 1, 100, 20, help="Number of graphs to generate")
         
         seed = st.number_input("Random Seed", value=42, help="Random seed for reproducibility")
         
@@ -423,7 +417,7 @@ def main():
             universe = GraphUniverse(
                 K=K,
                 feature_dim=feature_dim,
-                inter_community_variance=inter_community_variance,
+                edge_probability_variance=edge_probability_variance,
                 center_variance=center_variance,
                 cluster_variance=cluster_variance,
                 degree_center_method=degree_center_method,
@@ -448,7 +442,6 @@ def main():
                 community_cooccurrence_homogeneity=community_cooccurrence_homogeneity,
                 disable_deviation_limiting=disable_deviation_limiting,
                 max_mean_community_deviation=max_mean_community_deviation,
-                max_max_community_deviation=max_max_community_deviation,
                 min_edge_density=min_edge_density,
                 degree_distribution=degree_distribution,
                 power_law_exponent_range=(power_law_min, power_law_max),
@@ -935,7 +928,7 @@ def main():
                     st.metric("Feature Dimension", universe.feature_dim)
                 
                 with col2:
-                    st.metric("Inter-Community Variance", f"{universe.inter_community_variance:.3f}")
+                    st.metric("Edge Probability Variance", f"{universe.edge_probability_variance:.3f}")
                     st.metric("Co-occurrence Homogeneity", f"{universe.community_cooccurrence_homogeneity:.3f}")
                 
                 with col3:
