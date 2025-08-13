@@ -463,6 +463,7 @@ def run_baseline_analysis(params_to_test=None, output_dir='parameter_analysis_re
                 try:
                     # Create universe with baseline params
                     universe_params = baseline_params['universe']
+                    
                     universe = GraphUniverse(
                         K=UNIVERSE_K,
                         edge_probability_variance=universe_params['edge_probability_variance'],
@@ -523,6 +524,9 @@ def run_baseline_analysis(params_to_test=None, output_dir='parameter_analysis_re
                         if metric in properties:
                             baseline_properties[metric].append(properties[metric])
 
+                    mean_degree_consistency = np.mean(consistency['degree_consistency'])
+                    std_degree_consistency = np.std(consistency['degree_consistency'])
+                    
                     baseline_metadata.append({
                         'repeat': repeat,
                         'all_params': baseline_params,
@@ -695,7 +699,8 @@ def plot_parameter_effects(results_dict, save_dir='parameter_analysis_plots'):
                         
                         if all_graph_values:
                             box_data.append(all_graph_values)
-                            box_positions.append(i)
+                            # Use the correct x_values position, not the iteration index
+                            box_positions.append(x_values[i] if i < len(x_values) else i)
                             # Use proper labels
                             if i < len(x_labels_temp):
                                 x_labels.append(x_labels_temp[i])
@@ -836,7 +841,8 @@ def plot_parameter_effects(results_dict, save_dir='parameter_analysis_plots'):
                         
                         if all_graph_values:
                             box_data.append(all_graph_values)
-                            box_positions.append(i)
+                            # Use the correct x_values position, not the iteration index
+                            box_positions.append(x_values[i] if i < len(x_values) else i)
                             # Use proper labels
                             if i < len(x_labels_temp):
                                 x_labels.append(x_labels_temp[i])
@@ -972,7 +978,7 @@ def plot_parameter_effects(results_dict, save_dir='parameter_analysis_plots'):
             is_categorical = param_config['type'] in ['categorical', 'boolean']
             
             if is_categorical:
-                # For categorical parameters, use boxplots with statistical testing (EXACT same logic as randomized method)
+                # For categorical parameters, use boxplots with statistical testing
                 box_data = []
                 box_positions = []
                 x_labels = []
@@ -980,7 +986,7 @@ def plot_parameter_effects(results_dict, save_dir='parameter_analysis_plots'):
                 # Get parameter values for proper grouping
                 test_values = param_results['test_values']
                 x_values, x_labels_temp = get_plot_x_values(param_name, test_values, param_config)
-                
+             
                 for i, data_point in enumerate(metric_data):
                     if data_point['values']:
                         # The values are already flattened when stored
@@ -988,12 +994,14 @@ def plot_parameter_effects(results_dict, save_dir='parameter_analysis_plots'):
                         
                         if all_graph_values:
                             box_data.append(all_graph_values)
-                            box_positions.append(i)
+                            # Use the correct x_values position, not the iteration index
+                            box_positions.append(x_values[i] if i < len(x_values) else i)
                             # Use proper labels
                             if i < len(x_labels_temp):
                                 x_labels.append(x_labels_temp[i])
                             else:
                                 x_labels.append(str(test_values[i]) if i < len(test_values) else str(i))
+                            
                 
                 # Use helper function with consistency metric colors (green)
                 consistency_colors = {'face': 'lightgreen', 'median': 'darkgreen', 'whiskers': 'darkgreen'}
@@ -1216,8 +1224,6 @@ def create_summary_heatmap(results_dict, save_path='parameter_sensitivity_heatma
     # Create the main heatmap with blue-to-red colormap for -1 to +1 correlations
     im = ax.imshow(correlation_matrix, cmap='RdBu_r', aspect='auto', vmin=-1, vmax=1)
     
-    # Note: We no longer need separate overlay for NS values since we'll show them with text
-    
     # Set ticks and labels with larger, consistent font sizes
     ax.set_xticks(np.arange(len(metrics)))
     ax.set_yticks(np.arange(len(params)))
@@ -1229,11 +1235,13 @@ def create_summary_heatmap(results_dict, save_path='parameter_sensitivity_heatma
     cbar.set_label('Correlation Coefficient', rotation=270, labelpad=20, fontsize=16)
     cbar.ax.tick_params(labelsize=14)
     
-    # Add text annotations with correlation values
+    # Add text annotations with correlation values or significance stars
     for i in range(len(params)):
         for j in range(len(metrics)):
             correlation_val = correlation_matrix[i, j]
             significance = significance_matrix[i, j]
+            param_name = params[i]
+            param_config = ALL_VARIABLE_PARAMS.get(param_name, {})
             
             # Choose text color based on correlation magnitude for better contrast
             if abs(correlation_val) < 0.4:
@@ -1243,11 +1251,15 @@ def create_summary_heatmap(results_dict, save_path='parameter_sensitivity_heatma
             
             # Show correlation value only if significant at ** or *** level
             if significance in ['**', '***']:
-                # Format correlation value with 2 decimal places
-                if abs(correlation_val) < 0.01:
-                    display_text = '<0.01'
+                # For categorical parameters, show stars instead of correlation values
+                if param_config.get('type') in ['categorical', 'boolean']:
+                    display_text = display_matrix[i, j]  # This contains the stars
                 else:
-                    display_text = f'{correlation_val:.2f}'
+                    # For continuous parameters, format correlation value with 2 decimal places
+                    if abs(correlation_val) < 0.01:
+                        display_text = '<0.01'
+                    else:
+                        display_text = f'{correlation_val:.2f}'
                 
                 text = ax.text(j, i, display_text,
                              ha="center", va="center", color=text_color,
@@ -1258,7 +1270,7 @@ def create_summary_heatmap(results_dict, save_path='parameter_sensitivity_heatma
                              ha="center", va="center", color="gray", 
                              fontweight='normal', fontsize=16)
     
-    plt.title('Parameter Sensitivity Analysis: Correlation (continuous) / Non-parametric Test Significance (categorical)\n(Only ** and *** significance shown, * treated as NS)', 
+    plt.title('Parameter Sensitivity Analysis: Correlation (continuous) / Mann-Withney U Test (categorical)\n(Only ** and *** significance shown, * treated as NS)', 
               fontsize=18, pad=25)
     plt.savefig(save_path, dpi=300, bbox_inches='tight')
     plt.close()
@@ -2609,6 +2621,7 @@ def create_random_baseline_correlation_heatmap(param_values, metric_values, save
     
     # Determine significance mask (only show ** and ***)
     significance_mask = np.full_like(correlation_matrix, False, dtype=bool)
+    significance_values = np.full_like(correlation_matrix, 'ns', dtype=object)
     for i, metric in enumerate(all_metrics):
         for j, param_name in enumerate(all_params):
             if param_name in param_values and metric in metric_values:
@@ -2618,11 +2631,15 @@ def create_random_baseline_correlation_heatmap(param_values, metric_values, save
                 valid_indices = [idx for idx in range(max_idx) 
                                  if not (is_invalid_value(param_vals[idx]) or is_invalid_value(metric_vals[idx]))]
                 if len(valid_indices) > 2:
+                    param_config = ALL_VARIABLE_PARAMS.get(param_name, {})
+                    param_type = param_config.get('type', 'continuous')
+                    
                     corr, direction, significance, ci_lower, ci_upper = calculate_correlation_with_significance(
                         np.array([param_vals[idx] for idx in valid_indices], dtype=float),
                         np.array([metric_vals[idx] for idx in valid_indices], dtype=float),
-                        'continuous'
+                        param_type
                     )
+                    significance_values[i, j] = significance
                     # Only mark if significant at ** or ***
                     if significance in ['**', '***']:
                         significance_mask[i, j] = True
@@ -2652,17 +2669,25 @@ def create_random_baseline_correlation_heatmap(param_values, metric_values, save
         for j in range(len(all_params)):
             if significance_mask[i, j]:
                 val = correlation_matrix[i, j]
+                param_name = all_params[j]
+                param_config = ALL_VARIABLE_PARAMS.get(param_name, {})
+                significance = significance_values[i, j]
+                
                 # Choose text color based on correlation magnitude for better contrast
                 if abs(val) < 0.4:
                     text_color = "black"
                 else:
                     text_color = "white"
                 
-                # Format correlation value with 2 decimal places
-                if abs(val) < 0.01:
-                    display_text = '<0.01'
+                # For categorical parameters, show stars instead of correlation values
+                if param_config.get('type') in ['categorical', 'boolean']:
+                    display_text = significance  # Show just the stars (**, ***)
                 else:
-                    display_text = f'{val:.2f}'
+                    # For continuous parameters, format correlation value with 2 decimal places
+                    if abs(val) < 0.01:
+                        display_text = '<0.01'
+                    else:
+                        display_text = f'{val:.2f}'
                 
                 ax.text(j, i, display_text, ha='center', va='center', color=text_color, fontsize=16, fontweight='bold')
             else:
