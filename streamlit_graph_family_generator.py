@@ -267,11 +267,11 @@ def main():
             help="How to generate degree centers"
         )
         
-        community_cooccurrence_homogeneity = st.slider(
-            "Community Co-occurrence Homogeneity",
-            0.0, 1.0, 1.0, 0.01,
-            help="Controls community co-occurrence patterns"
-        )
+        # community_cooccurrence_homogeneity = st.slider(
+        #     "Community Co-occurrence Homogeneity",
+        #     0.0, 1.0, 1.0, 0.01,
+        #     help="Controls community co-occurrence patterns"
+        # )
         
         # Graph Family Parameters
         st.markdown("### Graph Family Parameters")
@@ -421,7 +421,7 @@ def main():
                 center_variance=center_variance,
                 cluster_variance=cluster_variance,
                 degree_center_method=degree_center_method,
-                community_cooccurrence_homogeneity=community_cooccurrence_homogeneity,
+                # community_cooccurrence_homogeneity=community_cooccurrence_homogeneity,
                 seed=seed
             )
             
@@ -439,7 +439,7 @@ def main():
                 homophily_range=(homophily_min, homophily_max),
                 avg_degree_range=(avg_degree_min, avg_degree_max),
                 use_dccc_sbm=use_dccc_sbm,
-                community_cooccurrence_homogeneity=community_cooccurrence_homogeneity,
+                # community_cooccurrence_homogeneity=community_cooccurrence_homogeneity,
                 disable_deviation_limiting=disable_deviation_limiting,
                 max_mean_community_deviation=max_mean_community_deviation,
                 min_edge_density=min_edge_density,
@@ -929,7 +929,7 @@ def main():
                 
                 with col2:
                     st.metric("Edge Probability Variance", f"{universe.edge_probability_variance:.3f}")
-                    st.metric("Co-occurrence Homogeneity", f"{universe.community_cooccurrence_homogeneity:.3f}")
+                    #st.metric("Co-occurrence Homogeneity", f"{universe.community_cooccurrence_homogeneity:.3f}")
                 
                 with col3:
                     # Calculate degree center statistics

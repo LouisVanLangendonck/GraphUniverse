@@ -7,6 +7,7 @@ from graph_universe.feature_regimes import (
 )
 import time
 import warnings
+import traceback
 from scipy.stats import spearmanr, pearsonr
 from itertools import combinations
 from tqdm import tqdm
@@ -21,7 +22,6 @@ class GraphUniverse:
         self,
         # Main Universe Parameters
         K: int,
-        P: Optional[np.ndarray] = None,
 
         # Only used if use_dccc_sbm is True
         edge_probability_variance: float = 0.5, # 0-1: how much variance in the edge probabilities
@@ -35,8 +35,8 @@ class GraphUniverse:
         degree_center_method: str = "linear",  # How to generate degree centers ("linear", "random", "constant")
         seed: Optional[int] = None,
 
-        # Community co-occurrence homogeneity
-        community_cooccurrence_homogeneity: float = 1.0,  # 0-1: how homogeneous the co-occurrence of communities is
+        # If we want to use a pre-defined probability matrix, we can pass it in here
+        P: Optional[np.ndarray] = None,
     ):
         """
         Initialize a graph universe with K communities and optional feature generation.
@@ -105,9 +105,9 @@ class GraphUniverse:
         else:
             raise ValueError(f"Unknown degree center method: {degree_center_method}")
             
-        # Generate community co-occurrence matrix
-        self.community_cooccurrence_homogeneity = community_cooccurrence_homogeneity
-        self.community_cooccurrence_matrix = self._generate_cooccurrence_matrix(K, community_cooccurrence_homogeneity, seed)
+        # # Generate community co-occurrence matrix
+        # self.community_cooccurrence_homogeneity = community_cooccurrence_homogeneity
+        # self.community_cooccurrence_matrix = self._generate_cooccurrence_matrix(K, community_cooccurrence_homogeneity, seed)
 
     def _generate_edge_probability_variance_matrix(
         self, 
@@ -245,105 +245,105 @@ class GraphUniverse:
         K = self.K
         size = min(size, K)
         
-        if not use_cooccurrence or self.community_cooccurrence_homogeneity == 1.0:
-            # Sample community one by one and always check for a new candidate that is has a non-zero probabilty connection to the existing communities
-            result = [np.random.choice(self.K)]
-            while len(result) < size:
-                new_community = np.random.choice(self.K)
-                # Check if self.P[new_community, result] is non-zero
-                if np.sum(self.P[new_community, result]) > 0 and new_community not in result:
-                    result.append(new_community)
-            return result
+        # if not use_cooccurrence or self.community_cooccurrence_homogeneity == 1.0:
+        # Sample community one by one and always check for a new candidate that is has a non-zero probabilty connection to the existing communities
+        result = [np.random.choice(self.K)]
+        while len(result) < size:
+            new_community = np.random.choice(self.K)
+            # Check if self.P[new_community, result] is non-zero
+            if np.sum(self.P[new_community, result]) > 0 and new_community not in result:
+                result.append(new_community)
+        return result
         
-        # Start with a random seed community
-        first_community = np.random.choice(K)
-        result = {first_community}
-        remaining_size = size - 1
+        # # Start with a random seed community
+        # first_community = np.random.choice(K)
+        # result = {first_community}
+        # remaining_size = size - 1
         
-        # Iteratively add communities based on co-occurrence probabilities
-        while remaining_size > 0 and len(result) < K:
+        # # Iteratively add communities based on co-occurrence probabilities
+        # while remaining_size > 0 and len(result) < K:
             
-            # Calculate sampling probabilities based on co-occurrence with existing communities
-            remaining_communities = list(set(range(K)) - result)
-            if not remaining_communities:
-                break
+        #     # Calculate sampling probabilities based on co-occurrence with existing communities
+        #     remaining_communities = list(set(range(K)) - result)
+        #     if not remaining_communities:
+        #         break
             
-            # For each remaining community, calculate its average co-occurrence with selected ones
-            cooccurrence_scores = np.zeros(len(remaining_communities))
-            for i, candidate in enumerate(remaining_communities):
-                # Average co-occurrence probability with all selected communities
-                avg_cooccurrence = np.mean([
-                    self.community_cooccurrence_matrix[candidate, selected] 
-                    for selected in result
-                ])
-                cooccurrence_scores[i] = avg_cooccurrence
+        #     # For each remaining community, calculate its average co-occurrence with selected ones
+        #     cooccurrence_scores = np.zeros(len(remaining_communities))
+        #     for i, candidate in enumerate(remaining_communities):
+        #         # Average co-occurrence probability with all selected communities
+        #         avg_cooccurrence = np.mean([
+        #             self.community_cooccurrence_matrix[candidate, selected] 
+        #             for selected in result
+        #         ])
+        #         cooccurrence_scores[i] = avg_cooccurrence
             
-            # Convert scores to probabilities
-            if np.sum(cooccurrence_scores) > 0:
-                probabilities = cooccurrence_scores / np.sum(cooccurrence_scores)
-            else:
-                # Fallback to uniform if all scores are zero
-                probabilities = np.ones(len(remaining_communities)) / len(remaining_communities)
+        #     # Convert scores to probabilities
+        #     if np.sum(cooccurrence_scores) > 0:
+        #         probabilities = cooccurrence_scores / np.sum(cooccurrence_scores)
+        #     else:
+        #         # Fallback to uniform if all scores are zero
+        #         probabilities = np.ones(len(remaining_communities)) / len(remaining_communities)
             
-            # Sample next community
-            next_idx = np.random.choice(len(remaining_communities), p=probabilities)
-            next_community = remaining_communities[next_idx]
-            result.add(next_community)
-            remaining_size -= 1
+        #     # Sample next community
+        #     next_idx = np.random.choice(len(remaining_communities), p=probabilities)
+        #     next_community = remaining_communities[next_idx]
+        #     result.add(next_community)
+        #     remaining_size -= 1
         
-        return list(result)
+        # return list(result)
     
-    def _generate_cooccurrence_matrix(self, K: int, homogeneity: float, seed: Optional[int] = None) -> np.ndarray:
-        """
-        Generate symmetric community co-occurrence matrix.
+    # def _generate_cooccurrence_matrix(self, K: int, homogeneity: float, seed: Optional[int] = None) -> np.ndarray:
+    #     """
+    #     Generate symmetric community co-occurrence matrix.
         
-        Args:
-            K: Number of communities
-            homogeneity: 1.0 = uniform co-occurrence, 0.0 = heterogeneous patterns
-            seed: Random seed
+    #     Args:
+    #         K: Number of communities
+    #         homogeneity: 1.0 = uniform co-occurrence, 0.0 = heterogeneous patterns
+    #         seed: Random seed
             
-        Returns:
-            Symmetric K x K co-occurrence probability matrix (diagonal is always 0)
-        """
-        if seed is not None:
-            np.random.seed(seed)
+    #     Returns:
+    #         Symmetric K x K co-occurrence probability matrix (diagonal is always 0)
+    #     """
+    #     if seed is not None:
+    #         np.random.seed(seed)
         
-        if homogeneity == 1.0:
-            # Perfectly homogeneous - all pairs equally likely
-            matrix = np.ones((K, K)) / K
-            np.fill_diagonal(matrix, 0.0)  # Self-occurrence is always 0
-            return matrix
+    #     if homogeneity == 1.0:
+    #         # Perfectly homogeneous - all pairs equally likely
+    #         matrix = np.ones((K, K)) / K
+    #         np.fill_diagonal(matrix, 0.0)  # Self-occurrence is always 0
+    #         return matrix
         
-        # Generate heterogeneous matrix
-        # Start with base uniform probability
-        base_prob = 1.0 / K
+    #     # Generate heterogeneous matrix
+    #     # Start with base uniform probability
+    #     base_prob = 1.0 / K
         
-        # Generate random variations
-        # Use narrow normal distribution for heterogeneous patterns
-        variance = (1.0 - homogeneity) * 0.5  # Scale variance with heterogeneity
+    #     # Generate random variations
+    #     # Use narrow normal distribution for heterogeneous patterns
+    #     variance = (1.0 - homogeneity) * 0.5  # Scale variance with heterogeneity
         
-        # Generate upper triangle of matrix (excluding diagonal)
-        upper_triangle = np.random.normal(base_prob, variance, size=(K, K))
+    #     # Generate upper triangle of matrix (excluding diagonal)
+    #     upper_triangle = np.random.normal(base_prob, variance, size=(K, K))
         
-        # Make it symmetric
-        matrix = np.triu(upper_triangle, k=1) + np.triu(upper_triangle, k=1).T
+    #     # Make it symmetric
+    #     matrix = np.triu(upper_triangle, k=1) + np.triu(upper_triangle, k=1).T
         
-        # Set diagonal to 0.0 (self-occurrence is always 0)
-        np.fill_diagonal(matrix, 0.0)
+    #     # Set diagonal to 0.0 (self-occurrence is always 0)
+    #     np.fill_diagonal(matrix, 0.0)
         
-        # Ensure all values are positive and reasonable
-        matrix = np.clip(matrix, 0.01, 1.0)
+    #     # Ensure all values are positive and reasonable
+    #     matrix = np.clip(matrix, 0.01, 1.0)
         
-        # Normalize rows to maintain proper probabilities
-        # Each row should sum to something reasonable relative to K
-        row_sums = np.sum(matrix, axis=1, keepdims=True)
-        matrix = matrix / row_sums * K * base_prob * 2  # Scale to reasonable range
-        matrix = np.clip(matrix, 0.01, 1.0)
+    #     # Normalize rows to maintain proper probabilities
+    #     # Each row should sum to something reasonable relative to K
+    #     row_sums = np.sum(matrix, axis=1, keepdims=True)
+    #     matrix = matrix / row_sums * K * base_prob * 2  # Scale to reasonable range
+    #     matrix = np.clip(matrix, 0.01, 1.0)
         
-        # Ensure diagonal stays at 0 after normalization
-        np.fill_diagonal(matrix, 0.0)
+    #     # Ensure diagonal stays at 0 after normalization
+    #     np.fill_diagonal(matrix, 0.0)
         
-        return matrix
+    #     return matrix
 
 
 class GraphSample:
@@ -530,8 +530,8 @@ class GraphSample:
                 # Store the degree method
                 self.degree_signal_calc_method = degree_signal_calc_method
                 
-                # Generate community-specific degree factors using improved method
-                self.degree_factors = self._generate_community_degree_factors_improved(
+                # Generate community-specific degree factors 
+                self.degree_factors = self._generate_community_degree_factors(
                     self.community_labels,
                     degree_distribution,
                     degree_separation,
@@ -556,6 +556,7 @@ class GraphSample:
             check_timeout()
 
             # Create initial NetworkX graph
+            # print(self.adjacency)
             temp_graph = nx.from_scipy_sparse_array(self.adjacency)
             
             # Time: Component filtering
@@ -616,14 +617,15 @@ class GraphSample:
         except TimeoutError:
             raise TimeoutError("GraphSample initialization timed out")
   
-    def _connect_disconnected_components(self, components: list[set[int]]) -> None:
+    def _connect_disconnected_components(self, components: list[set[int]]) -> sp.spmatrix:
         """
         Connect disconnected components of the graph iteratively, starting with the smallest component.
         Uses deviation analysis to find optimal connections that bring the actual probability matrix
         closer to the expected P_sub matrix.
         """
         if len(components) <= 1:
-            return  # Already connected or empty graph
+            # Already connected or empty graph; return current adjacency unchanged
+            return self.adjacency
         
         # Create a copy of the graph to work with
         temp_graph = nx.from_scipy_sparse_array(self.adjacency)
@@ -837,7 +839,7 @@ class GraphSample:
         
         return factors
     
-    def _generate_community_degree_factors_improved(
+    def _generate_community_degree_factors(
         self,
         community_labels: np.ndarray,
         degree_distribution_type: str,
@@ -849,7 +851,7 @@ class GraphSample:
         # 1. Sample global degree distribution
         if degree_distribution_type == "power_law":
             exponent = global_degree_params.get("exponent", 2.5)
-            raw_degrees = (np.random.pareto(exponent, size=n_nodes) + 1) ** 1.5 # Slightly more skewed to balance normalization effect
+            raw_degrees = (np.random.pareto(exponent, size=n_nodes) + 1) #** 1.5 (if added the scaler: Slightly more skewed to balance normalization effect
             # raw_degrees = np.random.pareto(exponent, size=n_nodes) + 1
         elif degree_distribution_type == "exponential":
             rate = global_degree_params.get("rate", 1.0)
@@ -904,7 +906,7 @@ class GraphSample:
         #         community_std = 1.0
         # else:
         #     # Linear interpolation between tight and wide
-        max_std = n_nodes / 3  # Wide case
+        max_std = n_nodes  # Wide case
         min_std = 1.0 if K == 1 else max(1.0, np.min(np.diff(community_means)) / 6)  # Tight case
         community_std = min_std + max((1 - degree_separation), 0.1) * (max_std - min_std)
         
@@ -919,11 +921,6 @@ class GraphSample:
             # Get the mean for this community's distribution (use original community index)
             mean_pos = community_means[community_local_idx]
             std_pos = community_std
-            
-            # if not available_positions:
-            #     # This shouldn't happen, but fallback
-            #     degree_factors[node_idx] = sorted_degrees[node_idx % n_nodes]
-            #     continue
             
             # Sample from truncated normal distribution over available positions
             if len(available_positions) == 1:
@@ -946,6 +943,24 @@ class GraphSample:
             available_positions.remove(chosen_pos)
 
         # 9. Normalize to mean 1 to not influence edge density
+        # Since we multiply degree_factors[i] * degree_factors[j] in edge generation,
+        # we need to normalize by the expected value of their product, not just their individual means
+        # if len(degree_factors) > 1:
+        #     # Since Correlated variables, E[X*Y] ≈ E[X]² + Var(X) * correlation
+        #     # Since degree factors within communities are correlated, we need to account for this
+        #     mean_factor = np.mean(degree_factors)
+        #     var_factor = np.var(degree_factors)
+            
+        #     # Estimate correlation based on degree_separation parameter
+        #     # Higher degree_separation means more correlation within communities
+        #     estimated_correlation = (degree_separation + self.universe.edge_probability_variance)/2  # Scale correlation by degree_separation and edge_probabality_variance
+            
+        #     # Expected product = E[X]² + correlation * Var(X)
+        #     expected_product = mean_factor ** 2 + estimated_correlation * var_factor
+            
+        #     # Normalize by square root of expected product
+        #     degree_factors = degree_factors / np.sqrt(expected_product)
+        # else:
         degree_factors = degree_factors / degree_factors.mean()
         
         return degree_factors
@@ -974,49 +989,33 @@ class GraphSample:
         """
         n_nodes = len(community_labels)
         
-        for attempt in range(max_retries):
-            # Create node pairs using meshgrid
-            i_nodes, j_nodes = np.triu_indices(n_nodes, k=1)
-            
-            # Get community pairs for all node pairs at once
-            comm_i = community_labels[i_nodes]
-            comm_j = community_labels[j_nodes]
-            
-            # Get base probabilities from P matrix
-            edge_probs = P_sub[comm_i, comm_j]
+        # Create node pairs using meshgrid
+        i_nodes, j_nodes = np.triu_indices(n_nodes, k=1)
+        
+        # Get community pairs for all node pairs at once
+        comm_i = community_labels[i_nodes]
+        comm_j = community_labels[j_nodes]  
 
-            # Apply degree correction
-            edge_probs *= degree_factors[i_nodes] * degree_factors[j_nodes]
-            
-            # Sample edges
-            edges = np.random.random(len(edge_probs)) < edge_probs
-            
-            # Get the edges that were sampled
-            rows = i_nodes[edges]
-            cols = j_nodes[edges]
-            
-            # Create data for both directions (undirected graph)
-            all_rows = np.concatenate([rows, cols])
-            all_cols = np.concatenate([cols, rows])
-            all_data = np.ones(len(all_rows))
-            
-            # Create sparse adjacency matrix
-            adj = sp.csr_matrix((all_data, (all_rows, all_cols)), shape=(n_nodes, n_nodes))
-            
-            # Calculate actual edge density
-            actual_density = len(all_rows) / (n_nodes * (n_nodes - 1))
-            
-            if actual_density >= min_edge_density:
-                return adj
-            
-            # If density is too low, increase edge probabilities
-            if attempt < max_retries - 1:
-                print(f"Attempt {attempt + 1}: Graph too sparse (density={actual_density:.4f}). Retrying with adjusted probabilities...")
-                P_sub = P_sub * 2  # Double the connection probabilities
-            else:
-                print(f"Warning: Could not achieve minimum edge density after {max_retries} attempts.")
-                print(f"Final density: {actual_density:.4f}")
-                return adj
+        # Get base probabilities from P matrix
+        edge_probs = P_sub[comm_i, comm_j]
+
+        # Apply degree correction
+        edge_probs *= degree_factors[i_nodes] * degree_factors[j_nodes]
+
+        # Sample edges
+        edges = np.random.random(len(edge_probs)) < edge_probs
+
+        # Get the edges that were sampled
+        rows = i_nodes[edges]
+        cols = j_nodes[edges]
+
+        # Create data for both directions (undirected graph)
+        all_rows = np.concatenate([rows, cols])
+        all_cols = np.concatenate([cols, rows])
+        all_data = np.ones(len(all_rows))
+
+        # Create sparse adjacency matrix
+        adj = sp.csr_matrix((all_data, (all_rows, all_cols)), shape=(n_nodes, n_nodes))
         
         return adj
 
@@ -1028,7 +1027,6 @@ class GraphSample:
         n_nodes: Optional[int] = None,
         use_dccc_sbm: bool = True
     ) -> np.ndarray:
-        # Get the number of communities
         n = P_sub.shape[0]
 
         # If using standard dc_sbm, the inter-community structure is FLAT (uniform). Set the P_sub to ones all and let it be scaled
@@ -1037,12 +1035,6 @@ class GraphSample:
 
         # Make copy to avoid modifying the original matrix
         P_scaled = P_sub.copy()
-
-        
-        # Use instance target values if not specified
-        target_avg_degree = target_avg_degree if target_avg_degree is not None else self.target_average_degree
-        target_homophily = target_homophily if target_homophily is not None else self.target_homophily
-        n_nodes = n_nodes if n_nodes is not None else self.n_nodes
         
         # Convert target average degree to equivalent density
         # avg_degree = 2 * edges / n_nodes
@@ -1091,8 +1083,9 @@ class GraphSample:
             # No existing off-diagonal elements, but we need some
             P_scaled[off_diagonal_mask] = target_off_diagonal_sum / (n * n - n)
         
-        # NOW ensure all probabilities are in [0, 1] for actual graph generation
+        # Now ensure all probabilities are in [0, 1] for actual graph generation
         P_scaled = np.clip(P_scaled, 0, 1)
+        # print(P_scaled)
         
         # # Recalculate actual values after clipping
         # actual_diagonal_sum = np.sum(P_scaled[diagonal_mask])
@@ -1144,15 +1137,6 @@ class GraphSample:
                     n1, n2 = community_sizes[i], community_sizes[j]
                     if n1 > 0 and n2 > 0:
                         actual_matrix[i, j] = actual_matrix[i, j] / (n1 * n2)
-        
-        # Normalize actual matrix to match P_sub total mass
-        p_sub_total_mass = np.sum(self.P_sub)
-        actual_total_mass = np.sum(actual_matrix)
-        
-        if actual_total_mass > 0 and p_sub_total_mass > 0:
-            # Scale actual matrix to match P_sub total mass
-            normalization_factor = p_sub_total_mass / actual_total_mass
-            actual_matrix = actual_matrix * normalization_factor
         
         return actual_matrix, community_sizes, connection_counts
 
@@ -1235,14 +1219,14 @@ class GraphSample:
                     if n1 > 0 and n2 > 0:  # Add check for zero community sizes
                         actual_matrix[i, j] = actual_matrix[i, j] / (n1 * n2)
         
-        # Normalize actual matrix to match P_sub total mass
-        p_sub_total_mass = np.sum(P_sub)
-        actual_total_mass = np.sum(actual_matrix)
+        # # Normalize actual matrix to match P_sub total mass
+        # p_sub_total_mass = np.sum(P_sub)
+        # actual_total_mass = np.sum(actual_matrix)
         
-        if actual_total_mass > 0 and p_sub_total_mass > 0:
-            # Scale actual matrix to match P_sub total mass
-            normalization_factor = p_sub_total_mass / actual_total_mass
-            actual_matrix = actual_matrix * normalization_factor
+        # if actual_total_mass > 0 and p_sub_total_mass > 0:
+        #     # Scale actual matrix to match P_sub total mass
+        #     normalization_factor = p_sub_total_mass / actual_total_mass
+        #     actual_matrix = actual_matrix * normalization_factor
         
         # Calculate deviations
         deviation_matrix = np.abs(actual_matrix - P_sub)
@@ -1542,7 +1526,7 @@ class GraphFamilyGenerator:
         use_dccc_sbm: bool = False,
         
         # Community co-occurrence homogeneity
-        community_cooccurrence_homogeneity: float = 1.0,
+        # community_cooccurrence_homogeneity: float = 1.0,
 
         # Deviation limiting
         disable_deviation_limiting: bool = False,
@@ -1617,7 +1601,7 @@ class GraphFamilyGenerator:
         self.degree_signal_calc_method = degree_signal_calc_method # How to calculate degree signal
         
         # Community co-occurrence homogeneity
-        self.community_cooccurrence_homogeneity = community_cooccurrence_homogeneity
+        # self.community_cooccurrence_homogeneity = community_cooccurrence_homogeneity
 
         # Deviation limiting
         self.disable_deviation_limiting = disable_deviation_limiting
@@ -1768,7 +1752,13 @@ class GraphFamilyGenerator:
                         pbar.update(1)
                     
                 except Exception as e:
+                    tb_str = traceback.format_exc()
+                    # Short error version
                     print(f"Failed to generate graph after {attempts} attempts: {e}")
+
+                    # Long error version
+                    # print(f"Failed to generate graph after {attempts} attempts: {e}\n{tb_str}")
+
                     if attempts == max_attempts_per_graph:
                         warnings.warn(f"Failed to generate graph after {attempts} attempts: {e}")
                         failed_graphs += 1
@@ -1777,7 +1767,8 @@ class GraphFamilyGenerator:
                             'graph_id': len(self.graphs),
                             'attempts': attempts,
                             'failed': True,
-                            'error': str(e)
+                            'error': str(e),
+                            'traceback': tb_str
                         })
                     # Continue to next attempt
 
@@ -2011,7 +2002,7 @@ class GraphFamilyGenerator:
             except Exception as e:
                 # print(f"Attempt {attempts} failed: {str(e)}")
                 if attempts == max_attempts:
-                    raise Exception(f"Failed to generate graph after {attempts} attempts: {e}")
+                    raise Exception(f"Failed to generate graph after {attempts} attempts: {e}") from e
                 # Continue to next attempt
  
     def _collect_generation_stats(self, start_time: float, failed_graphs: int, n_graphs: int) -> None:
@@ -2342,53 +2333,142 @@ class GraphFamilyGenerator:
             
             return fidelity_scores
     
+    def _measure_ordering_consistency(self, values_a: np.ndarray, values_b: np.ndarray) -> float:
+        """
+        Fallback ordering consistency: fraction of correctly ordered pairs between two vectors.
+        Values that preserve pairwise ordering contribute positively.
+        """
+        num_items = len(values_a)
+        if num_items <= 1:
+            return 1.0
+        correct_pairs = 0
+        total_pairs = 0
+        for i in range(num_items):
+            for j in range(i + 1, num_items):
+                total_pairs += 1
+                diff_a = values_a[i] - values_a[j]
+                diff_b = values_b[i] - values_b[j]
+                if diff_a == 0 and diff_b == 0:
+                    # Ties in both are considered consistent
+                    correct_pairs += 1
+                elif diff_a * diff_b >= 0:
+                    correct_pairs += 1
+        return (correct_pairs / total_pairs) if total_pairs > 0 else 1.0
+
     def _calculate_degree_consistency(self) -> List[float]:
         """
-        Compare actual node degrees to expected degrees based on universe degree centers.
+        Compare actual node degrees to expected degrees based on universe degree centers
+        (within-graph ranking consistency) and also measure cross-graph ranking consistency.
+        Final per-graph score is the average of the within-graph score and the cross-graph score.
         """
-        consistency_scores = []
-        
         degree_centers = self.universe.degree_centers
+        universe_num_communities = len(degree_centers)
+
+        # First pass: compute within-graph scores and percentile rank signatures per graph
+        within_scores: List[float] = []
+        percentile_signatures: List[np.ndarray] = []  # Each is length universe_num_communities with NaNs for absent communities
+
         for graph in self.graphs:
-            try:
-                # Get actual degrees per community
-                actual_degrees_per_community = np.zeros(len(graph.communities))
+            num_local_communities = len(graph.communities)
 
-                for node_idx in range(graph.n_nodes):
-                    community_id = graph.community_labels[node_idx]
-                    degree = graph.graph.degree[node_idx]
+            # Average degree per community (normalized by community size)
+            avg_degrees_per_community = np.zeros(num_local_communities)
+            community_sizes = np.zeros(num_local_communities)
 
-                    actual_degrees_per_community[community_id] += degree
+            for node_idx in range(graph.n_nodes):
+                local_community_id = graph.community_labels[node_idx]
+                degree = graph.graph.degree[node_idx]
+                avg_degrees_per_community[local_community_id] += degree
+                community_sizes[local_community_id] += 1
 
-                # Get the degree centers for the communities in the graph
-                community_degree_centers = degree_centers[graph.communities]
+            # Normalize by community size
+            for i in range(num_local_communities):
+                if community_sizes[i] > 0:
+                    avg_degrees_per_community[i] /= community_sizes[i]
 
-                # Check if degree centers are constant (all same value)
-                if np.std(community_degree_centers) == 0:
-                    # For constant degree centers, measure degree homogeneity instead
-                    # Calculate coefficient of variation of actual degrees per community
-                    if np.mean(actual_degrees_per_community) > 0:
-                        cv = np.std(actual_degrees_per_community) / np.mean(actual_degrees_per_community)
-                        # Convert to a "consistency" score: lower CV = higher consistency
-                        # Use 1 / (1 + cv) to get a score between 0 and 1
-                        consistency_score = 1.0 / (1.0 + cv)
-                    else:
-                        consistency_score = 0.0
+            # Degree centers for the communities present in this graph (same local order)
+            community_degree_centers = degree_centers[graph.communities]
+
+            # Within-graph score: how well avg degrees respect universe degree centers
+            if np.std(community_degree_centers) == 0:
+                # For constant degree centers, measure degree homogeneity instead
+                if np.mean(avg_degrees_per_community) > 0:
+                    cv = np.std(avg_degrees_per_community) / np.mean(avg_degrees_per_community)
+                    within_score = 1.0 / (1.0 + cv)
                 else:
-                    # Calculate the correlation between the actual degrees and the community degree centers
-                    correlation, _ = pearsonr(actual_degrees_per_community, community_degree_centers)
-                    consistency_score = correlation if not np.isnan(correlation) else 0.0
-                
-                consistency_scores.append(consistency_score)
-                    
-            except Exception as e:
-                warnings.warn(f"Error in degree consistency calculation for graph: {e}")
-                continue
-        
-        if not consistency_scores:
+                    within_score = 1.0  # All degrees are 0, perfectly consistent
+            else:
+                if num_local_communities > 2:
+                    from scipy.stats import spearmanr
+                    rank_correlation, _ = spearmanr(avg_degrees_per_community, community_degree_centers)
+                    if not np.isnan(rank_correlation):
+                        within_score = rank_correlation
+                    else:
+                        within_score = self._measure_ordering_consistency(
+                            avg_degrees_per_community, community_degree_centers
+                        )
+                elif num_local_communities == 2:
+                    degree_order_correct = (
+                        (avg_degrees_per_community[0] >= avg_degrees_per_community[1]) ==
+                        (community_degree_centers[0] >= community_degree_centers[1])
+                    )
+                    within_score = 1.0 if degree_order_correct else 0.0
+                else:
+                    within_score = 1.0
+
+            within_scores.append(within_score)
+
+            # Percentile rank signature anchored to universe communities
+            signature = np.full(universe_num_communities, np.nan, dtype=float)
+            if num_local_communities == 1:
+                # Single community: set neutral percentile
+                universe_id = graph.community_id_mapping[0]
+                signature[universe_id] = 0.5
+            else:
+                from scipy.stats import rankdata
+                ranks = rankdata(avg_degrees_per_community, method='average')  # 1..K
+                percentiles = (ranks - 1.0) / (num_local_communities - 1.0)
+                for local_idx, universe_id in graph.community_id_mapping.items():
+                    signature[universe_id] = percentiles[local_idx]
+            percentile_signatures.append(signature)
+
+        # Second pass: cross-graph ranking consistency using Spearman between percentile signatures
+        num_graphs = len(self.graphs)
+        cross_scores: List[float] = []
+        if num_graphs == 0:
             return []
-        
-        return consistency_scores
+
+        from scipy.stats import spearmanr
+        for i in range(num_graphs):
+            sig_i = percentile_signatures[i]
+            pairwise_scores: List[float] = []
+            pairwise_weights: List[int] = []
+            for j in range(num_graphs):
+                if j == i:
+                    continue
+                sig_j = percentile_signatures[j]
+                common_mask = ~np.isnan(sig_i) & ~np.isnan(sig_j)
+                overlap = int(np.sum(common_mask))
+                # Require sufficient overlap for a meaningful correlation
+                if overlap >= 3:
+                    corr, _ = spearmanr(sig_i[common_mask], sig_j[common_mask])
+                    if not np.isnan(corr):
+                        pairwise_scores.append(float(corr))
+                        pairwise_weights.append(overlap)
+            if pairwise_scores:
+                cross_scores.append(float(np.average(pairwise_scores, weights=pairwise_weights)))
+            else:
+                cross_scores.append(float('nan'))
+
+        # Final score: average within-graph (vs centers) and cross-graph ranking consistency
+        final_scores: List[float] = []
+        for within_score, cross_score in zip(within_scores, cross_scores):
+            if np.isnan(cross_score):
+                final_scores.append(float(within_score))
+            else:
+                final_scores.append(float(0.5 * (within_score + cross_score)))
+
+        return final_scores
 
     def _calculate_cooccurrence_consistency(self) -> List[float]:
         """
