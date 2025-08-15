@@ -968,5 +968,125 @@ def main():
             else:
                 st.warning("No universe has been created yet. Please generate a graph family first.")
 
+        # PyG Graph Saving Section
+        if st.checkbox("Save PyG Graphs"):
+            st.markdown('<h3 class="section-header">Save PyTorch Geometric Graphs</h3>', unsafe_allow_html=True)
+            
+            # Check if family generator exists in session state
+            if 'family_generator' in st.session_state and st.session_state.family_generator is not None:
+                family_generator = st.session_state.family_generator
+                
+                if len(family_generator.graphs) > 0:
+                    st.info(f"Ready to convert and save {len(family_generator.graphs)} graphs to PyG format.")
+                    
+                    # Task selection
+                    st.markdown("#### Select Tasks")
+                    available_tasks = [
+                        "community_detection",
+                        "triangle_counting",
+                        "k_hop_community_counts_k1",
+                        "k_hop_community_counts_k2", 
+                        "k_hop_community_counts_k3"
+                    ]
+                    
+                    selected_tasks = st.multiselect(
+                        "Choose tasks to generate PyG graphs for:",
+                        available_tasks,
+                        default=["community_detection"],
+                        help="Select one or more tasks. Each task will create different target labels for the graphs."
+                    )
+                    
+                    if selected_tasks:
+                        # Family naming and directory
+                        col1, col2 = st.columns(2)
+                        
+                        with col1:
+                            family_id = st.text_input(
+                                "Family ID",
+                                value="family_001",
+                                help="Alphanumeric identifier for this graph family"
+                            )
+                        
+                        with col2:
+                            family_dir = st.text_input(
+                                "Save Directory",
+                                value="graph_family",
+                                help="Directory where the PyG graphs will be saved"
+                            )
+                        
+                        # Validation
+                        valid_family_id = family_id.replace("_", "").isalnum()
+                        if not valid_family_id:
+                            st.error("Family ID must be alphanumeric (underscores allowed)")
+                        
+                        if valid_family_id and st.button("Convert and Save PyG Graphs", type="primary"):
+                            try:
+                                # Create progress containers
+                                progress_container = st.container()
+                                status_container = st.container()
+                                
+                                with progress_container:
+                                    progress_bar = st.progress(0)
+                                    progress_text = st.empty()
+                                
+                                with status_container:
+                                    status_text = st.empty()
+                                
+                                # Step 1: Convert to PyG graphs
+                                status_text.text("Step 1/2: Converting graphs to PyTorch Geometric format...")
+                                progress_bar.progress(25)
+                                progress_text.text("25% - Starting conversion...")
+                                
+                                # Check if graphs have features (required for PyG conversion)
+                                graphs_with_features = all(hasattr(g, 'features') and g.features is not None for g in family_generator.graphs)
+                                if not graphs_with_features:
+                                    st.error("❌ Cannot convert to PyG: Some graphs don't have features. Please generate graphs with feature_dim > 0.")
+                                    progress_container.empty()
+                                    status_container.empty()
+                                    return
+                                
+                                progress_bar.progress(50)
+                                progress_text.text("50% - Converting graphs...")
+                                
+                                # Step 2: Save PyG graphs and universe
+                                status_text.text("Step 2/2: Saving PyG graphs and universe...")
+                                progress_bar.progress(75)
+                                progress_text.text("75% - Saving to disk...")
+                                
+                                # Use the family generator's save method
+                                family_generator.save_pyg_graphs_and_universe(
+                                    tasks=selected_tasks,
+                                    family_id=family_id,
+                                    family_dir=family_dir
+                                )
+                                
+                                progress_bar.progress(100)
+                                progress_text.text("100% - Complete!")
+                                
+                                st.success(f"✅ Successfully saved PyG graphs for {len(selected_tasks)} task(s)!")
+                                
+                                # Show saved files
+                                st.markdown("#### Saved Files:")
+                                for task in selected_tasks:
+                                    st.code(f"{family_dir}/pyg_graph_list_{family_id}_{task}.pkl")
+                                st.code(f"{family_dir}/graph_universe_{family_id}.pkl")
+                                
+                                # Clear progress indicators after a short delay
+                                time.sleep(1)
+                                progress_container.empty()
+                                status_container.empty()
+                                
+                            except Exception as e:
+                                st.error(f"❌ Error saving PyG graphs: {str(e)}")
+                                st.exception(e)
+                                progress_container.empty()
+                                status_container.empty()
+                    else:
+                        st.warning("Please select at least one task to proceed.")
+                else:
+                    st.warning("No graphs available. Please generate a graph family first.")
+            else:
+                st.warning("No graph family has been generated yet. Please generate a graph family first.")
+
 if __name__ == "__main__":
     main() 

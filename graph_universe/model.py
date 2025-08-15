@@ -11,6 +11,11 @@ import traceback
 from scipy.stats import spearmanr, pearsonr
 from itertools import combinations
 from tqdm import tqdm
+import torch_geometric.data as pyg
+from torch_geometric.utils import to_undirected
+from torch_geometric.data import Data
+import torch
+import pickle
 
 class GraphUniverse:
     """
@@ -293,58 +298,6 @@ class GraphUniverse:
         
         # return list(result)
     
-    # def _generate_cooccurrence_matrix(self, K: int, homogeneity: float, seed: Optional[int] = None) -> np.ndarray:
-    #     """
-    #     Generate symmetric community co-occurrence matrix.
-        
-    #     Args:
-    #         K: Number of communities
-    #         homogeneity: 1.0 = uniform co-occurrence, 0.0 = heterogeneous patterns
-    #         seed: Random seed
-            
-    #     Returns:
-    #         Symmetric K x K co-occurrence probability matrix (diagonal is always 0)
-    #     """
-    #     if seed is not None:
-    #         np.random.seed(seed)
-        
-    #     if homogeneity == 1.0:
-    #         # Perfectly homogeneous - all pairs equally likely
-    #         matrix = np.ones((K, K)) / K
-    #         np.fill_diagonal(matrix, 0.0)  # Self-occurrence is always 0
-    #         return matrix
-        
-    #     # Generate heterogeneous matrix
-    #     # Start with base uniform probability
-    #     base_prob = 1.0 / K
-        
-    #     # Generate random variations
-    #     # Use narrow normal distribution for heterogeneous patterns
-    #     variance = (1.0 - homogeneity) * 0.5  # Scale variance with heterogeneity
-        
-    #     # Generate upper triangle of matrix (excluding diagonal)
-    #     upper_triangle = np.random.normal(base_prob, variance, size=(K, K))
-        
-    #     # Make it symmetric
-    #     matrix = np.triu(upper_triangle, k=1) + np.triu(upper_triangle, k=1).T
-        
-    #     # Set diagonal to 0.0 (self-occurrence is always 0)
-    #     np.fill_diagonal(matrix, 0.0)
-        
-    #     # Ensure all values are positive and reasonable
-    #     matrix = np.clip(matrix, 0.01, 1.0)
-        
-    #     # Normalize rows to maintain proper probabilities
-    #     # Each row should sum to something reasonable relative to K
-    #     row_sums = np.sum(matrix, axis=1, keepdims=True)
-    #     matrix = matrix / row_sums * K * base_prob * 2  # Scale to reasonable range
-    #     matrix = np.clip(matrix, 0.01, 1.0)
-        
-    #     # Ensure diagonal stays at 0 after normalization
-    #     np.fill_diagonal(matrix, 0.0)
-        
-    #     return matrix
-
 
 class GraphSample:
     """
@@ -583,7 +536,6 @@ class GraphSample:
                 if mean_deviation > self.max_mean_community_deviation:
                     raise ValueError(f"Graph exceeds mean community deviation limit: {mean_deviation:.4f} > {self.max_mean_community_deviation:.4f}")
 
-    
             check_timeout()
             
             # Time: Feature generation
@@ -1037,10 +989,11 @@ class GraphSample:
         P_scaled = P_sub.copy()
         
         # Convert target average degree to equivalent density
-        # avg_degree = 2 * edges / n_nodes
+        # avg_degree = (2 * edges / n_nodes) / 2 -> avg_degree = edges / n_nodes -> extra /2 because undirected graph
         # density = edges / (n_nodes * (n_nodes - 1) / 2)
-        # Therefore: density = avg_degree / (n_nodes - 1)
-        target_density = target_avg_degree / (n_nodes - 1)
+        # Therefore: density = 2 * avg_degree / (n_nodes - 1)
+        target_density = target_avg_degree * 2 / (n_nodes - 1) # *2 because undirected graph
+        # These extra *2 factors are more internal to the practicalities of the graph libraries and not included in paper formulas. Empirically validated though. 
         
         # Create masks for diagonal and off-diagonal elements
         diagonal_mask = np.eye(n, dtype=bool)
@@ -1100,6 +1053,50 @@ class GraphSample:
         
         return P_scaled
 
+    def to_pyg_graph(self, task: str) -> pyg.data.Data:
+        """
+        Convert the graph to a PyG graph including the task specified.
+        Possible tasks are:
+        - "community_detection"
+        - "triangle_counting"
+        - "khop_community_counting"
+        """
+        graph = self.graph
+        n_nodes = graph.number_of_nodes()
+        edges = list(graph.edges())
+        edge_index = torch.tensor(edges, dtype=torch.long).t().contiguous()
+        edge_index = to_undirected(edge_index)
+
+        # Use features from GraphSample if available, else identity
+        if hasattr(self, 'features') and self.features is not None:
+            features = torch.tensor(self.features, dtype=torch.float)
+        else:
+            raise ValueError("Features are not available for the graph")
+            # features = torch.eye(n_nodes, dtype=torch.float)
+
+        # Use community_labels as y
+        if task == "community_detection":
+            if hasattr(self, 'community_labels_universe_level') and self.community_labels_universe_level is not None:
+                y = torch.tensor(self.community_labels_universe_level, dtype=torch.long)
+            else:
+                raise ValueError("Community labels are not available for the graph")
+                # community_labels = torch.zeros(n_nodes, dtype=torch.long)
+        
+        if task == "triangle_counting":
+            # Triangle counting (via networkx then to tensor)
+            triangle_count = self.count_triangles_graph()
+            y = torch.tensor(triangle_count, dtype=torch.float)
+
+        if task.startswith("k_hop_community_counts_k"):
+            # Extract k value from task name
+            k = int(task.split("k")[-1])
+            # K-hop community counting - universe-indexed
+            y = self.compute_khop_community_counts_universe_indexed(k)
+
+        data = Data(x=features, edge_index=edge_index, y=y)
+        
+        return data 
+
     def calculate_actual_probability_matrix(self) -> np.ndarray:
         """
         Calculate the actual probability matrix for the graph.
@@ -1138,6 +1135,9 @@ class GraphSample:
                     if n1 > 0 and n2 > 0:
                         actual_matrix[i, j] = actual_matrix[i, j] / (n1 * n2)
         
+        # Divide the actual matrix by 2 because it's an undirected graph
+        actual_matrix = actual_matrix / 2
+
         return actual_matrix, community_sizes, connection_counts
 
     def analyze_community_connections(self) -> Dict[str, Any]:
@@ -1503,6 +1503,39 @@ class GraphSample:
             signals['triangle_signal'] = 0.0
         
         return signals
+    
+    def count_triangles_graph(self) -> int:
+        # Use networkx's triangles function which is more reliable
+        triangle_counts = nx.triangles(self.graph)
+        # Sum all triangle counts and divide by 3 (each triangle is counted 3 times)
+        total_triangles = sum(triangle_counts.values()) // 3
+        return total_triangles
+    
+    def compute_khop_community_counts_universe_indexed(
+        self,
+        k: int
+    ) -> torch.Tensor:
+        """
+        Compute k-hop community counts (only nodes at exactly k-hops) with universe indexing.
+        """
+        n_nodes = self.graph.number_of_nodes()
+        counts = np.zeros((n_nodes, self.universe.K))
+        
+        for node in range(n_nodes):
+            # Get nodes at exact distance k using single-source shortest path
+            sp_lengths = nx.single_source_shortest_path_length(self.graph, node, cutoff=k)
+            khop_nodes = [n for n, dist in sp_lengths.items() if dist == k]
+            
+            for neighbor in khop_nodes:
+                local_comm = self.community_labels[neighbor]
+                # Map local community index to universe community ID
+                if local_comm in self.community_id_mapping:
+                    universe_comm = self.community_id_mapping[local_comm]
+                    counts[node, universe_comm] += 1
+                else:
+                    raise ValueError(f"Community {local_comm} not in community_id_mapping")
+        
+        return torch.tensor(counts, dtype=torch.float)
 
 
 class GraphFamilyGenerator:
@@ -1523,7 +1556,7 @@ class GraphFamilyGenerator:
         # density_range: Tuple[float, float] = (0.1, 0.15),    # Density range
 
         # Whether to use DCCC-SBM or standard DC-SBM
-        use_dccc_sbm: bool = False,
+        use_dccc_sbm: bool = True,
         
         # Community co-occurrence homogeneity
         # community_cooccurrence_homogeneity: float = 1.0,
@@ -1787,6 +1820,52 @@ class GraphFamilyGenerator:
             self._collect_generation_stats(start_time, failed_graphs, n_graphs)
         
         return self.graphs
+
+    def to_pyg_graphs(self, tasks: List[str]) -> Dict[str, List[pyg.data.Data]]:
+        """
+        Convert the graphs to PyG graphs for the specified tasks.
+        """
+        # Check if graphs are created
+        if len(self.graphs) == 0:
+            raise ValueError("No graphs have been generated yet")
+        
+        # Check if tasks are valid - updated to handle k-hop tasks
+        valid_task_prefixes = ["community_detection", "triangle_counting", "k_hop_community_counts_k"]
+        for task in tasks:
+            if not any(task.startswith(prefix) for prefix in valid_task_prefixes):
+                raise ValueError(f"Invalid task specified: {task}")
+        
+        pyg_graphs = {task: [] for task in tasks}
+        for graph in tqdm(self.graphs, desc="Converting graphs to PyG graphs"):
+            for task in tasks:
+                pyg_graphs[task].append(graph.to_pyg_graph(task))
+        
+        return pyg_graphs
+    
+    def save_pyg_graphs_and_universe(self, tasks: List[str], family_id: str, family_dir: str = "graph_family"):
+        """
+        Save the PyG graphs and universe to a file.
+        """
+        import os
+
+        pyg_graphs = self.to_pyg_graphs(tasks)
+        
+        # Check if family_id is valid (allow underscores)
+        if not family_id.replace("_", "").isalnum():
+            raise ValueError("family_id must be alphanumeric (underscores allowed)")
+        
+        # Create directory if it doesn't exist
+        os.makedirs(family_dir, exist_ok=True)
+        os.makedirs(f"{family_dir}/{family_id}", exist_ok=True)
+        
+        for task in tasks:
+            with open(f"{family_dir}/{family_id}/pyg_graph_list_{task}.pkl", "wb") as f:
+                pickle.dump(pyg_graphs[task], f)
+
+        with open(f"{family_dir}/{family_id}/graph_universe.pkl", "wb") as f:
+            pickle.dump(self.universe, f)
+
+        print(f"Family {family_id} has been successfully saved to {family_dir}")
 
     def _validate_parameters(self) -> None:
         """Validate initialization parameters."""
@@ -2138,7 +2217,7 @@ class GraphFamilyGenerator:
                 properties['densities'].append(0.0)
             
             if graph.n_nodes > 0:
-                avg_degree = sum(dict(graph.graph.degree()).values()) / graph.n_nodes
+                avg_degree = sum(dict(graph.graph.degree()).values()) / (graph.n_nodes * 2) # *2 because undirected graph
                 properties['avg_degrees'].append(avg_degree)
             else:
                 properties['avg_degrees'].append(0.0)
@@ -2242,17 +2321,17 @@ class GraphFamilyGenerator:
         # 1. Pattern preservation (do communities RELATIVELY connect more to the communities they are supposed to connect to?)
         try:
             pattern_corrs = self._calculate_pattern_consistency()
-            results['pattern_preservation'] = pattern_corrs
+            results['structure_consistency'] = pattern_corrs
 
         except Exception as e:
-            results['pattern_preservation'] = []
+            results['structure_consistency'] = []
 
-        # 2. Generation fidelity (do graphs match their scaled probability targets (P_sub)?)
-        try:
-            generation_fidelity = self._calculate_generation_fidelity()
-            results['generation_fidelity'] = generation_fidelity
-        except Exception as e:
-            results['generation_fidelity'] = []
+        # # 2. Generation fidelity (do graphs match their scaled probability targets (P_sub)?)
+        # try:
+        #     generation_fidelity = self._calculate_generation_fidelity()
+        #     results['generation_fidelity'] = generation_fidelity
+        # except Exception as e:
+        #     results['generation_fidelity'] = []
 
         # 3. Degree consistency (do actual node degrees correlate with universe degree centers?)
         try:
@@ -2260,13 +2339,6 @@ class GraphFamilyGenerator:
             results['degree_consistency'] = degree_consistency
         except Exception as e:
             results['degree_consistency'] = []
-
-        # 4. Co-occurrence consistency (do communities co-occur in the family as expected?)
-        try:
-            cooccurrence_consistency = self._calculate_cooccurrence_consistency()
-            results['cooccurrence_consistency'] = cooccurrence_consistency
-        except Exception as e:
-            results['cooccurrence_consistency'] = 0.0
 
         return results
 
