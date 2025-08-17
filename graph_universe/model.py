@@ -1787,7 +1787,7 @@ class GraphFamilyGenerator:
                 except Exception as e:
                     tb_str = traceback.format_exc()
                     # Short error version
-                    print(f"Failed to generate graph after {attempts} attempts: {e}")
+                    # print(f"Failed to generate graph after {attempts} attempts: {e}")
 
                     # Long error version
                     # print(f"Failed to generate graph after {attempts} attempts: {e}\n{tb_str}")
