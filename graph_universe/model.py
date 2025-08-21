@@ -1277,7 +1277,10 @@ class GraphSample:
                 k = int(task.split("k")[-1])
                 # K-hop community counting - universe-indexed
                 k_hop_counts = self.compute_khop_community_counts_universe_indexed(k)
+                k_hop_counts_binary = (k_hop_counts > 0).float()
+                task_binary = task + "_binary"
                 setattr(data, task, k_hop_counts)
+                setattr(data, task_binary, k_hop_counts_binary)
             
             else:
                 raise ValueError(f"Unknown task: {task}")
@@ -2018,8 +2021,6 @@ class GraphFamilyGenerator:
         pyg_graphs = []
         for graph in tqdm(self.graphs, desc="Converting graphs to PyG graphs"):
             pyg_graphs.append(graph.to_pyg_graph(tasks))
-
-        print(pyg_graphs[0])
         
         return pyg_graphs
     
@@ -2073,7 +2074,6 @@ class GraphFamilyGenerator:
 
         # Convert the graphs to PyG graphs including tasks
         pyg_graphs = self.to_pyg_graphs(tasks)
-        print(pyg_graphs[0])
 
         # Create directory if it doesn't exist
         os.makedirs(family_dir, exist_ok=True) 
@@ -2104,7 +2104,6 @@ class GraphFamilyGenerator:
         with open(metadata_file, 'w') as f:
             json.dump(uniquely_identifying_metadata, f, indent=2, default=str)
         
-
     def _validate_parameters(self) -> None:
         """Validate initialization parameters."""
         if self.min_n_nodes <= 0:
