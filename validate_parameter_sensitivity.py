@@ -93,7 +93,7 @@ def create_wide_boxplot(axis, box_data, positions, widths=0.65, show_fliers=Fals
 
 def create_categorical_boxplot_with_tests(ax, box_data, box_positions, x_labels, colors, annotation_color='lightgray'):
     """
-    Create categorical boxplot with statistical testing - EXACT same logic as randomized method.
+    Create categorical boxplot with statistical testing using classical legend approach.
     
     Args:
         ax: matplotlib axis
@@ -138,6 +138,10 @@ def create_categorical_boxplot_with_tests(ax, box_data, box_positions, x_labels,
     
     # Calculate non-parametric test significance for categorical parameters
     from scipy.stats import kruskal
+    from matplotlib.patches import Patch
+    
+    legend_elements = []
+    
     try:
         if len(box_data) == 2:
             # Use Mann-Whitney U for 2 groups
@@ -158,31 +162,36 @@ def create_categorical_boxplot_with_tests(ax, box_data, box_positions, x_labels,
         else:
             significance = 'NS'
         
-        # Add significance annotation for location test
-        ax.text(0.05, 0.95, f'{test_name} p={p_value:.3f} ({significance})', 
-                transform=ax.transAxes, verticalalignment='top',
-                bbox=dict(boxstyle='round', facecolor=annotation_color, alpha=0.7))
+        # Add text-only legend with automatic best position (avoiding center)
+        from matplotlib.lines import Line2D
+        legend_elements = [Line2D([0], [0], color='none', 
+                                 label=f'{test_name}: p={p_value:.3f} ({significance})')]
         
-        # Add variance equality test
-        try:
-            from scipy.stats import levene
-            levene_stat, var_p_value = levene(*box_data)
-            if var_p_value < 0.001:
-                var_significance = '***'
-            elif var_p_value < 0.01:
-                var_significance = '**'
-            elif var_p_value < 0.05:
-                var_significance = '*'
-            else:
-                var_significance = 'NS'
+        # Create legend with 'best' location first to get the automatic position
+        legend = ax.legend(handles=legend_elements, loc='best', framealpha=0.9, 
+                          fontsize='small', fancybox=True, shadow=True)
+        
+        # Check if the legend is positioned in the center and relocate if needed
+        bbox = legend.get_window_extent()
+        ax_bbox = ax.get_window_extent()
+        
+        # Calculate relative position of legend center
+        legend_center_x = (bbox.x0 + bbox.x1) / 2
+        legend_center_y = (bbox.y0 + bbox.y1) / 2
+        ax_center_x = (ax_bbox.x0 + ax_bbox.x1) / 2
+        ax_center_y = (ax_bbox.y0 + ax_bbox.y1) / 2
+        
+        # If legend is too close to the center, move it to upper right
+        center_threshold = 0.3  # Within 30% of center is considered "middle"
+        x_distance = abs(legend_center_x - ax_center_x) / (ax_bbox.x1 - ax_bbox.x0)
+        y_distance = abs(legend_center_y - ax_center_y) / (ax_bbox.y1 - ax_bbox.y0)
+        
+        if x_distance < center_threshold and y_distance < center_threshold:
+            # Remove the current legend and create a new one at upper right
+            legend.remove()
+            ax.legend(handles=legend_elements, loc='upper right', framealpha=0.9, 
+                     fontsize='small', fancybox=True, shadow=True)
             
-            # Use same annotation color for variance test in baseline, lightyellow in randomized
-            var_annotation_color = 'lightgray' if annotation_color == 'lightgray' else 'lightyellow'
-            ax.text(0.05, 0.85, f"Levene's test p={var_p_value:.3f} ({var_significance})", 
-                    transform=ax.transAxes, verticalalignment='top',
-                    bbox=dict(boxstyle='round', facecolor=var_annotation_color, alpha=0.7))
-        except:
-            pass
     except:
         pass
 
@@ -305,13 +314,13 @@ ALL_VARIABLE_PARAMS = {
     'center_variance': {
         'type': 'continuous',
         'test_values': [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0],
-        'random_range': (0.1, 1.0),
+        'random_range': (0.5, 0.5),
         'level': 'universe'
     },
     'cluster_variance': {
         'type': 'continuous',
         'test_values': [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0],
-        'random_range': (0.1, 0.5),
+        'random_range': (0.1, 1.0),
         'level': 'universe'
     },
     'degree_center_method': {
@@ -359,7 +368,7 @@ ALL_VARIABLE_PARAMS = {
     'avg_degree_range': {
         'type': 'range',
         'test_values': [(2.0, 2.5), (4.0, 4.5), (6.0, 6.5), (8.0, 8.5), (10.0, 10.5)],
-        'random_range': (2.0, 15.0),
+        'random_range': (2.0, 20.0),
         'level': 'family'
     },
     'degree_heterogeneity': {
@@ -954,7 +963,7 @@ def plot_parameter_effects(results_dict, save_dir='parameter_analysis_plots'):
 def create_summary_heatmap(results_dict, save_path='parameter_sensitivity_heatmap.png'):
     """
     Create split heatmaps showing correlation values for continuous parameters and significance levels for categorical parameters.
-    Only shows statistical significance from ** (p < 0.01) and above, treating * (p < 0.05) as NS.
+    Shows statistical significance levels: * (p < 0.05), ** (p < 0.01), and *** (p < 0.001).
     """
     params = list(results_dict.keys())
     metrics = SIGNAL_METRICS + CONSISTENCY_METRICS + PROPERTY_METRICS
@@ -1070,6 +1079,13 @@ def create_summary_heatmap(results_dict, save_path='parameter_sensitivity_heatma
                         categorical_display_matrix[i, j] = f'{significance} {short_direction}'
                     else:
                         categorical_display_matrix[i, j] = significance
+                elif significance == '*':
+                    categorical_significance_matrix[i, j] = 1
+                    if direction != 'none':
+                        short_direction = '+' if direction == 'positive' else '-'
+                        categorical_display_matrix[i, j] = f'{significance} {short_direction}'
+                    else:
+                        categorical_display_matrix[i, j] = significance
                 else:
                     categorical_significance_matrix[i, j] = 0
                     categorical_display_matrix[i, j] = 'NS'
@@ -1092,7 +1108,7 @@ def create_summary_heatmap(results_dict, save_path='parameter_sensitivity_heatma
         ax1.set_yticks(np.arange(len(continuous_params)))
         ax1.set_xticklabels([m.replace('_', ' ').title() for m in metrics], rotation=45, ha='right', fontsize=14)
         ax1.set_yticklabels([get_plot_param_name(p) for p in continuous_params], fontsize=14)
-        ax1.set_title('Continuous Parameters: Pearson Correlation Coefficients', fontsize=16, pad=20) # (Only ** and *** significance shown, * treated as NS)
+        ax1.set_title('Continuous Parameters: Pearson Correlation Coefficients', fontsize=16, pad=20)
         
         # Colorbar for continuous
         cbar1 = plt.colorbar(im1, ax=ax1)
@@ -1110,7 +1126,7 @@ def create_summary_heatmap(results_dict, save_path='parameter_sensitivity_heatma
                 else:
                     text_color = "white"
                 
-                if significance in ['**', '***']:
+                if significance in ['*', '**', '***']:
                     if abs(correlation_val) < 0.01:
                         display_text = '<0.01'
                     else:
@@ -1135,7 +1151,7 @@ def create_summary_heatmap(results_dict, save_path='parameter_sensitivity_heatma
         ax2.set_yticks(np.arange(len(categorical_params)))
         ax2.set_xticklabels([m.replace('_', ' ').title() for m in metrics], rotation=45, ha='right', fontsize=14)
         ax2.set_yticklabels([get_plot_param_name(p) for p in categorical_params], fontsize=14)
-        ax2.set_title('Categorical Parameters: Mann-Whitney U Test of Identical Distribution', fontsize=16, pad=20) # " (Only ** and *** significance shown, * treated as NS)"
+        ax2.set_title('Categorical Parameters: Mann-Whitney U Test of Identical Distribution', fontsize=16, pad=20)
         
         # Colorbar for categorical
         cbar2 = plt.colorbar(im2, ax=ax2, ticks=[0, 1, 2, 3])
@@ -1156,7 +1172,7 @@ def create_summary_heatmap(results_dict, save_path='parameter_sensitivity_heatma
                 ax2.text(j, i, display_text, ha="center", va="center", color=text_color,
                         fontweight='bold' if display_text != 'NS' else 'normal', fontsize=14)
         
-        # plt.suptitle('Parameter Sensitivity Analysis\n(Only ** and *** significance shown, * treated as NS)', 
+        # plt.suptitle('Parameter Sensitivity Analysis\n(*, **, and *** significance levels shown)', 
         #              fontsize=18, y=1.02)
         
     elif len(continuous_params) > 0:
@@ -1185,7 +1201,7 @@ def create_summary_heatmap(results_dict, save_path='parameter_sensitivity_heatma
                 else:
                     text_color = "white"
                 
-                if significance in ['**', '***']:
+                if significance in ['*', '**', '***']:
                     if abs(correlation_val) < 0.01:
                         display_text = '<0.01'
                     else:
@@ -1196,7 +1212,7 @@ def create_summary_heatmap(results_dict, save_path='parameter_sensitivity_heatma
                     ax.text(j, i, 'NS', ha="center", va="center", color="gray", 
                            fontweight='normal', fontsize=16)
         
-        plt.title('Continuous Parameters: Correlation Analysis\n(Only ** and *** significance shown, * treated as NS)', 
+        plt.title('Continuous Parameters: Correlation Analysis\n(*, **, and *** significance levels shown)', 
                   fontsize=18, pad=25)
         
     elif len(categorical_params) > 0:
@@ -1233,7 +1249,7 @@ def create_summary_heatmap(results_dict, save_path='parameter_sensitivity_heatma
                 ax.text(j, i, display_text, ha="center", va="center", color=text_color,
                        fontweight='bold' if display_text != 'NS' else 'normal', fontsize=16)
         
-        plt.title('Categorical Parameters: Mann-Whitney U Test\n(Only ** and *** significance shown, * treated as NS)', 
+        plt.title('Categorical Parameters: Mann-Whitney U Test\n(*, **, and *** significance levels shown)', 
                   fontsize=18, pad=25, weight='bold')
     
     plt.tight_layout()
@@ -1688,15 +1704,34 @@ def calculate_categorical_significance(x, y):
                 return 0.0, 'none', 'ns', 0.0, 0.0, variance_test_name, variance_p_value, variance_significance
             
             # Determine direction based on medians (more robust than means for non-parametric tests)
-            median_0 = np.median(groups[0])
-            median_1 = np.median(groups[1])
+            # Note: groups are ordered by np.unique(x) which sorts the x values
             
-            if median_0 > median_1:
-                direction = 'positive'
-            elif median_0 < median_1:
-                direction = 'negative'
+            unique_x_sorted = np.unique(x)  # This is the sorted order
+            median_0 = np.median(groups[0])  # median for unique_x_sorted[0]
+            median_1 = np.median(groups[1])  # median for unique_x_sorted[1]
+            
+            # Determine direction by comparing medians
+            # The direction should match the visual relationship in individual plots
+            
+            if len(unique_x_sorted) == 2:
+                x_low, x_high = unique_x_sorted[0], unique_x_sorted[1]
+                median_low, median_high = median_0, median_1
+                
+                # Standard interpretation: positive if higher x value leads to higher y value
+                if median_high > median_low:
+                    direction = 'positive'
+                elif median_high < median_low:
+                    direction = 'negative'
+                else:
+                    direction = 'none'
             else:
-                direction = 'none'
+                # Fallback for non-binary cases
+                if median_1 > median_0:
+                    direction = 'positive'
+                elif median_1 < median_0:
+                    direction = 'negative'
+                else:
+                    direction = 'none'
             
             # Determine significance based on p-value
             if p_value < 0.001:
@@ -1709,8 +1744,8 @@ def calculate_categorical_significance(x, y):
                 significance = 'ns'
             
             # Return binary significance (1 if significant, 0 if not)
-            # Only return 1 for ** and *** significance
-            if significance in ['**', '***']:
+            # Return 1 for *, **, and *** significance
+            if significance in ['*', '**', '***']:
                 return 1.0, direction, significance, 0.0, 0.0, variance_test_name, variance_p_value, variance_significance
             else:
                 return 0.0, direction, significance, 0.0, 0.0, variance_test_name, variance_p_value, variance_significance
@@ -1752,8 +1787,8 @@ def calculate_categorical_significance(x, y):
                 significance = 'ns'
             
             # Return binary significance (1 if significant, 0 if not)
-            # Only return 1 for ** and *** significance
-            if significance in ['**', '***']:
+            # Return 1 for *, **, and *** significance
+            if significance in ['*', '**', '***']:
                 return 1.0, direction, significance, 0.0, 0.0, variance_test_name, variance_p_value, variance_significance
             else:
                 return 0.0, direction, significance, 0.0, 0.0, variance_test_name, variance_p_value, variance_significance
@@ -1838,18 +1873,25 @@ def get_plot_x_values(param_name, test_values, param_config):
         x_labels = ['True' if v == 'random' else 'False' for v in test_values]
         return x_values, x_labels
     elif param_config['type'] in ['categorical', 'boolean']:
-        x_values = list(range(len(test_values)))
-        # Convert boolean values to True/False strings
-        x_labels = []
-        for v in test_values:
-            if isinstance(v, bool):
-                x_labels.append('True' if v else 'False')
-            else:
-                x_labels.append(str(v))
+        # For boolean parameters, use consistent mapping: True=1, False=0
+        if param_config['type'] == 'boolean':
+            x_values = [1 if v else 0 for v in test_values]
+            x_labels = ['True' if v else 'False' for v in test_values]
+        else:
+            # For categorical parameters, use position-based mapping
+            x_values = list(range(len(test_values)))
+            x_labels = [str(v) for v in test_values]
         return x_values, x_labels
     elif param_config['type'] == 'range':
-        x_values = [(v[0] + v[1]) / 2 for v in test_values]
-        x_labels = [f"{v[0]:.2f}-{v[1]:.2f}" for v in test_values]
+        # Handle both tuple ranges and midpoint values
+        if isinstance(test_values[0], tuple):
+            # Original baseline format with (min, max) tuples
+            x_values = [(v[0] + v[1]) / 2 for v in test_values]
+            x_labels = [f"{v[0]:.2f}-{v[1]:.2f}" for v in test_values]
+        else:
+            # Randomized format with midpoint values
+            x_values = test_values
+            x_labels = [f"{v:.2f}" for v in test_values]
         return x_values, x_labels
     else:
         x_values = test_values
@@ -2441,11 +2483,14 @@ def convert_random_baseline_to_summary_format(param_values, metric_values):
         # For other parameters, use the values as-is
         if param_config.get('type') == 'range':
             # For range parameters, the param_vals are already midpoints
-            # We need to create fake ranges around these midpoints for compatibility
+            # Instead of creating fake ranges, use the midpoints directly as test values
             unique_midpoints = sorted(list(set(param_vals)))
-            # Create small ranges around each midpoint (±0.025 which is half the typical range size of 0.05)
-            range_size = 0.05
-            unique_param_vals = [(midpoint - range_size/2, midpoint + range_size/2) for midpoint in unique_midpoints]
+            unique_param_vals = unique_midpoints
+        elif param_name == 'degree_center_method':
+            # Special handling for degree_center_method which was converted to True/False
+            # Convert back to the original string values for compatibility with heatmap logic
+            unique_booleans = sorted(list(set(param_vals)))
+            unique_param_vals = ['random' if val else 'constant' for val in unique_booleans]
         else:
             # For non-range parameters, use the values directly
             unique_param_vals = sorted(list(set(param_vals)))
@@ -2463,10 +2508,14 @@ def convert_random_baseline_to_summary_format(param_values, metric_values):
         for test_value in unique_param_vals:
             # Find all indices where this parameter value occurs
             if param_config.get('type') == 'range':
-                # For range parameters, test_value is a tuple (min, max), but param_vals contains midpoints
-                # Find indices where the midpoint matches this range's midpoint
-                range_midpoint = (test_value[0] + test_value[1]) / 2
-                value_indices = [i for i, val in enumerate(param_vals) if abs(val - range_midpoint) < 1e-6]
+                # For range parameters, test_value is now a midpoint (float), and param_vals contains midpoints
+                # Find indices where the midpoint matches this test_value
+                value_indices = [i for i, val in enumerate(param_vals) if abs(val - test_value) < 1e-6]
+            elif param_name == 'degree_center_method':
+                # For degree_center_method, test_value is a string ('random'/'constant') but param_vals contains booleans
+                # Convert test_value back to boolean for matching
+                target_bool = True if test_value == 'random' else False
+                value_indices = [i for i, val in enumerate(param_vals) if val == target_bool]
             else:
                 # For non-range parameters, match exactly
                 value_indices = [i for i, val in enumerate(param_vals) if val == test_value]
@@ -2548,7 +2597,586 @@ def convert_random_baseline_to_summary_format(param_values, metric_values):
     return results_dict
 
 
+def plot_side_by_side_comparison(baseline_results, random_results, save_dir='side_by_side_plots'):
+    """
+    Create side-by-side comparison plots for parameters that exist in both baseline and randomized results.
+    Uses the exact same plotting logic as the individual methods but arranges them side by side.
+    """
+    os.makedirs(save_dir, exist_ok=True)
+    
+    # Find common parameters between baseline and randomized results
+    baseline_params = set(baseline_results.keys()) if baseline_results else set()
+    
+    # For random results, we need to extract the parameter names from the converted format
+    random_params = set()
+    if random_results:
+        # Check if random_results is in the raw format (from run_random_baseline_analysis)
+        if 'random_samples' in random_results:
+            # This is raw random results - we need to extract parameter names
+            if random_results['random_samples']:
+                sample_params = random_results['random_samples'][0]
+                for param_name in RANDOM_PARAMS_OF_INTEREST:
+                    param_config = ALL_VARIABLE_PARAMS[param_name]
+                    if param_config['level'] == 'universe' and param_name in sample_params['universe']:
+                        random_params.add(param_name)
+                    elif param_config['level'] == 'family' and param_name in sample_params['family']:
+                        random_params.add(param_name)
+        else:
+            # This is already converted format
+            random_params = set(random_results.keys())
+    
+    # Find intersection
+    common_params = baseline_params.intersection(random_params)
+    
+    if not common_params:
+        print("No common parameters found between baseline and randomized results.")
+        return
+    
+    print(f"Found {len(common_params)} common parameters: {sorted(common_params)}")
+    
+    # For randomized data, we need to work with raw data, not converted summary format
+    if random_results and 'random_samples' in random_results:
+        print("Extracting raw random results data...")
+        # Extract parameter and metric values from raw random results (same as working method)
+        random_param_values, random_metric_values = extract_random_baseline_data(random_results)
+        
+        # Also extract metric standard deviations
+        random_metric_stds = {}
+        for metric in SIGNAL_METRICS + CONSISTENCY_METRICS + PROPERTY_METRICS:
+            random_metric_stds[metric] = []
+        
+        # Process the results to extract metric standard deviations
+        for sample_idx in range(len(random_results['random_samples'])):
+            # Extract metric standard deviations (across repeats for this sample)
+            for metric in SIGNAL_METRICS:
+                if (metric in random_results['signal_metrics'] and 
+                    sample_idx < len(random_results['signal_metrics'][metric]) and 
+                    random_results['signal_metrics'][metric][sample_idx]):
+                    all_values = []
+                    for repeat_data in random_results['signal_metrics'][metric][sample_idx]:
+                        if repeat_data:
+                            all_values.extend(repeat_data)
+                    if all_values:
+                        random_metric_stds[metric].append(np.std(all_values))
+                    else:
+                        random_metric_stds[metric].append(np.nan)
+                else:
+                    random_metric_stds[metric].append(np.nan)
+            
+            for metric in CONSISTENCY_METRICS:
+                if (metric in random_results['consistency_metrics'] and 
+                    sample_idx < len(random_results['consistency_metrics'][metric]) and 
+                    random_results['consistency_metrics'][metric][sample_idx]):
+                    all_values = []
+                    for repeat_data in random_results['consistency_metrics'][metric][sample_idx]:
+                        if repeat_data:
+                            all_values.extend(repeat_data)
+                    if all_values:
+                        random_metric_stds[metric].append(np.std(all_values))
+                    else:
+                        random_metric_stds[metric].append(np.nan)
+                else:
+                    random_metric_stds[metric].append(np.nan)
+            
+            for metric in PROPERTY_METRICS:
+                if (metric in random_results['property_metrics'] and 
+                    sample_idx < len(random_results['property_metrics'][metric]) and 
+                    random_results['property_metrics'][metric][sample_idx]):
+                    all_values = []
+                    for repeat_data in random_results['property_metrics'][metric][sample_idx]:
+                        if repeat_data:
+                            all_values.extend(repeat_data)
+                    if all_values:
+                        random_metric_stds[metric].append(np.std(all_values))
+                    else:
+                        random_metric_stds[metric].append(np.nan)
+                else:
+                    random_metric_stds[metric].append(np.nan)
+        
+        # Convert to summary format for baseline compatibility
+        random_results_converted = convert_random_baseline_to_summary_format(random_param_values, random_metric_values)
+    else:
+        random_results_converted = random_results
+        random_param_values = None
+        random_metric_values = None
+        random_metric_stds = None
+    
+    # Create side-by-side plots for each common parameter
+    for param_name in sorted(common_params):
+        print(f"Creating side-by-side plot for parameter: {param_name}")
+        
+        # Get parameter configuration
+        param_config = ALL_VARIABLE_PARAMS[param_name]
+        
+        # Create figure with two subplots side by side, each containing a 3x3 grid
+        fig = plt.figure(figsize=(30, 13.5))  # Double width for side-by-side
+        
+        # Create two main subplot areas with space for method labels at bottom
+        gs_main = fig.add_gridspec(2, 2, height_ratios=[20, 1], width_ratios=[1, 1], wspace=0.2, hspace=0.1)
+        
+        # Left side: Baseline results (top row)
+        if param_name in ['avg_degree_range', 'homophily_range', 'power_law_exponent_range']:
+            gs_left = gs_main[0, 0].subgridspec(3, 3, hspace=1.0, wspace=0.3)
+        else:
+            gs_left = gs_main[0, 0].subgridspec(3, 3, hspace=0.6, wspace=0.3)
+        # Right side: Random results (top row)
+        if param_name in ['avg_degree_range', 'homophily_range', 'power_law_exponent_range']:
+            gs_right = gs_main[0, 1].subgridspec(3, 3, hspace=1.0, wspace=0.3)
+        else:
+            gs_right = gs_main[0, 1].subgridspec(3, 3, hspace=0.6, wspace=0.3)
+        
+        # Bottom row for method labels
+        ax_label_left = fig.add_subplot(gs_main[1, 0])
+        ax_label_right = fig.add_subplot(gs_main[1, 1])
+        
+        # Get baseline data
+        baseline_param_results = baseline_results[param_name]
+        baseline_test_values = baseline_param_results['test_values']
+        baseline_x_values, baseline_x_labels = get_plot_x_values(param_name, baseline_test_values, param_config)
+        
+        # Get random data
+        random_param_results = random_results_converted[param_name]
+        random_test_values = random_param_results['test_values'] 
+        
+        random_x_values, random_x_labels = get_plot_x_values(param_name, random_test_values, param_config)
+        
+        # Create ordered list of metrics: signals first, then properties, then consistency
+        ordered_metrics = SIGNAL_METRICS + PROPERTY_METRICS + CONSISTENCY_METRICS
+        metric_types = (['signal'] * len(SIGNAL_METRICS) + 
+                       ['property'] * len(PROPERTY_METRICS) + 
+                       ['consistency'] * len(CONSISTENCY_METRICS))
+        
+        # Plot all metrics in order
+        for metric_idx, (metric, metric_type) in enumerate(zip(ordered_metrics, metric_types)):
+            row = metric_idx // 3
+            col = metric_idx % 3
+            
+            # Create axes for baseline (left) and random (right)
+            ax_baseline = fig.add_subplot(gs_left[row, col])
+            ax_random = fig.add_subplot(gs_right[row, col])
+            
+            # Plot baseline data (left side)
+            plot_single_metric_data(ax_baseline, param_name, metric, metric_type, param_config,
+                                   baseline_param_results, baseline_x_values, baseline_x_labels,
+                                   "Baseline", 'lightgray')
+            
+            # Plot random data (right side)  
+            plot_single_metric_data(ax_random, param_name, metric, metric_type, param_config,
+                                   random_param_results, random_x_values, random_x_labels,
+                                   "Randomized", 'lightcoral', 
+                                   raw_param_values=random_param_values, 
+                                   raw_metric_values=random_metric_values,
+                                   raw_metric_stds=random_metric_stds)
+            
+            # Set titles
+            if metric_idx < 3:  # Top row
+                ax_baseline.set_title(f'{metric.replace("_", " ").title()}', fontsize=19, fontweight='bold', pad=15)
+                ax_random.set_title(f'{metric.replace("_", " ").title()}', fontsize=19, fontweight='bold', pad=15)
+            else:
+                ax_baseline.set_title(f'{metric.replace("_", " ").title()}', fontsize=19, fontweight='bold', pad=15)
+                ax_random.set_title(f'{metric.replace("_", " ").title()}', fontsize=19, fontweight='bold', pad=15)
+        
+        # Add overall title
+        if param_name == 'avg_degree_range':
+            fig.suptitle(f'Parameter Effects: Average Degree Range', 
+                        fontsize=24, fontweight='bold', y=0.96)
+        else:
+            fig.suptitle(f'Parameter Effects: {get_plot_param_name(param_name)}', 
+                        fontsize=24, fontweight='bold', y=0.96)
+        
+        # Configure method label axes
+        if param_name in ['avg_degree_range', 'homophily_range', 'power_law_exponent_range']:
+            ax_label_left.set_title('Systemic Isolated Variation', fontsize=24, fontweight='bold', pad=10, y=-1.8)
+            ax_label_left.axis('off')  # Hide axes
+        
+            ax_label_right.set_title('Randomized Sampling', fontsize=24, fontweight='bold', pad=10, y=-1.8)
+            ax_label_right.axis('off')  # Hide axes
+        else:
+            ax_label_left.set_title('Systemic Isolated Variation', fontsize=24, fontweight='bold', pad=10, y=-1.3)
+            ax_label_left.axis('off')  # Hide axes
+            
+            ax_label_right.set_title('Randomized Sampling', fontsize=24, fontweight='bold', pad=10, y=-1.3)
+            ax_label_right.axis('off')  # Hide axes
+        
+        # Save figure
+        plt.savefig(os.path.join(save_dir, f'{param_name}_side_by_side_comparison.png'), 
+                   dpi=300, bbox_inches='tight', facecolor='white', edgecolor='none')
+        plt.close()
+    
+    print(f"Side-by-side comparison plots saved to {save_dir}")
 
+
+
+
+
+def extract_random_baseline_data(random_results):
+    """
+    Extract parameter and metric values from raw random baseline results.
+    This replicates the extraction logic from plot_random_baseline_results.
+    """
+    # Extract parameter values from the random samples (only for RANDOM_PARAMS_OF_INTEREST)
+    param_values = {}
+    for param_name in RANDOM_PARAMS_OF_INTEREST:
+        param_values[param_name] = []
+    
+    # Extract metric values and their standard deviations
+    metric_values = {}
+    for metric in SIGNAL_METRICS + CONSISTENCY_METRICS + PROPERTY_METRICS:
+        metric_values[metric] = []
+    
+    # Process the results to extract parameter and metric values
+    for sample_idx in range(len(random_results['random_samples'])):
+        # Get the parameters for this sample
+        sample_params = random_results['random_samples'][sample_idx]
+        
+        # Extract parameter values (only for RANDOM_PARAMS_OF_INTEREST)
+        for param_name in RANDOM_PARAMS_OF_INTEREST:
+            param_config = ALL_VARIABLE_PARAMS[param_name]
+            if param_config['level'] == 'universe':
+                value = sample_params['universe'].get(param_name)
+            else:
+                value = sample_params['family'].get(param_name)
+            
+            # For range parameters, use the midpoint
+            if isinstance(value, tuple) and len(value) == 2:
+                value = (value[0] + value[1]) / 2
+            
+            # Special handling for degree_center_method to convert to numeric values for plotting
+            if param_name == 'degree_center_method':
+                # Convert 'random' to 1 (True - using degree community coupling) and 'constant' to 0 (False)
+                value = True if value == 'random' else False
+            
+            param_values[param_name].append(value)
+        
+        # Extract metric values (across repeats for this sample)
+        for metric in SIGNAL_METRICS:
+            if (metric in random_results['signal_metrics'] and 
+                sample_idx < len(random_results['signal_metrics'][metric]) and 
+                random_results['signal_metrics'][metric][sample_idx]):
+                # Flatten all values across repeats and graphs
+                all_values = []
+                for repeat_data in random_results['signal_metrics'][metric][sample_idx]:
+                    if repeat_data:
+                        all_values.extend(repeat_data)
+                if all_values:
+                    metric_values[metric].append(np.mean(all_values))
+                else:
+                    metric_values[metric].append(np.nan)
+            else:
+                metric_values[metric].append(np.nan)
+        
+        for metric in CONSISTENCY_METRICS:
+            if (metric in random_results['consistency_metrics'] and 
+                sample_idx < len(random_results['consistency_metrics'][metric]) and 
+                random_results['consistency_metrics'][metric][sample_idx]):
+                all_values = []
+                for repeat_data in random_results['consistency_metrics'][metric][sample_idx]:
+                    if repeat_data:
+                        all_values.extend(repeat_data)
+                if all_values:
+                    metric_values[metric].append(np.mean(all_values))
+                else:
+                    metric_values[metric].append(np.nan)
+            else:
+                metric_values[metric].append(np.nan)
+        
+        for metric in PROPERTY_METRICS:
+            if (metric in random_results['property_metrics'] and 
+                sample_idx < len(random_results['property_metrics'][metric]) and 
+                random_results['property_metrics'][metric][sample_idx]):
+                all_values = []
+                for repeat_data in random_results['property_metrics'][metric][sample_idx]:
+                    if repeat_data:
+                        all_values.extend(repeat_data)
+                if all_values:
+                    metric_values[metric].append(np.mean(all_values))
+                else:
+                    metric_values[metric].append(np.nan)
+            else:
+                metric_values[metric].append(np.nan)
+    
+    return param_values, metric_values
+
+
+def plot_single_metric_data(ax, param_name, metric, metric_type, param_config, 
+                           param_results, x_values, x_labels, method_name, annotation_color,
+                           raw_param_values=None, raw_metric_values=None, raw_metric_stds=None):
+    """
+    Plot a single metric using the exact same logic as the individual plotting methods.
+    This function contains the unified plotting logic for both baseline and randomized data.
+    """
+    # Get metric data from the appropriate dictionary
+    if metric_type == 'signal':
+        metric_data = param_results['signal_metrics'][metric]
+    elif metric_type == 'property':
+        metric_data = param_results['property_metrics'][metric]
+    else:  # consistency
+        metric_data = param_results['consistency_metrics'][metric]
+    
+    # Check if this is a categorical parameter
+    # Special handling for degree_center_method which should be treated as categorical
+    is_categorical = param_config['type'] in ['categorical', 'boolean'] or param_name == 'degree_center_method'
+    
+    if is_categorical:
+        # For categorical parameters, use boxplots with statistical testing
+        box_data = []
+        box_positions = []
+        box_x_labels = []
+        
+        for i, data_point in enumerate(metric_data):
+            if data_point['values']:
+                # The values are already flattened when stored
+                all_graph_values = data_point['values']
+                
+                if all_graph_values:
+                    box_data.append(all_graph_values)
+                    # Use the correct x_values position, not the iteration index
+                    box_positions.append(x_values[i] if i < len(x_values) else i)
+                    # Use proper labels
+                    if i < len(x_labels):
+                        box_x_labels.append(x_labels[i])
+                    else:
+                        box_x_labels.append(str(param_results['test_values'][i]) if i < len(param_results['test_values']) else str(i))
+        
+        # Use appropriate colors based on metric type - colorblind friendly
+        if metric_type == 'signal':
+            colors = {'face': 'lightblue', 'median': 'blue', 'whiskers': 'blue'}
+        elif metric_type == 'property':
+            colors = {'face': 'mistyrose', 'median': 'firebrick', 'whiskers': 'firebrick'}
+        else:  # consistency
+            colors = {'face': 'lightgreen', 'median': 'darkgreen', 'whiskers': 'darkgreen'}
+        # Use different annotation colors based on method
+        if method_name == "Randomized":
+            annotation_color = 'lightgray'  # Use gray for randomized method
+        create_categorical_boxplot_with_tests(ax, box_data, box_positions, box_x_labels, colors, annotation_color)
+    else:
+        # Different plotting logic for baseline vs randomized methods
+        if method_name == "Baseline":
+            # For baseline continuous parameters, use both error bars AND confidence intervals
+            # Each dot represents a family (test value), with shaded confidence intervals
+            means = []
+            stds = []
+            ci_lowers = []
+            ci_uppers = []
+            
+            for data_point in metric_data:
+                if data_point['values']:
+                    # The values are already flattened when stored
+                    all_graph_values = data_point['values']
+                    
+                    if all_graph_values:
+                        mean_val = np.mean(all_graph_values)
+                        std_val = np.std(all_graph_values)
+                        means.append(mean_val)
+                        stds.append(std_val)
+                        
+                        # Also calculate confidence intervals for shaded area
+                        ci_lower, ci_upper = calculate_confidence_intervals(all_graph_values)[1:3]
+                        ci_lowers.append(ci_lower)
+                        ci_uppers.append(ci_upper)
+                    else:
+                        means.append(np.nan)
+                        stds.append(np.nan)
+                        ci_lowers.append(np.nan)
+                        ci_uppers.append(np.nan)
+                else:
+                    means.append(np.nan)
+                    stds.append(np.nan)
+                    ci_lowers.append(np.nan)
+                    ci_uppers.append(np.nan)
+            
+            # Plot both confidence intervals (shaded) and error bars
+            valid_indices = [i for i, m in enumerate(means) if not np.isnan(m)]
+            if valid_indices:
+                valid_x = [x_values[i] for i in valid_indices]
+                valid_means = [means[i] for i in valid_indices]
+                valid_stds = [stds[i] for i in valid_indices]
+                valid_ci_lower = [ci_lowers[i] for i in valid_indices]
+                valid_ci_upper = [ci_uppers[i] for i in valid_indices]
+                
+                # Get color based on metric type - colorblind friendly
+                if metric_type == 'signal':
+                    plot_color = 'blue'
+                elif metric_type == 'property':
+                    plot_color = 'firebrick'
+                else:  # consistency
+                    plot_color = 'darkgreen'
+                
+                # Plot shaded confidence intervals first (background)
+                ax.fill_between(valid_x, valid_ci_lower, valid_ci_upper, 
+                              alpha=0.3, color=plot_color, label='95% CI')
+                
+                # Plot error bars for each family on top
+                ax.errorbar(valid_x, valid_means, yerr=valid_stds, 
+                           fmt='o-', alpha=0.8, markersize=6, capsize=3, capthick=1, 
+                           color=plot_color, linewidth=2, label='Family Mean ± SD')
+        else:
+            # For randomized continuous parameters, use EXACT same logic as plot_random_baseline_results
+            if raw_param_values is not None and raw_metric_values is not None and raw_metric_stds is not None:
+                # Use raw data - EXACT same as working randomized method
+                if param_name in raw_param_values and metric in raw_metric_values:
+                    param_vals = raw_param_values[param_name]
+                    metric_vals = raw_metric_values[metric]
+                    metric_std_vals = raw_metric_stds[metric]
+                    
+                    # Remove NaN values - EXACT same logic as working method
+                    valid_indices = [i for i in range(len(param_vals)) 
+                                   if not (is_invalid_value(param_vals[i]) or is_invalid_value(metric_vals[i]))]
+                    
+                    if len(valid_indices) > 1:
+                        valid_params = [param_vals[i] for i in valid_indices]
+                        valid_metrics = [metric_vals[i] for i in valid_indices]
+                        valid_stds = [metric_std_vals[i] for i in valid_indices]
+                        
+                        # Get color based on metric type - colorblind friendly
+                        if metric_type == 'signal':
+                            point_color = 'blue'
+                        elif metric_type == 'property':
+                            point_color = 'firebrick'
+                        else:  # consistency
+                            point_color = 'darkgreen'
+                        
+                        # Plot scatter with error bars - EXACT same as existing randomized method
+                        ax.errorbar(valid_params, valid_metrics, yerr=valid_stds, 
+                                   fmt='o', alpha=0.6, markersize=4, capsize=3, capthick=1, color=point_color)
+                        
+                        # Add dark gray dotted correlation line (no confidence intervals, just simple fit)
+                        if len(valid_params) > 1:
+                            z = np.polyfit(valid_params, valid_metrics, 1)
+                            p = np.poly1d(z)
+                            ax.plot(valid_params, p(valid_params), ":", alpha=0.8, linewidth=3, color='darkgray')
+            else:
+                # Fallback to processed data if raw data not available
+                all_x_vals = []
+                all_y_vals = []
+                all_stds = []
+                
+                for i, data_point in enumerate(metric_data):
+                    if data_point['values'] and i < len(x_values):
+                        all_graph_values = data_point['values']
+                        
+                        if all_graph_values:
+                            mean_val = np.mean(all_graph_values)
+                            std_val = np.std(all_graph_values)
+                            
+                            all_x_vals.append(x_values[i])
+                            all_y_vals.append(mean_val)
+                            all_stds.append(std_val)
+                
+                valid_indices = [i for i in range(len(all_x_vals)) if not (is_invalid_value(all_x_vals[i]) or is_invalid_value(all_y_vals[i]))]
+                
+                if valid_indices:
+                    valid_params = [all_x_vals[i] for i in valid_indices]
+                    valid_metrics = [all_y_vals[i] for i in valid_indices]
+                    valid_stds = [all_stds[i] for i in valid_indices]
+                    
+                    if metric_type == 'signal':
+                        point_color = 'blue'
+                    elif metric_type == 'property':
+                        point_color = 'firebrick'
+                    else:  # consistency
+                        point_color = 'darkgreen'
+                    
+                    ax.errorbar(valid_params, valid_metrics, yerr=valid_stds, 
+                               fmt='o', alpha=0.6, markersize=4, capsize=3, capthick=1, color=point_color)
+                    
+                    if len(valid_params) > 1:
+                        z = np.polyfit(valid_params, valid_metrics, 1)
+                        p = np.poly1d(z)
+                        ax.plot(valid_params, p(valid_params), ":", alpha=0.8, linewidth=3, color='darkgray')
+    
+    # Calculate and display correlation with significance and direction
+    # Skip for categorical parameters since they're handled in the helper function
+    if not is_categorical:
+        # Use all individual data points, not just means
+        all_x_values = []
+        all_y_values = []
+        
+        for i, data_point in enumerate(metric_data):
+            if data_point['values']:
+                # The values are already flattened when stored
+                all_graph_values = data_point['values']
+                
+                if all_graph_values:
+                    # Add x value for each individual measurement
+                    all_x_values.extend([x_values[i]] * len(all_graph_values))
+                    all_y_values.extend(all_graph_values)
+        
+        if len(all_x_values) > 2:
+            result_tuple = calculate_correlation_with_significance(
+                np.array(all_x_values), np.array(all_y_values), param_config['type']
+            )
+            results = extract_correlation_results(result_tuple)
+            
+            # For continuous parameters, show correlation
+            if results['significance'] == 'ns':
+                display_text = 'NS'
+            else:
+                if abs(results['correlation_value']) < 0.01:
+                    formatted_value = '<0.01'
+                else:
+                    formatted_value = f'{results["correlation_value"]:.3f}'
+                
+                display_text = f'{formatted_value} ({results["significance"]})'
+            
+            # Add significance with larger, more readable text
+            ax.text(0.05, 0.95, display_text, 
+                   transform=ax.transAxes, verticalalignment='top', fontsize=13, fontweight='bold',
+                   bbox=dict(boxstyle='round,pad=0.4', facecolor='white', edgecolor='black', linewidth=1.0, alpha=0.95))
+    
+    ax.set_xlabel(get_plot_param_name(param_name), fontsize=17)
+    
+    # Set appropriate y-axis label and limits based on metric type
+    if metric_type == 'signal':
+        ax.set_ylabel('Signal Value', fontsize=17)
+        ax.set_ylim(0, 1)
+    elif metric_type == 'consistency':
+        ax.set_ylabel('Consistency Value', fontsize=17)
+        ax.set_ylim(0, 1)
+    else:  # property
+        ax.set_ylabel('Property Value', fontsize=17)
+        # Don't fix limits for property metrics as they have different scales
+        if metric == 'homophily_levels':
+            ax.set_ylim(0, 1)
+    
+    # Enhanced publication styling
+    ax.tick_params(axis='both', which='major', labelsize=15, length=8, width=1.5)
+    ax.tick_params(axis='both', which='minor', labelsize=12, length=4, width=1.2)
+    for spine in ax.spines.values():
+        spine.set_linewidth(1.5)
+    ax.grid(True, alpha=0.3, linewidth=1.0)
+    ax.set_facecolor('white')
+    
+    maybe_add_legend(ax)
+    
+    # Special handling for x-axis based on method and parameter type
+    if method_name == "Randomized" and param_config.get('type') in ['continuous', 'discrete', 'range']:
+        # For randomized continuous/discrete/range parameters, use cleaner x-axis with fewer ticks
+        if x_values:
+            # Set reasonable x-axis limits
+            x_min, x_max = min(x_values), max(x_values)
+            ax.set_xlim(x_min - 0.05 * (x_max - x_min), x_max + 0.05 * (x_max - x_min))
+            
+            # Create fewer, evenly spaced ticks
+            if len(x_values) > 6:
+                # Too many points, use fewer ticks
+                n_ticks = 5
+                tick_positions = np.linspace(x_min, x_max, n_ticks)
+                tick_labels = [f"{pos:.2f}" for pos in tick_positions]
+                ax.set_xticks(tick_positions)
+                ax.set_xticklabels(tick_labels, rotation=45, ha='right', fontsize=12)
+            else:
+                # Few enough points, use all
+                ax.set_xticks(x_values)
+                ax.set_xticklabels(x_labels, rotation=45, ha='right', fontsize=12)
+    elif x_labels:
+        # Default behavior for other cases
+        ax.set_xticks(x_values)
+        ax.set_xticklabels(x_labels, rotation=45, ha='right', fontsize=12)
+        
+        # For range parameters (baseline), ensure proper spacing
+        if param_config.get('type') == 'range' and len(x_values) > 1:
+            ax.set_xlim(min(x_values) - 0.1, max(x_values) + 0.1)
 
 
 if __name__ == "__main__":
@@ -2575,6 +3203,8 @@ if __name__ == "__main__":
                        help='Number of repeats for categorical parameters (default: 10)')
     parser.add_argument('--n-continuous-repeats', type=int, default=1,
                        help='Number of repeats for continuous parameters (default: 3)')
+    parser.add_argument('--plot-side-to-side', action='store_true',
+                       help='Create side-by-side comparison plots for parameters run with both baseline and randomized methods')
     
     args = parser.parse_args()
     
@@ -2652,5 +3282,59 @@ if __name__ == "__main__":
                                  os.path.join(args.output_dir, 'baseline_sensitivity_heatmap.png'))
             create_variance_equality_heatmap(results,
                                            os.path.join(args.output_dir, 'baseline_variance_equality_heatmap.png'))
+    
+    # Handle side-by-side comparison if requested
+    if args.plot_side_to_side:
+        print("\nCreating side-by-side comparison plots...")
+        
+        # Load both baseline and randomized results
+        baseline_results = None
+        random_results = None
+        
+        # Try to load baseline results
+        try:
+            with open(os.path.join(args.output_dir, 'all_baseline_analysis.pkl'), 'rb') as f:
+                baseline_results = pickle.load(f)
+            print("Loaded baseline results for side-by-side comparison.")
+        except FileNotFoundError:
+            print("Combined baseline analysis results not found. Loading individual parameter files...")
+            baseline_results = {}
+            
+            # Load individual parameter files
+            for param_name in BASELINE_PARAMS_OF_INTEREST:
+                baseline_file = os.path.join(args.output_dir, f'{param_name}_baseline_analysis.pkl')
+                
+                if os.path.exists(baseline_file):
+                    try:
+                        with open(baseline_file, 'rb') as f:
+                            baseline_results[param_name] = pickle.load(f)
+                        print(f"Loaded baseline results for {param_name}")
+                    except Exception as e:
+                        print(f"Error loading baseline results for {param_name}: {e}")
+            
+            if not baseline_results:
+                print("No baseline analysis results found.")
+        
+        # Try to load randomized results
+        try:
+            with open(os.path.join(args.output_dir, 'random_baseline_analysis.pkl'), 'rb') as f:
+                random_results = pickle.load(f)
+            print("Loaded randomized results for side-by-side comparison.")
+        except FileNotFoundError:
+            print("Random baseline analysis results not found.")
+        
+        # Create side-by-side plots if both results are available
+        if baseline_results and random_results:
+            plot_side_by_side_comparison(
+                baseline_results, 
+                random_results, 
+                os.path.join(args.output_dir, 'side_by_side_plots')
+            )
+        else:
+            print("Cannot create side-by-side plots: both baseline and randomized results are required.")
+            if not baseline_results:
+                print("  - Missing baseline results")
+            if not random_results:
+                print("  - Missing randomized results")
            
     print("\nAnalysis complete! Check the output directory for results and plots.")

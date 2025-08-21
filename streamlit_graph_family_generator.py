@@ -12,6 +12,7 @@ from utils.visualizations import (
     plot_graph_communities, 
     plot_universe_degree_centers
 )
+import time
 
 # Add function to generate theoretical power law distribution
 def generate_theoretical_power_law(n_nodes: int, exponent: float, x_min: float = 1.0) -> np.ndarray:
@@ -258,7 +259,6 @@ def main():
                             'K': universe.K,
                             'feature_dim': universe.feature_dim,
                             'edge_probability_variance': universe.edge_probability_variance,
-                            'degree_center_method': 'loaded',  # We don't know the original method
                             'seed': 'unknown'  # We don't know the original seed
                         }
                         
@@ -328,11 +328,6 @@ def main():
                 
                 with col_b:
                     feature_dim = st.slider("Feature Dimension", 0, 50, 15, help="Dimension of node features (0 for no features)")
-                    degree_center_method = st.selectbox(
-                        "Degree Center Method",
-                        ["random", "constant"],
-                        help="How to generate degree centers"
-                    )
             
                 # Feature generation parameters
                 if feature_dim > 0:
@@ -366,7 +361,6 @@ def main():
                             edge_probability_variance=edge_probability_variance,
                             center_variance=center_variance,
                             cluster_variance=cluster_variance,
-                            degree_center_method=degree_center_method,
                             seed=universe_seed
                         )
                         
@@ -378,7 +372,6 @@ def main():
                             'edge_probability_variance': edge_probability_variance,
                             'center_variance': center_variance,
                             'cluster_variance': cluster_variance,
-                            'degree_center_method': degree_center_method,
                             'seed': universe_seed
                         }
                         
@@ -400,7 +393,6 @@ def main():
                 st.metric("Communities", universe.K)
                 st.metric("Feature Dim", universe.feature_dim)
                 st.metric("Edge Prob Variance", f"{universe.edge_probability_variance:.3f}")
-                st.metric("Degree Method", params.get('degree_center_method', 'unknown'))
             else:
                 st.warning("⚠️ No Universe Available")
                 st.info("Create a new universe or load an existing one to proceed with graph family generation.")
@@ -538,24 +530,7 @@ def main():
                 0.0, 1.0, 0.5,
                 help="Controls degree variability for standard DC-SBM"
             )
-            
-            # Deviation limiting parameters
-            disable_deviation_limiting = st.checkbox("Disable Deviation Limiting", value=False)
-            
-            max_mean_community_deviation = st.slider(
-                "Max Mean Community Deviation",
-                0.01, 0.5, 0.05,
-                help="Maximum allowed mean deviation from expected community patterns"
-            )
-            
-            min_edge_density = st.slider(
-                "Min Edge Density",
-                0.001, 0.1, 0.0005,
-                help="Minimum acceptable edge density"
-            )
-            
-            max_retries = st.slider("Max Retries", 1, 20, 5, help="Maximum retries for graph generation")
-            
+             
             # Generation parameters
             st.markdown("### Generation Parameters")
             
@@ -565,8 +540,6 @@ def main():
             
             timeout_minutes = st.slider("Timeout (minutes)", 1.0, 30.0, 5.0, help="Timeout for generation")
             
-            max_attempts_per_graph = st.slider("Max Attempts per Graph", 1, 50, 10, help="Maximum attempts per graph")
-    
         # Main generation area
         universe = st.session_state.universe
         
@@ -600,9 +573,6 @@ def main():
                 homophily_range=(homophily_min, homophily_max),
                 avg_degree_range=(avg_degree_min, avg_degree_max),
                 use_dccc_sbm=use_dccc_sbm,
-                disable_deviation_limiting=disable_deviation_limiting,
-                max_mean_community_deviation=max_mean_community_deviation,
-                min_edge_density=min_edge_density,
                 degree_distribution=degree_distribution,
                 power_law_exponent_range=(power_law_min, power_law_max),
                 exponential_rate_range=(exp_min, exp_max),
@@ -610,7 +580,6 @@ def main():
                 uniform_max_factor_range=(uniform_max_min, uniform_max_max),
                 degree_separation_range=(degree_separation_min, degree_separation_max),
                 degree_heterogeneity=degree_heterogeneity,
-                max_retries=max_retries,
                 seed=family_seed
             )
             
@@ -627,7 +596,6 @@ def main():
                 n_graphs=n_graphs,
                 show_progress=True,
                 collect_stats=True,
-                max_attempts_per_graph=max_attempts_per_graph,
                 timeout_minutes=timeout_minutes
             )
             
@@ -805,103 +773,23 @@ def main():
                             status_text.text("Step 2/2: Saving PyG graphs and universe...")
                             progress_bar.progress(75)
                             progress_text.text("75% - Saving to disk...")
+
+                            # Get uniquely identifying metadata
+                            uniquely_identifying_metadata = family_generator.get_uniquely_identifying_metadata(n_graphs=len(family_generator.graphs))
+
                             
                             # Use the family generator's save method
                             family_generator.save_pyg_graphs_and_universe(
+                                n_graphs=n_graphs,
                                 tasks=selected_tasks,
-                                family_id=family_id,
+                                uniquely_identifying_metadata=uniquely_identifying_metadata,
                                 family_dir=family_dir
                             )
-                            
-                            # Create and save metadata JSON file
-                            metadata = {
-                                "generation_info": {
-                                    "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
-                                    "family_id": family_id,
-                                    "n_graphs_generated": len(family_generator.graphs),
-                                    "tasks": selected_tasks
-                                },
-                                "universe_parameters": st.session_state.get('universe_params', {}),
-                                "graph_family_parameters": {
-                                    "min_n_nodes": min_n_nodes,
-                                    "max_n_nodes": max_n_nodes,
-                                    "min_communities": min_communities,
-                                    "max_communities": max_communities,
-                                    "homophily_range": [homophily_min, homophily_max],
-                                    "avg_degree_range": [avg_degree_min, avg_degree_max],
-                                    "use_dccc_sbm": use_dccc_sbm,
-                                    "degree_distribution": degree_distribution,
-                                    "power_law_exponent_range": [power_law_min, power_law_max],
-                                    "exponential_rate_range": [exp_min, exp_max],
-                                    "uniform_min_factor_range": [uniform_min_min, uniform_min_max],
-                                    "uniform_max_factor_range": [uniform_max_min, uniform_max_max],
-                                    "degree_separation_range": [degree_separation_min, degree_separation_max],
-                                    "degree_heterogeneity": degree_heterogeneity,
-                                    "disable_deviation_limiting": disable_deviation_limiting,
-                                    "max_mean_community_deviation": max_mean_community_deviation,
-                                    "min_edge_density": min_edge_density,
-                                    "max_retries": max_retries,
-                                    "family_seed": family_seed,
-                                    "timeout_minutes": timeout_minutes,
-                                    "max_attempts_per_graph": max_attempts_per_graph
-                                },
-                                "universe_fingerprint": {
-                                    "degree_centers": universe.degree_centers.tolist(),
-                                    "probability_matrix_hash": hash(universe.P.tobytes()),
-                                    "edge_probability_variance": universe.edge_probability_variance
-                                }
-                            }
-                            
-                            # Add feature center information if features exist
-                            if universe.feature_dim > 0 and universe.feature_generator is not None:
-                                try:
-                                    # Get feature centers for first community
-                                    feature_centers = universe.feature_generator.cluster_centers
-                                    if len(feature_centers) > 0:
-                                        first_community_center = feature_centers[0]
-                                        metadata["universe_fingerprint"]["first_community_feature_center_mean"] = float(np.mean(first_community_center))
-                                        metadata["universe_fingerprint"]["first_community_feature_center_var"] = float(np.var(first_community_center))
-                                        metadata["universe_fingerprint"]["first_community_feature_center"] = first_community_center.tolist()
-                                except Exception as e:
-                                    metadata["universe_fingerprint"]["feature_center_error"] = str(e)
-                            
-                            # Add generation statistics if available
-                            if hasattr(family_generator, 'generation_stats') and family_generator.generation_stats:
-                                metadata["generation_statistics"] = family_generator.generation_stats
-                            
-                            # Save metadata to JSON file
-                            import json
-                            import os
-                            
-                            # Create directory if it doesn't exist
-                            os.makedirs(family_dir, exist_ok=True)
-                            
-                            # Custom JSON encoder to handle numpy types
-                            class NumpyEncoder(json.JSONEncoder):
-                                def default(self, obj):
-                                    if isinstance(obj, np.integer):
-                                        return int(obj)
-                                    elif isinstance(obj, np.floating):
-                                        return float(obj)
-                                    elif isinstance(obj, np.ndarray):
-                                        return obj.tolist()
-                                    return super(NumpyEncoder, self).default(obj)
-                            
-                            metadata_file = f"{family_dir}/{family_id}/metadata_{family_id}.json"
-                            with open(metadata_file, 'w') as f:
-                                json.dump(metadata, f, indent=2, cls=NumpyEncoder)
                             
                             progress_bar.progress(100)
                             progress_text.text("100% - Complete!")
                             
                             st.success(f"✅ Successfully saved PyG graphs for {len(selected_tasks)} task(s)!")
-                            
-                            # Show saved files
-                            st.markdown("#### ✅ Successfully Created Files:")
-                            for task in selected_tasks:
-                                st.code(f"✓ {family_dir}/{family_id}/pyg_graph_list_{task}.pkl")
-                            st.code(f"✓ {family_dir}/{family_id}/graph_universe.pkl")
-                            st.code(f"✓ {family_dir}/{family_id}/metadata_{family_id}.json")
                             
                             # Clear progress indicators after a short delay
                             time.sleep(1)
