@@ -284,17 +284,20 @@ def set_fig_legend_right(fig, labels_and_handles):
     fig.legend(handles_u, labels_u, loc='center left', bbox_to_anchor=(1.0, 0.5), frameon=False)
 
 # Parameters for baseline analysis (includes use_dccc_sbm)
-BASELINE_PARAMS_OF_INTEREST = ['edge_probability_variance', 'cluster_variance', 
-'degree_center_method', 'min_n_nodes', 'homophily_range', 'avg_degree_range', 
-'degree_separation_range', 'use_dccc_sbm', 'power_law_exponent_range']
+BASELINE_PARAMS_OF_INTEREST = ['edge_probability_variance', 'cluster_variance', 'min_n_nodes', 'min_communities', 'homophily_range', 'avg_degree_range', 
+'degree_separation_range', 'power_law_exponent_range']
 
 # Parameters for random analysis (excludes use_dccc_sbm)
-RANDOM_PARAMS_OF_INTEREST = ['edge_probability_variance', 'cluster_variance', 
-'degree_center_method', 'min_n_nodes', 'homophily_range', 'avg_degree_range', 
+RANDOM_PARAMS_OF_INTEREST = ['edge_probability_variance', 'cluster_variance', 'min_n_nodes', 'min_communities', 'homophily_range', 'avg_degree_range', 
 'degree_separation_range', 'power_law_exponent_range']
 
 # Keep backward compatibility
 PARAMS_OF_INTEREST = BASELINE_PARAMS_OF_INTEREST
+
+# Fixed settings
+REPEATS_PER_VALUE = 1
+GRAPHS_PER_FAMILY = 30
+UNIVERSE_K = 15
 
 # All parameters that can be varied
 ALL_VARIABLE_PARAMS = {
@@ -323,12 +326,6 @@ ALL_VARIABLE_PARAMS = {
         'random_range': (0.1, 1.0),
         'level': 'universe'
     },
-    'degree_center_method': {
-        'type': 'categorical',
-        'test_values': ['random', 'constant'],
-        'random_range': ['random', 'constant'],
-        'level': 'universe'
-    },
     
     # Family generator parameters
     'min_n_nodes': {
@@ -343,12 +340,12 @@ ALL_VARIABLE_PARAMS = {
         'test_values': [100, 200, 400, 800],
         'random_range': (100, 1000),
         'level': 'family',
-        'paired_with': 'min_n_nodes'
+        'paired_with': 'min_n_nodes',
     },
     'min_communities': {
         'type': 'discrete',
-        'test_values': [2, 4, 6],
-        'random_range': (2, 6),
+        'test_values': [2, 4, 6, 10, 15],
+        'random_range': (2, 15),
         'level': 'family',
         'paired_with': 'max_communities'
     },
@@ -357,7 +354,8 @@ ALL_VARIABLE_PARAMS = {
         'test_values': [4, 6, 8],
         'random_range': (4, 8),
         'level': 'family',
-        'paired_with': 'min_communities'
+        'paired_with': 'min_communities',
+        'max_value': UNIVERSE_K
     },
     'homophily_range': {
         'type': 'range',
@@ -409,18 +407,12 @@ ALL_VARIABLE_PARAMS = {
     },
 }
 
-# Fixed settings
-REPEATS_PER_VALUE = 1
-GRAPHS_PER_FAMILY = 30
-UNIVERSE_K = 15
-
 # Baseline configurations for fixed parameter analysis
 BASELINE_UNIVERSE_PARAMS = {
     'edge_probability_variance': 0.5,
     'feature_dim': 15,
     'center_variance': 0.5,
     'cluster_variance': 0.2,
-    'degree_center_method': 'random',
     # 'community_cooccurrence_homogeneity': 1.0
 }
 
@@ -442,7 +434,7 @@ BASELINE_FAMILY_PARAMS = {
 # Metrics to calculate
 SIGNAL_METRICS = ['feature_signal', 'degree_signal', 'structure_signal'] # 'triangle_signal'
 CONSISTENCY_METRICS = ['structure_consistency', 'degree_consistency'] # 'generation_fidelity', 
-PROPERTY_METRICS = ['homophily_levels', 'avg_degrees', 'tail_ratio_99', 'graph_generation_times']
+PROPERTY_METRICS = ['mean_edge_probability_deviation', 'homophily_levels', 'avg_degrees', 'tail_ratio_99', 'graph_generation_times']
 
 
 def generate_baseline_params(fixed_param, fixed_value):
@@ -472,12 +464,12 @@ def generate_baseline_params(fixed_param, fixed_value):
             else:
                 params['family'][paired_param] = fixed_value + 100
 
-        elif 'min_communities':
+        elif fixed_param =='min_communities':
             # Ensure max > min
             if param_config['level'] == 'universe':
-                params['universe'][paired_param] = fixed_value + 3
+                params['universe'][paired_param] = min(fixed_value + 3, param_config['max_value'])
             else:
-                params['family'][paired_param] = fixed_value + 3
+                params['family'][paired_param] = min(fixed_value + 3, param_config['max_value'])
     
     return params
 
@@ -543,7 +535,6 @@ def run_baseline_analysis(params_to_test=None, output_dir='parameter_analysis_re
                         feature_dim=universe_params['feature_dim'],
                         center_variance=universe_params['center_variance'],
                         cluster_variance=universe_params['cluster_variance'],
-                        degree_center_method=universe_params['degree_center_method'],
                         # community_cooccurrence_homogeneity=universe_params.get('community_cooccurrence_homogeneity', 1.0),
                         seed=seed
                     )
@@ -1974,9 +1965,9 @@ def generate_random_baseline_params(n_samples=100, seed=None):
                 elif param_name == 'min_communities':
                     # Ensure max > min
                     if param_config['level'] == 'universe':
-                        params['universe'][paired_param] = params['universe'][param_name] + np.random.randint(1, 4)
+                        params['universe'][paired_param] = min(params['universe'][param_name] + np.random.randint(1, 4), UNIVERSE_K)
                     else:
-                        params['family'][paired_param] = params['family'][param_name] + np.random.randint(1, 4)
+                        params['family'][paired_param] = min(params['family'][param_name] + np.random.randint(1, 4), UNIVERSE_K)
         
         # Fill in any missing parameters with baseline values
         for param_name, default_val in BASELINE_UNIVERSE_PARAMS.items():
@@ -2038,7 +2029,6 @@ def run_random_baseline_analysis(n_samples=100, n_repeats_per_sample=3, output_d
                     feature_dim=universe_params['feature_dim'],
                     center_variance=universe_params['center_variance'],
                     cluster_variance=universe_params['cluster_variance'],
-                    degree_center_method=universe_params['degree_center_method'],
                     seed=seed
                 )
                 
