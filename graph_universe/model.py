@@ -64,7 +64,6 @@ class FeatureGenerator:
         
         # Determine number of clusters
         self.n_clusters = max(1, int(universe_K * cluster_count_factor))
-        print(f"Creating {self.n_clusters} feature clusters for {universe_K} communities")
         
         # Generate cluster centers
         self.cluster_centers = self._generate_cluster_centers()
@@ -997,10 +996,10 @@ class GraphSample:
         sorted_degrees = np.sort(raw_degrees)
         
         # 3. Get universe degree centers for our communities
-        K = len(self.communities)
+        k = len(self.communities)
         universe_degree_centers = np.array([
             self.universe.degree_centers[self.community_id_mapping[local_comm_id]]
-            for local_comm_id in range(K)
+            for local_comm_id in range(k)
         ])
         
         # 4. Order communities by universe degree center (lowest to highest)
@@ -1008,7 +1007,7 @@ class GraphSample:
         ordered_degree_centers = universe_degree_centers[comm_order]
         
         # 5. Map universe degree centers to positions preserving relative distances
-        if K == 1:
+        if k == 1:
             community_means = [n_nodes // 2]
         else:
             # Scale the actual degree center values to [0, n_nodes-1] range
@@ -1017,27 +1016,18 @@ class GraphSample:
             
             if max_center == min_center:
                 # All centers are the same, spread evenly
-                community_means = np.linspace(0, n_nodes - 1, K)
+                community_means = np.linspace(0, n_nodes - 1, k)
             else:
                 # Scale preserving relative distances - use ordered_degree_centers for scaling
                 scaled_centers = (ordered_degree_centers - min_center) / (max_center - min_center)
                 # Map back to original community order
-                community_means = np.zeros(K)
+                community_means = np.zeros(k)
                 for i, comm_idx in enumerate(comm_order):
                     community_means[comm_idx] = scaled_centers[i] * (n_nodes - 1)
         
-        # 6. Calculate standard deviation based on degree_separation
-        # if degree_separation == 1.0:
-        #     # For perfect separation, make std tight enough to avoid overlap
-        #     if K > 1:
-        #         min_distance = np.min(np.diff(community_means))
-        #         community_std = max(1.0, min_distance / 6)  # 3*std = half the minimum distance
-        #     else:
-        #         community_std = 1.0
-        # else:
-        #     # Linear interpolation between tight and wide
+        
         max_std = n_nodes  # Wide case
-        min_std = 1.0 if K == 1 else max(1.0, np.min(np.diff(community_means)) / 6)  # Tight case
+        min_std = 1.0 if k == 1 else max(1.0, np.min(np.diff(community_means)) / 6)  # Tight case
         community_std = min_std + max((1 - degree_separation), 0.1) * (max_std - min_std)
         
         # 7. Create available positions array and sample for each node
@@ -1072,26 +1062,9 @@ class GraphSample:
             degree_factors[node_idx] = sorted_degrees[chosen_pos]
             available_positions.remove(chosen_pos)
 
-        # 9. Normalize to mean 1 to not influence edge density
-        # Since we multiply degree_factors[i] * degree_factors[j] in edge generation,
-        # we need to normalize by the expected value of their product, not just their individual means
-        # if len(degree_factors) > 1:
-        #     # Since Correlated variables, E[X*Y] ≈ E[X]² + Var(X) * correlation
-        #     # Since degree factors within communities are correlated, we need to account for this
-        #     mean_factor = np.mean(degree_factors)
-        #     var_factor = np.var(degree_factors)
-            
-        #     # Estimate correlation based on degree_separation parameter
-        #     # Higher degree_separation means more correlation within communities
-        #     estimated_correlation = (degree_separation + self.universe.edge_probability_variance)/2  # Scale correlation by degree_separation and edge_probabality_variance
-            
-        #     # Expected product = E[X]² + correlation * Var(X)
-        #     expected_product = mean_factor ** 2 + estimated_correlation * var_factor
-            
-        #     # Normalize by square root of expected product
-        #     degree_factors = degree_factors / np.sqrt(expected_product)
-        # else:
-        degree_factors = degree_factors / degree_factors.mean()
+            # Degree factor mean normalization to minimize effect on expected edge count
+            degree_factors_mean = np.mean(degree_factors)
+            degree_factors = degree_factors / degree_factors_mean
         
         return degree_factors
 
