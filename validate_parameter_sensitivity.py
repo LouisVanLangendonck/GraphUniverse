@@ -71,6 +71,34 @@ def apply_publication_style(axis):
         pass
 
 
+def calculate_grid_dimensions(n_items, max_cols=4):
+    """
+    Calculate optimal grid dimensions for a given number of items.
+    
+    Args:
+        n_items: Number of items to arrange
+        max_cols: Maximum number of columns (default 4)
+    
+    Returns:
+        tuple: (n_rows, n_cols)
+    """
+    if n_items <= 0:
+        return 1, 1
+    
+    # For small numbers, use simple layouts
+    if n_items <= 3:
+        return 1, n_items
+    elif n_items <= 6:
+        return 2, 3
+    elif n_items <= 9:
+        return 3, 3
+    else:
+        # For larger numbers, try to keep it roughly square but favor more columns
+        n_cols = min(max_cols, n_items)
+        n_rows = (n_items + n_cols - 1) // n_cols  # Ceiling division
+        return n_rows, n_cols
+
+
 def create_wide_boxplot(axis, box_data, positions, widths=0.65, show_fliers=False):
     """Create a wider, cleaner boxplot with consistent styling."""
     bp = axis.boxplot(
@@ -284,11 +312,11 @@ def set_fig_legend_right(fig, labels_and_handles):
     fig.legend(handles_u, labels_u, loc='center left', bbox_to_anchor=(1.0, 0.5), frameon=False)
 
 # Parameters for baseline analysis (includes use_dccc_sbm)
-BASELINE_PARAMS_OF_INTEREST = ['edge_probability_variance', 'cluster_variance', 'min_n_nodes', 'min_communities', 'homophily_range', 'avg_degree_range', 
+BASELINE_PARAMS_OF_INTEREST = ['edge_propensity_variance', 'cluster_variance', 'min_n_nodes', 'min_communities', 'homophily_range', 'avg_degree_range', 
 'degree_separation_range', 'power_law_exponent_range']
 
 # Parameters for random analysis (excludes use_dccc_sbm)
-RANDOM_PARAMS_OF_INTEREST = ['edge_probability_variance', 'cluster_variance', 'min_n_nodes', 'min_communities', 'homophily_range', 'avg_degree_range', 
+RANDOM_PARAMS_OF_INTEREST = ['edge_propensity_variance', 'cluster_variance', 'min_n_nodes', 'min_communities', 'homophily_range', 'avg_degree_range', 
 'degree_separation_range', 'power_law_exponent_range']
 
 # Keep backward compatibility
@@ -302,7 +330,7 @@ UNIVERSE_K = 15
 # All parameters that can be varied
 ALL_VARIABLE_PARAMS = {
     # Universe parameters
-    'edge_probability_variance': {
+    'edge_propensity_variance': {
         'type': 'continuous',
         'test_values': [0.0, 0.10, 0.20, 0.30, 0.4, .5, 0.6, 0.7, 0.8, 0.9, 1.0],
         'random_range': (0.0, 1.0),
@@ -409,7 +437,7 @@ ALL_VARIABLE_PARAMS = {
 
 # Baseline configurations for fixed parameter analysis
 BASELINE_UNIVERSE_PARAMS = {
-    'edge_probability_variance': 0.5,
+    'edge_propensity_variance': 0.5,
     'feature_dim': 15,
     'center_variance': 0.5,
     'cluster_variance': 0.2,
@@ -531,7 +559,7 @@ def run_baseline_analysis(params_to_test=None, output_dir='parameter_analysis_re
                     
                     universe = GraphUniverse(
                         K=UNIVERSE_K,
-                        edge_probability_variance=universe_params['edge_probability_variance'],
+                        edge_propensity_variance=universe_params['edge_propensity_variance'],
                         feature_dim=universe_params['feature_dim'],
                         center_variance=universe_params['center_variance'],
                         cluster_variance=universe_params['cluster_variance'],
@@ -721,15 +749,25 @@ def plot_parameter_effects(results_dict, save_dir='parameter_analysis_plots'):
     os.makedirs(save_dir, exist_ok=True)
     
     for param_name, param_results in results_dict.items():
-        # Create 3x3 figure for exactly 9 metrics (3 signal + 4 property + 2 consistency)
-        # Force 3x3 grid regardless of metric count
-        n_cols = 3
-        n_rows = 3
+        # Calculate total number of metrics
+        total_metrics = len(SIGNAL_METRICS) + len(PROPERTY_METRICS) + len(CONSISTENCY_METRICS)
         
-        # 3x3 grid figure with better proportions for publication
-        fig, axes = plt.subplots(n_rows, n_cols, figsize=(15, 13.5), 
+        # Calculate optimal grid dimensions
+        n_rows, n_cols = calculate_grid_dimensions(total_metrics, max_cols=4)
+        
+        # Create adaptive grid figure with better proportions for publication
+        fig_width = 5 * n_cols
+        fig_height = 4.5 * n_rows
+        fig, axes = plt.subplots(n_rows, n_cols, figsize=(fig_width, fig_height), 
                                 constrained_layout=True)
-        axes = axes.flatten()
+        
+        # Handle single subplot case
+        if n_rows == 1 and n_cols == 1:
+            axes = [axes]
+        elif n_rows == 1 or n_cols == 1:
+            axes = axes.flatten()
+        else:
+            axes = axes.flatten()
         
         # Get test values and prepare x-axis
         test_values = param_results['test_values']
@@ -1839,6 +1877,8 @@ def get_plot_param_name(param_name):
         return 'Use Degree Community Coupling'
     elif param_name == 'use_dccc_sbm':
         return 'Use DCCC SBM'
+    elif param_name == 'edge_propensity_variance':
+        return 'Edge Propensity Variance'
     
     # General formatting: remove underscores and capitalize
     return param_name.replace('_', ' ').title()
@@ -2025,7 +2065,7 @@ def run_random_baseline_analysis(n_samples=100, n_repeats_per_sample=3, output_d
                 universe_params = sample_params['universe']
                 universe = GraphUniverse(
                     K=UNIVERSE_K,
-                    edge_probability_variance=universe_params['edge_probability_variance'],
+                    edge_propensity_variance=universe_params['edge_propensity_variance'],
                     feature_dim=universe_params['feature_dim'],
                     center_variance=universe_params['center_variance'],
                     cluster_variance=universe_params['cluster_variance'],
@@ -2280,20 +2320,26 @@ def plot_random_baseline_results(random_results, save_dir='random_baseline_plots
             # Treat degree_center_method as categorical since we convert it to True/False
             is_categorical = param_config['type'] in ['categorical', 'boolean'] or param_name == 'degree_center_method'
             
-            # Create subplots for all metrics - force 3x3 grid for exactly 9 metrics
-            n_metrics = len(SIGNAL_METRICS) + len(CONSISTENCY_METRICS) + len(PROPERTY_METRICS)
+            # Create subplots for all metrics - adaptive grid based on metric count
+            total_metrics = len(SIGNAL_METRICS) + len(CONSISTENCY_METRICS) + len(PROPERTY_METRICS)
             metric_axes = []
             
-            # Force 3x3 grid for the 9 metrics
-            n_cols_metric = 3
-            n_rows_metric = 3
+            # Calculate optimal grid dimensions
+            n_rows_metric, n_cols_metric = calculate_grid_dimensions(total_metrics, max_cols=4)
             
-            # Create subplot for this parameter
+            # Create subplot for this parameter with adaptive sizing
+            fig_width = 4.5 * n_cols_metric
+            fig_height = 4.5 * n_rows_metric
             param_fig, param_axes = plt.subplots(n_rows_metric, n_cols_metric, 
-                                               figsize=(18, 4.5 * n_rows_metric))
-            if n_rows_metric == 1:
-                param_axes = param_axes.reshape(1, -1)
-            param_axes = param_axes.flatten()
+                                               figsize=(fig_width, fig_height))
+            
+            # Handle single subplot case
+            if n_rows_metric == 1 and n_cols_metric == 1:
+                param_axes = [param_axes]
+            elif n_rows_metric == 1 or n_cols_metric == 1:
+                param_axes = param_axes.flatten()
+            else:
+                param_axes = param_axes.flatten()
             
             metric_idx = 0
             
@@ -2698,22 +2744,28 @@ def plot_side_by_side_comparison(baseline_results, random_results, save_dir='sid
         # Get parameter configuration
         param_config = ALL_VARIABLE_PARAMS[param_name]
         
-        # Create figure with two subplots side by side, each containing a 3x3 grid
-        fig = plt.figure(figsize=(30, 13.5))  # Double width for side-by-side
+        # Calculate total number of metrics for adaptive grid
+        total_metrics = len(SIGNAL_METRICS) + len(PROPERTY_METRICS) + len(CONSISTENCY_METRICS)
+        n_rows_metric, n_cols_metric = calculate_grid_dimensions(total_metrics, max_cols=4)
+        
+        # Create figure with two subplots side by side, each containing an adaptive grid
+        fig_width = 7.5 * n_cols_metric  # Double width for side-by-side
+        fig_height = 4.5 * n_rows_metric + 2  # Extra height for labels
+        fig = plt.figure(figsize=(fig_width, fig_height))
         
         # Create two main subplot areas with space for method labels at bottom
         gs_main = fig.add_gridspec(2, 2, height_ratios=[20, 1], width_ratios=[1, 1], wspace=0.2, hspace=0.1)
         
         # Left side: Baseline results (top row)
         if param_name in ['avg_degree_range', 'homophily_range', 'power_law_exponent_range']:
-            gs_left = gs_main[0, 0].subgridspec(3, 3, hspace=1.0, wspace=0.3)
+            gs_left = gs_main[0, 0].subgridspec(n_rows_metric, n_cols_metric, hspace=1.0, wspace=0.3)
         else:
-            gs_left = gs_main[0, 0].subgridspec(3, 3, hspace=0.6, wspace=0.3)
+            gs_left = gs_main[0, 0].subgridspec(n_rows_metric, n_cols_metric, hspace=0.6, wspace=0.3)
         # Right side: Random results (top row)
         if param_name in ['avg_degree_range', 'homophily_range', 'power_law_exponent_range']:
-            gs_right = gs_main[0, 1].subgridspec(3, 3, hspace=1.0, wspace=0.3)
+            gs_right = gs_main[0, 1].subgridspec(n_rows_metric, n_cols_metric, hspace=1.0, wspace=0.3)
         else:
-            gs_right = gs_main[0, 1].subgridspec(3, 3, hspace=0.6, wspace=0.3)
+            gs_right = gs_main[0, 1].subgridspec(n_rows_metric, n_cols_metric, hspace=0.6, wspace=0.3)
         
         # Bottom row for method labels
         ax_label_left = fig.add_subplot(gs_main[1, 0])
@@ -2738,8 +2790,8 @@ def plot_side_by_side_comparison(baseline_results, random_results, save_dir='sid
         
         # Plot all metrics in order
         for metric_idx, (metric, metric_type) in enumerate(zip(ordered_metrics, metric_types)):
-            row = metric_idx // 3
-            col = metric_idx % 3
+            row = metric_idx // n_cols_metric
+            col = metric_idx % n_cols_metric
             
             # Create axes for baseline (left) and random (right)
             ax_baseline = fig.add_subplot(gs_left[row, col])
@@ -2759,7 +2811,7 @@ def plot_side_by_side_comparison(baseline_results, random_results, save_dir='sid
                                    raw_metric_stds=random_metric_stds)
             
             # Set titles
-            if metric_idx < 3:  # Top row
+            if row == 0:  # Top row
                 ax_baseline.set_title(f'{metric.replace("_", " ").title()}', fontsize=19, fontweight='bold', pad=15)
                 ax_random.set_title(f'{metric.replace("_", " ").title()}', fontsize=19, fontweight='bold', pad=15)
             else:
@@ -2794,9 +2846,6 @@ def plot_side_by_side_comparison(baseline_results, random_results, save_dir='sid
         plt.close()
     
     print(f"Side-by-side comparison plots saved to {save_dir}")
-
-
-
 
 
 def extract_random_baseline_data(random_results):

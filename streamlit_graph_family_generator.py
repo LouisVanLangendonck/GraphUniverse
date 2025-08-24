@@ -10,7 +10,7 @@ warnings.filterwarnings('ignore')
 from graph_universe.model import GraphUniverse, GraphSample, GraphFamilyGenerator
 from utils.visualizations import (
     plot_graph_communities, 
-    plot_universe_degree_centers
+    plot_universe_community_degree_propensity_vector
 )
 import time
 
@@ -57,13 +57,13 @@ def plot_probability_matrices_comparison(graph_sample, figsize: Tuple[int, int] 
     
     # Plot target probability matrix (P_sub)
     im1 = ax1.imshow(P_sub, cmap='viridis', vmin=vmin, vmax=vmax, aspect='auto')
-    ax1.set_title('Target Probability Matrix (P_sub)')
+    ax1.set_title('Target Propensity Matrix (P_sub)')
     ax1.set_xlabel('Community')
     ax1.set_ylabel('Community')
     
     # Add colorbar for the first plot
     cbar1 = plt.colorbar(im1, ax=ax1, shrink=0.8)
-    cbar1.set_label('Probability')
+    cbar1.set_label('Propensity')
     
     # Add text annotations to the first plot
     for i in range(P_sub.shape[0]):
@@ -258,7 +258,7 @@ def main():
                         st.session_state.universe_params = {
                             'K': universe.K,
                             'feature_dim': universe.feature_dim,
-                            'edge_probability_variance': universe.edge_probability_variance,
+                            'edge_propensity_variance': universe.edge_propensity_variance,
                             'seed': 'unknown'  # We don't know the original seed
                         }
                         
@@ -270,21 +270,21 @@ def main():
                             st.metric("Communities (K)", universe.K)
                             st.metric("Feature Dimension", universe.feature_dim)
                         with col_info2:
-                            st.metric("Edge Probability Variance", f"{universe.edge_probability_variance:.3f}")
-                            st.metric("Degree Centers Shape", f"{universe.degree_centers.shape}")
+                            st.metric("Edge Propensity Variance", f"{universe.edge_propensity_variance:.3f}")
+                            st.metric("Community-Degree Propensity Vector Shape", f"{universe.community_degree_propensity_vector.shape}")
                         
                         # Show universe properties
                         if st.checkbox("Show Loaded Universe Properties", key="loaded_universe_props"):
-                            st.markdown("#### Degree Centers")
-                            fig_degree_centers = plot_universe_degree_centers(universe)
+                            st.markdown("#### Community-Degree Propensity Vector")
+                            fig_degree_centers = plot_universe_community_degree_propensity_vector(universe)
                             st.pyplot(fig_degree_centers)
                             plt.close(fig_degree_centers)
                             
-                            st.markdown("#### Probability Matrix")
+                            st.markdown("#### Propensity Matrix")
                             fig, ax = plt.subplots(figsize=(8, 6))
                             im = ax.imshow(universe.P, cmap='viridis', aspect='auto')
-                            plt.colorbar(im, ax=ax, label="Edge Probability")
-                            ax.set_title("Inter-Community Probability Matrix")
+                            plt.colorbar(im, ax=ax, label="Edge Propensity")
+                            ax.set_title("Inter-Community Propensity Matrix")
                             ax.set_xticks(np.arange(universe.K))
                             ax.set_yticks(np.arange(universe.K))
                             ax.set_xticklabels([f"C{i}" for i in range(universe.K)])
@@ -320,10 +320,10 @@ def main():
                 col_a, col_b = st.columns(2)
                 with col_a:
                     K = st.slider("Number of Communities (K)", 2, 20, 10, help="Number of communities in the universe")
-                    edge_probability_variance = st.slider(
-                        "Edge Probability Variance", 
+                    edge_propensity_variance = st.slider(
+                        "Edge Propensity Variance", 
                         0.0, 1.0, 0.5, 0.01,
-                        help="Amount of variance in edge probabilities"
+                        help="Amount of variance in edge propensities"
                     )
                 
                 with col_b:
@@ -358,7 +358,7 @@ def main():
                         universe = GraphUniverse(
                             K=K,
                             feature_dim=feature_dim,
-                            edge_probability_variance=edge_probability_variance,
+                            edge_propensity_variance=edge_propensity_variance,
                             center_variance=center_variance,
                             cluster_variance=cluster_variance,
                             seed=universe_seed
@@ -369,7 +369,7 @@ def main():
                         st.session_state.universe_params = {
                             'K': K,
                             'feature_dim': feature_dim,
-                            'edge_probability_variance': edge_probability_variance,
+                            'edge_propensity_variance': edge_propensity_variance,
                             'center_variance': center_variance,
                             'cluster_variance': cluster_variance,
                             'seed': universe_seed
@@ -392,7 +392,7 @@ def main():
                 st.success("🌌 Universe Ready")
                 st.metric("Communities", universe.K)
                 st.metric("Feature Dim", universe.feature_dim)
-                st.metric("Edge Prob Variance", f"{universe.edge_probability_variance:.3f}")
+                st.metric("Edge Propensity Variance", f"{universe.edge_propensity_variance:.3f}")
             else:
                 st.warning("⚠️ No Universe Available")
                 st.info("Create a new universe or load an existing one to proceed with graph family generation.")
@@ -403,8 +403,8 @@ def main():
                 
                 # Universe properties visualization
                 if st.checkbox("Show Universe Properties", key="universe_props_tab1"):
-                    st.markdown("#### Degree Centers")
-                    fig_degree_centers = plot_universe_degree_centers(universe)
+                    st.markdown("#### Community-Degree Propensity Vector")
+                    fig_degree_centers = plot_universe_community_degree_propensity_vector(universe)
                     st.pyplot(fig_degree_centers)
                     plt.close(fig_degree_centers)
                     
@@ -412,8 +412,8 @@ def main():
                     # Create a simple probability matrix visualization
                     fig, ax = plt.subplots(figsize=(8, 6))
                     im = ax.imshow(universe.P, cmap='viridis', aspect='auto')
-                    plt.colorbar(im, ax=ax, label="Edge Probability")
-                    ax.set_title("Inter-Community Probability Matrix")
+                    plt.colorbar(im, ax=ax, label="Edge Propensity")
+                    ax.set_title("Inter-Community Propensity Matrix")
                     ax.set_xticks(np.arange(universe.K))
                     ax.set_yticks(np.arange(universe.K))
                     ax.set_xticklabels([f"C{i}" for i in range(universe.K)])

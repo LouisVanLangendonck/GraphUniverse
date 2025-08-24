@@ -45,7 +45,8 @@ __all__ = [
     'add_dccc_visualization_to_app',
     'visualize_community_cluster_assignments',
     'plot_universe_cooccurrence_matrix',
-    'plot_universe_degree_centers',
+    'plot_universe_community_degree_propensity_vector',
+    'plot_universe_degree_centers',  # Backward compatibility alias
     'plot_universe_summary'
 ]
 
@@ -2806,15 +2807,15 @@ def plot_universe_cooccurrence_matrix(
     fig.tight_layout()
     return fig
 
-def plot_universe_degree_centers(
+def plot_universe_community_degree_propensity_vector(
     universe: 'GraphUniverse',
     figsize: Tuple[int, int] = (12, 6),
     color: str = "blue",
-    title: str = "Universe Degree Centers",
+    title: str = "Universe Community-Degree Propensity Vector",
     ax: Optional[plt.Axes] = None
 ) -> plt.Figure:
     """
-    Plot the universe's degree centers.
+    Plot the universe's community-degree propensity vector.
     
     Args:
         universe: GraphUniverse instance
@@ -2831,21 +2832,21 @@ def plot_universe_degree_centers(
     else:
         fig = ax.figure
     
-    # Get the degree centers
-    degree_centers = universe.degree_centers
+    # Get the community-degree propensity vector
+    community_degree_propensity_vector = universe.community_degree_propensity_vector
     K = universe.K
     
     # Create bar plot
-    bars = ax.bar(range(K), degree_centers, color=color, alpha=0.7, edgecolor='black')
+    bars = ax.bar(range(K), community_degree_propensity_vector, color=color, alpha=0.7, edgecolor='black')
     
     # Add value labels on bars
-    for i, (bar, value) in enumerate(zip(bars, degree_centers)):
+    for i, (bar, value) in enumerate(zip(bars, community_degree_propensity_vector)):
         ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.02,
                f"{value:.2f}", ha="center", va="bottom", fontweight='bold')
     
     # Set labels
     ax.set_xlabel("Community ID")
-    ax.set_ylabel("Degree Center Value")
+    ax.set_ylabel("Community-Degree Propensity Value")
     ax.set_xticks(range(K))
     ax.set_xticklabels([f"C{i}" for i in range(K)])
     
@@ -2860,6 +2861,9 @@ def plot_universe_degree_centers(
     
     fig.tight_layout()
     return fig
+
+# Backward compatibility alias
+plot_universe_degree_centers = plot_universe_community_degree_propensity_vector
 
 def plot_universe_summary(
     universe: 'GraphUniverse',
@@ -2897,14 +2901,14 @@ def plot_universe_summary(
     ax2.set_xticklabels([f"C{i}" for i in range(universe.K)], rotation=45)
     ax2.set_yticklabels([f"C{i}" for i in range(universe.K)])
     
-    # 3. Degree centers
-    bars = ax3.bar(range(universe.K), universe.degree_centers, color='blue', alpha=0.7, edgecolor='black')
-    for i, (bar, value) in enumerate(zip(bars, universe.degree_centers)):
+    # 3. Community-degree propensity vector
+    bars = ax3.bar(range(universe.K), universe.community_degree_propensity_vector, color='blue', alpha=0.7, edgecolor='black')
+    for i, (bar, value) in enumerate(zip(bars, universe.community_degree_propensity_vector)):
         ax3.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.02,
                 f"{value:.2f}", ha="center", va="bottom", fontweight='bold')
-    ax3.set_title("Degree Centers")
+    ax3.set_title("Community-Degree Propensity Vector")
     ax3.set_xlabel("Community ID")
-    ax3.set_ylabel("Degree Center Value")
+    ax3.set_ylabel("Community-Degree Propensity Value")
     ax3.set_xticks(range(universe.K))
     ax3.set_xticklabels([f"C{i}" for i in range(universe.K)])
     ax3.grid(True, alpha=0.3)

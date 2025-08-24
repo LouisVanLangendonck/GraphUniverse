@@ -40,7 +40,7 @@ PROPERTY_CONFIGS = {
 
 # Fixed randomization ranges for other parameters
 RANDOMIZATION_RANGES = {
-    'edge_probability_variance': (0.0, 1.0),
+    'edge_propensity_variance': (0.0, 1.0),
     'degree_heterogeneity': (0.0, 1.0),
     'degree_separation_range': (0.0, 1.0),
     'feature_dim': [10, 50, 100],  # discrete choices
@@ -72,7 +72,7 @@ SINGLE_VALUE_PARAMS = {
     'max_n_nodes': (200, 1000),
     'min_communities': (2, 8),
     'max_communities': (8, 16),
-    'edge_probability_variance': (0.0, 1.0),
+    'edge_propensity_variance': (0.0, 1.0),
     'degree_heterogeneity': (0.0, 1.0),
     'feature_dim': [10, 50, 100],
     'center_variance': (0.5, 2.0),
@@ -219,7 +219,7 @@ def run_validation_experiments(output_dir='validation_results'):
                     # Create universe
                     universe = GraphUniverse(
                         K=UNIVERSE_K,
-                        edge_probability_variance=params.get('edge_probability_variance', 0.5),
+                        edge_propensity_variance=params.get('edge_propensity_variance', 0.5),
                         feature_dim=params.get('feature_dim', 0),
                         center_variance=params.get('center_variance', 1.0),
                         cluster_variance=params.get('cluster_variance', 0.1),
