@@ -316,7 +316,7 @@ class GraphUniverse:
         K: int,
 
         # Only used if use_dccc_sbm is True
-        edge_probability_variance: float = 0.5, # 0-1: how much variance in the edge probabilities
+        edge_propensity_variance: float = 0.5, # 0-1: how much variance in the edge propensities
 
         # Feature generation parameters
         feature_dim: int = 0,
@@ -334,12 +334,12 @@ class GraphUniverse:
         
         Args:
             K: Number of communities
-            edge_probability_variance: Amount of variance in the edge probabilities
+            edge_propensity_variance: Amount of variance in the edge propensities
             feature_dim: Dimension of node features
             center_variance: Separation between cluster centers
             cluster_variance: Spread within each cluster
             seed: Random seed for reproducibility
-            P: Optional probability matrix (if None, will be generated)
+            P: Optional propensity matrix (if None, will be generated)
         """
         self.K = K
         self.feature_dim = feature_dim
@@ -351,10 +351,10 @@ class GraphUniverse:
         if seed is not None:
             np.random.seed(seed)
             
-        # Generate or use provided probability matrix
+        # Generate or use provided propensity matrix
         if P is None:
-            self.P = self._generate_edge_probability_variance_matrix(
-                K, edge_probability_variance
+            self.P = self._generate_edge_propensity_matrix(
+                K, edge_propensity_variance
             )
         else:
             self.P = P
@@ -375,32 +375,32 @@ class GraphUniverse:
             self.feature_generator = None
         
         # Store parameters
-        self.edge_probability_variance = edge_probability_variance
+        self.edge_propensity_variance = edge_propensity_variance
 
-        # Generate degree centers based on method
-        self.degree_centers = np.random.uniform(-1, 1, K)
+        # Generate community-degree propensity vector based on method
+        self.community_degree_propensity_vector = np.random.uniform(-1, 1, K)
             
-    def _generate_edge_probability_variance_matrix(
+    def _generate_edge_propensity_matrix(
         self, 
         K: int, 
-        edge_probability_variance: float = 0.0
+        edge_propensity_variance: float = 0.0
     ) -> np.ndarray:
         """
-        Generate a pseudo-probability matrix that gives the RELATIVE probabilities BETWEEN different communities (the intra-community prob / homophily is decided by the GraphFamily object and scaled accordingly in a GraphSample object)
+        Generate an edge propensity matrix that gives the RELATIVE propensities BETWEEN different communities (the intra-community prob / homophily is decided by the GraphFamily object and scaled accordingly in a GraphSample object)
         
         Args:
             K: Number of communities
-            edge_probability_variance: Amount of variance in the edge probabilities
+            edge_propensity_variance: Amount of variance in the edge propensities
             
         Returns:
-            K × K probability matrix
+            K × K propensity matrix
         """
             
         P = np.ones((K, K))
         
-        # Add the edge probability variance if requested
-        if edge_probability_variance > 0:
-            noise = np.random.normal(0, edge_probability_variance*2, size=(K, K))
+        # Add the edge propensity variance if requested
+        if edge_propensity_variance > 0:
+            noise = np.random.normal(0, edge_propensity_variance*2, size=(K, K))
             P = P + noise
             # Clip to be between 0 and 2
             P[P < 0.0] = 0.0
@@ -509,8 +509,11 @@ class GraphSample:
         power_law_exponent: Optional[float],
         max_mean_community_deviation: float,
 
+        # Whether to use the poisson version of the DC-SBM (i.e. the edge count matrix is scaled to match the target average degree)
+        poisson_version: bool = False,
+
         # Standard DC-SBM parameters (so if use_dccc_sbm is False, this is used)
-        degree_heterogeneity: float,
+        degree_heterogeneity: Optional[float] = None,
 
         # DCCC-SBM parameters
         use_dccc_sbm: bool = True,
@@ -613,14 +616,23 @@ class GraphSample:
                     self.P_sub[i, j] = universe.P[ci, cj]
 
             # Scale the probability matrix
-            self.P_sub = self._scale_probability_matrix(
-                self.P_sub, 
-                self.target_average_degree,
-                self.target_homophily,
-                self.original_n_nodes,
-                self.use_dccc_sbm,
-            )
-            self.timing_info['probability_matrix'] = time.time() - start
+            if poisson_version:
+                self.P_sub = self._scale_edge_propensity_to_edge_count(
+                    self.P_sub, 
+                    self.target_average_degree,
+                    self.target_homophily,
+                    self.original_n_nodes,
+                    self.use_dccc_sbm,
+                )
+            else:
+                self.P_sub = self._scale_edge_propensity_to_edge_probability(
+                    self.P_sub, 
+                    self.target_average_degree,
+                    self.target_homophily,
+                    self.original_n_nodes,
+                    self.use_dccc_sbm,
+                )
+            self.timing_info['propensity_matrix_scaling'] = time.time() - start
             
             check_timeout()
             
@@ -667,7 +679,8 @@ class GraphSample:
                     self.community_labels,
                     degree_distribution,
                     degree_separation,
-                    global_degree_params
+                    global_degree_params,
+                    poisson_version
                 )
 
             else:
@@ -678,11 +691,18 @@ class GraphSample:
             
             # Time: Generate edges
             start = time.time()
-            self.adjacency = self._generate_edges(
-                self.community_labels,
-                self.P_sub,
-                self.degree_factors,
-            )
+            if poisson_version:
+                self.adjacency = self._generate_edges_poisson(
+                    self.community_labels,
+                    self.P_sub,
+                    self.degree_factors,
+                )
+            else:
+                self.adjacency = self._generate_edges(
+                    self.community_labels,
+                    self.P_sub,
+                    self.degree_factors,
+                )
             self.timing_info['edge_generation'] = time.time() - start
 
             check_timeout()
@@ -941,7 +961,7 @@ class GraphSample:
         # Directly assign each node to a random community
         return np.random.choice(K_sub, size=n_nodes)
 
-    def _generate_degree_factors(self, n_nodes: int, heterogeneity: float) -> np.ndarray:
+    def _generate_degree_factors(self, n_nodes: int, heterogeneity: float, poisson_version: bool) -> np.ndarray:
         """
         Generate degree correction factors for nodes.
         
@@ -974,6 +994,7 @@ class GraphSample:
         degree_distribution_type: str,
         degree_separation: float,
         global_degree_params: dict,
+        poisson_version: bool = True,
     ) -> np.ndarray:
         n_nodes = len(community_labels)
         
@@ -995,10 +1016,10 @@ class GraphSample:
         # 2. Sort degrees
         sorted_degrees = np.sort(raw_degrees)
         
-        # 3. Get universe degree centers for our communities
+        # 3. Get universe community-degree propensity vector for our communities
         k = len(self.communities)
         universe_degree_centers = np.array([
-            self.universe.degree_centers[self.community_id_mapping[local_comm_id]]
+            self.universe.community_degree_propensity_vector[self.community_id_mapping[local_comm_id]]
             for local_comm_id in range(k)
         ])
         
@@ -1062,11 +1083,76 @@ class GraphSample:
             degree_factors[node_idx] = sorted_degrees[chosen_pos]
             available_positions.remove(chosen_pos)
 
-            # Degree factor mean normalization to minimize effect on expected edge count
+        if poisson_version:
+            # Degree factor sum-to-1 normalization to minimize effect on expected edge count PER COMMUNITY
+            for community_local_idx in range(k):
+                community_nodes = np.where(community_labels == community_local_idx)[0]
+                community_degree_factors = degree_factors[community_nodes]
+                community_degree_factors_sum = np.sum(community_degree_factors)
+                degree_factors[community_nodes] = community_degree_factors / community_degree_factors_sum
+
+        else:
             degree_factors_mean = np.mean(degree_factors)
             degree_factors = degree_factors / degree_factors_mean
+            # # Degree factor mean normalization to minimize effect on expected edge count PER COMMUNITY
+            # for community_local_idx in range(k):
+            #     community_nodes = np.where(community_labels == community_local_idx)[0]
+            #     community_degree_factors = degree_factors[community_nodes]
+            #     community_degree_factors_mean = np.mean(community_degree_factors)
+            #     degree_factors[community_nodes] = community_degree_factors / community_degree_factors_mean
+
+        
         
         return degree_factors
+
+    def _generate_edges_poisson(
+        self, 
+        community_labels: np.ndarray,
+        Lambda_sub: np.ndarray,
+        degree_factors: np.ndarray,
+        simple_graph: bool = True
+    ) -> sp.spmatrix:
+        """
+        Generate edges using Poisson DC-SBM.
+        
+        Args:
+            community_labels: Node community assignments (indices)
+            Lambda_sub: Community-community expected edge count matrix
+            degree_factors: Node degree factors
+            simple_graph: If True, collapse multiedges to single edges
+        
+        Returns:
+            Sparse adjacency matrix
+        """
+        n_nodes = len(community_labels)
+
+        # Upper-triangular node pairs
+        i_nodes, j_nodes = np.triu_indices(n_nodes, k=1)
+        comm_i = community_labels[i_nodes]
+        comm_j = community_labels[j_nodes]
+
+        # Poisson mean parameter
+        lam = Lambda_sub[comm_i, comm_j] * degree_factors[i_nodes] * degree_factors[j_nodes]
+
+        # Sample edge counts
+        edge_counts = np.random.poisson(lam)
+
+        if simple_graph:
+            mask = edge_counts > 0
+            rows, cols = i_nodes[mask], j_nodes[mask]
+            data = np.ones(len(rows) * 2)
+        else:
+            # Keep multiplicities: repeat indices according to count
+            rows = np.repeat(i_nodes, edge_counts)
+            cols = np.repeat(j_nodes, edge_counts)
+            data = np.ones(len(rows) * 2)
+
+        # Make undirected adjacency
+        all_rows = np.concatenate([rows, cols])
+        all_cols = np.concatenate([cols, rows])
+
+        adj = sp.csr_matrix((data, (all_rows, all_cols)), shape=(n_nodes, n_nodes))
+        return adj
 
     def _generate_edges(
         self, 
@@ -1118,7 +1204,47 @@ class GraphSample:
         
         return adj
 
-    def _scale_probability_matrix(
+    def _scale_edge_propensity_to_edge_count(
+        self, 
+        P_sub: np.ndarray, 
+        target_avg_degree: float, 
+        target_homophily: float,
+        n_nodes: int,
+        use_dccc_sbm: bool = True
+    ) -> np.ndarray:
+        """
+        Scale edge propensity matrix so entries represent expected edge counts (Poisson DC-SBM form).
+        """
+        n = P_sub.shape[0]
+        if not use_dccc_sbm:
+            P_sub = np.ones((n, n))
+
+        P_scaled = P_sub.copy()
+
+        # Total expected edges in the graph
+        target_total_edges = n_nodes * target_avg_degree
+
+        # Diagonal vs off-diagonal masks
+        diagonal_mask = np.eye(n, dtype=bool)
+        off_diagonal_mask = ~diagonal_mask
+
+        diagonal_sum = np.sum(P_sub[diagonal_mask])
+        off_diagonal_sum = np.sum(P_sub[off_diagonal_mask])
+
+        # Split total edge budget by homophily
+        target_diag_sum = target_homophily * target_total_edges
+        target_off_sum = (1 - target_homophily) * target_total_edges
+
+        # Scale so that diagonals/off-diagonals match
+        diag_scale = target_diag_sum / diagonal_sum if diagonal_sum > 0 else 0
+        off_scale = target_off_sum / off_diagonal_sum if off_diagonal_sum > 0 else 0
+
+        P_scaled[diagonal_mask] *= diag_scale
+        P_scaled[off_diagonal_mask] *= off_scale
+
+        return P_scaled
+
+    def _scale_edge_propensity_to_edge_probability(
         self, 
         P_sub: np.ndarray, 
         target_avg_degree: Optional[float] = None, 
@@ -1139,7 +1265,8 @@ class GraphSample:
         # avg_degree = (2 * edges / n_nodes) / 2 -> avg_degree = edges / n_nodes -> extra /2 because undirected graph
         # density = edges / (n_nodes * (n_nodes - 1) / 2)
         # Therefore: density = 2 * avg_degree / (n_nodes - 1)
-        target_density = target_avg_degree * 2 / (n_nodes - 1) # *2 because undirected graph
+        target_total_edges = n_nodes * target_avg_degree / 2
+        target_density = target_avg_degree / (n_nodes - 1) 
         # These extra *2 factors are more internal to the practicalities of the graph libraries and not included in paper formulas. Empirically validated though. 
         
         # Create masks for diagonal and off-diagonal elements
@@ -2007,11 +2134,11 @@ class GraphFamilyGenerator:
                 'feature_dim': self.universe.feature_dim,
                 'center_variance': self.universe.center_variance,
                 'cluster_variance': self.universe.cluster_variance,
-                'edge_probability_variance': self.universe.edge_probability_variance,
+                'edge_propensity_variance': self.universe.edge_propensity_variance,
                 'random_seed': self.universe.seed,
-                'degree_centers': self.universe.degree_centers.tolist(),
-                'probability_matrix_hash': hash(self.universe.P.tobytes()),
-                'degree_center_hash': hash(self.universe.degree_centers.tobytes()),
+                'community_degree_propensity_vector': self.universe.community_degree_propensity_vector.tolist(),
+                'propensity_matrix_hash': hash(self.universe.P.tobytes()),
+                'community_degree_propensity_vector_hash': hash(self.universe.community_degree_propensity_vector.tobytes()),
             },
             'family_parameters': {
                 'n_graphs': n_graphs,
@@ -2052,14 +2179,14 @@ class GraphFamilyGenerator:
         os.makedirs(family_dir, exist_ok=True) 
         
         # Create the directory structure
-        # First level K_val_edge_prob_var_val
-        family_dir = os.path.join(family_dir, f"K_{self.universe.K}_edge_prob_var_{self.universe.edge_probability_variance}")
+        # First level K_val_edge_prop_var_val
+        family_dir = os.path.join(family_dir, f"K_{self.universe.K}_edge_prop_var_{self.universe.edge_propensity_variance}")
         # Second level homophily_[minval_maxval]
-        family_dir = os.path.join(family_dir, f"homophily_{self.homophily_range[0]}_{self.homophily_range[1]}")
+        family_dir = os.path.join(family_dir, f"homophily_{self.homophily_range[0]}_to_{self.homophily_range[1]}")
         # Third level n_graphs_val_n_nodes_[minval_maxval]
-        family_dir = os.path.join(family_dir, f"n_graphs_{n_graphs}_n_nodes_{self.min_n_nodes}_{self.max_n_nodes}")
+        family_dir = os.path.join(family_dir, f"n_graphs_{n_graphs}_n_nodes_{self.min_n_nodes}_to_{self.max_n_nodes}")
         # Fourth level n_communities_[minval_maxval]
-        family_dir = os.path.join(family_dir, f"n_communities_{self.min_communities}_{self.max_communities}")
+        family_dir = os.path.join(family_dir, f"n_communities_{self.min_communities}_to_{self.max_communities}")
         # Then we use the HASH as a folder name and within the folder we save the config and we save the graphs list as graphs.pkl file
         family_dir = os.path.join(family_dir, f"hash_{unique_hash}")
 
@@ -2409,7 +2536,7 @@ class GraphFamilyGenerator:
                 properties['densities'].append(0.0)
             
             if graph.n_nodes > 0:
-                avg_degree = sum(dict(graph.graph.degree()).values()) / (graph.n_nodes * 2) # *2 because undirected graph
+                avg_degree = sum(dict(graph.graph.degree()).values()) / (graph.n_nodes)
                 properties['avg_degrees'].append(avg_degree)
             else:
                 properties['avg_degrees'].append(0.0)
@@ -2632,7 +2759,7 @@ class GraphFamilyGenerator:
         (within-graph ranking consistency) and also measure cross-graph ranking consistency.
         Final per-graph score is the average of the within-graph score and the cross-graph score.
         """
-        degree_centers = self.universe.degree_centers
+        degree_centers = self.universe.community_degree_propensity_vector
         universe_num_communities = len(degree_centers)
 
         # First pass: compute within-graph scores and percentile rank signatures per graph
