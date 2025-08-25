@@ -8,5 +8,6 @@ multi_transductive_results/
 multi_ssl_experiments/
 multi_finetune_results/
 graph_family/
+parameter_analysis_results/
 */__pycache__/
 *.pyc
