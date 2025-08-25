@@ -492,12 +492,12 @@ def generate_baseline_params(fixed_param, fixed_value):
             else:
                 params['family'][paired_param] = fixed_value + 100
 
-        elif fixed_param =='min_communities':
-            # Ensure max > min
+        elif fixed_param == 'min_communities':
+            # Ensure max > min, and use UNIVERSE_K as the maximum limit
             if param_config['level'] == 'universe':
-                params['universe'][paired_param] = min(fixed_value + 3, param_config['max_value'])
+                params['universe'][paired_param] = min(fixed_value + 3, UNIVERSE_K)
             else:
-                params['family'][paired_param] = min(fixed_value + 3, param_config['max_value'])
+                params['family'][paired_param] = min(fixed_value + 3, UNIVERSE_K)
     
     return params
 
@@ -1234,7 +1234,7 @@ def create_summary_heatmap(results_dict, save_path='parameter_sensitivity_heatma
                     if abs(correlation_val) < 0.01:
                         display_text = '<0.01'
                     else:
-                        display_text = f'{correlation_val:.2f}'
+                        display_text = f'{correlation_val:.2f} {significance}'
                     ax.text(j, i, display_text, ha="center", va="center", color=text_color,
                            fontweight='bold', fontsize=16)
                 else:
@@ -2746,26 +2746,26 @@ def plot_side_by_side_comparison(baseline_results, random_results, save_dir='sid
         
         # Calculate total number of metrics for adaptive grid
         total_metrics = len(SIGNAL_METRICS) + len(PROPERTY_METRICS) + len(CONSISTENCY_METRICS)
-        n_rows_metric, n_cols_metric = calculate_grid_dimensions(total_metrics, max_cols=4)
+        n_rows_metric, n_cols_metric = calculate_grid_dimensions(total_metrics, max_cols=3)
         
         # Create figure with two subplots side by side, each containing an adaptive grid
-        fig_width = 7.5 * n_cols_metric  # Double width for side-by-side
+        fig_width = 5.5 * n_cols_metric * 2  # Width for two side-by-side grids
         fig_height = 4.5 * n_rows_metric + 2  # Extra height for labels
         fig = plt.figure(figsize=(fig_width, fig_height))
         
         # Create two main subplot areas with space for method labels at bottom
-        gs_main = fig.add_gridspec(2, 2, height_ratios=[20, 1], width_ratios=[1, 1], wspace=0.2, hspace=0.1)
+        gs_main = fig.add_gridspec(2, 2, height_ratios=[20, 1], width_ratios=[1, 1], wspace=0.15, hspace=0.05)
         
         # Left side: Baseline results (top row)
         if param_name in ['avg_degree_range', 'homophily_range', 'power_law_exponent_range']:
-            gs_left = gs_main[0, 0].subgridspec(n_rows_metric, n_cols_metric, hspace=1.0, wspace=0.3)
+            gs_left = gs_main[0, 0].subgridspec(n_rows_metric, n_cols_metric, hspace=1.0, wspace=0.4)
         else:
-            gs_left = gs_main[0, 0].subgridspec(n_rows_metric, n_cols_metric, hspace=0.6, wspace=0.3)
+            gs_left = gs_main[0, 0].subgridspec(n_rows_metric, n_cols_metric, hspace=0.6, wspace=0.4)
         # Right side: Random results (top row)
         if param_name in ['avg_degree_range', 'homophily_range', 'power_law_exponent_range']:
-            gs_right = gs_main[0, 1].subgridspec(n_rows_metric, n_cols_metric, hspace=1.0, wspace=0.3)
+            gs_right = gs_main[0, 1].subgridspec(n_rows_metric, n_cols_metric, hspace=1.0, wspace=0.4)
         else:
-            gs_right = gs_main[0, 1].subgridspec(n_rows_metric, n_cols_metric, hspace=0.6, wspace=0.3)
+            gs_right = gs_main[0, 1].subgridspec(n_rows_metric, n_cols_metric, hspace=0.6, wspace=0.4)
         
         # Bottom row for method labels
         ax_label_left = fig.add_subplot(gs_main[1, 0])
