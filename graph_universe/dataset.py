@@ -37,18 +37,10 @@ class GraphUniverseDataset(InMemoryDataset):
         )
 
         out = fs.torch_load(self.processed_paths[0])
-        assert len(out) == 3 or len(out) == 4
+        
+        data, self.slices, self.sizes, data_cls = out
 
-        if len(out) == 3:  # Backward compatibility.
-            data, self.slices, self.sizes = out
-            data_cls = Data
-        else:
-            data, self.slices, self.sizes, data_cls = out
-
-        if not isinstance(data, dict):  # Backward compatibility.
-            self.data = data
-        else:
-            self.data = data_cls.from_dict(data)
+        self.data = data_cls.from_dict(data)
 
         assert isinstance(self._data, Data)
 
