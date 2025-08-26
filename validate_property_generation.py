@@ -12,7 +12,8 @@ from typing import Dict, List, Tuple, Any, Optional
 import argparse
 
 # Import the graph generation classes
-from graph_universe.model import GraphUniverse, GraphFamilyGenerator
+from graph_universe.graph_universe import GraphUniverse
+from graph_universe.graph_family import GraphFamilyGenerator
 
 # Properties to validate with their test ranges
 PROPERTY_CONFIGS = {

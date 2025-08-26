@@ -18,7 +18,8 @@ import pandas as pd
 import sys
 
 # Import the graph generation classes
-from graph_universe.model import GraphUniverse, GraphFamilyGenerator
+from graph_universe.graph_universe import GraphUniverse
+from graph_universe.graph_family import GraphFamilyGenerator
 
 # Set global Matplotlib style for publication-quality figures
 plt.rcParams.update({

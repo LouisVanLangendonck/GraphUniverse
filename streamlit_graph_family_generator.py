@@ -7,7 +7,10 @@ import warnings
 warnings.filterwarnings('ignore')
 
 # Import the graph generation classes
-from graph_universe.model import GraphUniverse, GraphSample, GraphFamilyGenerator
+from graph_universe.graph_universe import GraphUniverse
+from graph_universe.graph_sample import GraphSample
+from graph_universe.graph_family import GraphFamilyGenerator
+
 from utils.visualizations import (
     plot_graph_communities, 
     plot_universe_community_degree_propensity_vector
