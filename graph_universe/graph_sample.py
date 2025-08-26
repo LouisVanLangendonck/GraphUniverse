@@ -8,7 +8,7 @@ import torch_geometric.data as pyg
 from torch_geometric.utils import to_undirected
 from torch_geometric.data import Data
 import torch
-from graph_universe import GraphUniverse
+from graph_universe.graph_universe import GraphUniverse
 
 
 class GraphSample:

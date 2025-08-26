@@ -1,6 +1,6 @@
 import numpy as np
 from typing import List, Optional
-from feature_generator import FeatureGenerator
+from graph_universe.feature_generator import FeatureGenerator
 
 
 class GraphUniverse:
