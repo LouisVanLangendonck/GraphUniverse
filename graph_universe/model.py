@@ -20,10 +20,23 @@ import json
 class FeatureGenerator:
     """
     Feature generator using multivariate Gaussian clusters.
+
     Features are generated with controllable inter-cluster and intra-cluster variance,
     and flexible assignment of clusters to communities.
+
+    Args:
+        universe_K: Total number of communities in the universe
+        feature_dim: Dimension of node features
+        cluster_count_factor: Controls number of clusters relative to communities
+                                (0.1 = few clusters, 1.0 = same as communities, 4.0 = many clusters)
+        center_variance: Controls separation between cluster centers
+        cluster_variance: Controls spread within each cluster
+        assignment_skewness: Controls if some clusters are used more frequently
+                            (0.0 = balanced, 1.0 = highly skewed)
+        community_exclusivity: Controls how exclusively clusters map to communities
+                                (0.0 = shared across communities, 1.0 = exclusive to communities)
+        seed: Random seed for reproducibility
     """
-    
     def __init__(
         self,
         universe_K: int,
@@ -35,22 +48,6 @@ class FeatureGenerator:
         community_exclusivity: float = 1.0, # How exclusively clusters map to communities (0.0 to 1.0)
         seed: Optional[int] = None
     ):
-        """
-        Initialize the feature generator.
-        
-        Args:
-            universe_K: Total number of communities in the universe
-            feature_dim: Dimension of node features
-            cluster_count_factor: Controls number of clusters relative to communities
-                                 (0.1 = few clusters, 1.0 = same as communities, 4.0 = many clusters)
-            center_variance: Controls separation between cluster centers
-            cluster_variance: Controls spread within each cluster
-            assignment_skewness: Controls if some clusters are used more frequently
-                                (0.0 = balanced, 1.0 = highly skewed)
-            community_exclusivity: Controls how exclusively clusters map to communities
-                                  (0.0 = shared across communities, 1.0 = exclusive to communities)
-            seed: Random seed for reproducibility
-        """
         self.universe_K = universe_K
         self.feature_dim = feature_dim
         self.center_variance = center_variance
@@ -308,8 +305,18 @@ class GraphUniverse:
     """
     Represents a generative universe for graph instances sampled from a master "pseudo" stochastic block model.
     The GraphSample class will randomly sub-sample from these global universe properties.
-    """
     
+    Initialize a graph universe with K communities and optional feature generation.
+        
+    Args:
+        K: Number of communities
+        edge_propensity_variance: Amount of variance in the edge propensities
+        feature_dim: Dimension of node features
+        center_variance: Separation between cluster centers
+        cluster_variance: Spread within each cluster
+        seed: Random seed for reproducibility
+        P: Optional propensity matrix (if None, will be generated)
+    """
     def __init__(
         self,
         # Main Universe Parameters
@@ -329,18 +336,6 @@ class GraphUniverse:
         # If we want to use a pre-defined probability matrix, we can pass it in here
         P: Optional[np.ndarray] = None,
     ):
-        """
-        Initialize a graph universe with K communities and optional feature generation.
-        
-        Args:
-            K: Number of communities
-            edge_propensity_variance: Amount of variance in the edge propensities
-            feature_dim: Dimension of node features
-            center_variance: Separation between cluster centers
-            cluster_variance: Spread within each cluster
-            seed: Random seed for reproducibility
-            P: Optional propensity matrix (if None, will be generated)
-        """
         self.K = K
         self.feature_dim = feature_dim
         self.center_variance = center_variance
@@ -2136,9 +2131,9 @@ class GraphFamilyGenerator:
                 'cluster_variance': self.universe.cluster_variance,
                 'edge_propensity_variance': self.universe.edge_propensity_variance,
                 'random_seed': self.universe.seed,
-                'community_degree_propensity_vector': self.universe.community_degree_propensity_vector.tolist(),
-                'propensity_matrix_hash': hash(self.universe.P.tobytes()),
-                'community_degree_propensity_vector_hash': hash(self.universe.community_degree_propensity_vector.tobytes()),
+                # 'community_degree_propensity_vector': self.universe.community_degree_propensity_vector.tolist(),
+                # 'propensity_matrix_hash': hash(self.universe.P.tobytes()),
+                # 'community_degree_propensity_vector_hash': hash(self.universe.community_degree_propensity_vector.tobytes()),
             },
             'family_parameters': {
                 'n_graphs': n_graphs,
@@ -2154,20 +2149,21 @@ class GraphFamilyGenerator:
                 'degree_distribution': self.degree_distribution
             },
         }
-        # Create a hash of all UNIVERSE generation parameters to be able to indentify common universes between different graph families
-        universe_hash_parts = []
-        for key, value in uniquely_identifying_metadata['universe_parameters'].items():
-            universe_hash_parts.append(f"{key}:{value}")
+        # # Create a hash of all UNIVERSE generation parameters to be able to indentify common universes between different graph families
+        # universe_hash_parts = []
+        # for key, value in uniquely_identifying_metadata['universe_parameters'].items():
+        #     universe_hash_parts.append(f"{key}:{value}")
         
-        universe_hash = hashlib.sha256(str(universe_hash_parts).encode()).hexdigest()
-        uniquely_identifying_metadata['universe_hash'] = universe_hash
+        # universe_hash = hashlib.sha256(str(universe_hash_parts).encode()).hexdigest()
+        # uniquely_identifying_metadata['universe_hash'] = universe_hash
         return uniquely_identifying_metadata
     
-    def save_pyg_graphs_and_universe(self, n_graphs, uniquely_identifying_metadata: Dict[str, Any], tasks: List[str], family_dir: str = "graph_family"):
+    def save_pyg_graphs_and_universe(self, n_graphs, uniquely_identifying_metadata: Dict[str, Any], tasks: List[str], root_dir: str = "datasets"):
         """
         Save the PyG graphs and universe to a file.
         """
         import os
+        from .dataset import GraphUniverseDataset
 
         # Create a hash of the uniquely identifying metadata
         unique_hash = hashlib.sha256(str(uniquely_identifying_metadata).encode()).hexdigest()
@@ -2175,12 +2171,12 @@ class GraphFamilyGenerator:
         # Convert the graphs to PyG graphs including tasks
         pyg_graphs = self.to_pyg_graphs(tasks)
 
-        # Create directory if it doesn't exist
-        os.makedirs(family_dir, exist_ok=True) 
+        # # Create directory if it doesn't exist
+        # os.makedirs(family_dir, exist_ok=True) 
         
         # Create the directory structure
         # First level K_val_edge_prop_var_val
-        family_dir = os.path.join(family_dir, f"K_{self.universe.K}_edge_prop_var_{self.universe.edge_propensity_variance}")
+        family_dir = f"K_{self.universe.K}_edge_prop_var_{self.universe.edge_propensity_variance}"
         # Second level homophily_[minval_maxval]
         family_dir = os.path.join(family_dir, f"homophily_{self.homophily_range[0]}_to_{self.homophily_range[1]}")
         # Third level n_graphs_val_n_nodes_[minval_maxval]
@@ -2190,19 +2186,26 @@ class GraphFamilyGenerator:
         # Then we use the HASH as a folder name and within the folder we save the config and we save the graphs list as graphs.pkl file
         family_dir = os.path.join(family_dir, f"hash_{unique_hash}")
 
-        # Make these dirs in the family_dir
-        os.makedirs(family_dir, exist_ok=True)
+        _ = GraphUniverseDataset(
+            graph_list=pyg_graphs,
+            root=root_dir,
+            name=family_dir,
+            parameters=uniquely_identifying_metadata
+        )
 
-        # Now we save the graphs and the metadata
-        # Save the graphs
-        graphs_file = os.path.join(family_dir, "graphs.pkl")
-        with open(graphs_file, 'wb') as f:
-            pickle.dump(pyg_graphs, f)
+        # # Make these dirs in the family_dir
+        # os.makedirs(family_dir, exist_ok=True)
+
+        # # Now we save the graphs and the metadata
+        # # Save the graphs
+        # graphs_file = os.path.join(family_dir, "graphs.pkl")
+        # with open(graphs_file, 'wb') as f:
+        #     pickle.dump(pyg_graphs, f)
         
-        # Save the metadata
-        metadata_file = os.path.join(family_dir, "metadata.json")
-        with open(metadata_file, 'w') as f:
-            json.dump(uniquely_identifying_metadata, f, indent=2, default=str)
+        # # Save the metadata
+        # metadata_file = os.path.join(family_dir, "metadata.json")
+        # with open(metadata_file, 'w') as f:
+        #     json.dump(uniquely_identifying_metadata, f, indent=2, default=str)
         
     def _validate_parameters(self) -> None:
         """Validate initialization parameters."""

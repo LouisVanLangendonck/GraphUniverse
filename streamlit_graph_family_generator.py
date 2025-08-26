@@ -714,7 +714,7 @@ def main():
                     with col_b:
                         family_dir = st.text_input(
                             "Save Directory",
-                            value="graph_family",
+                            value="datasets",
                             help="Directory where the PyG graphs will be saved"
                         )
                 
@@ -783,7 +783,7 @@ def main():
                                 n_graphs=n_graphs,
                                 tasks=selected_tasks,
                                 uniquely_identifying_metadata=uniquely_identifying_metadata,
-                                family_dir=family_dir
+                                root_dir=family_dir
                             )
                             
                             progress_bar.progress(100)
