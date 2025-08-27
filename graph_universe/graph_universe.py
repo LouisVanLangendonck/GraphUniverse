@@ -1,6 +1,6 @@
 import numpy as np
 from typing import List, Optional
-from graph_universe.feature_generator import FeatureGenerator
+from .feature_generator import FeatureGenerator
 
 
 class GraphUniverse:
@@ -21,22 +21,13 @@ class GraphUniverse:
     """
     def __init__(
         self,
-        # Main Universe Parameters
         K: int,
-
-        # Only used if use_dccc_sbm is True
-        edge_propensity_variance: float = 0.5, # 0-1: how much variance in the edge propensities
-
-        # Feature generation parameters
+        edge_propensity_variance: float = 0.5, # 0-1: how much variance in the edge propensities. Only used if use_dccc_sbm is True
         feature_dim: int = 0,
         center_variance: float = 1.0,       # Separation between cluster centers
         cluster_variance: float = 0.1,      # Spread within each cluster
-
-        # Random seed
-        seed: Optional[int] = None,
-
-        # If we want to use a pre-defined probability matrix, we can pass it in here
-        P: Optional[np.ndarray] = None,
+        seed: Optional[int] = 42,           # Random seed
+        P: Optional[np.ndarray] = None,     # If we want to use a pre-defined probability matrix, we can pass it in here
     ):
         self.K = K
         self.feature_dim = feature_dim

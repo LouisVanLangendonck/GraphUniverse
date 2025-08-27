@@ -595,12 +595,13 @@ def main():
             start_time = time.time()
             
             # Use the family generator's generate_family method
-            graphs = family_generator.generate_family(
+            family_generator.generate_family(
                 n_graphs=n_graphs,
                 show_progress=True,
                 collect_stats=True,
                 timeout_minutes=timeout_minutes
             )
+            graphs = family_generator.graphs
             
             progress_bar.progress(90)
             progress_text.text("90% - Family generation complete")
@@ -694,55 +695,57 @@ def main():
                         "triangle_counting",
                         "k_hop_community_counts_k1",
                         "k_hop_community_counts_k2", 
-                        "k_hop_community_counts_k3"
+                        "k_hop_community_counts_k3",
+                        "k_hop_community_counts_k4",
+                        "k_hop_community_counts_k5",
                     ]
                     
                     selected_tasks = st.multiselect(
                         "Choose tasks to generate PyG graphs for:",
                         available_tasks,
-                        default=["community_detection"],
+                        default=["community_detection", "triangle_counting", "k_hop_community_counts_k1", "k_hop_community_counts_k2", "k_hop_community_counts_k3", "k_hop_community_counts_k4", "k_hop_community_counts_k5"],
                         help="Select one or more tasks. Each task will create different target labels for the graphs."
                     )
                     
                     # Family naming and directory
-                    col_a, col_b = st.columns(2)
+                    # col_a, col_b = st.columns(2)
                     
-                    with col_a:
-                        family_id = st.text_input(
-                            "Family ID",
-                            value="family_001",
-                            help="Alphanumeric identifier for this graph family"
-                        )
+                    # with col_a:
+                    #     family_id = st.text_input(
+                    #         "Family ID",
+                    #         value="family_001",
+                    #         help="Alphanumeric identifier for this graph family"
+                    #     )
                     
-                    with col_b:
-                        family_dir = st.text_input(
-                            "Save Directory",
-                            value="datasets",
-                            help="Directory where the PyG graphs will be saved"
-                        )
+                    # with col_b:
+                    family_dir = st.text_input(
+                        "Save Directory",
+                        value="datasets",
+                        help="Directory where the PyG graphs will be saved"
+                    )
                 
                 with col2:
                     st.markdown("#### Download Status")
                     st.info(f"Ready to convert and save {len(family_generator.graphs)} graphs to PyG format.")
                     
                     # Show what files will be created
-                    if selected_tasks and family_id:
-                        st.markdown("**Files to be created:**")
-                        for task in selected_tasks:
-                            st.code(f"{family_dir}/pyg_graph_list_{family_id}_{task}.pkl")
-                        st.code(f"{family_dir}/graph_universe_{family_id}.pkl")
-                        st.code(f"{family_dir}/metadata_{family_id}.json")
+                    # if selected_tasks and family_id:
+                    #     st.markdown("**Files to be created:**")
+                    #     for task in selected_tasks:
+                    #         st.code(f"{family_dir}/pyg_graph_list_{family_id}_{task}.pkl")
+                    #     st.code(f"{family_dir}/graph_universe_{family_id}.pkl")
+                    #     st.code(f"{family_dir}/metadata_{family_id}.json")
                 
                 # Validation and download button
-                valid_family_id = family_id.replace("_", "").isalnum() if family_id else False
-                if not valid_family_id:
-                    st.error("Family ID must be alphanumeric (underscores allowed)")
+                # valid_family_id = family_id.replace("_", "").isalnum() if family_id else False
+                # if not valid_family_id:
+                #     st.error("Family ID must be alphanumeric (underscores allowed)")
                 
                 if not selected_tasks:
                     st.warning("Please select at least one task to proceed.")
                 
                 # Prominent download button
-                if valid_family_id and selected_tasks:
+                if selected_tasks:  # valid_family_id and selected_tasks:
                     if st.button("💾 Download PyG Graphs", type="primary", use_container_width=True):
                         try:
                             # Create progress containers
@@ -777,15 +780,9 @@ def main():
                             progress_bar.progress(75)
                             progress_text.text("75% - Saving to disk...")
 
-                            # Get uniquely identifying metadata
-                            uniquely_identifying_metadata = family_generator.get_uniquely_identifying_metadata(n_graphs=len(family_generator.graphs))
-
-                            
                             # Use the family generator's save method
                             family_generator.save_pyg_graphs_and_universe(
-                                n_graphs=n_graphs,
                                 tasks=selected_tasks,
-                                uniquely_identifying_metadata=uniquely_identifying_metadata,
                                 root_dir=family_dir
                             )
                             

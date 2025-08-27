@@ -5,6 +5,7 @@ import os.path as osp
 from omegaconf import DictConfig
 import json
 import os
+import hashlib
 
 class GraphUniverseDataset(InMemoryDataset):
     r"""Dataset class for GraphUniverse datasets.
@@ -23,26 +24,45 @@ class GraphUniverseDataset(InMemoryDataset):
 
     def __init__(
         self,
-        graph_list: list[Data],
         root: str,
-        name: str,
-        parameters: DictConfig,
+        parameters: dict,
+        name: str = None,
+        graph_list: list[Data] = None,
         **kwargs,
     ) -> None:
-        self.name = name
+        self.name = name if name is not None else self.get_dataset_dir(parameters)
         self.parameters = parameters
-        self.graph_list = graph_list
+        self.graph_list = graph_list if graph_list is not None else []
         super().__init__(
             root,
         )
-
-        out = fs.torch_load(self.processed_paths[0])
-        
-        data, self.slices, self.sizes, data_cls = out
-
+        data, self.slices, self.sizes, data_cls = fs.torch_load(self.processed_paths[0])
         self.data = data_cls.from_dict(data)
-
         assert isinstance(self._data, Data)
+
+    def get_dataset_dir(self,config: dict) -> str:
+        """Generate a unique dataset directory based on the configuration.
+
+        Args:
+            config: Configuration dictionary.
+
+        Returns:
+            str: Unique dataset directory.
+        """
+        # Create the directory structure
+        # Create a hash of the uniquely identifying metadata
+        unique_hash = hashlib.sha256(str(config).encode()).hexdigest()
+        # First level K_val_edge_prop_var_val
+        dataset_dir = f"K_{config['universe_parameters']['K']}_edge_prop_var_{config['universe_parameters']['edge_propensity_variance']}"
+        # Second level homophily_[minval_maxval]
+        dataset_dir = os.path.join(dataset_dir, f"homophily_{config['family_parameters']['homophily_range'][0]}_to_{config['family_parameters']['homophily_range'][1]}")
+        # Third level n_graphs_val_n_nodes_[minval_maxval]
+        dataset_dir = os.path.join(dataset_dir, f"n_graphs_{config['family_parameters']['n_graphs']}_n_nodes_{config['family_parameters']['min_n_nodes']}_to_{config['family_parameters']['max_n_nodes']}")
+        # Fourth level n_communities_[minval_maxval]
+        dataset_dir = os.path.join(dataset_dir, f"n_communities_{config['family_parameters']['min_communities']}_to_{config['family_parameters']['max_communities']}")
+        # Then we use the HASH as a folder name and within the folder we save the config and we save the graphs list as graphs.pkl file
+        dataset_dir = os.path.join(dataset_dir, f"hash_{unique_hash}")
+        return dataset_dir
 
     @property
     def raw_dir(self) -> str:
@@ -82,7 +102,7 @@ class GraphUniverseDataset(InMemoryDataset):
         list[str]
             List of raw file names.
         """
-        return ["raw_data.pt"]
+        return ["data.pt"]
 
     @property
     def processed_file_names(self) -> str:
@@ -96,13 +116,23 @@ class GraphUniverseDataset(InMemoryDataset):
         return "data.pt"
 
     def download(self) -> None:
-        r"""Download the dataset from a URL and saves it to the raw directory.
+        r"""Generates the dataset"""
+        from .graph_universe import GraphUniverse
+        from .graph_family import GraphFamilyGenerator
+        # Initialize GraphUniverse
+        universe = GraphUniverse(
+            **self.parameters['universe_parameters'],
+        )
 
-        Raises:
-            FileNotFoundError: If the dataset URL is not found.
-        """
-        # Nothing to download
-        pass
+        # Initialize GraphFamilyGenerator
+        family = GraphFamilyGenerator(
+            universe=universe,
+            **self.parameters['family_parameters'],
+        )
+
+        # Generate and save graph family
+        family.generate_family(show_progress=True)
+        self.graph_list = family.to_pyg_graphs(self.parameters.get('tasks', None))
 
 
     def process(self) -> None:

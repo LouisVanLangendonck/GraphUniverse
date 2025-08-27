@@ -588,7 +588,7 @@ def run_baseline_analysis(params_to_test=None, output_dir='parameter_analysis_re
                     )
 
                     # Generate family
-                    graphs = generator.generate_family(
+                    generator.generate_family(
                         n_graphs=GRAPHS_PER_FAMILY,
                         show_progress=False
                     )
@@ -623,7 +623,7 @@ def run_baseline_analysis(params_to_test=None, output_dir='parameter_analysis_re
                     baseline_metadata.append({
                         'repeat': repeat,
                         'all_params': baseline_params,
-                        'n_graphs': len(graphs)
+                        'n_graphs': len(generator.graphs)
                     })
 
                 except Exception as e:
@@ -2093,7 +2093,7 @@ def run_random_baseline_analysis(n_samples=100, n_repeats_per_sample=3, output_d
                 )
                 
                 # Generate family
-                graphs = generator.generate_family(
+                generator.generate_family(
                     n_graphs=GRAPHS_PER_FAMILY,
                     show_progress=False
                 )

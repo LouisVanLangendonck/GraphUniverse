@@ -6,8 +6,6 @@ import warnings
 from scipy.stats import spearmanr, pearsonr
 from tqdm import tqdm
 import torch_geometric.data as pyg
-from torch_geometric.utils import to_undirected
-from torch_geometric.data import Data
 import hashlib
 from graph_universe.graph_sample import GraphSample
 from graph_universe.graph_universe import GraphUniverse
@@ -16,6 +14,30 @@ class GraphFamilyGenerator:
     """
     Generates families of graphs sampled from a graph universe.
     Each graph in the family is a subgraph of the universe with its own community structure.
+
+    Initialize the graph family generator.
+        
+    Args:
+        universe: GraphUniverse to sample from
+        n_graphs: Number of graphs to generate in the family
+        min_n_nodes: Minimum number of nodes per graph
+        max_n_nodes: Maximum number of nodes per graph
+        n_graphs: Default number of graphs to generate
+        min_communities: Minimum number of communities per graph
+        max_communities: Maximum number of communities per graph (defaults to universe.K)
+        homophily_range: Tuple of (min_homophily, max_homophily) in graph family
+        density_range: Tuple of (min_density, max_density) in graph family
+        use_dccc_sbm: Whether to use DCCC-SBM model or standard DC-SBM
+        degree_separation_range: Range for degree distribution separation (min, max)
+        enable_deviation_limiting: Whether to enable deviation checks
+        max_mean_community_deviation: If enabled, maximum allowed mean target scaled edge probability community deviation
+        degree_distribution: Degree distribution type ("standard", "power_law", "exponential", "uniform")
+        power_law_exponent_range: Range for power law exponent (min, max)
+        exponential_rate_range: Range for exponential distribution rate (min, max)
+        uniform_min_factor_range: Range for uniform distribution min factor (min, max)
+        uniform_max_factor_range: Range for uniform distribution max factor (min, max)
+        degree_heterogeneity: Fixed degree heterogeneity for all graphs (if use_dccc_sbm is False, this is used)
+        seed: Random seed for reproducibility
     """
     
     def __init__(
@@ -23,70 +45,27 @@ class GraphFamilyGenerator:
         universe: GraphUniverse,
         min_n_nodes: int,
         max_n_nodes: int,
+        n_graphs: int = 100,
         min_communities: int = 2,
         max_communities: int = None,
         homophily_range: Tuple[float, float] = (0.0, 0.4),  # Homophily range
         avg_degree_range: Tuple[float, float] = (1.0, 3.0),    # Average degree range
-        # density_range: Tuple[float, float] = (0.1, 0.15),    # Density range
-
-        # Whether to use DCCC-SBM or standard DC-SBM
-        use_dccc_sbm: bool = True,
-        
-        # Community co-occurrence homogeneity
-        # community_cooccurrence_homogeneity: float = 1.0,
-
-        # Deviation limiting
-        enable_deviation_limiting: bool = False,
+        use_dccc_sbm: bool = True, # Whether to use DCCC-SBM or standard DC-SBM
+        enable_deviation_limiting: bool = False, # Deviation limiting
         max_mean_community_deviation: float = 0.10,
-
-        # DCCC distribution-specific parameter ranges
-        degree_distribution: str = "standard",
+        degree_distribution: str = "standard", # DCCC distribution-specific parameter ranges
         power_law_exponent_range: Tuple[float, float] = (2.0, 3.5),
         exponential_rate_range: Tuple[float, float] = (0.3, 1.0),
         uniform_min_factor_range: Tuple[float, float] = (0.3, 0.7),
         uniform_max_factor_range: Tuple[float, float] = (1.3, 2.0),
         degree_separation_range: Tuple[float, float] = (0.5, 0.5),    # Range for degree separation
-
-        # Standard DC-SBM parameters (so if use_dccc_sbm is False, this is used)
-        degree_heterogeneity: float = 0.5,
-
-        seed: Optional[int] = None
+        degree_heterogeneity: float = 0.5,  # Standard DC-SBM parameters (so if use_dccc_sbm is False, this is used)
+        seed: Optional[int] = 42
     ):
-        """
-        Initialize the graph family generator.
-        
-        Args:
-            universe: GraphUniverse to sample from
-            n_graphs: Number of graphs to generate in the family
-            min_n_nodes: Minimum number of nodes per graph
-            max_n_nodes: Maximum number of nodes per graph
-            min_communities: Minimum number of communities per graph
-            max_communities: Maximum number of communities per graph (defaults to universe.K)
-            homophily_range: Tuple of (min_homophily, max_homophily) in graph family
-            density_range: Tuple of (min_density, max_density) in graph family
-
-            # Whether to use DCCC-SBM or standard DC-SBM
-            use_dccc_sbm: Whether to use DCCC-SBM model
-
-            # DCCC distribution-specific parameters
-            degree_separation_range: Range for degree distribution separation (min, max)
-            enable_deviation_limiting: Whether to enable deviation checks
-            max_mean_community_deviation: If enabled, maximum allowed mean target scaled edge probability community deviation
-            degree_distribution: Degree distribution type ("standard", "power_law", "exponential", "uniform")
-            power_law_exponent_range: Range for power law exponent (min, max)
-            exponential_rate_range: Range for exponential distribution rate (min, max)
-            uniform_min_factor_range: Range for uniform distribution min factor (min, max)
-            uniform_max_factor_range: Range for uniform distribution max factor (min, max)
-            
-            # Standard DC-SBM parameters (so if use_dccc_sbm is False, this is used)
-            degree_heterogeneity: Fixed degree heterogeneity for all graphs
-
-            # Fixed parameters for all graphs in family
-            seed: Random seed for reproducibility
-        """
         self.universe = universe
         self.min_n_nodes = min_n_nodes
         self.max_n_nodes = max_n_nodes
+        self.n_graphs = n_graphs
         self.min_communities = min_communities
         self.max_communities = max_communities if max_communities is not None else universe.K
         self.homophily_range = homophily_range
@@ -116,8 +95,8 @@ class GraphFamilyGenerator:
         # Standard DC-SBM parameters (so if use_dccc_sbm is False, this is used)
         self.degree_heterogeneity = degree_heterogeneity
         
-        
         # Set random seed
+        self.seed = seed
         if seed is not None:
             np.random.seed(seed)
             
@@ -129,21 +108,21 @@ class GraphFamilyGenerator:
         self.generation_metadata: List[Dict[str, Any]] = []
         self.generation_stats: Dict[str, Any] = {}
 
+        self.family_generated = False
+
     def generate_family(
         self,
-        # Main parameters
-        n_graphs: int,
+        n_graphs: int | None = None,
         show_progress: bool = True,
         collect_stats: bool = True,
         timeout_minutes: float = 5.0,
-
-        # Community sampling parameters
         allowed_community_combinations: Optional[List[List[int]]] = None
     ) -> List[GraphSample]:
         """
         Generate a family of graphs from the universe.
         
         Args:
+            n_graphs: Number of graphs to generate (overrides initial configuration)
             show_progress: Whether to show progress bar
             collect_stats: Whether to collect generation statistics
             timeout_minutes: Maximum time in minutes to spend generating graphs
@@ -151,6 +130,7 @@ class GraphFamilyGenerator:
         Returns:
             List of generated GraphSample objects
         """
+        self.n_graphs = n_graphs if n_graphs is not None else self.n_graphs
         start_time = time.time()
         starting_time_new_graph = start_time
         timeout_seconds = timeout_minutes * 60
@@ -161,17 +141,17 @@ class GraphFamilyGenerator:
         failed_graphs = 0
 
         # Every time this function is called we need to reset Seed
-        self.seed = np.random.randint(0, 1000000)
-        np.random.seed(self.seed)
+        # self.seed = np.random.randint(0, 1000000)
+        # np.random.seed(self.seed)
         
         # Progress bar setup
         if show_progress:
-            pbar = tqdm(total=n_graphs, desc="Generating graph family")
+            pbar = tqdm(total=self.n_graphs, desc="Generating graph family")
         
-        while len(self.graphs) < n_graphs:
+        while len(self.graphs) < self.n_graphs:
             # Check for timeout
             if time.time() - start_time > timeout_seconds:
-                warnings.warn(f"Timeout reached after {timeout_minutes} minutes. Generated {len(self.graphs)} graphs instead of {n_graphs}")
+                warnings.warn(f"Timeout reached after {timeout_minutes} minutes. Generated {len(self.graphs)} graphs instead of {self.n_graphs}")
                 break
                 
             # graph_generated = False
@@ -277,37 +257,53 @@ class GraphFamilyGenerator:
         
         # Collect generation statistics
         if collect_stats:
-            self._collect_generation_stats(start_time, failed_graphs, n_graphs)
-        
-        return self.graphs
+            self._collect_generation_stats(start_time, failed_graphs, self.n_graphs)
 
-    def to_pyg_graphs(self, tasks: List[str]) -> List[pyg.data.Data]:
+        # Mark family as generated
+        self.family_generated = True
+
+
+
+    def to_pyg_graphs(self, tasks: List[str] | None = None) -> List[pyg.data.Data]:
         """
         Convert the graphs to PyG graphs with all specified tasks as properties.
         
         Args:
-            tasks: List of task strings to include as properties on each graph
-            
+            tasks: List of task strings to include as properties on each graph.
+                If None, include all tasks.
+
         Returns:
             List of PyG Data objects, each containing all tasks as properties
         """
         # Check if graphs are created
-        if len(self.graphs) == 0:
-            raise ValueError("No graphs have been generated yet")
+        assert self.family_generated, "Graph family has not been generated yet"
         
         # Check if tasks are valid - updated to handle k-hop tasks
-        valid_task_prefixes = ["community_detection", "triangle_counting", "k_hop_community_counts_k"]
-        for task in tasks:
-            if not any(task.startswith(prefix) for prefix in valid_task_prefixes):
-                raise ValueError(f"Invalid task specified: {task}")
-        
+        if tasks is not None:
+            valid_task_prefixes = ["community_detection", "triangle_counting", "k_hop_community_counts_k"]
+            for task in tasks:
+                if not any(task.startswith(prefix) for prefix in valid_task_prefixes):
+                    raise ValueError(f"Invalid task specified: {task}")
+            self.tasks = tasks
+        else:
+            # Include all tasks if None
+            self.tasks = [
+                "community_detection",
+                "triangle_counting",
+                "k_hop_community_counts_k1",
+                "k_hop_community_counts_k2",
+                "k_hop_community_counts_k3",
+                "k_hop_community_counts_k4",
+                "k_hop_community_counts_k5",
+            ]
+
         pyg_graphs = []
         for graph in tqdm(self.graphs, desc="Converting graphs to PyG graphs"):
-            pyg_graphs.append(graph.to_pyg_graph(tasks))
+            pyg_graphs.append(graph.to_pyg_graph(self.tasks))
         
         return pyg_graphs
     
-    def get_uniquely_identifying_metadata(self, n_graphs: int) -> Dict[str, Any]:
+    def get_uniquely_identifying_metadata(self) -> Dict[str, Any]:
         """
         Get uniquely identifying metadata for the graph family.
         """
@@ -318,13 +314,13 @@ class GraphFamilyGenerator:
                 'center_variance': self.universe.center_variance,
                 'cluster_variance': self.universe.cluster_variance,
                 'edge_propensity_variance': self.universe.edge_propensity_variance,
-                'random_seed': self.universe.seed,
+                'seed': self.universe.seed,
                 # 'community_degree_propensity_vector': self.universe.community_degree_propensity_vector.tolist(),
                 # 'propensity_matrix_hash': hash(self.universe.P.tobytes()),
                 # 'community_degree_propensity_vector_hash': hash(self.universe.community_degree_propensity_vector.tobytes()),
             },
             'family_parameters': {
-                'n_graphs': n_graphs,
+                'n_graphs': self.n_graphs,
                 'min_n_nodes': self.min_n_nodes,
                 'max_n_nodes': self.max_n_nodes,
                 'min_communities': self.min_communities,
@@ -334,7 +330,8 @@ class GraphFamilyGenerator:
                 'degree_heterogeneity': self.degree_heterogeneity,
                 'use_dccc_sbm': self.use_dccc_sbm,
                 'degree_separation_range': self.degree_separation_range,
-                'degree_distribution': self.degree_distribution
+                'degree_distribution': self.degree_distribution,
+                'seed': self.seed,
             },
         }
         # # Create a hash of all UNIVERSE generation parameters to be able to indentify common universes between different graph families
@@ -345,55 +342,24 @@ class GraphFamilyGenerator:
         # universe_hash = hashlib.sha256(str(universe_hash_parts).encode()).hexdigest()
         # uniquely_identifying_metadata['universe_hash'] = universe_hash
         return uniquely_identifying_metadata
-    
-    def save_pyg_graphs_and_universe(self, n_graphs, uniquely_identifying_metadata: Dict[str, Any], tasks: List[str], root_dir: str = "datasets"):
+
+    def save_pyg_graphs_and_universe(self, tasks: List[str] | None = None, root_dir: str = "datasets"):
         """
         Save the PyG graphs and universe to a file.
         """
         import os
         from .dataset import GraphUniverseDataset
 
-        # Create a hash of the uniquely identifying metadata
-        unique_hash = hashlib.sha256(str(uniquely_identifying_metadata).encode()).hexdigest()
+        uniquely_identifying_metadata = self.get_uniquely_identifying_metadata()
 
         # Convert the graphs to PyG graphs including tasks
         pyg_graphs = self.to_pyg_graphs(tasks)
 
-        # # Create directory if it doesn't exist
-        # os.makedirs(family_dir, exist_ok=True) 
-        
-        # Create the directory structure
-        # First level K_val_edge_prop_var_val
-        family_dir = f"K_{self.universe.K}_edge_prop_var_{self.universe.edge_propensity_variance}"
-        # Second level homophily_[minval_maxval]
-        family_dir = os.path.join(family_dir, f"homophily_{self.homophily_range[0]}_to_{self.homophily_range[1]}")
-        # Third level n_graphs_val_n_nodes_[minval_maxval]
-        family_dir = os.path.join(family_dir, f"n_graphs_{n_graphs}_n_nodes_{self.min_n_nodes}_to_{self.max_n_nodes}")
-        # Fourth level n_communities_[minval_maxval]
-        family_dir = os.path.join(family_dir, f"n_communities_{self.min_communities}_to_{self.max_communities}")
-        # Then we use the HASH as a folder name and within the folder we save the config and we save the graphs list as graphs.pkl file
-        family_dir = os.path.join(family_dir, f"hash_{unique_hash}")
-
-        _ = GraphUniverseDataset(
+        GraphUniverseDataset(
             graph_list=pyg_graphs,
             root=root_dir,
-            name=family_dir,
             parameters=uniquely_identifying_metadata
         )
-
-        # # Make these dirs in the family_dir
-        # os.makedirs(family_dir, exist_ok=True)
-
-        # # Now we save the graphs and the metadata
-        # # Save the graphs
-        # graphs_file = os.path.join(family_dir, "graphs.pkl")
-        # with open(graphs_file, 'wb') as f:
-        #     pickle.dump(pyg_graphs, f)
-        
-        # # Save the metadata
-        # metadata_file = os.path.join(family_dir, "metadata.json")
-        # with open(metadata_file, 'w') as f:
-        #     json.dump(uniquely_identifying_metadata, f, indent=2, default=str)
         
     def _validate_parameters(self) -> None:
         """Validate initialization parameters."""
