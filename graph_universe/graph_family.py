@@ -262,8 +262,6 @@ class GraphFamilyGenerator:
         # Mark family as generated
         self.family_generated = True
 
-
-
     def to_pyg_graphs(self, tasks: List[str] | None = None) -> List[pyg.data.Data]:
         """
         Convert the graphs to PyG graphs with all specified tasks as properties.
