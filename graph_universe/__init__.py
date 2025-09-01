@@ -13,3 +13,5 @@ __all__ = [
     'GraphFamilyGenerator',
     'FeatureGenerator',
 ]
+
+__version__ = "0.0.1"
