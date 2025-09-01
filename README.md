@@ -1,0 +1,111 @@
+# Graph Universe
+
+This repo is proposing proposing:
+
+- A **core generative universe**: a large, structured SBM (with overlapping communities and complex edge patterns)
+- A **distribution over graph instances**: each sampled from different *subsets* of this universe
+- A training setup where self-supervised methods pretrain across this rich distribution
+- A **transfer learning scenario**: test graphs with **new combinations or unseen subsets** + sparse supervision (labels)
+
+### ✅ Why this is a powerful idea:
+- You're simulating **distributional shifts** across tasks (like in natural language or vision benchmarks).
+- You're using **shared latent structure** (the overlapping communities in a large SBM) to encourage models to generalize.
+- This is analogous to **pretraining on a wide range of domains**, then adapting with few-shot learning.
+
+---
+
+## 🔧 How to implement "sampling from the core SBM"
+
+Let’s now break down **how to go from a global SBM to a sampled graph**:
+
+---
+
+### **1. Define the core generative structure ("Graph Universe")**
+
+You begin with:
+
+- \( K \): total number of community types (say 100)
+- \( P \in [0,1]^{K \times K} \): edge probability matrix
+- Optional:
+  - A **node type to feature prototype** mapping (for feature generation)
+  - A **community co-membership matrix** (to simulate typical overlaps)
+
+You now have the **full vocabulary** of behaviors.
+
+---
+
+### **2. Sample a graph instance from this universe**
+
+Each graph is a **subset** of this universe:
+
+#### **a. Select a subset of communities**
+Choose a subset \( S \subset \{1, \ldots, K\} \), e.g. 10 out of 100.
+
+You can control:
+- Diversity (choose similar vs dissimilar communities)
+- Difficulty (choose overlapping or ambiguous subsets)
+
+#### **b. Define the size and node distribution**
+- Sample how many nodes per community (e.g. power-law, uniform)
+- Allow **overlap**: a node can belong to multiple selected communities
+- Assign each node a (possibly mixed) community membership vector \( \pi_i \)
+
+#### **c. Sample node features (optional)**
+- If using prototypes: generate features \( x_i \sim \mathcal{N}(\mu_{\pi_i}, \Sigma) \)
+- Or use more elaborate encoding per community
+
+#### **d. Generate edges**
+You now use a **degree-corrected MMSBM-like rule**:
+
+For each node pair \( i, j \):
+1. Sample community pair \( (a, b) \sim \pi_i \otimes \pi_j \)
+2. Use degree-scaled probability:  
+   \[
+   p_{ij} = \theta_i \theta_j P_{ab}
+   \]
+3. Sample \( A_{ij} \sim \text{Bernoulli}(p_{ij}) \)
+
+This is **a generalization of DC-MMSBM**, and lets you:
+- Preserve statistical edge structure
+- Embed real overlap
+- Control node degrees and community mixing
+
+---
+
+### **3. Repeat many times to generate a benchmark**
+
+Each graph instance has:
+- A specific subset of node types
+- Community overlaps and induced structure
+- Features generated conditionally on communities
+- Structural patterns sampled from \( P \)
+
+Over time, **shared structural patterns** emerge across graphs:
+- Some community combinations appear often
+- Some connection motifs become frequent
+- The model can learn general **inter-community dynamics**
+
+---
+
+### **4. Use this for pretraining and transfer learning**
+
+#### **Pretraining**
+- Self-supervised tasks (e.g. contrastive learning, masked edges/nodes)
+- No community labels needed
+- Goal: learn representations that generalize across graphs
+
+#### **Transfer Tasks**
+- Sample new graphs with:
+  - Unseen or rare community subsets
+  - Sparse node labels (few labeled nodes)
+- Task: predict community memberships, labels, or edge patterns
+- This tests **few-shot generalization** based on learned structure
+
+---
+
+## 💡 Bonus: Sampling tricks
+
+To make this scalable and flexible:
+- Use **sampling-by-membership** (only compute edge probabilities between nodes that share at least one community)
+- Use **sparse graph construction** (skip low-probability edges)
+- Precompute a "meta-graph" over communities (learn high-level structure too)

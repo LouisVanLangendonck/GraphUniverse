@@ -16,40 +16,6 @@ from sklearn.decomposition import PCA
 import seaborn as sns
 import pandas as pd
 
-__all__ = [
-    'visualize_graph_generation_process',
-    'plot_graph_communities',
-    'plot_membership_matrix',
-    'plot_community_matrix',
-    'plot_degree_distribution',
-    'plot_community_size_distribution',
-    'create_dashboard',
-    'plot_probability_matrix_comparison',
-    'plot_connectivity_analysis',
-    'plot_community_probability_heatmap',
-    'compare_graph_structures',
-    'plot_community_graph',
-    'plot_node_embeddings',
-    'plot_feature_heatmap',
-    'plot_community_overlap_distribution',
-    'plot_multiple_graphs',
-    'plot_membership_comparison',
-    'plot_transfer_performance',
-    'visualize_feature_subtypes',
-    'visualize_feature_similarity_matrix',
-    'visualize_feature_correlations',
-    'compare_feature_distributions',
-    'plot_community_degree_distributions',
-    'create_dccc_sbm_dashboard',
-    'plot_degree_community_interaction',
-    'add_dccc_visualization_to_app',
-    'visualize_community_cluster_assignments',
-    'plot_universe_cooccurrence_matrix',
-    'plot_universe_community_degree_propensity_vector',
-    'plot_universe_degree_centers',  # Backward compatibility alias
-    'plot_universe_summary'
-]
-
 def visualize_graph_generation_process(
     graph: nx.Graph,
     community_labels: np.ndarray,

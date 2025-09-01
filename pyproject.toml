@@ -79,4 +79,13 @@ dev = ["GraphUniverse[test, lint]"]
 all = ["GraphUniverse[dev, doc]"]
 
 [project.urls]
-repository="https://github.com/LouisVanLangendonck/GraphUniverse#"
+repository="https://github.com/LouisVanLangendonck/GraphUniverse"
+
+[tool.setuptools.dynamic]
+version = {attr = "graph_universe.__version__"}
+
+[tool.setuptools.packages.find]
+include = [
+    "graph_universe",
+    "graph_universe.*"
+]
