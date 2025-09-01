@@ -1,0 +1,82 @@
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "GraphUniverse"
+dynamic = ["version"]
+authors = [
+    {name = "Louis Van Langendonck", email = "louis.van.langendonck@upc.edu"}
+]
+readme = "README.md"
+description = "Graph Universe: A Library for Generating Inductive Graph Datasets"
+license = {file = "LICENSE.txt"}
+classifiers = [
+    "License :: OSI Approved :: MIT License",
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering",
+    "Topic :: Scientific/Engineering :: Mathematics",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Natural Language :: English",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11"
+]
+requires-python = ">= 3.10"
+dependencies=[
+    "tqdm",
+    "numpy",
+    "scipy",
+    "requests",
+    "scikit-learn",
+    "matplotlib",
+    "networkx",
+    "pandas",
+    "decorator",
+    "hypernetx < 2.0.0",
+    "trimesh",
+    "spharapy",
+    "wandb",
+    "tensorboard",
+    "einops==0.7.0",
+    "tabulate",
+    "ipykernel",
+    "notebook",
+    "jupyterlab",
+    "rich",
+    "ogb",
+    "rootutils",
+    "scipy",
+    "scikit-optimize",
+]
+
+[project.optional-dependencies]
+doc = [
+    "jupyter",
+    "nbsphinx",
+    "nbsphinx_link",
+    "numpydoc",
+    "sphinx",
+    "sphinx_gallery",
+    "pydata-sphinx-theme",
+    "myst_parser"
+]
+lint = [
+    "pre-commit",
+    "ruff"
+]
+test = [
+    "pytest",
+    "pytest-cov",
+    "coverage",
+    "jupyter",
+    "mypy",
+    "pytest-mock"
+]
+
+dev = ["GraphUniverse[test, lint]"]
+all = ["GraphUniverse[dev, doc]"]
+
+[project.urls]
+repository="https://github.com/LouisVanLangendonck/GraphUniverse#"
