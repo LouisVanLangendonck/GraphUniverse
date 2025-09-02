@@ -6,12 +6,14 @@ from graph_universe.feature_generator import FeatureGenerator
 from graph_universe.graph_family import GraphFamilyGenerator
 from graph_universe.graph_universe import GraphUniverse
 from graph_universe.graph_sample import GraphSample
+from graph_universe.dataset import GraphUniverseDataset
 
 __all__ = [
     'GraphUniverse',
     'GraphSample',
     'GraphFamilyGenerator',
     'FeatureGenerator',
+    'GraphUniverseDataset'
 ]
 
 __version__ = "0.0.1"
