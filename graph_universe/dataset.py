@@ -115,6 +115,16 @@ class GraphUniverseDataset(InMemoryDataset):
         """
         return "data.pt"
 
+    def get_data_dir(self) -> str:
+        """Return the path to the data directory.
+
+        Returns
+        -------
+        str
+            Path to the data directory.
+        """
+        return osp.join(self.root, self.name)
+
     def download(self) -> None:
         r"""Generates the dataset"""
         from .graph_universe import GraphUniverse
