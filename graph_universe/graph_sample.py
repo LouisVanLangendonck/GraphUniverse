@@ -5,11 +5,150 @@ from typing import Dict, List, Optional, Tuple, Union, Callable, Any
 import time
 import warnings
 import torch_geometric.data as pyg
-from torch_geometric.utils import to_undirected
+from torch_geometric.utils import to_undirected, get_laplacian, to_scipy_sparse_matrix
 from torch_geometric.data import Data
 import torch
 from graph_universe.graph_universe import GraphUniverse
+from scipy.sparse.linalg import eigsh
 
+class PositionalEncodingComputer:
+    """Compute various types of positional encodings for graphs."""
+    
+    def __init__(self, max_pe_dim: int = 10, pe_types: List[str] = None):
+        """
+        Initialize PE computer.
+        
+        Args:
+            max_pe_dim: Maximum PE dimension
+            pe_types: List of PE types to compute ['laplacian', 'degree', 'rwse']
+        """
+        self.max_pe_dim = max_pe_dim
+        self.pe_types = pe_types or ['laplacian']
+    
+    def compute_degree_pe(self, edge_index: torch.Tensor, num_nodes: int) -> torch.Tensor:
+        """Degree-based PE."""
+        from torch_geometric.utils import degree
+        
+        degrees = degree(edge_index[0], num_nodes=num_nodes).float()
+        pe = torch.zeros(num_nodes, self.max_pe_dim)
+        
+        for i in range(min(self.max_pe_dim, 8)):
+            pe[:, i] = (degrees ** (i / 4.0)) / (1 + degrees ** (i / 4.0))
+        
+        return pe
+    
+    def compute_rwse(self, edge_index: torch.Tensor, num_nodes: int) -> torch.Tensor:
+        """Random Walk Structural Encoding - landing probabilities after k steps."""
+        try:
+            from torch_geometric.utils import degree
+            
+            # Get node degrees
+            degrees = degree(edge_index[0], num_nodes=num_nodes).float()
+            
+            # Handle isolated nodes
+            degrees = torch.where(degrees == 0, torch.ones_like(degrees), degrees)
+            
+            # Create adjacency matrix
+            adj = torch.zeros(num_nodes, num_nodes)
+            adj[edge_index[0], edge_index[1]] = 1.0
+            
+            # Transition matrix: P[i,j] = A[i,j] / degree[i]
+            P = adj / degrees.unsqueeze(1)
+            
+            # Compute powers of transition matrix for different walk lengths
+            rwse = torch.zeros(num_nodes, self.max_pe_dim)
+            P_power = torch.eye(num_nodes)  # P^0 = I
+            
+            for k in range(self.max_pe_dim):
+                if k > 0:
+                    P_power = P_power @ P  # P^k
+                
+                # Use diagonal entries (return probabilities) as features
+                rwse[:, k] = P_power.diag()
+            
+            return rwse
+            
+        except Exception as e:
+            print(f"Warning: RWSE computation failed: {e}")
+            return torch.zeros(num_nodes, self.max_pe_dim)
+    
+    def compute_laplacian_pe(self, edge_index: torch.Tensor, num_nodes: int) -> torch.Tensor:
+        """Laplacian Positional Encoding using eigenvectors."""
+        try:
+            # Handle empty/trivial graphs
+            if edge_index.shape[1] == 0 or num_nodes <= 1:
+                return torch.zeros(num_nodes, self.max_pe_dim)
+            
+            # Get normalized Laplacian
+            edge_index_lap, edge_weight = get_laplacian(
+                edge_index, 
+                edge_weight=None,
+                normalization='sym', 
+                num_nodes=num_nodes
+            )
+            
+            # Convert to scipy sparse matrix
+            L = to_scipy_sparse_matrix(edge_index_lap, edge_weight, num_nodes)
+            
+            # Compute eigenvalues/eigenvectors
+            k = min(self.max_pe_dim, num_nodes - 2)
+            if k <= 0:
+                return torch.zeros(num_nodes, self.max_pe_dim)
+            
+            try:
+                eigenvals, eigenvecs = eigsh(
+                    L, 
+                    k=k, 
+                    which='SM',  # Smallest eigenvalues
+                    return_eigenvectors=True,
+                    tol=1e-6
+                )
+            except:
+                # Fallback for small graphs
+                L_dense = L.toarray()
+                eigenvals, eigenvecs = np.linalg.eigh(L_dense)
+                idx = np.argsort(eigenvals)
+                eigenvecs = eigenvecs[:, idx[1:k+1]]  # Skip first (constant) eigenvector
+            
+            # Handle sign ambiguity
+            for i in range(eigenvecs.shape[1]):
+                if eigenvecs[0, i] < 0:
+                    eigenvecs[:, i] *= -1
+            
+            # Pad or truncate to max_pe_dim
+            if eigenvecs.shape[1] < self.max_pe_dim:
+                pad_width = self.max_pe_dim - eigenvecs.shape[1]
+                eigenvecs = np.pad(eigenvecs, ((0, 0), (0, pad_width)), mode='constant')
+            else:
+                eigenvecs = eigenvecs[:, :self.max_pe_dim]
+            
+            return torch.tensor(eigenvecs, dtype=torch.float32)
+            
+        except Exception as e:
+            print(f"Warning: Laplacian PE computation failed: {e}")
+            return torch.zeros(num_nodes, self.max_pe_dim)
+    
+    def compute_all_pe(self, edge_index: torch.Tensor, num_nodes: int) -> Dict[str, torch.Tensor]:
+        """Compute all requested PE types."""
+        pe_dict = {}
+        
+        for pe_type in self.pe_types:
+            if pe_type == 'laplacian':
+                pe = self.compute_laplacian_pe(edge_index, num_nodes)
+                pe_dict['laplacian_pe'] = pe
+                    
+            elif pe_type == 'degree':
+                pe = self.compute_degree_pe(edge_index, num_nodes)
+                pe_dict['degree_pe'] = pe
+                    
+            elif pe_type == 'rwse':
+                pe = self.compute_rwse(edge_index, num_nodes)
+                pe_dict['rwse_pe'] = pe
+                    
+            else:
+                raise ValueError(f"Invalid PE type: {pe_type}")
+        
+        return pe_dict
 
 class GraphSample:
     """
@@ -852,7 +991,7 @@ class GraphSample:
         
         return P_scaled
 
-    def to_pyg_graph(self, tasks: Union[str, List[str]]) -> pyg.data.Data:
+    def to_pyg_graph(self, tasks: Union[str, List[str]], pe_types: List[str] = ['laplacian', 'degree', 'rwse'], pe_dim: int = 10) -> pyg.data.Data:
         """
         Convert the graph to a PyG graph including all specified tasks as properties.
         Possible tasks are:
@@ -862,9 +1001,11 @@ class GraphSample:
         
         Args:
             tasks: Single task string or list of task strings to include
+            pe_types: List of positional encoding types to compute
+            pe_dim: Dimension of the positional encodings
             
         Returns:
-            PyG Data object with task results stored as properties
+            PyG Data object with task results and positional encodings stored as properties
         """
         # Handle single task input
         if isinstance(tasks, str):
@@ -914,6 +1055,11 @@ class GraphSample:
         if len(tasks) == 1:
             data.y = getattr(data, tasks[0])
         
+        # Compute positional encodings
+        pe_dict = self.compute_positional_encodings(pyg_graph=data, pe_types=pe_types, pe_dim=pe_dim)
+        for pe_type, pe in pe_dict.items():
+            setattr(data, pe_type, pe)
+
         return data 
 
     def calculate_actual_probability_matrix(self) -> np.ndarray:
@@ -1352,4 +1498,9 @@ class GraphSample:
                     raise ValueError(f"Community {local_comm} not in community_id_mapping")
         
         return torch.tensor(counts, dtype=torch.float)
+
+    def compute_positional_encodings(self, pyg_graph: pyg.data.Data, pe_types: List[str] = ['laplacian', 'degree', 'rwse'], pe_dim: int = 10) -> Dict[str, torch.Tensor]:
+        """Compute positional encodings for the graph."""
+        pe_computer = PositionalEncodingComputer(max_pe_dim=pe_dim, pe_types=pe_types)
+        return pe_computer.compute_all_pe(pyg_graph.edge_index, len(pyg_graph.x))
 

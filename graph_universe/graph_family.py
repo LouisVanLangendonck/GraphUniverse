@@ -329,6 +329,7 @@ class GraphFamilyGenerator:
                 'use_dccc_sbm': self.use_dccc_sbm,
                 'degree_separation_range': self.degree_separation_range,
                 'degree_distribution': self.degree_distribution,
+                'power_law_exponent_range': self.power_law_exponent_range,
                 'seed': self.seed,
             },
         }
