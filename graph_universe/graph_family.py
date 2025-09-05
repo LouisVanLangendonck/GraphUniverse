@@ -262,8 +262,6 @@ class GraphFamilyGenerator:
         # Mark family as generated
         self.family_generated = True
 
-
-
     def to_pyg_graphs(self, tasks: List[str] | None = None) -> List[pyg.data.Data]:
         """
         Convert the graphs to PyG graphs with all specified tasks as properties.
@@ -331,6 +329,7 @@ class GraphFamilyGenerator:
                 'use_dccc_sbm': self.use_dccc_sbm,
                 'degree_separation_range': self.degree_separation_range,
                 'degree_distribution': self.degree_distribution,
+                'power_law_exponent_range': self.power_law_exponent_range,
                 'seed': self.seed,
             },
         }
