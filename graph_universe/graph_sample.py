@@ -1056,9 +1056,9 @@ class GraphSample:
             data.y = getattr(data, tasks[0])
         
         # Compute positional encodings
-        pe_dict = self.compute_positional_encodings(pyg_graph=data, pe_types=pe_types, pe_dim=pe_dim)
-        for pe_type, pe in pe_dict.items():
-            setattr(data, pe_type, pe)
+        # pe_dict = self.compute_positional_encodings(pyg_graph=data, pe_types=pe_types, pe_dim=pe_dim)
+        # for pe_type, pe in pe_dict.items():
+        #     setattr(data, pe_type, pe)
 
         return data 
 
