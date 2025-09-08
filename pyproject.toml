@@ -25,18 +25,16 @@ classifiers = [
 ]
 requires-python = ">= 3.10"
 dependencies=[
-    "tqdm",
-    "numpy",
+    "scikit-optimize",
+    "torch",
+    "torch-geometric",
     "scipy",
-    "requests",
-    "scikit-learn",
+    "torchdiffeq",
     "matplotlib",
-    "networkx",
-    "pandas",
-    "decorator",
-    "hypernetx < 2.0.0",
-    "trimesh",
-    "spharapy",
+    "tqdm",
+    "streamlit",
+    "omegaconf",
+    "seaborn",
     "wandb",
     "tensorboard",
     "einops==0.7.0",
@@ -45,9 +43,7 @@ dependencies=[
     "notebook",
     "jupyterlab",
     "rich",
-    "ogb",
     "rootutils",
-    "scipy",
     "scikit-optimize",
 ]
 
