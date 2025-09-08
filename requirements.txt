@@ -3,3 +3,5 @@ torch>=2.0.0
 torch-geometric>=2.3.0 
 scipy>=1.11.0
 torchdiffeq>=0.2.3
+matplotlib
+tqdm
