@@ -1,4 +1,4 @@
-from visualizations import *
+from .visualizations import *
 
 __all__ = [
     'visualize_graph_generation_process',
