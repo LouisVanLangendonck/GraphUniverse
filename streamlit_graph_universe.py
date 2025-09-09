@@ -726,7 +726,7 @@ def main():
                 
                 with col2:
                     st.markdown("#### Download Status")
-                    st.info(f"Ready to convert and save {len(family_generator.graphs)} graphs to PyG format.")
+                    st.info(f"Ready to convert and save {len(family_generator.graphs)} graphs to PyG format (InMemoryDataset).")
                     
                     # Show what files will be created
                     # if selected_tasks and family_id:
@@ -746,7 +746,7 @@ def main():
                 
                 # Prominent download button
                 if selected_tasks:  # valid_family_id and selected_tasks:
-                    if st.button("💾 Download PyG Graphs", type="primary", use_container_width=True):
+                    if st.button("💾 Save PyG Graphs", type="primary", use_container_width=True):
                         try:
                             # Create progress containers
                             progress_container = st.container()
