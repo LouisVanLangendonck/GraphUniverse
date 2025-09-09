@@ -11,3 +11,4 @@ datasets/
 */__pycache__/
 *.pyc
 .vscode/
+*.zip

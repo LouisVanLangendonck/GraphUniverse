@@ -790,7 +790,22 @@ def main():
                             progress_text.text("100% - Complete!")
                             
                             st.success(f"✅ Successfully saved PyG graphs for {len(selected_tasks)} task(s)!")
-                            
+
+                            import shutil
+                            # Compress the directory into a ZIP file for download
+                            shutil.make_archive(family_dir, 'zip', family_dir)
+
+                            with open(f"{family_dir}.zip", "rb") as fp:
+                                st.download_button(
+                                    label="Download generated datasets (ZIP)",
+                                    data=fp,
+                                    file_name=f'{family_dir}.zip',
+                                    mime='application/zip',
+                                    type="primary", 
+                                    use_container_width=True,
+                                    on_click="ignore",
+                                    icon=":material/download:",
+                                )
                             # Clear progress indicators after a short delay
                             time.sleep(1)
                             progress_container.empty()
