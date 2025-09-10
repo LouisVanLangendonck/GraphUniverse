@@ -681,7 +681,7 @@ class GraphFamilyGenerator:
             'graph_generation_times': self.graph_generation_times
         }
         
-        for graph in self.graphs:
+        for graph in tqdm(self.graphs, desc="Analyzing graph family properties", total=len(self.graphs)):
             properties['node_counts'].append(graph.n_nodes)
             properties['edge_counts'].append(graph.graph.number_of_edges())
             
@@ -784,7 +784,7 @@ class GraphFamilyGenerator:
             'structure_signal': []
         }
         
-        for graph in self.graphs:
+        for graph in tqdm(self.graphs, desc="Calculating signals", total=len(self.graphs)):
             signals['feature_signal'].append(graph.calculate_feature_signal())
             signals['degree_signal'].append(graph.calculate_degree_signal())
             signals['triangle_signal'].append(graph.calculate_triangle_community_signal())
@@ -799,8 +799,10 @@ class GraphFamilyGenerator:
         
         # Calculate the consistency
         results = {}
+
+        print("Calculating consistency metrics...")
         
-        # 1. Pattern preservation (do communities RELATIVELY connect more to the communities they are supposed to connect to?)
+        # 1. Structural consistency (do communities RELATIVELY connect more to the communities they are supposed to connect to?)
         try:
             pattern_corrs = self._calculate_pattern_consistency()
             results['structure_consistency'] = pattern_corrs
@@ -808,12 +810,12 @@ class GraphFamilyGenerator:
         except Exception as e:
             results['structure_consistency'] = []
 
-        # # 2. Generation fidelity (do graphs match their scaled probability targets (P_sub)?)
-        # try:
-        #     generation_fidelity = self._calculate_generation_fidelity()
-        #     results['generation_fidelity'] = generation_fidelity
-        # except Exception as e:
-        #     results['generation_fidelity'] = []
+        # 2. Feature consistency (do communities of the same community indeed draw from a consistent feature distribution?)
+        try:
+            feature_consistency = self._calculate_feature_consistency()
+            results['feature_consistency'] = feature_consistency
+        except Exception as e:
+            results['feature_consistency'] = []
 
         # 3. Degree consistency (do actual node degrees correlate with universe degree centers?)
         try:
@@ -821,6 +823,8 @@ class GraphFamilyGenerator:
             results['degree_consistency'] = degree_consistency
         except Exception as e:
             results['degree_consistency'] = []
+
+        print("Consistency metrics calculated.")
 
         return results
 
@@ -887,6 +891,88 @@ class GraphFamilyGenerator:
             
             return fidelity_scores
     
+    def _calculate_feature_consistency(self) -> List[float]:
+        """
+        Measure cross-graph feature consistency for communities.
+        Returns per-graph consistency scores.
+        """
+        if not self.graphs or self.universe.feature_dim == 0:
+            return []
+        
+        consistency_scores = []
+        universe_K = self.universe.K
+        
+        for graph_idx, graph in enumerate(self.graphs):
+            graph_consistency = 0.0
+            valid_communities = 0
+            
+            # For each universe community that appears in this graph
+            for universe_comm_id in graph.communities:
+                # Get nodes from this community in current graph
+                current_nodes = np.where(graph.community_labels_universe_level == universe_comm_id)[0]
+                current_features = graph.features[current_nodes]
+                
+                if len(current_features) == 0:
+                    continue
+                    
+                # Compare against same community in other graphs
+                cross_graph_similarities = []
+                
+                for other_graph_idx, other_graph in enumerate(self.graphs):
+                    if other_graph_idx == graph_idx:
+                        continue
+                        
+                    # Check if this community exists in other graph
+                    if universe_comm_id in other_graph.communities:
+                        other_nodes = np.where(other_graph.community_labels_universe_level == universe_comm_id)[0]
+                        other_features = other_graph.features[other_nodes]
+                        
+                        if len(other_features) == 0:
+                            continue
+                        
+                        # Calculate feature similarity between same communities across graphs
+                        similarity = self._calculate_feature_similarity(current_features, other_features)
+                        cross_graph_similarities.append(similarity)
+                
+                if cross_graph_similarities:
+                    graph_consistency += np.mean(cross_graph_similarities)
+                    valid_communities += 1
+            
+            if valid_communities > 0:
+                consistency_scores.append(graph_consistency / valid_communities)
+            else:
+                consistency_scores.append(0.0)
+        
+        return consistency_scores
+
+    def _calculate_feature_similarity(self, features1: np.ndarray, features2: np.ndarray) -> float:
+        """
+        Calculate similarity between two feature matrices.
+        
+        Args:
+            features1: Shape (n1, feature_dim) - features from community in graph 1
+            features2: Shape (n2, feature_dim) - features from same community in graph 2
+        
+        Returns:
+            Similarity score in [0, 1]
+        """
+        # Calculate centroid vectors (mean across nodes, keeping all dimensions)
+        centroid1 = np.mean(features1, axis=0)  # Shape: (feature_dim,)
+        centroid2 = np.mean(features2, axis=0)  # Shape: (feature_dim,)
+        
+        # Calculate cosine similarity between the two centroid vectors
+        dot_product = np.dot(centroid1, centroid2)
+        norm1 = np.linalg.norm(centroid1)
+        norm2 = np.linalg.norm(centroid2)
+        
+        if norm1 == 0 or norm2 == 0:
+            return 0.0
+        
+        cosine_sim = dot_product / (norm1 * norm2)
+        
+        # Convert to [0, 1] range (cosine similarity is in [-1, 1])
+        return (cosine_sim + 1) / 2
+
     def _measure_ordering_consistency(self, values_a: np.ndarray, values_b: np.ndarray) -> float:
         """
         Fallback ordering consistency: fraction of correctly ordered pairs between two vectors.
@@ -911,118 +997,181 @@ class GraphFamilyGenerator:
 
     def _calculate_degree_consistency(self) -> List[float]:
         """
-        Compare actual node degrees to expected degrees based on universe degree centers
-        (within-graph ranking consistency) and also measure cross-graph ranking consistency.
-        Final per-graph score is the average of the within-graph score and the cross-graph score.
+        Measure degree consistency by comparing relative rankings of communities
+        that appear together in graphs.
         """
         degree_centers = self.universe.community_degree_propensity_vector
-        universe_num_communities = len(degree_centers)
-
-        # First pass: compute within-graph scores and percentile rank signatures per graph
-        within_scores: List[float] = []
-        percentile_signatures: List[np.ndarray] = []  # Each is length universe_num_communities with NaNs for absent communities
-
+        consistency_scores = []
+        
         for graph in self.graphs:
-            num_local_communities = len(graph.communities)
-
-            # Average degree per community (normalized by community size)
-            avg_degrees_per_community = np.zeros(num_local_communities)
-            community_sizes = np.zeros(num_local_communities)
-
-            for node_idx in range(graph.n_nodes):
-                local_community_id = graph.community_labels[node_idx]
-                degree = graph.graph.degree[node_idx]
-                avg_degrees_per_community[local_community_id] += degree
-                community_sizes[local_community_id] += 1
-
-            # Normalize by community size
-            for i in range(num_local_communities):
-                if community_sizes[i] > 0:
-                    avg_degrees_per_community[i] /= community_sizes[i]
-
-            # Degree centers for the communities present in this graph (same local order)
-            community_degree_centers = degree_centers[graph.communities]
-
-            # Within-graph score: how well avg degrees respect universe degree centers
-            if np.std(community_degree_centers) == 0:
-                # For constant degree centers, measure degree homogeneity instead
-                if np.mean(avg_degrees_per_community) > 0:
-                    cv = np.std(avg_degrees_per_community) / np.mean(avg_degrees_per_community)
-                    within_score = 1.0 / (1.0 + cv)
-                else:
-                    within_score = 1.0  # All degrees are 0, perfectly consistent
+            if len(graph.communities) < 2:
+                # Can't measure relative ranking with only one community
+                consistency_scores.append(1.0)
+                continue
+                
+            # Calculate average degree per community in this graph
+            avg_degrees = self._get_community_avg_degrees(graph)
+            
+            # Get expected relative ordering from universe degree centers
+            expected_ordering = self._get_expected_ordering(graph.communities, degree_centers)
+            actual_ordering = self._get_actual_ordering(avg_degrees)
+            
+            # Calculate rank correlation between expected and actual orderings
+            if len(expected_ordering) > 1:
+                correlation = self._rank_correlation(expected_ordering, actual_ordering)
+                consistency_scores.append(max(0.0, correlation))  # Convert [-1,1] to [0,1]
             else:
-                if num_local_communities > 2:
-                    from scipy.stats import spearmanr
-                    rank_correlation, _ = spearmanr(avg_degrees_per_community, community_degree_centers)
-                    if not np.isnan(rank_correlation):
-                        within_score = rank_correlation
-                    else:
-                        within_score = self._measure_ordering_consistency(
-                            avg_degrees_per_community, community_degree_centers
-                        )
-                elif num_local_communities == 2:
-                    degree_order_correct = (
-                        (avg_degrees_per_community[0] >= avg_degrees_per_community[1]) ==
-                        (community_degree_centers[0] >= community_degree_centers[1])
-                    )
-                    within_score = 1.0 if degree_order_correct else 0.0
-                else:
-                    within_score = 1.0
+                consistency_scores.append(1.0)
+        
+        return consistency_scores
 
-            within_scores.append(within_score)
+    def _get_community_avg_degrees(self, graph) -> np.ndarray:
+        """Get average degree for each community in the graph."""
+        num_communities = len(graph.communities)
+        avg_degrees = np.zeros(num_communities)
+        community_sizes = np.zeros(num_communities)
+        
+        for node_idx in range(graph.n_nodes):
+            local_comm_id = graph.community_labels[node_idx]
+            degree = graph.graph.degree[node_idx]
+            avg_degrees[local_comm_id] += degree
+            community_sizes[local_comm_id] += 1
+        
+        # Normalize by community size
+        for i in range(num_communities):
+            if community_sizes[i] > 0:
+                avg_degrees[i] /= community_sizes[i]
+        
+        return avg_degrees
 
-            # Percentile rank signature anchored to universe communities
-            signature = np.full(universe_num_communities, np.nan, dtype=float)
-            if num_local_communities == 1:
-                # Single community: set neutral percentile
-                universe_id = graph.community_id_mapping[0]
-                signature[universe_id] = 0.5
-            else:
-                from scipy.stats import rankdata
-                ranks = rankdata(avg_degrees_per_community, method='average')  # 1..K
-                percentiles = (ranks - 1.0) / (num_local_communities - 1.0)
-                for local_idx, universe_id in graph.community_id_mapping.items():
-                    signature[universe_id] = percentiles[local_idx]
-            percentile_signatures.append(signature)
+    def _get_expected_ordering(self, communities: List[int], degree_centers: np.ndarray) -> np.ndarray:
+        """Get expected relative ordering of communities based on universe degree centers."""
+        community_centers = degree_centers[communities]
+        return np.argsort(np.argsort(community_centers))  # Ranks from 0 to k-1
 
-        # Second pass: cross-graph ranking consistency using Spearman between percentile signatures
-        num_graphs = len(self.graphs)
-        cross_scores: List[float] = []
-        if num_graphs == 0:
-            return []
+    def _get_actual_ordering(self, avg_degrees: np.ndarray) -> np.ndarray:
+        """Get actual relative ordering of communities based on observed average degrees."""
+        return np.argsort(np.argsort(avg_degrees))  # Ranks from 0 to k-1
 
+    def _rank_correlation(self, expected_ranks: np.ndarray, actual_ranks: np.ndarray) -> float:
+        """Calculate Spearman rank correlation."""
         from scipy.stats import spearmanr
-        for i in range(num_graphs):
-            sig_i = percentile_signatures[i]
-            pairwise_scores: List[float] = []
-            pairwise_weights: List[int] = []
-            for j in range(num_graphs):
-                if j == i:
-                    continue
-                sig_j = percentile_signatures[j]
-                common_mask = ~np.isnan(sig_i) & ~np.isnan(sig_j)
-                overlap = int(np.sum(common_mask))
-                # Require sufficient overlap for a meaningful correlation
-                if overlap >= 3:
-                    corr, _ = spearmanr(sig_i[common_mask], sig_j[common_mask])
-                    if not np.isnan(corr):
-                        pairwise_scores.append(float(corr))
-                        pairwise_weights.append(overlap)
-            if pairwise_scores:
-                cross_scores.append(float(np.average(pairwise_scores, weights=pairwise_weights)))
-            else:
-                cross_scores.append(float('nan'))
+        correlation, _ = spearmanr(expected_ranks, actual_ranks)
+        return correlation if not np.isnan(correlation) else 0.0
+    # def _calculate_degree_consistency(self) -> List[float]:
+    #     """
+    #     Compare actual node degrees to expected degrees based on universe degree centers
+    #     (within-graph ranking consistency) and also measure cross-graph ranking consistency.
+    #     Final per-graph score is the average of the within-graph score and the cross-graph score.
+    #     """
+    #     degree_centers = self.universe.community_degree_propensity_vector
+    #     universe_num_communities = len(degree_centers)
 
-        # Final score: average within-graph (vs centers) and cross-graph ranking consistency
-        final_scores: List[float] = []
-        for within_score, cross_score in zip(within_scores, cross_scores):
-            if np.isnan(cross_score):
-                final_scores.append(float(within_score))
-            else:
-                final_scores.append(float(0.5 * (within_score + cross_score)))
+    #     # First pass: compute within-graph scores and percentile rank signatures per graph
+    #     within_scores: List[float] = []
+    #     percentile_signatures: List[np.ndarray] = []  # Each is length universe_num_communities with NaNs for absent communities
 
-        return final_scores
+    #     for graph in self.graphs:
+    #         num_local_communities = len(graph.communities)
+
+    #         # Average degree per community (normalized by community size)
+    #         avg_degrees_per_community = np.zeros(num_local_communities)
+    #         community_sizes = np.zeros(num_local_communities)
+
+    #         for node_idx in range(graph.n_nodes):
+    #             local_community_id = graph.community_labels[node_idx]
+    #             degree = graph.graph.degree[node_idx]
+    #             avg_degrees_per_community[local_community_id] += degree
+    #             community_sizes[local_community_id] += 1
+
+    #         # Normalize by community size
+    #         for i in range(num_local_communities):
+    #             if community_sizes[i] > 0:
+    #                 avg_degrees_per_community[i] /= community_sizes[i]
+
+    #         # Degree centers for the communities present in this graph (same local order)
+    #         community_degree_centers = degree_centers[graph.communities]
+
+    #         # Within-graph score: how well avg degrees respect universe degree centers
+    #         if np.std(community_degree_centers) == 0:
+    #             # For constant degree centers, measure degree homogeneity instead
+    #             if np.mean(avg_degrees_per_community) > 0:
+    #                 cv = np.std(avg_degrees_per_community) / np.mean(avg_degrees_per_community)
+    #                 within_score = 1.0 / (1.0 + cv)
+    #             else:
+    #                 within_score = 1.0  # All degrees are 0, perfectly consistent
+    #         else:
+    #             if num_local_communities > 2:
+    #                 from scipy.stats import spearmanr
+    #                 rank_correlation, _ = spearmanr(avg_degrees_per_community, community_degree_centers)
+    #                 if not np.isnan(rank_correlation):
+    #                     within_score = rank_correlation
+    #                 else:
+    #                     within_score = self._measure_ordering_consistency(
+    #                         avg_degrees_per_community, community_degree_centers
+    #                     )
+    #             elif num_local_communities == 2:
+    #                 degree_order_correct = (
+    #                     (avg_degrees_per_community[0] >= avg_degrees_per_community[1]) ==
+    #                     (community_degree_centers[0] >= community_degree_centers[1])
+    #                 )
+    #                 within_score = 1.0 if degree_order_correct else 0.0
+    #             else:
+    #                 within_score = 1.0
+
+    #         within_scores.append(within_score)
+
+    #         # Percentile rank signature anchored to universe communities
+    #         signature = np.full(universe_num_communities, np.nan, dtype=float)
+    #         if num_local_communities == 1:
+    #             # Single community: set neutral percentile
+    #             universe_id = graph.community_id_mapping[0]
+    #             signature[universe_id] = 0.5
+    #         else:
+    #             from scipy.stats import rankdata
+    #             ranks = rankdata(avg_degrees_per_community, method='average')  # 1..K
+    #             percentiles = (ranks - 1.0) / (num_local_communities - 1.0)
+    #             for local_idx, universe_id in graph.community_id_mapping.items():
+    #                 signature[universe_id] = percentiles[local_idx]
+    #         percentile_signatures.append(signature)
+
+    #     # Second pass: cross-graph ranking consistency using Spearman between percentile signatures
+    #     num_graphs = len(self.graphs)
+    #     cross_scores: List[float] = []
+    #     if num_graphs == 0:
+    #         return []
+
+    #     from scipy.stats import spearmanr
+    #     for i in range(num_graphs):
+    #         sig_i = percentile_signatures[i]
+    #         pairwise_scores: List[float] = []
+    #         pairwise_weights: List[int] = []
+    #         for j in range(num_graphs):
+    #             if j == i:
+    #                 continue
+    #             sig_j = percentile_signatures[j]
+    #             common_mask = ~np.isnan(sig_i) & ~np.isnan(sig_j)
+    #             overlap = int(np.sum(common_mask))
+    #             # Require sufficient overlap for a meaningful correlation
+    #             if overlap >= 3:
+    #                 corr, _ = spearmanr(sig_i[common_mask], sig_j[common_mask])
+    #                 if not np.isnan(corr):
+    #                     pairwise_scores.append(float(corr))
+    #                     pairwise_weights.append(overlap)
+    #         if pairwise_scores:
+    #             cross_scores.append(float(np.average(pairwise_scores, weights=pairwise_weights)))
+    #         else:
+    #             cross_scores.append(float('nan'))
+
+    #     # Final score: average within-graph (vs centers) and cross-graph ranking consistency
+    #     final_scores: List[float] = []
+    #     for within_score, cross_score in zip(within_scores, cross_scores):
+    #         if np.isnan(cross_score):
+    #             final_scores.append(float(within_score))
+    #         else:
+    #             final_scores.append(float(0.5 * (within_score + cross_score)))
+
+    #     return final_scores
 
     def _calculate_cooccurrence_consistency(self) -> List[float]:
         """
