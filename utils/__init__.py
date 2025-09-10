@@ -31,5 +31,6 @@ __all__ = [
     'plot_universe_cooccurrence_matrix',
     'plot_universe_community_degree_propensity_vector',
     'plot_universe_degree_centers',  # Backward compatibility alias
-    'plot_universe_summary'
+    'plot_universe_summary',
+    'plot_property_validation'
 ]

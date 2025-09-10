@@ -2773,6 +2773,35 @@ def plot_universe_cooccurrence_matrix(
     fig.tight_layout()
     return fig
 
+def plot_universe_feature_centers(
+    universe: 'GraphUniverse',
+    figsize: Tuple[int, int] = (12, 6),
+    title: str = "Universe Feature Centers",
+    ax: Optional[plt.Axes] = None
+) -> plt.Figure:
+    """
+    Plot the universe's feature centers.
+    """
+    if ax is None:
+        fig, ax = plt.subplots(figsize=figsize)
+    else:
+        fig = ax.figure
+    
+    feature_centers = universe.feature_generator.cluster_centers
+    K = universe.K
+    
+    # Create a heatmap of the feature centers
+    im = ax.imshow(feature_centers, cmap='viridis', aspect='auto')
+    plt.colorbar(im, ax=ax, label="Feature Center")
+    ax.set_title(title)
+    ax.set_xticks(np.arange(feature_centers.shape[1]))
+    ax.set_yticks(np.arange(K))
+    ax.set_xticklabels([f"dim{i}" for i in range(feature_centers.shape[1])])
+    ax.set_yticklabels([f"C{i}" for i in range(K)])
+    
+    fig.tight_layout()
+    return fig
+
 def plot_universe_community_degree_propensity_vector(
     universe: 'GraphUniverse',
     figsize: Tuple[int, int] = (12, 6),
@@ -2827,6 +2856,225 @@ def plot_universe_community_degree_propensity_vector(
     
     fig.tight_layout()
     return fig
+
+def plot_property_validation(family_generator, figsize=(14, 10)):
+    """
+    Create a validation plot showing target vs. actual property ranges.
+    
+    Args:
+        family_generator: GraphFamilyGenerator object with generated graphs
+        figsize: Figure size
+        
+    Returns:
+        Matplotlib figure
+    """
+    import numpy as np
+    import matplotlib.pyplot as plt
+    import matplotlib.patches as patches
+    import matplotlib.gridspec as gridspec
+    from matplotlib.lines import Line2D
+    
+    if not family_generator.graphs:
+        fig, ax = plt.subplots(figsize=(8, 6))
+        ax.text(0.5, 0.5, "No graphs available for validation", 
+                ha='center', va='center', fontsize=14)
+        ax.axis('off')
+        return fig
+    
+    # Extract properties from the family generator
+    properties = family_generator.analyze_graph_family_properties()
+    
+    # Define the property configurations with maximum possible ranges from the Streamlit UI
+    property_configs = [
+        {
+            'name': 'homophily',
+            'values': properties.get('homophily_levels', []),
+            'target_range': family_generator.homophily_range,
+            'max_possible_range': (0.0, 1.0),  # Full homophily range in Streamlit
+            'title': 'Homophily',
+            'format': '{:.2f}',
+            'position': 0  # Top to bottom order
+        },
+        {
+            'name': 'avg_degree',
+            'values': properties.get('avg_degrees', []),
+            'target_range': family_generator.avg_degree_range,
+            'max_possible_range': (1.0, 30.0),  # Max degree range in Streamlit
+            'title': 'Average Degree',
+            'format': '{:.1f}',
+            'position': 1
+        },
+        {
+            'name': 'n_nodes',
+            'values': properties.get('node_counts', []),
+            'target_range': (family_generator.min_n_nodes, family_generator.max_n_nodes),
+            'max_possible_range': (10, 500),  # Node count range in Streamlit
+            'title': 'Node Count',
+            'format': '{:d}',
+            'position': 2
+        },
+        {
+            'name': 'n_communities',
+            'values': properties.get('community_counts', []),
+            'target_range': (family_generator.min_communities, family_generator.max_communities),
+            'max_possible_range': (2, family_generator.universe.K),  # Communities range in Streamlit
+            'title': 'Community Count',
+            'format': '{:d}',
+            'position': 3
+        }
+    ]
+    
+    # Sort configs by position
+    property_configs.sort(key=lambda x: x['position'])
+    
+    # Check if we have any data
+    has_data = any(len(config['values']) > 0 for config in property_configs)
+    if not has_data:
+        fig, ax = plt.subplots(figsize=(8, 6))
+        ax.text(0.5, 0.5, "No data available for validation", 
+                ha='center', va='center', fontsize=14)
+        ax.axis('off')
+        return fig
+    
+    # Create a figure with subplots stacked vertically
+    fig = plt.figure(figsize=figsize)
+    
+    # Create a gridspec with tight spacing between subplots
+    gs = gridspec.GridSpec(len(property_configs), 1, hspace=0.4)
+    
+    # Create shared legend elements
+    legend_elements = [
+        Line2D([0], [0], marker='o', color='w', markerfacecolor='blue', markersize=8, label='Within Range'),
+        Line2D([0], [0], marker='o', color='w', markerfacecolor='red', markersize=8, label='Outside Range')
+    ]
+    
+    # Plot each property in its own subplot
+    for i, config in enumerate(property_configs):
+        ax = plt.subplot(gs[i])
+        
+        values = config['values']
+        target_range = config['target_range']
+        
+        if not values:
+            ax.text(0.5, 0.5, f"No data for {config['title']}", 
+                    ha='center', va='center', fontsize=12)
+            ax.axis('off')
+            continue
+        
+        # Calculate coverage
+        within_range = sum(1 for v in values if target_range[0] <= v <= target_range[1])
+        coverage = within_range / len(values) * 100 if values else 0
+        
+        # Choose color based on coverage
+        if coverage >= 90:
+            color = 'green'
+        elif coverage >= 70:
+            color = 'orange'
+        else:
+            color = 'red'
+        
+        # Use the maximum possible range from Streamlit UI as reference
+        max_possible_range = config.get('max_possible_range', target_range)
+        
+        # Calculate axis limits with padding
+        min_val = min(min(values), max_possible_range[0])
+        max_val = max(max(values), max_possible_range[1])
+        padding = (max_val - min_val) * 0.1
+        x_min = min_val - padding
+        x_max = max_val + padding
+        
+        # Set axis limits
+        ax.set_xlim(x_min, x_max)
+        ax.set_ylim(-0.5, 0.5)
+        
+        # Draw maximum possible range as a light gray box
+        max_possible_range = config.get('max_possible_range', target_range)
+        box_height = 0.4
+        max_box = patches.Rectangle(
+            (max_possible_range[0], -box_height/2), 
+            max_possible_range[1] - max_possible_range[0], 
+            box_height, 
+            alpha=0.15, 
+            facecolor='gray',
+            edgecolor='gray', 
+            linewidth=1
+        )
+        ax.add_patch(max_box)
+        
+        # Draw target range as a colored box on top
+        target_box = patches.Rectangle(
+            (target_range[0], -box_height/2), 
+            target_range[1] - target_range[0], 
+            box_height, 
+            alpha=0.4, 
+            facecolor=color,
+            edgecolor='black', 
+            linewidth=1
+        )
+        ax.add_patch(target_box)
+        
+        # Add target range text
+        if config['name'] in ['homophily', 'avg_degree']:
+            range_text = f"Target: {config['format'].format(target_range[0])}-{config['format'].format(target_range[1])}"
+        else:
+            range_text = f"Target: {int(target_range[0])}-{int(target_range[1])}"
+            
+        # Add max possible range text (smaller and lighter)
+        max_possible_range = config.get('max_possible_range', target_range)
+        # if config['name'] in ['homophily', 'avg_degree']:
+        #     max_range_text = f"Max Range: {config['format'].format(max_possible_range[0])}-{config['format'].format(max_possible_range[1])}"
+        # else:
+        #     max_range_text = f"Max Range: {int(max_possible_range[0])}-{int(max_possible_range[1])}"
+        
+        # Position target range text in the middle of the box
+        text_x = target_range[0] + (target_range[1] - target_range[0]) / 2
+        ax.text(text_x, 0, range_text, ha='center', va='center', 
+               fontsize=10, fontweight='bold', color='black')
+               
+        # # Position max range text at the top of the subplot
+        # ax.text(0.02, 0.95, max_range_text, ha='left', va='top', 
+        #        fontsize=8, color='gray', transform=ax.transAxes)
+        
+        # Add scatter points for actual values (with jitter on y-axis)
+        y_jitter = np.random.normal(0, 0.1, size=len(values))
+        scatter = ax.scatter(values, y_jitter, 
+                  alpha=0.7, s=30, 
+                  c=['red' if (v < target_range[0] or v > target_range[1]) else 'blue' for v in values],
+                  marker='o', zorder=5)
+        
+        # Add coverage annotation
+        ax.text(0.99, 0.5, f'Coverage: {coverage:.1f}%', 
+               ha='right', va='center', fontsize=10, fontweight='bold', color=color,
+               transform=ax.transAxes,
+               bbox=dict(facecolor='white', alpha=0.7, boxstyle='round,pad=0.2'))
+        
+        # Set title and labels
+        ax.set_title(config['title'], fontsize=12, fontweight='bold')
+        
+        # Only show x-label on the bottom subplot
+        if i == len(property_configs) - 1:
+            ax.set_xlabel('Value')
+        
+        # Remove y-ticks and labels
+        ax.set_yticks([])
+        ax.set_yticklabels([])
+        
+        # Add grid lines
+        ax.grid(True, alpha=0.3, axis='x')
+    
+    # Add a common legend at the top of the figure
+    fig.legend(handles=legend_elements, loc='upper center', 
+              bbox_to_anchor=(0.5, 0.95),
+              ncol=2, frameon=True, fontsize=10)
+    
+    # Add a title to the figure
+    # fig.suptitle("Graph Property Validation", fontsize=16, fontweight='bold', y=0.99)
+    
+    # Adjust layout
+    plt.tight_layout(rect=[0, 0, 1, 0.95])  # Make room for the title
+    
+    return fig
+
 
 # Backward compatibility alias
 plot_universe_degree_centers = plot_universe_community_degree_propensity_vector
