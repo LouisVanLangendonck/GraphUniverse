@@ -224,7 +224,7 @@ def main():
     st.markdown('<h1 class="main-header">GraphUniverse</h1>', unsafe_allow_html=True)
     
     # Create tabs for better organization
-    tab1, tab2 = st.tabs(["🌌 Universe Generation", "📊 Graph Family Generation"])
+    tab1, tab2, tab3, tab4 = st.tabs(["🌌 Universe Generation", "📊 Graph Family Generation", "📊 Analysis", "💾 Download"])
     
     # TAB 1: UNIVERSE GENERATION
     with tab1:
@@ -268,8 +268,6 @@ def main():
                             'seed': 'unknown'  # We don't know the original seed
                         }
                         
-                        # Set active tab to Graph Family Generation
-                        st.session_state.active_tab = 1
                         
                         st.success("✅ Universe loaded successfully!")
                         
@@ -408,8 +406,6 @@ def main():
                         if 'validation_plot' in st.session_state:
                             del st.session_state.validation_plot
                         
-                        # Set active tab to Graph Family Generation
-                        st.session_state.active_tab = 1
                         
                         st.success("✅ Universe generated successfully!")
                         
@@ -478,12 +474,6 @@ def main():
     with tab2:
         st.markdown('<h2 class="section-header">Graph Family Generation</h2>', unsafe_allow_html=True)
         
-        # Check if user just created/loaded a universe
-        if 'active_tab' in st.session_state and st.session_state.active_tab == 1:
-            st.success("🎉 Welcome to Graph Family Generation! Your universe is ready.")
-            # Reset the active tab flag so balloons don't show every time
-            if 'active_tab' in st.session_state:
-                del st.session_state.active_tab
         
         st.markdown("**Step 2:** Generate a family of graphs using the created universe with user-definable properties.")
         
@@ -565,19 +555,10 @@ def main():
         # Display current universe info
         st.info(f"🌌 Using universe with {universe.K} communities, {universe.feature_dim}D features")
         
-        # Initialize session state for UI control if not already set
-        if 'show_download' not in st.session_state:
-            st.session_state.show_download = False
-        if 'show_analysis' not in st.session_state:
-            st.session_state.show_analysis = False
             
         # Generate Graph Family Button
         if st.button("📊 Generate Graph Family", type="primary", use_container_width=True):
             # Reset analysis state
-            if 'show_analysis' in st.session_state:
-                del st.session_state.show_analysis
-            if 'show_download' in st.session_state:
-                del st.session_state.show_download
             if 'show_properties' in st.session_state:
                 del st.session_state.show_properties
             if 'show_consistency' in st.session_state:
@@ -683,6 +664,7 @@ def main():
             
             # Add an announcement banner for downloading or moving to the next page
             st.success("🎉 Graph family successfully generated! You can now download the family or analyze it in detail.")
+            st.info("💡 **Tip:** Use the tabs above to navigate to '📊 Analysis' or '💾 Download' sections.")
             
             # We'll show the property validation plot when the user clicks 'Analyze Graph Family'
             
@@ -751,553 +733,294 @@ def main():
             col_nav1, col_nav2 = st.columns(2)
             
             with col_nav1:
-                download_option = st.button("💾 Download Graph Family", use_container_width=True)
+                st.info("💾 **Download:** Use the '💾 Download' tab above to download your graph family")
             with col_nav2:
-                analyze_option = st.button("📊 Analyze Graph Family", use_container_width=True)
+                st.info("📊 **Analysis:** Use the '📊 Analysis' tab above to analyze your graph family")
                 
-            # Show download options if download button is clicked
-            if download_option:
-                st.session_state.show_download = True
-                st.session_state.show_analysis = False
-                st.rerun()
-                
-            # Show analysis if analyze button is clicked
-            if analyze_option:
-                st.session_state.show_analysis = True
-                st.session_state.show_download = False
-                st.rerun()
-                
-            # Show download section if selected
-            if st.session_state.get('show_download', False):
-                st.markdown("### 💾 Download PyTorch Geometric Graphs")
-                
-                # Check if family generator exists in session state
-                if 'family_generator' in st.session_state and st.session_state.family_generator is not None:
-                    family_generator = st.session_state.family_generator
-                    
-                    if len(family_generator.graphs) > 0:
-                        # Task selection
-                        st.markdown("#### Select Tasks and Configure Download")
-                        available_tasks = [
-                            "community_detection",
-                            "triangle_counting",
-                            "k_hop_community_counts_k1",
-                            "k_hop_community_counts_k2", 
-                            "k_hop_community_counts_k3",
-                            "k_hop_community_counts_k4",
-                            "k_hop_community_counts_k5",
-                        ]
-                        
-                        selected_tasks = st.multiselect(
-                            "Choose tasks to generate PyG graphs for:",
-                            available_tasks,
-                            default=["community_detection", "triangle_counting", "k_hop_community_counts_k1"],
-                            help="Select one or more tasks. Each task will create different target labels for the graphs."
-                        )
-                        
-                        # Directory for saving
-                        family_dir = st.text_input(
-                            "Save Directory",
-                            value="datasets",
-                            help="Directory where the PyG graphs will be saved"
-                        )
-                    
-                        # Validation and download button
-                        if not selected_tasks:
-                            st.warning("Please select at least one task to proceed.")
-                        
-                        # Prominent download button
-                        if selected_tasks:
-                            if st.button("💾 Download PyG Graphs", type="primary", use_container_width=True):
-                                try:
-                                    # Create progress containers
-                                    progress_container = st.container()
-                                    status_container = st.container()
-                                    
-                                    with progress_container:
-                                        progress_bar = st.progress(0)
-                                        progress_text = st.empty()
-                                    
-                                    with status_container:
-                                        status_text = st.empty()
-                                    
-                                    # Step 1: Convert to PyG graphs
-                                    status_text.text("Step 1/2: Converting graphs to PyTorch Geometric format...")
-                                    progress_bar.progress(25)
-                                    progress_text.text("25% - Starting conversion...")
-                                    
-                                    # Check if graphs have features (required for PyG conversion)
-                                    graphs_with_features = all(hasattr(g, 'features') and g.features is not None for g in family_generator.graphs)
-                                    if not graphs_with_features:
-                                        st.error("❌ Cannot convert to PyG: Some graphs don't have features. Please generate graphs with feature_dim > 0.")
-                                        progress_container.empty()
-                                        status_container.empty()
-                                        return
-                                    
-                                    progress_bar.progress(50)
-                                    progress_text.text("50% - Converting graphs...")
-                                    
-                                    # Step 2: Save PyG graphs and universe
-                                    status_text.text("Step 2/2: Saving PyG graphs and universe...")
-                                    progress_bar.progress(75)
-                                    progress_text.text("75% - Saving to disk...")
-                                    
-                                    # Use the family generator's save method
-                                    family_generator.save_pyg_graphs_and_universe(
-                                        tasks=selected_tasks,
-                                        root_dir=family_dir
-                                    )
-                                    
-                                    progress_bar.progress(100)
-                                    progress_text.text("100% - Complete!")
-                                    
-                                    st.success(f"✅ Successfully saved PyG graphs for {len(selected_tasks)} task(s)!")
-                                    
-                                    # Clear progress indicators after a short delay
-                                    time.sleep(1)
-                                    progress_container.empty()
-                                    status_container.empty()
-                                    
-                                except Exception as e:
-                                    st.error(f"❌ Error saving PyG graphs: {str(e)}")
-                                    st.exception(e)
-                                    progress_container.empty()
-                                    status_container.empty()
+    
+    # TAB 3: ANALYSIS
+    with tab3:
+        st.markdown('<h2 class="section-header">Graph Family Analysis</h2>', unsafe_allow_html=True)
+        
+        # Check if graphs exist
+        if 'graphs' not in st.session_state or not st.session_state.graphs:
+            st.error("❌ No graphs available. Please generate a graph family first in the 'Graph Family Generation' tab.")
+            st.info("💡 **Tip:** Go to the '📊 Graph Family Generation' tab to create your graph family first.")
+        else:
+            graphs = st.session_state.graphs
+            family_generator = st.session_state.family_generator
+            
+            # Property Validation Visualization
+            st.markdown("#### Property Target vs. Actual Ranges")
+            st.markdown("This visualization shows how well the generated graphs match the target property ranges:")
+            
+            # Display property validation plot
+            with st.spinner("Generating property validation plot..."):
+                try:
+                    # Check if we have cached the validation plot
+                    if 'validation_plot' not in st.session_state:
+                        validation_fig = plot_property_validation(family_generator)
+                        st.session_state.validation_plot = validation_fig
                     else:
-                        st.warning("No graphs available in family generator. Please generate a graph family first.")
-                else:
-                    st.warning("No graph family has been generated yet. Please generate a graph family first.")
+                        validation_fig = st.session_state.validation_plot
+                    
+                    st.pyplot(validation_fig)
+                    plt.close(validation_fig)
+                except Exception as e:
+                    st.error(f"Error generating property validation plot: {str(e)}")
             
-            # Show analysis section if selected
-            if st.session_state.get('show_analysis', False):
-                st.markdown("### 📊 Family-level Analysis")
+            st.markdown("---")
+            st.markdown("#### Detailed Analysis")
+            
+            # Create three buttons for different analysis types
+            col_btn1, col_btn2, col_btn3 = st.columns(3)
+            
+            with col_btn1:
+                analyze_properties = st.button("General Family Properties", use_container_width=True, key="analyze_properties_btn")
+            
+            with col_btn2:
+                analyze_consistency = st.button("Consistency Metrics", use_container_width=True, key="analyze_consistency_btn")
+            
+            with col_btn3:
+                analyze_signals = st.button("Signal Properties", use_container_width=True, key="analyze_signals_btn")
+            
+            # Store button states in session state if clicked
+            if analyze_properties:
+                st.session_state.show_properties = True
+                st.session_state.show_consistency = False
+                st.session_state.show_signals = False
+                st.rerun()
+            
+            if analyze_consistency:
+                st.session_state.show_consistency = True
+                st.session_state.show_properties = False
+                st.session_state.show_signals = False
+                st.rerun()
+            
+            if analyze_signals:
+                st.session_state.show_signals = True
+                st.session_state.show_properties = False
+                st.session_state.show_consistency = False
+                st.rerun()
+            
+            # Initialize session state variables if they don't exist
+            if 'show_properties' not in st.session_state:
+                st.session_state.show_properties = True
+            if 'show_consistency' not in st.session_state:
+                st.session_state.show_consistency = False
+            if 'show_signals' not in st.session_state:
+                st.session_state.show_signals = False
                 
-                # Check if family generator exists in session state
-                if 'family_generator' in st.session_state and st.session_state.family_generator is not None:
-                    family_generator = st.session_state.family_generator
+            # Add a cancel button to stop analysis
+            if st.session_state.show_signals:
+                if st.button("Cancel Signal Analysis", type="secondary"):
+                    del st.session_state.show_signals
+                    st.session_state.show_properties = True
+                    st.rerun()
+            
+            # Show analysis based on selection
+            try:
+                # General Family Properties
+                if st.session_state.show_properties:
+                    st.markdown("#### General Family Properties")
+                    family_properties = family_generator.analyze_graph_family_properties()
                     
-                    # Property Validation Visualization
-                    st.markdown("#### Property Target vs. Actual Ranges")
-                    st.markdown("This visualization shows how well the generated graphs match the target property ranges:")
+                    # Convert to DataFrame for table display
+                    data = []
+                    for key, value in family_properties.items():
+                        if isinstance(value, list) and all(isinstance(v, (int, float)) for v in value):
+                            if len(value) > 0:
+                                mean_val = np.mean(value)
+                                std_val = np.std(value)
+                                min_val = np.min(value)
+                                max_val = np.max(value)
+                                data.append({
+                                    "Metric": key,
+                                    "Mean": f"{mean_val:.3f}",
+                                    "Std Dev": f"{std_val:.3f}",
+                                    "Min": f"{min_val:.3f}",
+                                    "Max": f"{max_val:.3f}"
+                                })
                     
-                    # Display property validation plot
-                    with st.spinner("Generating property validation plot..."):
-                        try:
-                            # Check if we have cached the validation plot
-                            if 'validation_plot' not in st.session_state:
-                                validation_fig = plot_property_validation(family_generator)
-                                st.session_state.validation_plot = validation_fig
-                            else:
-                                validation_fig = st.session_state.validation_plot
-                            
-                            st.pyplot(validation_fig)
-                            plt.close(validation_fig)
-                        except Exception as e:
-                            st.error(f"Error generating property validation plot: {str(e)}")
+                    # Display as a table
+                    if data:
+                        df = pd.DataFrame(data)
+                        st.table(df.set_index("Metric"))
+                    else:
+                        st.info("No property data available.")
+                
+                # Consistency Metrics
+                elif st.session_state.show_consistency:
+                    st.markdown("#### Consistency Metrics")
+                    consistency = family_generator.analyze_graph_family_consistency()
                     
-                    st.markdown("---")
-                    st.markdown("#### Detailed Analysis")
+                    # Convert to DataFrame for table display
+                    data = []
+                    for metric, value in consistency.items():
+                        if isinstance(value, list):
+                            if len(value) > 0:
+                                mean_val = np.mean(value)
+                                std_val = np.std(value)
+                                min_val = np.min(value)
+                                max_val = np.max(value)
+                                data.append({
+                                    "Metric": metric,
+                                    "Mean": f"{mean_val:.3f}",
+                                    "Std Dev": f"{std_val:.3f}",
+                                    "Min": f"{min_val:.3f}",
+                                    "Max": f"{max_val:.3f}"
+                                })
+                        else:
+                            data.append({
+                                "Metric": metric,
+                                "Value": str(value),
+                                "Std Dev": "-",
+                                "Min": "-",
+                                "Max": "-"
+                            })
                     
-                    # Create three buttons for different analysis types
-                    col_btn1, col_btn2, col_btn3 = st.columns(3)
+                    # Display as a table
+                    if data:
+                        df = pd.DataFrame(data)
+                        if "Value" in df.columns:
+                            st.table(df.set_index("Metric"))
+                        else:
+                            st.table(df.set_index("Metric"))
+                    else:
+                        st.info("No consistency data available.")
+                
+                # Signal Properties
+                elif st.session_state.show_signals:
+                    st.markdown("#### Signal Properties")
                     
-                    with col_btn1:
-                        analyze_properties = st.button("General Family Properties", use_container_width=True, key="analyze_properties_btn")
+                    # Check if signals have already been calculated
+                    if 'cached_signals' not in st.session_state:
+                        with st.spinner("Calculating signal properties... This may take a while."):
+                            signals = family_generator.analyze_graph_family_signals()
+                            # Cache the results
+                            st.session_state.cached_signals = signals
+                    else:
+                        signals = st.session_state.cached_signals
                     
-                    with col_btn2:
-                        analyze_consistency = st.button("Consistency Metrics", use_container_width=True, key="analyze_consistency_btn")
-                    
-                    with col_btn3:
-                        analyze_signals = st.button("Signal Properties", use_container_width=True, key="analyze_signals_btn")
-                    
-                    # Store button states in session state if clicked
-                    if analyze_properties:
-                        st.session_state.show_properties = True
-                        st.session_state.show_consistency = False
-                        st.session_state.show_signals = False
-                        st.rerun()
-                    
-                    if analyze_consistency:
-                        st.session_state.show_consistency = True
-                        st.session_state.show_properties = False
-                        st.session_state.show_signals = False
-                        st.rerun()
-                    
-                    if analyze_signals:
-                        st.session_state.show_signals = True
-                        st.session_state.show_properties = False
-                        st.session_state.show_consistency = False
-                        st.rerun()
-                    
-                    # Initialize session state variables if they don't exist
-                    if 'show_properties' not in st.session_state:
-                        st.session_state.show_properties = True
-                    if 'show_consistency' not in st.session_state:
-                        st.session_state.show_consistency = False
-                    if 'show_signals' not in st.session_state:
-                        st.session_state.show_signals = False
-                        
-                    # Add a cancel button to stop analysis
-                    if st.session_state.show_signals:
-                        if st.button("Cancel Signal Analysis", type="secondary"):
-                            del st.session_state.show_signals
-                            st.session_state.show_properties = True
-                            st.rerun()
-                    
-                    # Show analysis based on selection
-                    try:
-                        # General Family Properties
-                        if st.session_state.show_properties:
-                            st.markdown("#### General Family Properties")
-                            family_properties = family_generator.analyze_graph_family_properties()
-                            
-                            # Convert to DataFrame for table display
-                            data = []
-                            for key, value in family_properties.items():
-                                if isinstance(value, list) and all(isinstance(v, (int, float)) for v in value):
-                                    if len(value) > 0:
-                                        mean_val = np.mean(value)
-                                        std_val = np.std(value)
-                                        min_val = np.min(value)
-                                        max_val = np.max(value)
-                                        data.append({
-                                            "Metric": key,
-                                            "Mean": f"{mean_val:.3f}",
-                                            "Std Dev": f"{std_val:.3f}",
-                                            "Min": f"{min_val:.3f}",
-                                            "Max": f"{max_val:.3f}"
-                                        })
-                            
-                            # Display as a table
-                            if data:
-                                df = pd.DataFrame(data)
-                                st.table(df.set_index("Metric"))
-                            else:
-                                st.info("No property data available.")
-                        
-                        # Consistency Metrics
-                        elif st.session_state.show_consistency:
-                            st.markdown("#### Consistency Metrics")
-                            consistency = family_generator.analyze_graph_family_consistency()
-                            
-                            # Convert to DataFrame for table display
-                            data = []
-                            for metric, value in consistency.items():
-                                if isinstance(value, list):
-                                    if len(value) > 0:
-                                        mean_val = np.mean(value)
-                                        std_val = np.std(value)
-                                        min_val = np.min(value)
-                                        max_val = np.max(value)
-                                        data.append({
-                                            "Metric": metric,
-                                            "Mean": f"{mean_val:.3f}",
-                                            "Std Dev": f"{std_val:.3f}",
-                                            "Min": f"{min_val:.3f}",
-                                            "Max": f"{max_val:.3f}"
-                                        })
-                                else:
-                                    data.append({
-                                        "Metric": metric,
-                                        "Value": str(value),
-                                        "Std Dev": "-",
-                                        "Min": "-",
-                                        "Max": "-"
-                                    })
-                            
-                            # Display as a table
-                            if data:
-                                df = pd.DataFrame(data)
-                                if "Value" in df.columns:
-                                    st.table(df.set_index("Metric"))
-                                else:
-                                    st.table(df.set_index("Metric"))
-                            else:
-                                st.info("No consistency data available.")
-                        
-                        # Signal Properties
-                        elif st.session_state.show_signals:
-                            st.markdown("#### Signal Properties")
-                            
-                            # Check if signals have already been calculated
-                            if 'cached_signals' not in st.session_state:
-                                with st.spinner("Calculating signal properties... This may take a while."):
-                                    signals = family_generator.analyze_graph_family_signals()
-                                    # Cache the results
-                                    st.session_state.cached_signals = signals
-                            else:
-                                signals = st.session_state.cached_signals
-                            
-                            if signals:
-                                signals_structured_dict = {signal_name: {'mean': np.mean(metric_data), 'std': np.std(metric_data), 'min': np.min(metric_data), 'max': np.max(metric_data)} for signal_name, metric_data in signals.items()}
-                                df = pd.DataFrame.from_dict(signals_structured_dict)
+                    if signals:
+                        signals_structured_dict = {signal_name: {'mean': np.mean(metric_data), 'std': np.std(metric_data), 'min': np.min(metric_data), 'max': np.max(metric_data)} for signal_name, metric_data in signals.items()}
+                        df = pd.DataFrame.from_dict(signals_structured_dict)
 
-                                # Display as a table
-                                st.table(df)
-                                
-                            else:
-                                st.info("No signal data available.")
-                    
-                    except Exception as e:
-                        st.error(f"❌ Error analyzing family properties: {str(e)}")
-                        st.exception(e)
+                        # Display as a table
+                        st.table(df)
+                        
+                    else:
+                        st.info("No signal data available.")
+            
+            except Exception as e:
+                st.error(f"❌ Error analyzing family properties: {str(e)}")
+                st.exception(e)
     
-    # Set active tab if needed
-    if 'active_tab' in st.session_state:
-        if st.session_state.active_tab == 2:
-            # Activate the Download & Analysis tab
-            tab3.selectbox = True
-            # Reset the active tab flag
-            del st.session_state.active_tab
+    # TAB 4: DOWNLOAD
+    with tab4:
+        st.markdown('<h2 class="section-header">Download Graph Family</h2>', unsafe_allow_html=True)
+        
+        # Check if graphs exist
+        if 'graphs' not in st.session_state or not st.session_state.graphs:
+            st.error("❌ No graphs available. Please generate a graph family first in the 'Graph Family Generation' tab.")
+            st.info("💡 **Tip:** Go to the '📊 Graph Family Generation' tab to create your graph family first.")
+        else:
+            graphs = st.session_state.graphs
+            family_generator = st.session_state.family_generator
+            
+            st.markdown("### 💾 Download PyTorch Geometric Graphs")
+            
+            if len(family_generator.graphs) > 0:
+                # Task selection
+                st.markdown("#### Select Tasks and Configure Download")
+                available_tasks = [
+                    "community_detection",
+                    "triangle_counting",
+                    "k_hop_community_counts_k1",
+                    "k_hop_community_counts_k2", 
+                    "k_hop_community_counts_k3",
+                    "k_hop_community_counts_k4",
+                    "k_hop_community_counts_k5",
+                ]
+                
+                selected_tasks = st.multiselect(
+                    "Choose tasks to generate PyG graphs for:",
+                    available_tasks,
+                    default=["community_detection", "triangle_counting", "k_hop_community_counts_k1"],
+                    help="Select one or more tasks. Each task will create different target labels for the graphs."
+                )
+                
+                # Directory for saving
+                family_dir = st.text_input(
+                    "Save Directory",
+                    value="datasets",
+                    help="Directory where the PyG graphs will be saved"
+                )
+            
+                # Validation and download button
+                if not selected_tasks:
+                    st.warning("Please select at least one task to proceed.")
+                
+                # Prominent download button
+                if selected_tasks:
+                    if st.button("💾 Download PyG Graphs", type="primary", use_container_width=True):
+                        try:
+                            # Create progress containers
+                            progress_container = st.container()
+                            status_container = st.container()
+                            
+                            with progress_container:
+                                progress_bar = st.progress(0)
+                                progress_text = st.empty()
+                            
+                            with status_container:
+                                status_text = st.empty()
+                            
+                            # Step 1: Convert to PyG graphs
+                            status_text.text("Step 1/2: Converting graphs to PyTorch Geometric format...")
+                            progress_bar.progress(25)
+                            progress_text.text("25% - Starting conversion...")
+                            
+                            # Check if graphs have features (required for PyG conversion)
+                            graphs_with_features = all(hasattr(g, 'features') and g.features is not None for g in family_generator.graphs)
+                            if not graphs_with_features:
+                                st.error("❌ Cannot convert to PyG: Some graphs don't have features. Please generate graphs with feature_dim > 0.")
+                                progress_container.empty()
+                                status_container.empty()
+                                return
+                            
+                            progress_bar.progress(50)
+                            progress_text.text("50% - Converting graphs...")
+                            
+                            # Step 2: Save PyG graphs and universe
+                            status_text.text("Step 2/2: Saving PyG graphs and universe...")
+                            progress_bar.progress(75)
+                            progress_text.text("75% - Saving to disk...")
+                            
+                            # Use the family generator's save method
+                            family_generator.save_pyg_graphs_and_universe(
+                                tasks=selected_tasks,
+                                root_dir=family_dir
+                            )
+                            
+                            progress_bar.progress(100)
+                            progress_text.text("100% - Complete!")
+                            
+                            st.success(f"✅ Successfully saved PyG graphs for {len(selected_tasks)} task(s)!")
+                            
+                            # Clear progress indicators after a short delay
+                            time.sleep(1)
+                            progress_container.empty()
+                            status_container.empty()
+                            
+                        except Exception as e:
+                            st.error(f"❌ Error saving PyG graphs: {str(e)}")
+                            st.exception(e)
+                            progress_container.empty()
+                            status_container.empty()
+            else:
+                st.warning("No graphs available in family generator. Please generate a graph family first.")
     
-    # # TAB 3: DOWNLOAD & ANALYSIS
-    # with tab3:
-    #     st.markdown('<h2 class="section-header">Download & Analysis</h2>', unsafe_allow_html=True)
-    #     st.markdown("**Step 3:** Download your generated graph families and analyze their properties.")
-        
-    #     # Check if graphs exist
-    #     if 'graphs' not in st.session_state or not st.session_state.graphs:
-    #         st.error("❌ No graphs available. Please generate a graph family first in the 'Graph Family Generation' tab.")
-    #         return
-        
-    #     graphs = st.session_state.graphs
-        
-    #     # ANALYSIS SECTION
-    #     st.markdown("### 📊 Graph Analysis & Visualization")
-        
-    #     # Graph selection and visualization
-    #     graphs = st.session_state.graphs
-        
-    #     # Graph selection
-    #     graph_idx = st.selectbox(
-    #         "Select Graph to Visualize",
-    #         range(len(graphs)),
-    #         format_func=lambda x: f"Graph {x+1} ({graphs[x].n_nodes} nodes, {graphs[x].graph.number_of_edges()} edges)",
-    #         key="graph_selector_tab3"
-    #     )
-        
-    #     selected_graph = graphs[graph_idx]
-        
-    #     # Visualization options
-    #     col1, col2, col3 = st.columns(3)
-        
-    #     with col1:
-    #         layout = st.selectbox("Layout", ["spring", "kamada_kawai", "spectral", "circular"], key="layout_selector_tab3")
-        
-    #     with col2:
-    #         node_size = st.slider("Node Size", 10, 200, 50, key="node_size_slider_tab3")
-        
-    #     with col3:
-    #         show_labels = st.checkbox("Show Node Labels", value=False, key="show_labels_checkbox_tab3")
-        
-    #     # Create visualization
-    #     fig = plot_graph_communities(
-    #         selected_graph,
-    #         layout=layout,
-    #         node_size=node_size,
-    #         with_labels=show_labels,
-    #         figsize=(12, 8),
-    #         title=f"Graph {graph_idx+1} - {selected_graph.n_nodes} nodes, {selected_graph.graph.number_of_edges()} edges"
-    #     )
-        
-    #     st.pyplot(fig)
-    #     plt.close(fig)
-        
-    #     # Graph statistics
-    #     st.markdown("#### Graph Statistics")
-        
-    #     col1, col2, col3, col4 = st.columns(4)
-        
-    #     with col1:
-    #         st.metric("Nodes", selected_graph.n_nodes)
-    #         st.metric("Edges", selected_graph.graph.number_of_edges())
-        
-    #     with col2:
-    #         st.metric("Communities", len(selected_graph.communities))
-    #         st.metric("Components", len(list(nx.connected_components(selected_graph.graph))))
-        
-    #     with col3:
-    #         if selected_graph.features is not None:
-    #             st.metric("Feature Dim", selected_graph.features.shape[1])
-    #         else:
-    #             st.metric("Feature Dim", 0)
-    #         st.metric("Generation Method", selected_graph.generation_method)
-        
-    #     with col4:
-    #         # Calculate some additional metrics
-    #         degrees = [d for _, d in selected_graph.graph.degree()]
-    #         if degrees:
-    #             st.metric("Avg Degree", f"{2 * selected_graph.graph.number_of_edges() / selected_graph.n_nodes:.2f}")
-    #             st.metric("Degree Std", f"{np.std(degrees):.2f}")
-    #         else:
-    #             st.metric("Avg Degree", "0")
-    #             st.metric("Degree Std", "0")
-        
-    #     # Additional analysis options
-    #     st.markdown("---")
-    #     st.markdown("#### Additional Analysis Options")
-        
-    #     # Community analysis
-    #     if st.checkbox("Show Community Analysis"):
-    #         st.markdown("##### Community Analysis")
-            
-    #         # Community sizes
-    #         community_sizes = {}
-    #         for label in selected_graph.community_labels:
-    #             comm_id = selected_graph.community_id_mapping[label]
-    #             if comm_id not in community_sizes:
-    #                 community_sizes[comm_id] = 0
-    #             community_sizes[comm_id] += 1
-            
-    #         # Create community size plot
-    #         fig, ax = plt.subplots(figsize=(10, 6))
-    #         communities = list(community_sizes.keys())
-    #         sizes = list(community_sizes.values())
-            
-    #         bars = ax.bar(range(len(communities)), sizes, color='skyblue', alpha=0.7)
-    #         ax.set_xlabel("Community ID")
-    #         ax.set_ylabel("Number of Nodes")
-    #         ax.set_title("Community Size Distribution")
-    #         ax.set_xticks(range(len(communities)))
-    #         ax.set_xticklabels([f"C{c}" for c in communities])
-            
-    #         # Add value labels on bars
-    #         for bar, size in zip(bars, sizes):
-    #             ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.5,
-    #                    str(size), ha='center', va='bottom')
-            
-    #         st.pyplot(fig)
-    #         plt.close(fig)
-        
-    #     # Probability Matrices Comparison
-    #     if st.checkbox("Show Probability Matrices Comparison"):
-    #         st.markdown("##### Probability Matrices Comparison")
-            
-    #         # Check if selected_graph is a GraphSample
-    #         if isinstance(selected_graph, GraphSample):
-    #             # Get the matrices for detailed analysis
-    #             P_sub = selected_graph.P_sub
-    #             P_real, community_sizes, connection_counts = selected_graph.calculate_actual_probability_matrix()
-                
-    #             # Calculate deviation statistics
-    #             deviation = np.abs(P_real - P_sub)
-    #             mean_deviation = np.mean(deviation)
-    #             max_deviation = np.max(deviation)
-    #             std_deviation = np.std(deviation)
-                
-    #             # Display statistics
-    #             col1, col2, col3, col4 = st.columns(4)
-    #             with col1:
-    #                 st.metric("Mean Deviation", f"{mean_deviation:.4f}")
-    #             with col2:
-    #                 st.metric("Max Deviation", f"{max_deviation:.4f}")
-    #             with col3:
-    #                 st.metric("Std Deviation", f"{std_deviation:.4f}")
-    #             with col4:
-    #                 st.metric("Relative Error", f"{mean_deviation/np.mean(P_sub)*100:.2f}%")
-                
-    #             # Plot the matrices
-    #             fig = plot_probability_matrices_comparison(selected_graph)
-    #             st.pyplot(fig)
-    #             plt.close(fig)
-    #         else:
-    #             st.warning("Selected graph is not a GraphSample object, so probability matrices cannot be displayed.")
-        
-    #     # Family-level analysis
-    #     if st.checkbox("Show Family-level Analysis"):
-    #         st.markdown("##### Family-level Analysis")
-            
-    #         # Check if family generator exists in session state
-    #         if 'family_generator' in st.session_state and st.session_state.family_generator is not None:
-    #             family_generator = st.session_state.family_generator
-                
-    #             # Family summary
-    #             try:
-    #                 family_properties = family_generator.analyze_graph_family_properties()
-    #                 col1, col2 = st.columns(2)
-                    
-    #                 with col1:
-    #                     st.markdown("**Family Properties**")
-    #                     for key, value in family_properties.items():
-    #                         if isinstance(value, list) and all(isinstance(v, (int, float)) for v in value):
-    #                             if len(value) > 0:
-    #                                 st.metric(key, f"{np.mean(value):.3f} ± {np.std(value):.3f}")
-    #                             else:
-    #                                 st.metric(key, "No data")
-                    
-    #                 with col2:
-    #                     st.markdown("**Family Consistency**")
-    #                     consistency = family_generator.analyze_graph_family_consistency()
-                        
-    #                     # Display consistency metrics with better formatting
-    #                     for metric, value in consistency.items():
-    #                         if isinstance(value, list):
-    #                             if len(value) > 0:
-    #                                 mean_val = np.mean(value)
-    #                                 std_val = np.std(value)
-                                    
-    #                                 # Color code based on consistency level
-    #                                 if metric == 'feature_consistency':
-    #                                     if family_generator.universe.feature_dim == 0:
-    #                                         st.metric(metric, "N/A (no features)")
-    #                                     elif mean_val >= 0.7:
-    #                                         st.metric(metric, f"🟢 {mean_val:.3f} ± {std_val:.3f}")
-    #                                     elif mean_val >= 0.5:
-    #                                         st.metric(metric, f"🟡 {mean_val:.3f} ± {std_val:.3f}")
-    #                                     else:
-    #                                         st.metric(metric, f"🔴 {mean_val:.3f} ± {std_val:.3f}")
-    #                                 else:
-    #                                     if mean_val >= 0.7:
-    #                                         st.metric(metric, f"🟢 {mean_val:.3f} ± {std_val:.3f}")
-    #                                     elif mean_val >= 0.5:
-    #                                         st.metric(metric, f"🟡 {mean_val:.3f} ± {std_val:.3f}")
-    #                                     else:
-    #                                         st.metric(metric, f"🔴 {mean_val:.3f} ± {std_val:.3f}")
-    #                             else:
-    #                                 st.metric(metric, "No data")
-    #                         else:
-    #                             st.metric(metric, str(value))
-                        
-    #                     # Additional feature consistency details
-    #                     if 'feature_consistency' in consistency and len(consistency['feature_consistency']) > 0:
-    #                         st.markdown("---")
-    #                         st.markdown("**Feature Consistency Details**")
-    #                         feature_scores = consistency['feature_consistency']
-                            
-    #                         col_a, col_b = st.columns(2)
-    #                         with col_a:
-    #                             st.metric("Min Score", f"{np.min(feature_scores):.3f}")
-    #                             st.metric("Max Score", f"{np.max(feature_scores):.3f}")
-    #                         with col_b:
-    #                             st.metric("Median Score", f"{np.median(feature_scores):.3f}")
-    #                             good_consistency = np.sum(np.array(feature_scores) >= 0.7)
-    #                             st.metric("High Consistency Graphs", f"{good_consistency}/{len(feature_scores)}")
-                            
-    #                         # Show distribution of feature consistency scores
-    #                         if len(feature_scores) > 1:
-    #                             fig, ax = plt.subplots(figsize=(10, 4))
-    #                             ax.hist(feature_scores, bins=min(20, len(feature_scores)), alpha=0.7, color='skyblue', edgecolor='black')
-    #                             ax.set_xlabel('Feature Consistency Score')
-    #                             ax.set_ylabel('Number of Graphs')
-    #                             ax.set_title('Distribution of Feature Consistency Scores')
-    #                             ax.grid(True, alpha=0.3)
-                                
-    #                             # Add vertical lines for mean and median
-    #                             ax.axvline(np.mean(feature_scores), color='red', linestyle='--', alpha=0.8, label=f'Mean: {np.mean(feature_scores):.3f}')
-    #                             ax.axvline(np.median(feature_scores), color='green', linestyle='--', alpha=0.8, label=f'Median: {np.median(feature_scores):.3f}')
-    #                             ax.legend()
-                                
-    #                             st.pyplot(fig)
-    #                             plt.close(fig)
-                        
-    #                     elif family_generator.universe.feature_dim == 0:
-    #                         st.info("💡 Feature consistency cannot be calculated because the universe has no node features (feature_dim = 0). Generate a universe with feature_dim > 0 to enable feature consistency analysis.")
-                        
-    #             except Exception as e:
-    #                 st.error(f"❌ Error analyzing family properties: {str(e)}")
-    #                 st.exception(e)
-    #         else:
-    #             st.warning("No graph family has been generated yet.")
 
 if __name__ == "__main__":
     main() 
