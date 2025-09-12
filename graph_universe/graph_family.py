@@ -354,7 +354,7 @@ class GraphFamilyGenerator:
         # Convert the graphs to PyG graphs including tasks
         pyg_graphs = self.to_pyg_graphs(tasks)
 
-        GraphUniverseDataset(
+        self.dataset = GraphUniverseDataset(
             graph_list=pyg_graphs,
             root=root_dir,
             parameters=uniquely_identifying_metadata
