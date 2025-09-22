@@ -16,6 +16,8 @@ from scipy.stats import pearsonr
 from sklearn.metrics import r2_score
 import pandas as pd
 import sys
+import statsmodels.api as sm
+from statsmodels.regression.mixed_linear_model import MixedLM
 
 # Import the graph generation classes
 from graph_universe.graph_universe import GraphUniverse
@@ -313,11 +315,11 @@ def set_fig_legend_right(fig, labels_and_handles):
     fig.legend(handles_u, labels_u, loc='center left', bbox_to_anchor=(1.0, 0.5), frameon=False)
 
 # Parameters for baseline analysis (includes use_dccc_sbm)
-BASELINE_PARAMS_OF_INTEREST = ['edge_propensity_variance', 'cluster_variance', 'min_n_nodes', 'min_communities', 'homophily_range', 'avg_degree_range', 
+BASELINE_PARAMS_OF_INTEREST = ['edge_propensity_variance', 'cluster_variance', 'homophily_range', 'avg_degree_range', 'min_n_nodes', 'min_communities', 
 'degree_separation_range', 'power_law_exponent_range']
 
 # Parameters for random analysis (excludes use_dccc_sbm)
-RANDOM_PARAMS_OF_INTEREST = ['edge_propensity_variance', 'cluster_variance', 'min_n_nodes', 'min_communities', 'homophily_range', 'avg_degree_range', 
+RANDOM_PARAMS_OF_INTEREST = ['edge_propensity_variance', 'cluster_variance', 'homophily_range', 'avg_degree_range', 'min_n_nodes', 'min_communities', 
 'degree_separation_range', 'power_law_exponent_range']
 
 # Keep backward compatibility
@@ -327,6 +329,8 @@ PARAMS_OF_INTEREST = BASELINE_PARAMS_OF_INTEREST
 REPEATS_PER_VALUE = 1
 GRAPHS_PER_FAMILY = 30
 UNIVERSE_K = 15
+
+# Correlation method settings - always use family means for simplicity and reliability
 
 # All parameters that can be varied
 ALL_VARIABLE_PARAMS = {
@@ -346,7 +350,7 @@ ALL_VARIABLE_PARAMS = {
     'center_variance': {
         'type': 'continuous',
         'test_values': [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0],
-        'random_range': (0.5, 0.5),
+        'random_range': (0.1, 1.0),
         'level': 'universe'
     },
     'cluster_variance': {
@@ -440,8 +444,8 @@ ALL_VARIABLE_PARAMS = {
 BASELINE_UNIVERSE_PARAMS = {
     'edge_propensity_variance': 0.5,
     'feature_dim': 15,
-    'center_variance': 0.5,
-    'cluster_variance': 0.2,
+    'center_variance': 0.2,
+    'cluster_variance': 0.5,
     # 'community_cooccurrence_homogeneity': 1.0
 }
 
@@ -462,9 +466,10 @@ BASELINE_FAMILY_PARAMS = {
 
 # Metrics to calculate
 SIGNAL_METRICS = ['feature_signal', 'degree_signal', 'structure_signal'] # 'triangle_signal'
-CONSISTENCY_METRICS = ['structure_consistency', 'degree_consistency'] # 'generation_fidelity', 
-PROPERTY_METRICS = ['mean_edge_probability_deviation', 'homophily_levels', 'avg_degrees', 'tail_ratio_99', 'graph_generation_times']
-
+CONSISTENCY_METRICS = ['feature_consistency', 'degree_consistency', 'structure_consistency'] # 'generation_fidelity', 
+MAIN_PROPERTY_METRICS = ['homophily_levels', 'avg_degrees', 'tail_ratio_99']
+TECHNICAL_METRICS = ['mean_edge_probability_deviation', 'graph_generation_times']
+PROPERTY_METRICS = MAIN_PROPERTY_METRICS + TECHNICAL_METRICS  # Keep for backward compatibility
 
 def generate_baseline_params(fixed_param, fixed_value):
     """
@@ -750,25 +755,20 @@ def plot_parameter_effects(results_dict, save_dir='parameter_analysis_plots'):
     os.makedirs(save_dir, exist_ok=True)
     
     for param_name, param_results in results_dict.items():
-        # Calculate total number of metrics
-        total_metrics = len(SIGNAL_METRICS) + len(PROPERTY_METRICS) + len(CONSISTENCY_METRICS)
+        # Calculate total number of metrics with organization:
+        # Row 1: 3 signal metrics
+        # Row 2: 3 consistency metrics  
+        # Row 3: 3 main property metrics
+        # Row 4: 2 technical metrics + 1 empty
+        total_metrics = len(SIGNAL_METRICS) + len(CONSISTENCY_METRICS) + len(MAIN_PROPERTY_METRICS) + len(TECHNICAL_METRICS)
         
-        # Calculate optimal grid dimensions
-        n_rows, n_cols = calculate_grid_dimensions(total_metrics, max_cols=4)
+        # Use simple 4 rows, 3 columns grid layout
+        n_rows, n_cols = 4, 3
         
-        # Create adaptive grid figure with better proportions for publication
+        # Create figure with simple grid layout
         fig_width = 5 * n_cols
         fig_height = 4.5 * n_rows
-        fig, axes = plt.subplots(n_rows, n_cols, figsize=(fig_width, fig_height), 
-                                constrained_layout=True)
-        
-        # Handle single subplot case
-        if n_rows == 1 and n_cols == 1:
-            axes = [axes]
-        elif n_rows == 1 or n_cols == 1:
-            axes = axes.flatten()
-        else:
-            axes = axes.flatten()
+        fig, axes = plt.subplots(n_rows, n_cols, figsize=(fig_width, fig_height), constrained_layout=True)
         
         # Get test values and prepare x-axis
         test_values = param_results['test_values']
@@ -777,25 +777,36 @@ def plot_parameter_effects(results_dict, save_dir='parameter_analysis_plots'):
         # Use helper function to get x values and labels
         x_values, x_labels = get_plot_x_values(param_name, test_values, param_config)
         
-        plot_idx = 0
-        
-        # Create ordered list of metrics: signals first, then properties, then consistency
-        ordered_metrics = SIGNAL_METRICS + PROPERTY_METRICS + CONSISTENCY_METRICS
+        # Create new ordered list of metrics with proper organization:
+        # Row 1: Signal metrics (3)
+        # Row 2: Consistency metrics (3) 
+        # Row 3: Main property metrics (3)
+        # Row 4: Technical metrics (2, centered)
+        ordered_metrics = SIGNAL_METRICS + CONSISTENCY_METRICS + MAIN_PROPERTY_METRICS + TECHNICAL_METRICS
         metric_types = (['signal'] * len(SIGNAL_METRICS) + 
-                       ['property'] * len(PROPERTY_METRICS) + 
-                       ['consistency'] * len(CONSISTENCY_METRICS))
+                       ['consistency'] * len(CONSISTENCY_METRICS) +
+                       ['main_property'] * len(MAIN_PROPERTY_METRICS) + 
+                       ['technical'] * len(TECHNICAL_METRICS))
         
-        # Plot all metrics in order
+        # Plot all metrics in the simple grid organization
         for metric_idx, (metric, metric_type) in enumerate(zip(ordered_metrics, metric_types)):
-            ax = axes[plot_idx]
+            # Calculate position in simple 3x4 grid
+            row = metric_idx // 3
+            col = metric_idx % 3
+            
+            # Skip if we're beyond our grid
+            if row >= n_rows or col >= n_cols:
+                continue
+            
+            ax = axes[row, col]
             
             # Get metric data from the appropriate dictionary
             if metric_type == 'signal':
                 metric_data = param_results['signal_metrics'][metric]
-            elif metric_type == 'property':
-                metric_data = param_results['property_metrics'][metric]
-            else:  # consistency
+            elif metric_type == 'consistency':
                 metric_data = param_results['consistency_metrics'][metric]
+            elif metric_type in ['main_property', 'technical']:
+                metric_data = param_results['property_metrics'][metric]
             
             # Check if this is a categorical parameter
             is_categorical = param_config['type'] in ['categorical', 'boolean']
@@ -828,15 +839,18 @@ def plot_parameter_effects(results_dict, save_dir='parameter_analysis_plots'):
                 # Use appropriate colors based on metric type - colorblind friendly
                 if metric_type == 'signal':
                     colors = {'face': 'lightblue', 'median': 'blue', 'whiskers': 'blue'}
-                elif metric_type == 'property':
-                    colors = {'face': 'mistyrose', 'median': 'firebrick', 'whiskers': 'firebrick'}
-                else:  # consistency
+                elif metric_type == 'consistency':
                     colors = {'face': 'lightgreen', 'median': 'darkgreen', 'whiskers': 'darkgreen'}
+                elif metric_type == 'main_property':
+                    colors = {'face': 'mistyrose', 'median': 'firebrick', 'whiskers': 'firebrick'}
+                else:  # technical
+                    colors = {'face': 'lightgray', 'median': 'black', 'whiskers': 'black'}
                 create_categorical_boxplot_with_tests(ax, box_data, box_positions, x_labels, colors, 'lightgray')
             else:
                 # For continuous parameters, use the original line plot with confidence intervals
                 # Calculate confidence intervals for each data point
                 means = []
+                stds = []
                 ci_lowers = []
                 ci_uppers = []
                 
@@ -847,15 +861,19 @@ def plot_parameter_effects(results_dict, save_dir='parameter_analysis_plots'):
                         
                         if all_graph_values:
                             mean_val, ci_lower, ci_upper = calculate_confidence_intervals(all_graph_values)
+                            std_val = np.std(all_graph_values)
                             means.append(mean_val)
+                            stds.append(std_val)
                             ci_lowers.append(ci_lower)
                             ci_uppers.append(ci_upper)
                         else:
                             means.append(np.nan)
+                            stds.append(np.nan)
                             ci_lowers.append(np.nan)
                             ci_uppers.append(np.nan)
                     else:
                         means.append(np.nan)
+                        stds.append(np.nan)
                         ci_lowers.append(np.nan)
                         ci_uppers.append(np.nan)
                 
@@ -864,27 +882,34 @@ def plot_parameter_effects(results_dict, save_dir='parameter_analysis_plots'):
                 if valid_indices:
                     valid_x = [x_values[i] for i in valid_indices]
                     valid_means = [means[i] for i in valid_indices]
-                    valid_ci_lower = [ci_lowers[i] for i in valid_indices]
-                    valid_ci_upper = [ci_uppers[i] for i in valid_indices]
+                    valid_stds = [stds[i] for i in valid_indices]
+                    
+                    # Calculate standard deviation bounds for shading
+                    valid_std_lower = [valid_means[i] - valid_stds[i] for i in range(len(valid_means))]
+                    valid_std_upper = [valid_means[i] + valid_stds[i] for i in range(len(valid_means))]
                     
                     # Get color based on metric type - colorblind friendly
                     if metric_type == 'signal':
                         plot_color = 'blue'
                         marker_style = 'o-'
-                    elif metric_type == 'property':
-                        plot_color = 'firebrick'
-                        marker_style = '^-'
-                    else:  # consistency
+                    elif metric_type == 'consistency':
                         plot_color = 'darkgreen'
                         marker_style = 's-'
+                    elif metric_type == 'main_property':
+                        plot_color = 'firebrick'
+                        marker_style = '^-'
+                    else:  # technical
+                        plot_color = 'black'
+                        marker_style = 'D-'
                     
-                    # Plot shaded confidence intervals
-                    ax.fill_between(valid_x, valid_ci_lower, valid_ci_upper, 
-                                  alpha=0.3, color=plot_color, label='95% CI')
+                    # Plot shaded standard deviation areas (no label)
+                    ax.fill_between(valid_x, valid_std_lower, valid_std_upper, 
+                                  alpha=0.3, color=plot_color)
                     
-                    # Plot mean line with larger markers for publication
-                    ax.plot(valid_x, valid_means, marker_style, markersize=10, linewidth=3, 
-                           color=plot_color, alpha=0.8, label='Mean')
+                    # Plot mean line with error bars
+                    ax.errorbar(valid_x, valid_means, yerr=valid_stds, 
+                               fmt=marker_style, markersize=8, linewidth=2, capsize=4, capthick=1.5,
+                               color=plot_color, alpha=0.8)
                 
                 # Add individual points
                 for i, data_point in enumerate(metric_data):
@@ -897,10 +922,12 @@ def plot_parameter_effects(results_dict, save_dir='parameter_analysis_plots'):
                             # Use lighter version of the main color for individual points
                             if metric_type == 'signal':
                                 point_color = 'lightblue'
-                            elif metric_type == 'property':
-                                point_color = 'lightcoral'
-                            else:  # consistency
+                            elif metric_type == 'consistency':
                                 point_color = 'lightgreen'
+                            elif metric_type == 'main_property':
+                                point_color = 'lightcoral'
+                            else:  # technical
+                                point_color = 'lightgray'
                             ax.scatter([x_values[i]] * len(all_graph_values), 
                                      np.array(all_graph_values) + y_jitter, 
                                      alpha=0.4, s=35, color=point_color)
@@ -911,6 +938,7 @@ def plot_parameter_effects(results_dict, save_dir='parameter_analysis_plots'):
                 # Use all individual data points, not just means
                 all_x_values = []
                 all_y_values = []
+                all_family_ids = []
                 
                 for i, data_point in enumerate(metric_data):
                     if data_point['values']:
@@ -921,10 +949,14 @@ def plot_parameter_effects(results_dict, save_dir='parameter_analysis_plots'):
                             # Add x value for each individual measurement
                             all_x_values.extend([x_values[i]] * len(all_graph_values))
                             all_y_values.extend(all_graph_values)
+                            # Create family IDs - each test value represents a different family
+                            # For baseline analysis: each parameter value is a separate family
+                            all_family_ids.extend([f"family_{i}_{param_name}"] * len(all_graph_values))
                 
                 if len(all_x_values) > 2:
                     result_tuple = calculate_correlation_with_significance(
-                        np.array(all_x_values), np.array(all_y_values), param_config['type']
+                        np.array(all_x_values), np.array(all_y_values), param_config['type'], 
+                        family_ids=np.array(all_family_ids)
                     )
                     results = extract_correlation_results(result_tuple)
                     
@@ -944,7 +976,9 @@ def plot_parameter_effects(results_dict, save_dir='parameter_analysis_plots'):
                            transform=ax.transAxes, verticalalignment='top', fontsize=13, fontweight='bold',
                            bbox=dict(boxstyle='round,pad=0.4', facecolor='white', edgecolor='black', linewidth=1.0, alpha=0.95))
             
-            ax.set_title(f'{metric.replace("_", " ").title()}', fontsize=16, fontweight='bold', pad=15)
+            # Use display names from HEATMAP_DISPLAY_NAMES if available
+            metric_title = HEATMAP_DISPLAY_NAMES.get(metric, metric.replace("_", " ").title())
+            ax.set_title(metric_title, fontsize=16, fontweight='bold', pad=15)
             ax.set_xlabel(get_plot_param_name(param_name), fontsize=14)
             
             # Set appropriate y-axis label and limits based on metric type
@@ -954,11 +988,15 @@ def plot_parameter_effects(results_dict, save_dir='parameter_analysis_plots'):
             elif metric_type == 'consistency':
                 ax.set_ylabel('Consistency Value', fontsize=14)
                 ax.set_ylim(0, 1)
-            else:  # property
+            elif metric_type == 'main_property':
                 ax.set_ylabel('Property Value', fontsize=14)
-                # Don't fix limits for property metrics as they have different scales
+                # Set specific limits for main property metrics
                 if metric == 'homophily_levels':
                     ax.set_ylim(0, 1)
+                # avg_degrees and tail_ratio_99 will use automatic scaling
+            else:  # technical
+                ax.set_ylabel('Technical Value', fontsize=14)
+                # Don't fix limits for technical metrics as they have different scales
             
             # Enhanced publication styling
             ax.tick_params(axis='both', which='major', labelsize=12, length=8, width=1.5)
@@ -973,12 +1011,10 @@ def plot_parameter_effects(results_dict, save_dir='parameter_analysis_plots'):
             if x_labels:
                 ax.set_xticks(x_values)
                 ax.set_xticklabels(x_labels, rotation=45, ha='right', fontsize=12)
-            
-            plot_idx += 1
         
-        # Remove empty subplots
-        for idx in range(plot_idx, len(axes)):
-            fig.delaxes(axes[idx])
+        # Hide the unused subplot (last position in 3x4 grid)
+        if len(ordered_metrics) < n_rows * n_cols:
+            axes[3, 2].set_visible(False)
         
         # Add overall title with publication styling
         fig.suptitle(f'Parameter Effects: {get_plot_param_name(param_name)}', 
@@ -990,24 +1026,63 @@ def plot_parameter_effects(results_dict, save_dir='parameter_analysis_plots'):
         plt.close()
 
 
-def create_summary_heatmap(results_dict, save_path='parameter_sensitivity_heatmap.png'):
+# Dictionary for renaming parameters and metrics in the heatmap
+HEATMAP_DISPLAY_NAMES = {
+    # Parameters
+    'edge_propensity_variance': r"Edge Propensity Variance $\epsilon$",
+    'cluster_variance': r"Cluster Variance $\sigma^2$",
+    'min_n_nodes': r"Mean Node Count $\bar{n}$",
+    'min_communities': r"Mean Communities Participating $\bar{k}$",
+    'homophily_range': r"Mean Homophily $\bar{h}$",
+    'avg_degree_range': r"Mean Average Degree $\bar{d}$",
+    'degree_separation_range': r"Mean Degree Separation $\bar{\rho}$",
+    'power_law_exponent_range': r"Mean Power Law Exponent $\bar{\alpha}$",
+    
+    # Signal Metrics
+    'feature_signal': 'Feature Signal',
+    'degree_signal': 'Degree Signal',
+    'structure_signal': 'Structure Signal',
+    
+    # Consistency Metrics
+    'feature_consistency': 'Feature Consistency',
+    'degree_consistency': 'Degree Consistency',
+    'structure_consistency': 'Structure Consistency',
+    
+    # Main Property Metrics
+    'homophily_levels': 'Mean Homophily Levels',
+    'avg_degrees': 'Mean Average Degree',
+    'tail_ratio_99': 'Mean Tail Ratio 99',
+    
+    # Technical Metrics
+    'mean_edge_probability_deviation': 'Mean Edge Probability Deviation',
+    'graph_generation_times': 'Mean Graph Generation Time'
+}
+
+def create_summary_heatmap(results_dict, save_path='parameter_sensitivity_heatmap.png', display_names=HEATMAP_DISPLAY_NAMES):
     """
     Create split heatmaps showing correlation values for continuous parameters and significance levels for categorical parameters.
     Shows statistical significance levels: * (p < 0.05), ** (p < 0.01), and *** (p < 0.001).
+    
+    Args:
+        results_dict: Dictionary containing results
+        save_path: Path to save the heatmap image
+        display_names: Dictionary mapping parameter and metric names to display names (e.g., LaTeX formatted)
     """
     params = list(results_dict.keys())
-    metrics = SIGNAL_METRICS + CONSISTENCY_METRICS + PROPERTY_METRICS
+    print(params)
+    # Reorder metrics: Property metrics first, then signal metrics, then consistency metrics
+    metrics = MAIN_PROPERTY_METRICS + TECHNICAL_METRICS + SIGNAL_METRICS + CONSISTENCY_METRICS
     
     # Separate continuous and categorical parameters
-    continuous_params = []
+    continuous_params = params
     categorical_params = []
     
-    for param_name in params:
-        param_config = ALL_VARIABLE_PARAMS.get(param_name, {})
-        if param_config.get('type') in ['categorical', 'boolean']:
-            categorical_params.append(param_name)
-        else:
-            continuous_params.append(param_name)
+    # for param_name in params:
+    #     param_config = ALL_VARIABLE_PARAMS.get(param_name, {})
+    #     if param_config.get('type') in ['categorical', 'boolean']:
+    #         categorical_params.append(param_name)
+    #     else:
+    #         continuous_params.append(param_name)
     
     # Create matrices for both parameter types
     continuous_correlation_matrix = np.zeros((len(continuous_params), len(metrics)))
@@ -1037,6 +1112,7 @@ def create_summary_heatmap(results_dict, save_path='parameter_sensitivity_heatma
             # Use all individual data points, not just means
             all_x_values = []
             all_y_values = []
+            all_family_ids = []
             
             for k, data_point in enumerate(metric_data):
                 if data_point['values']:
@@ -1044,10 +1120,13 @@ def create_summary_heatmap(results_dict, save_path='parameter_sensitivity_heatma
                     if all_graph_values:
                         all_x_values.extend([x_values[k]] * len(all_graph_values))
                         all_y_values.extend(all_graph_values)
+                        # Create family IDs - each test value represents a different family
+                        all_family_ids.extend([f"family_{k}_{param_name}"] * len(all_graph_values))
             
             if len(all_x_values) > 2 and np.std(all_x_values) > 0:
                 result_tuple = calculate_correlation_with_significance(
-                    np.array(all_x_values), np.array(all_y_values), param_config['type']
+                    np.array(all_x_values), np.array(all_y_values), param_config['type'],
+                    family_ids=np.array(all_family_ids)
                 )
                 results = extract_correlation_results(result_tuple)
                 correlation_value, direction, significance = results['correlation_value'], results['direction'], results['significance']
@@ -1079,6 +1158,7 @@ def create_summary_heatmap(results_dict, save_path='parameter_sensitivity_heatma
             # Use all individual data points, not just means
             all_x_values = []
             all_y_values = []
+            all_family_ids = []
             
             for k, data_point in enumerate(metric_data):
                 if data_point['values']:
@@ -1086,10 +1166,13 @@ def create_summary_heatmap(results_dict, save_path='parameter_sensitivity_heatma
                     if all_graph_values:
                         all_x_values.extend([x_values[k]] * len(all_graph_values))
                         all_y_values.extend(all_graph_values)
+                        # Create family IDs - each test value represents a different family
+                        all_family_ids.extend([f"family_{k}_{param_name}"] * len(all_graph_values))
             
             if len(all_x_values) > 2 and np.std(all_x_values) > 0:
                 result_tuple = calculate_correlation_with_significance(
-                    np.array(all_x_values), np.array(all_y_values), param_config['type']
+                    np.array(all_x_values), np.array(all_y_values), param_config['type'],
+                    family_ids=np.array(all_family_ids)
                 )
                 results = extract_correlation_results(result_tuple)
                 correlation_value, direction, significance = results['correlation_value'], results['direction'], results['significance']
@@ -1123,6 +1206,10 @@ def create_summary_heatmap(results_dict, save_path='parameter_sensitivity_heatma
                 categorical_significance_matrix[i, j] = 0
                 categorical_display_matrix[i, j] = 'NS'
     
+    # Define metric group boundaries for visual separation
+    property_end = len(MAIN_PROPERTY_METRICS + TECHNICAL_METRICS)
+    signal_end = property_end + len(SIGNAL_METRICS)
+    
     # Create the split heatmap figure
     if len(continuous_params) > 0 and len(categorical_params) > 0:
         # Both types exist - create split heatmap
@@ -1134,11 +1221,23 @@ def create_summary_heatmap(results_dict, save_path='parameter_sensitivity_heatma
         ax1.grid(False)
         im1 = ax1.imshow(continuous_correlation_matrix, cmap='RdBu_r', aspect='auto', vmin=-1, vmax=1)
         
+        # FIX: Set tick positions AND labels for continuous parameters
         ax1.set_xticks(np.arange(len(metrics)))
         ax1.set_yticks(np.arange(len(continuous_params)))
-        ax1.set_xticklabels([m.replace('_', ' ').title() for m in metrics], rotation=45, ha='right', fontsize=14)
-        ax1.set_yticklabels([get_plot_param_name(p) for p in continuous_params], fontsize=14)
+        ax1.set_xticklabels([display_names.get(m, m.replace('_', ' ').title()) for m in metrics], rotation=45, ha='right', fontsize=14)
+        ax1.set_yticklabels([display_names.get(p, get_plot_param_name(p)) for p in continuous_params], fontsize=14)
         ax1.set_title('Continuous Parameters: Pearson Correlation Coefficients', fontsize=16, pad=20)
+        
+        # Add vertical lines to separate metric groups
+        # ax1.axvline(x=property_end-0.5, color='black', linestyle='-', linewidth=3, alpha=0.3)
+        # ax1.axvline(x=signal_end-0.5, color='black', linestyle='-', linewidth=3, alpha=0.3)
+        
+        # Add x-axis subtitle
+        ax1.set_xlabel('Validation Metrics', fontsize=18, labelpad=15, fontweight='bold')
+        
+        # Add y-axis title above the labels (horizontal)
+        ax1.text(-0.15, 1.08, 'Graph Generation Parameters', fontsize=18, 
+                 rotation=0, va='center', ha='center', fontweight='bold', transform=ax1.transAxes)
         
         # Colorbar for continuous
         cbar1 = plt.colorbar(im1, ax=ax1)
@@ -1164,7 +1263,10 @@ def create_summary_heatmap(results_dict, save_path='parameter_sensitivity_heatma
                     ax1.text(j, i, display_text, ha="center", va="center", color=text_color,
                             fontweight='bold', fontsize=14)
                 else:
-                    ax1.text(j, i, 'NS', ha="center", va="center", color="lightgray", 
+                    # Set NS entries to light gray background
+                    ax1.add_patch(plt.Rectangle((j-0.5, i-0.5), 1, 1, 
+                                              facecolor='lightgray', alpha=0.7, zorder=0))
+                    ax1.text(j, i, 'NS', ha="center", va="center", color="black", 
                             fontweight='normal', fontsize=14)
         
         # Bottom heatmap: Categorical parameters
@@ -1177,11 +1279,23 @@ def create_summary_heatmap(results_dict, save_path='parameter_sensitivity_heatma
         
         im2 = ax2.imshow(categorical_significance_matrix, cmap=sig_cmap, aspect='auto', vmin=0, vmax=3)
         
+        # FIX: Set tick positions AND labels for categorical parameters
         ax2.set_xticks(np.arange(len(metrics)))
         ax2.set_yticks(np.arange(len(categorical_params)))
-        ax2.set_xticklabels([m.replace('_', ' ').title() for m in metrics], rotation=45, ha='right', fontsize=14)
-        ax2.set_yticklabels([get_plot_param_name(p) for p in categorical_params], fontsize=14)
+        ax2.set_xticklabels([display_names.get(m, m.replace('_', ' ').title()) for m in metrics], rotation=45, ha='right', fontsize=14)
+        ax2.set_yticklabels([display_names.get(p, get_plot_param_name(p)) for p in categorical_params], fontsize=14)
         ax2.set_title('Categorical Parameters: Mann-Whitney U Test of Identical Distribution', fontsize=16, pad=20)
+        
+        # Add vertical lines to separate metric groups
+        # ax2.axvline(x=property_end-0.5, color='black', linestyle='-', linewidth=2, alpha=0.3)
+        # ax2.axvline(x=signal_end-0.5, color='black', linestyle='-', linewidth=2, alpha=0.3)
+        
+        # Add x-axis subtitle
+        ax2.set_xlabel('Validation Metrics', fontsize=18, labelpad=15, fontweight='bold')
+        
+        # Add y-axis title above the labels (horizontal)
+        ax2.text(-0.15, 1.08, 'Graph Generation Parameters', fontsize=18, 
+                 rotation=0, va='center', ha='center', fontweight='bold', transform=ax2.transAxes)
         
         # Colorbar for categorical
         cbar2 = plt.colorbar(im2, ax=ax2, ticks=[0, 1, 2, 3])
@@ -1199,8 +1313,15 @@ def create_summary_heatmap(results_dict, save_path='parameter_sensitivity_heatma
                 else:
                     text_color = "black"
                 
-                ax2.text(j, i, display_text, ha="center", va="center", color=text_color,
-                        fontweight='bold' if display_text != 'NS' else 'normal', fontsize=14)
+                if display_text == 'NS':
+                    # Set NS entries to light gray background
+                    ax2.add_patch(plt.Rectangle((j-0.5, i-0.5), 1, 1, 
+                                              facecolor='lightgray', alpha=0.7, zorder=0))
+                    ax2.text(j, i, display_text, ha="center", va="center", color="black",
+                            fontweight='normal', fontsize=14)
+                else:
+                    ax2.text(j, i, display_text, ha="center", va="center", color=text_color,
+                            fontweight='bold', fontsize=14)
         
         # plt.suptitle('Parameter Sensitivity Analysis\n(*, **, and *** significance levels shown)', 
         #              fontsize=18, y=1.02)
@@ -1211,14 +1332,26 @@ def create_summary_heatmap(results_dict, save_path='parameter_sensitivity_heatma
         ax.grid(False)
         im = ax.imshow(continuous_correlation_matrix, cmap='RdBu_r', aspect='auto', vmin=-1, vmax=1)
         
+        # FIX: Set tick positions AND labels for continuous parameters only case
         ax.set_xticks(np.arange(len(metrics)))
-        ax.set_yticks(np.arange(len(continuous_params)))
-        ax.set_xticklabels([m.replace('_', ' ').title() for m in metrics], rotation=45, ha='right', fontsize=14)
-        ax.set_yticklabels([get_plot_param_name(p) for p in continuous_params], fontsize=14)
+        ax.set_yticks(np.arange(len(continuous_params)))  # This is the key fix!
+        ax.set_xticklabels([display_names.get(m, m.replace('_', ' ').title()) for m in metrics], rotation=45, ha='right', fontsize=16)
+        ax.set_yticklabels([display_names.get(p, get_plot_param_name(p)) for p in continuous_params], fontsize=16)
+        
+        # Add vertical lines to separate metric groups
+        # ax.axvline(x=property_end-0.5, color='black', linestyle='-', linewidth=3, alpha=0.3)
+        # ax.axvline(x=signal_end-0.5, color='black', linestyle='-', linewidth=3, alpha=0.3)
+        
+        # Add x-axis subtitle
+        ax.set_xlabel('Validation Metrics', fontsize=18, labelpad=15, fontweight='bold')
+        
+        # Add y-axis title above the labels
+        ax.text(-0.15, 1.08, 'Graph Generation Parameters', fontsize=18, 
+                rotation=0, va='center', ha='center', fontweight='bold', transform=ax.transAxes)
         
         cbar = plt.colorbar(im, ax=ax)
-        cbar.set_label('Correlation Coefficient', rotation=270, labelpad=20, fontsize=16)
-        cbar.ax.tick_params(labelsize=14)
+        cbar.set_label('Correlation Coefficient', rotation=270, labelpad=20, fontsize=17)
+        cbar.ax.tick_params(labelsize=16)
         
         # Add text annotations
         for i in range(len(continuous_params)):
@@ -1239,11 +1372,14 @@ def create_summary_heatmap(results_dict, save_path='parameter_sensitivity_heatma
                     ax.text(j, i, display_text, ha="center", va="center", color=text_color,
                            fontweight='bold', fontsize=16)
                 else:
-                    ax.text(j, i, 'NS', ha="center", va="center", color="gray", 
+                    # Set NS entries to light gray background
+                    ax.add_patch(plt.Rectangle((j-0.5, i-0.5), 1, 1, 
+                                            facecolor='lightgray', alpha=0.7, zorder=0))
+                    ax.text(j, i, 'NS', ha="center", va="center", color="black", 
                            fontweight='normal', fontsize=16)
         
-        plt.title('Continuous Parameters: Correlation Analysis\n(*, **, and *** significance levels shown)', 
-                  fontsize=18, pad=25)
+        plt.title('*, **, and *** significance levels shown, NS = Not Significant', 
+                  fontsize=16, pad=15)
         
     elif len(categorical_params) > 0:
         # Only categorical parameters
@@ -1256,8 +1392,9 @@ def create_summary_heatmap(results_dict, save_path='parameter_sensitivity_heatma
         
         im = ax.imshow(categorical_significance_matrix, cmap=sig_cmap, aspect='auto', vmin=0, vmax=3)
         
+        # FIX: Set tick positions AND labels for categorical parameters only case
         ax.set_xticks(np.arange(len(metrics)))
-        ax.set_yticks(np.arange(len(categorical_params)))
+        ax.set_yticks(np.arange(len(categorical_params)))  # This is the key fix!
         ax.set_xticklabels([m.replace('_', ' ').title() for m in metrics], rotation=45, ha='right', fontsize=14)
         ax.set_yticklabels([get_plot_param_name(p) for p in categorical_params], fontsize=14)
         
@@ -1276,8 +1413,15 @@ def create_summary_heatmap(results_dict, save_path='parameter_sensitivity_heatma
                 else:
                     text_color = "black"
                 
-                ax.text(j, i, display_text, ha="center", va="center", color=text_color,
-                       fontweight='bold' if display_text != 'NS' else 'normal', fontsize=16)
+                if display_text == 'NS':
+                    # Set NS entries to light gray background
+                    ax.add_patch(plt.Rectangle((j-0.5, i-0.5), 1, 1, 
+                                            facecolor='lightgray', alpha=0.7, zorder=0))
+                    ax.text(j, i, display_text, ha="center", va="center", color="black",
+                           fontweight='normal', fontsize=16)
+                else:
+                    ax.text(j, i, display_text, ha="center", va="center", color=text_color,
+                           fontweight='bold', fontsize=16)
         
         plt.title('Categorical Parameters: Mann-Whitney U Test\n(*, **, and *** significance levels shown)', 
                   fontsize=18, pad=25, weight='bold')
@@ -1410,7 +1554,7 @@ def create_variance_equality_heatmap(results_dict, save_path='categorical_varian
     print(f"Variance equality heatmap saved to {save_path}")
 
 
-def create_random_baseline_variance_heatmap(param_values, metric_values, save_dir='random_baseline_plots'):
+def create_random_baseline_variance_heatmap(param_values, metric_values, save_dir='random_baseline_plots', display_names=HEATMAP_DISPLAY_NAMES):
     """
     Create a variance equality heatmap for random baseline results.
     Shows Levene's test results for categorical parameters only.
@@ -1567,23 +1711,26 @@ def extract_correlation_results(result_tuple):
     }
 
 
-def calculate_correlation_with_significance(x, y, param_type='continuous'):
+def calculate_correlation_with_significance(x, y, param_type='continuous', family_ids=None):
     """
     Calculate correlation with direction and statistical significance.
-    
-    For continuous/range parameters: Uses Pearson correlation
-    For categorical/boolean parameters: Uses non-parametric tests (Mann-Whitney U or Kruskal-Wallis)
-                                       Also performs Levene's test for variance equality
+    Always uses family means when family_ids are provided.
     
     Args:
         x: Independent variable values
         y: Dependent variable values  
         param_type: Type of parameter ('continuous', 'categorical', 'boolean', 'range')
+        family_ids: Array of family identifiers for family mean calculation
     
     Returns:
         For continuous: (correlation_value, direction, significance, ci_lower, ci_upper)
         For categorical: (correlation_value, direction, significance, ci_lower, ci_upper, variance_test_name, variance_p_value, variance_significance)
     """
+    # If family_ids provided, always use family means approach
+    if family_ids is not None and len(family_ids) == len(x):
+        return calculate_family_mean_correlation(x, y, family_ids, param_type)
+    
+    # Fallback to traditional methods when no family structure
     # Remove NaN values first
     mask = ~(np.isnan(x) | np.isnan(y))
     x = x[mask]
@@ -1625,27 +1772,8 @@ def calculate_continuous_correlation(x, y):
         if np.isnan(correlation):
             return 0.0, 'none', 'ns', 0.0, 0.0
         
-        # Bootstrap for confidence intervals
-        n_bootstrap = 100
-        r_bootstrap = []
-        
-        for _ in range(n_bootstrap):
-            indices = np.random.choice(len(x), len(x), replace=True)
-            x_boot = x[indices]
-            y_boot = y[indices]
-            
-            try:
-                r_boot, _ = pearsonr(x_boot, y_boot)
-                if not np.isnan(r_boot):
-                    r_bootstrap.append(r_boot)
-            except:
-                continue
-        
-        if r_bootstrap:
-            ci_lower = np.percentile(r_bootstrap, 2.5)
-            ci_upper = np.percentile(r_bootstrap, 97.5)
-        else:
-            ci_lower, ci_upper = correlation, correlation
+        # No confidence intervals needed for plotting
+        ci_lower, ci_upper = 0.0, 0.0
         
         # Determine direction
         if correlation > 0:
@@ -1669,6 +1797,104 @@ def calculate_continuous_correlation(x, y):
         
     except:
         return 0.0, 'none', 'ns', 0.0, 0.0
+
+
+def calculate_family_mean_correlation(param_values, metric_values, family_ids, param_type='continuous'):
+    """
+    Calculate correlation using family means - much simpler and more reliable than mixed-effects.
+    
+    This aggregates all observations within each family to their mean, then performs
+    simple correlation on the family-level data. This properly accounts for the
+    hierarchical structure while being much more robust.
+    
+    Args:
+        param_values: Array of parameter values (one per graph)
+        metric_values: Array of metric values (one per graph)
+        family_ids: Array of family identifiers (which family each graph belongs to)
+        param_type: Type of parameter ('continuous', 'categorical', 'boolean', 'range')
+    
+    Returns:
+        tuple: (correlation_value, direction, significance, ci_lower, ci_upper)
+               For categorical: also includes variance test results
+    """
+    try:
+        # Convert to numpy arrays
+        param_values = np.array(param_values)
+        metric_values = np.array(metric_values)
+        family_ids = np.array(family_ids)
+        
+        # Remove NaN values
+        mask = ~(np.isnan(param_values) | np.isnan(metric_values))
+        param_values = param_values[mask]
+        metric_values = metric_values[mask]
+        family_ids = family_ids[mask]
+        
+        # Check for sufficient data
+        if len(param_values) < 3:
+            return 0.0, 'none', 'ns', 0.0, 0.0
+        
+        # Create DataFrame for easier aggregation
+        df = pd.DataFrame({
+            'parameter': param_values,
+            'metric': metric_values,
+            'family': family_ids
+        })
+        
+        # Aggregate by family means
+        family_means = df.groupby('family').agg({
+            'parameter': 'mean',
+            'metric': 'mean'
+        }).reset_index()
+        
+        # Check we have enough families
+        if len(family_means) < 3:
+            return 0.0, 'none', 'ns', 0.0, 0.0
+        
+        # Extract family-level data
+        family_params = family_means['parameter'].values
+        family_metrics = family_means['metric'].values
+        
+        # Check for variability at family level
+        if np.std(family_params) == 0 or np.std(family_metrics) == 0:
+            return 0.0, 'none', 'ns', 0.0, 0.0
+        
+        print(f"Family means: {len(family_means)} families, param_std={np.std(family_params):.4f}, metric_std={np.std(family_metrics):.4f}")
+        
+        # For categorical parameters, use non-parametric tests on family means
+        if param_type in ['categorical', 'boolean']:
+            return calculate_categorical_significance(family_params, family_metrics)
+        
+        # For continuous parameters, use simple Pearson correlation on family means
+        correlation, p_value = pearsonr(family_params, family_metrics)
+        
+        print(f"Family correlation: r={correlation:.4f}, p={p_value:.6f}")
+        
+        # No confidence intervals needed for plotting
+        ci_lower, ci_upper = 0.0, 0.0
+        
+        # Determine direction
+        if correlation > 0:
+            direction = 'positive'
+        elif correlation < 0:
+            direction = 'negative'
+        else:
+            direction = 'none'
+        
+        # Determine significance
+        if p_value < 0.001:
+            significance = '***'
+        elif p_value < 0.01:
+            significance = '**'
+        elif p_value < 0.05:
+            significance = '*'
+        else:
+            significance = 'ns'
+        
+        return correlation, direction, significance, ci_lower, ci_upper
+        
+    except Exception as e:
+        print(f"Family mean correlation failed: {e}")
+        return calculate_continuous_correlation(param_values, metric_values)
 
 
 def calculate_categorical_significance(x, y):
@@ -2172,7 +2398,7 @@ def run_random_baseline_analysis(n_samples=100, n_repeats_per_sample=3, output_d
     return random_results
 
 
-def plot_random_baseline_results(random_results, save_dir='random_baseline_plots'):
+def plot_random_baseline_results(random_results, save_dir='random_baseline_plots', display_names=HEATMAP_DISPLAY_NAMES):
     """
     Create plots for random baseline results showing each parameter of interest vs all metrics.
     For categorical parameters: use boxplots with statistical testing
@@ -2321,56 +2547,64 @@ def plot_random_baseline_results(random_results, save_dir='random_baseline_plots
             # Treat degree_center_method as categorical since we convert it to True/False
             is_categorical = param_config['type'] in ['categorical', 'boolean'] or param_name == 'degree_center_method'
             
-            # Create subplots for all metrics - adaptive grid based on metric count
-            total_metrics = len(SIGNAL_METRICS) + len(CONSISTENCY_METRICS) + len(PROPERTY_METRICS)
+            # Create subplots for all metrics with new organization:
+            # Row 1: 3 signal metrics
+            # Row 2: 3 consistency metrics  
+            # Row 3: 3 main property metrics
+            # Row 4: 2 technical metrics (centered)
+            total_metrics = len(SIGNAL_METRICS) + len(CONSISTENCY_METRICS) + len(MAIN_PROPERTY_METRICS) + len(TECHNICAL_METRICS)
             metric_axes = []
             
-            # Calculate optimal grid dimensions
-            n_rows_metric, n_cols_metric = calculate_grid_dimensions(total_metrics, max_cols=4)
+            # Use simple 4 rows, 3 columns grid layout
+            n_rows_metric, n_cols_metric = 4, 3
             
-            # Create subplot for this parameter with adaptive sizing
+            # Create subplot for this parameter with simple grid layout
             fig_width = 4.5 * n_cols_metric
             fig_height = 4.5 * n_rows_metric
             param_fig, param_axes = plt.subplots(n_rows_metric, n_cols_metric, 
-                                               figsize=(fig_width, fig_height))
-            
-            # Handle single subplot case
-            if n_rows_metric == 1 and n_cols_metric == 1:
-                param_axes = [param_axes]
-            elif n_rows_metric == 1 or n_cols_metric == 1:
-                param_axes = param_axes.flatten()
-            else:
-                param_axes = param_axes.flatten()
+                                               figsize=(fig_width, fig_height), constrained_layout=True)
             
             metric_idx = 0
             
-            # Create ordered list of metrics: signals first, then properties, then consistency
-            ordered_metrics = SIGNAL_METRICS + PROPERTY_METRICS + CONSISTENCY_METRICS
+            # Create new ordered list of metrics with proper organization:
+            # Row 1: Signal metrics (3)
+            # Row 2: Consistency metrics (3) 
+            # Row 3: Main property metrics (3)
+            # Row 4: Technical metrics (2, centered)
+            ordered_metrics = SIGNAL_METRICS + CONSISTENCY_METRICS + MAIN_PROPERTY_METRICS + TECHNICAL_METRICS
             metric_types = (['signal'] * len(SIGNAL_METRICS) + 
-                           ['property'] * len(PROPERTY_METRICS) + 
-                           ['consistency'] * len(CONSISTENCY_METRICS))
+                           ['consistency'] * len(CONSISTENCY_METRICS) +
+                           ['main_property'] * len(MAIN_PROPERTY_METRICS) + 
+                           ['technical'] * len(TECHNICAL_METRICS))
             
-            # Plot all metrics in order
+            # Plot all metrics in simple grid order
             for metric_idx_loop, (metric, metric_type) in enumerate(zip(ordered_metrics, metric_types)):
-                if metric_idx < len(param_axes):
-                    metric_ax = param_axes[metric_idx]
+                # Calculate position in simple 3x4 grid
+                row = metric_idx_loop // 3
+                col = metric_idx_loop % 3
+                
+                # Skip if we're beyond our grid
+                if row >= n_rows_metric or col >= n_cols_metric:
+                    continue
+                
+                metric_ax = param_axes[row, col]
+                
+                # Get parameter and metric values
+                if param_name in param_values and metric in metric_values:
+                    param_vals = param_values[param_name]
+                    metric_vals = metric_values[metric]
+                    metric_std_vals = metric_stds[metric]
                     
-                    # Get parameter and metric values
-                    if param_name in param_values and metric in metric_values:
-                        param_vals = param_values[param_name]
-                        metric_vals = metric_values[metric]
-                        metric_std_vals = metric_stds[metric]
+                    # Remove NaN values
+                    valid_indices = [i for i in range(len(param_vals)) 
+                                   if not (is_invalid_value(param_vals[i]) or is_invalid_value(metric_vals[i]))]
+                    
+                    if len(valid_indices) > 1:
+                        valid_params = [param_vals[i] for i in valid_indices]
+                        valid_metrics = [metric_vals[i] for i in valid_indices]
+                        valid_stds = [metric_std_vals[i] for i in valid_indices]
                         
-                        # Remove NaN values
-                        valid_indices = [i for i in range(len(param_vals)) 
-                                    if not (is_invalid_value(param_vals[i]) or is_invalid_value(metric_vals[i]))]
-                        
-                        if len(valid_indices) > 1:
-                            valid_params = [param_vals[i] for i in valid_indices]
-                            valid_metrics = [metric_vals[i] for i in valid_indices]
-                            valid_stds = [metric_std_vals[i] for i in valid_indices]
-                            
-                            if is_categorical:
+                        if is_categorical:
                                 # For categorical parameters, use boxplots
                                 box_data = []
                                 box_positions = []
@@ -2389,69 +2623,82 @@ def plot_random_baseline_results(random_results, save_dir='random_baseline_plots
                                 # Use appropriate colors based on metric type - colorblind friendly
                                 if metric_type == 'signal':
                                     colors = {'face': 'lightblue', 'median': 'blue', 'whiskers': 'blue'}
-                                elif metric_type == 'property':
-                                    colors = {'face': 'mistyrose', 'median': 'firebrick', 'whiskers': 'firebrick'}
-                                else:  # consistency
+                                elif metric_type == 'consistency':
                                     colors = {'face': 'lightgreen', 'median': 'darkgreen', 'whiskers': 'darkgreen'}
+                                elif metric_type == 'main_property':
+                                    colors = {'face': 'mistyrose', 'median': 'firebrick', 'whiskers': 'firebrick'}
+                                else:  # technical
+                                    colors = {'face': 'lightgray', 'median': 'black', 'whiskers': 'black'}
                                 create_categorical_boxplot_with_tests(metric_ax, box_data, box_positions, x_labels, colors, 'lightgray')
                                         
-                            else:
-                                # For continuous parameters, use scatter plot with error bars - color by metric type
-                                if metric_type == 'signal':
-                                    point_color = 'blue'
-                                elif metric_type == 'property':
-                                    point_color = 'firebrick'
-                                else:  # consistency
-                                    point_color = 'darkgreen'
-                                metric_ax.errorbar(valid_params, valid_metrics, yerr=valid_stds, 
-                                    fmt='o', alpha=0.6, markersize=4, capsize=3, capthick=1, color=point_color)
-                
-                                # Add dark gray dotted correlation line (no confidence intervals, just simple fit)
-                                if len(valid_params) > 1:
-                                    z = np.polyfit(valid_params, valid_metrics, 1)
-                                    p = np.poly1d(z)
-                                    metric_ax.plot(valid_params, p(valid_params), ":", alpha=0.8, linewidth=3, color='darkgray')
-                                
-                                # Calculate correlation with significance
-                                corr, direction, significance, ci_lower, ci_upper = calculate_correlation_with_significance(
-                                                    np.array(valid_params), np.array(valid_metrics), param_config.get('type', 'continuous')
-                                )
-                
-                                # Add correlation info
-                                corr_display = format_correlation_display(corr, direction, significance, ci_lower, ci_upper)
-                                metric_ax.text(0.05, 0.95, corr_display, 
-                                                transform=metric_ax.transAxes, verticalalignment='top',
-                                                bbox=dict(boxstyle='round,pad=0.3', facecolor='white', edgecolor='black', linewidth=0.8, alpha=0.9))
+                        else:
+                            # For continuous parameters, use scatter plot with error bars - color by metric type
+                            if metric_type == 'signal':
+                                point_color = 'blue'
+                            elif metric_type == 'consistency':
+                                point_color = 'darkgreen'
+                            elif metric_type == 'main_property':
+                                point_color = 'firebrick'
+                            else:  # technical
+                                point_color = 'black'
+                            metric_ax.errorbar(valid_params, valid_metrics, yerr=valid_stds, 
+                                fmt='o', alpha=0.6, markersize=4, capsize=3, capthick=1, color=point_color)
+            
+                            # Add dark gray dotted correlation line (no confidence intervals, just simple fit)
+                            if len(valid_params) > 1:
+                                z = np.polyfit(valid_params, valid_metrics, 1)
+                                p = np.poly1d(z)
+                                metric_ax.plot(valid_params, p(valid_params), ":", alpha=0.8, linewidth=3, color='darkgray')
+                            
+                            # Calculate correlation with significance
+                            # For randomized data, each sample is its own family
+                            family_ids = [f"sample_{idx}" for idx in range(len(valid_params))]
+                            corr, direction, significance, ci_lower, ci_upper = calculate_correlation_with_significance(
+                                                np.array(valid_params), np.array(valid_metrics), param_config.get('type', 'continuous'),
+                                                family_ids=np.array(family_ids)
+                            )
+            
+                            # Add correlation info
+                            corr_display = format_correlation_display(corr, direction, significance, ci_lower, ci_upper)
+                            metric_ax.text(0.05, 0.95, corr_display, 
+                                            transform=metric_ax.transAxes, verticalalignment='top',
+                                            bbox=dict(boxstyle='round,pad=0.3', facecolor='white', edgecolor='black', linewidth=0.8, alpha=0.9))
                                                 
-                            metric_ax.set_title(f'{metric.replace("_", " ").title()}', fontsize=16, weight='bold')
+                            # Use display names from HEATMAP_DISPLAY_NAMES if available
+                            metric_title = display_names.get(metric, metric.replace("_", " ").title())
+                            metric_ax.set_title(metric_title, fontsize=16, weight='bold')
                             metric_ax.set_xlabel(get_plot_param_name(param_name), fontsize=14)
                             metric_ax.set_ylabel('Value')
                             apply_publication_style(metric_ax)
                     else:
                         metric_ax.text(0.5, 0.5, f'No valid data', 
                                     ha='center', va='center', transform=metric_ax.transAxes)
-                        metric_ax.set_title(f'{metric.replace("_", " ").title()}', fontsize=16, weight='bold')
+                        # Use display names from HEATMAP_DISPLAY_NAMES if available
+                        metric_title = display_names.get(metric, metric.replace("_", " ").title())
+                        metric_ax.set_title(metric_title, fontsize=16, weight='bold')
                                 
                 metric_idx += 1
     
-            # Old separate metric plotting sections removed - now handled in unified loop above
+            # Hide the unused subplot (last position in 3x4 grid)
+            if len(ordered_metrics) < n_rows_metric * n_cols_metric:
+                param_axes[3, 2].set_visible(False)
             
-            # Hide unused subplots for this parameter
-            for i in range(metric_idx, len(param_axes)):
-                param_axes[i].set_visible(False)
-            
-            # Set the main title for this parameter
-            # param_fig.suptitle(f'{get_plot_param_name(param_name)} vs All Metrics', fontsize=16, y=0.98)
-            param_fig.tight_layout()
+            # Set the main title for this parameter using display names
+            param_title = display_names.get(param_name, get_plot_param_name(param_name))
+            param_fig.suptitle(f'{param_title}', fontsize=20, y=0.98, fontweight='bold')
+            param_fig.tight_layout(rect=[0, 0, 1, 0.96])  # Make room for the title
             
             # Save individual parameter plot
             param_output_file = os.path.join(save_dir, f'{param_name}_random_baseline_analysis.png')
             param_fig.savefig(param_output_file, dpi=300, bbox_inches='tight')
             plt.close(param_fig)
             
-            # Set the main plot title for this parameter
-            ax.set_title(f'{get_plot_param_name(param_name)}')
-            ax.text(0.5, 0.5, f'Parameter: {get_plot_param_name(param_name)}\nPlot saved as: {param_name}_random_baseline_analysis.png', 
+            # Set the main plot title for this parameter using display names if available
+            param_title = HEATMAP_DISPLAY_NAMES.get(param_name, get_plot_param_name(param_name))
+            ax.set_title(f'{param_title}')
+            # Use display names for parameter in the text as well
+            param_title = HEATMAP_DISPLAY_NAMES.get(param_name, get_plot_param_name(param_name))
+            ax.text(0.5, 0.5, f'Parameter: {param_title}\nPlot saved as: {param_name}_random_baseline_analysis.png', 
                    ha='center', va='center', transform=ax.transAxes, fontsize=12)
             ax.set_xlabel('')
             ax.set_ylabel('')
@@ -2482,11 +2729,11 @@ def plot_random_baseline_results(random_results, save_dir='random_baseline_plots
     # Convert random baseline data to summary format and create summary heatmap
     random_baseline_summary_format = convert_random_baseline_to_summary_format(param_values, metric_values)
     heatmap_path = os.path.join(save_dir, 'random_baseline_correlation_heatmap.png')
-    create_summary_heatmap(random_baseline_summary_format, heatmap_path)
+    create_summary_heatmap(random_baseline_summary_format, heatmap_path, display_names=display_names)
     print(f"Random baseline summary heatmap saved to {heatmap_path}")
     
     # Create variance equality heatmap for categorical parameters
-    create_random_baseline_variance_heatmap(param_values, metric_values, save_dir)
+    create_random_baseline_variance_heatmap(param_values, metric_values, save_dir, display_names=display_names)
     
     plt.close()
 
@@ -2745,11 +2992,15 @@ def plot_side_by_side_comparison(baseline_results, random_results, save_dir='sid
         # Get parameter configuration
         param_config = ALL_VARIABLE_PARAMS[param_name]
         
-        # Calculate total number of metrics for adaptive grid
-        total_metrics = len(SIGNAL_METRICS) + len(PROPERTY_METRICS) + len(CONSISTENCY_METRICS)
-        n_rows_metric, n_cols_metric = calculate_grid_dimensions(total_metrics, max_cols=3)
+        # Calculate total number of metrics with new organization:
+        # Row 1: 3 signal metrics
+        # Row 2: 3 consistency metrics  
+        # Row 3: 3 main property metrics
+        # Row 4: 2 technical metrics (centered)
+        total_metrics = len(SIGNAL_METRICS) + len(CONSISTENCY_METRICS) + len(MAIN_PROPERTY_METRICS) + len(TECHNICAL_METRICS)
+        n_rows_metric, n_cols_metric = 4, 3
         
-        # Create figure with two subplots side by side, each containing an adaptive grid
+        # Create figure with two subplots side by side, each containing a simple 3x4 grid
         fig_width = 5.5 * n_cols_metric * 2  # Width for two side-by-side grids
         fig_height = 4.5 * n_rows_metric + 2  # Extra height for labels
         fig = plt.figure(figsize=(fig_width, fig_height))
@@ -2757,16 +3008,13 @@ def plot_side_by_side_comparison(baseline_results, random_results, save_dir='sid
         # Create two main subplot areas with space for method labels at bottom
         gs_main = fig.add_gridspec(2, 2, height_ratios=[20, 1], width_ratios=[1, 1], wspace=0.15, hspace=0.05)
         
-        # Left side: Baseline results (top row)
+        # Create simple grid layouts for both sides with shared x-axes
         if param_name in ['avg_degree_range', 'homophily_range', 'power_law_exponent_range']:
-            gs_left = gs_main[0, 0].subgridspec(n_rows_metric, n_cols_metric, hspace=1.0, wspace=0.4)
+            gs_left = gs_main[0, 0].subgridspec(n_rows_metric, n_cols_metric, hspace=0.4, wspace=0.3)
+            gs_right = gs_main[0, 1].subgridspec(n_rows_metric, n_cols_metric, hspace=0.4, wspace=0.3)
         else:
-            gs_left = gs_main[0, 0].subgridspec(n_rows_metric, n_cols_metric, hspace=0.6, wspace=0.4)
-        # Right side: Random results (top row)
-        if param_name in ['avg_degree_range', 'homophily_range', 'power_law_exponent_range']:
-            gs_right = gs_main[0, 1].subgridspec(n_rows_metric, n_cols_metric, hspace=1.0, wspace=0.4)
-        else:
-            gs_right = gs_main[0, 1].subgridspec(n_rows_metric, n_cols_metric, hspace=0.6, wspace=0.4)
+            gs_left = gs_main[0, 0].subgridspec(n_rows_metric, n_cols_metric, hspace=0.3, wspace=0.3)
+            gs_right = gs_main[0, 1].subgridspec(n_rows_metric, n_cols_metric, hspace=0.3, wspace=0.3)
         
         # Bottom row for method labels
         ax_label_left = fig.add_subplot(gs_main[1, 0])
@@ -2783,25 +3031,55 @@ def plot_side_by_side_comparison(baseline_results, random_results, save_dir='sid
         
         random_x_values, random_x_labels = get_plot_x_values(param_name, random_test_values, param_config)
         
-        # Create ordered list of metrics: signals first, then properties, then consistency
-        ordered_metrics = SIGNAL_METRICS + PROPERTY_METRICS + CONSISTENCY_METRICS
+        # Create new ordered list of metrics with proper organization:
+        # Row 1: Signal metrics (3)
+        # Row 2: Consistency metrics (3) 
+        # Row 3: Main property metrics (3)
+        # Row 4: Technical metrics (2, centered)
+        ordered_metrics = SIGNAL_METRICS + CONSISTENCY_METRICS + MAIN_PROPERTY_METRICS + TECHNICAL_METRICS
         metric_types = (['signal'] * len(SIGNAL_METRICS) + 
-                       ['property'] * len(PROPERTY_METRICS) + 
-                       ['consistency'] * len(CONSISTENCY_METRICS))
+                       ['consistency'] * len(CONSISTENCY_METRICS) +
+                       ['main_property'] * len(MAIN_PROPERTY_METRICS) + 
+                       ['technical'] * len(TECHNICAL_METRICS))
         
-        # Plot all metrics in order
+        # Create axes arrays to track shared x-axes
+        axes_left = {}
+        axes_right = {}
+        
+        # Plot all metrics in simple grid order
         for metric_idx, (metric, metric_type) in enumerate(zip(ordered_metrics, metric_types)):
-            row = metric_idx // n_cols_metric
-            col = metric_idx % n_cols_metric
+            # Calculate position in simple 3x4 grid
+            row = metric_idx // 3
+            col = metric_idx % 3
             
-            # Create axes for baseline (left) and random (right)
-            ax_baseline = fig.add_subplot(gs_left[row, col])
-            ax_random = fig.add_subplot(gs_right[row, col])
+            # Skip if we're beyond our grid
+            if row >= n_rows_metric or col >= n_cols_metric:
+                continue
+            
+            # Create axes with shared x-axis for columns (share with the axis in the same column, bottom row)
+            if row == 0:
+                # First row - create new axes
+                ax_baseline = fig.add_subplot(gs_left[row, col])
+                ax_random = fig.add_subplot(gs_right[row, col])
+            else:
+                # Subsequent rows - share x-axis with the axis in the same column, first row
+                sharex_baseline = axes_left.get((0, col))
+                sharex_random = axes_right.get((0, col))
+                ax_baseline = fig.add_subplot(gs_left[row, col], sharex=sharex_baseline)
+                ax_random = fig.add_subplot(gs_right[row, col], sharex=sharex_random)
+            
+            # Store axes for sharing reference
+            axes_left[(row, col)] = ax_baseline
+            axes_right[(row, col)] = ax_random
+            
+            # Determine if this is the bottom row for this column
+            is_bottom_row = (row == n_rows_metric - 1) or (metric_idx + 3 >= len(ordered_metrics))
             
             # Plot baseline data (left side)
             plot_single_metric_data(ax_baseline, param_name, metric, metric_type, param_config,
                                    baseline_param_results, baseline_x_values, baseline_x_labels,
-                                   "Baseline", 'lightgray')
+                                   "Baseline", 'lightgray', is_bottom_row=is_bottom_row,
+                                   display_names=HEATMAP_DISPLAY_NAMES)
             
             # Plot random data (right side)  
             plot_single_metric_data(ax_random, param_name, metric, metric_type, param_config,
@@ -2809,36 +3087,35 @@ def plot_side_by_side_comparison(baseline_results, random_results, save_dir='sid
                                    "Randomized", 'lightcoral', 
                                    raw_param_values=random_param_values, 
                                    raw_metric_values=random_metric_values,
-                                   raw_metric_stds=random_metric_stds)
+                                   raw_metric_stds=random_metric_stds,
+                                   is_bottom_row=is_bottom_row,
+                                   display_names=HEATMAP_DISPLAY_NAMES)
             
-            # Set titles
-            if row == 0:  # Top row
-                ax_baseline.set_title(f'{metric.replace("_", " ").title()}', fontsize=19, fontweight='bold', pad=15)
-                ax_random.set_title(f'{metric.replace("_", " ").title()}', fontsize=19, fontweight='bold', pad=15)
-            else:
-                ax_baseline.set_title(f'{metric.replace("_", " ").title()}', fontsize=19, fontweight='bold', pad=15)
-                ax_random.set_title(f'{metric.replace("_", " ").title()}', fontsize=19, fontweight='bold', pad=15)
+            # Set titles using display names
+            metric_title = display_names.get(metric, metric.replace("_", " ").title())
+            ax_baseline.set_title(metric_title, fontsize=19, fontweight='bold', pad=10)
+            ax_random.set_title(metric_title, fontsize=19, fontweight='bold', pad=10)
         
-        # Add overall title
-        if param_name == 'avg_degree_range':
-            fig.suptitle(f'Parameter Effects: Average Degree Range', 
-                        fontsize=24, fontweight='bold', y=0.96)
-        else:
-            fig.suptitle(f'Parameter Effects: {get_plot_param_name(param_name)}', 
-                        fontsize=24, fontweight='bold', y=0.96)
+        # # Add overall title
+        # if param_name == 'avg_degree_range':
+        #     fig.suptitle(f'Parameter Effects: Average Degree Range', 
+        #                 fontsize=24, fontweight='bold', )
+        # else:
+        #     fig.suptitle(f'Parameter Effects: {get_plot_param_name(param_name)}', 
+        #                 fontsize=24, fontweight='bold')
         
         # Configure method label axes
         if param_name in ['avg_degree_range', 'homophily_range', 'power_law_exponent_range']:
-            ax_label_left.set_title('Systemic Isolated Variation', fontsize=24, fontweight='bold', pad=10, y=-1.8)
+            ax_label_left.set_title('Systemic Isolated Variation', fontsize=24, fontweight='bold', pad=10, y=-1.2)
             ax_label_left.axis('off')  # Hide axes
         
-            ax_label_right.set_title('Randomized Sampling', fontsize=24, fontweight='bold', pad=10, y=-1.8)
+            ax_label_right.set_title('Randomized Sampling', fontsize=24, fontweight='bold', pad=10, y=-1.2)
             ax_label_right.axis('off')  # Hide axes
         else:
-            ax_label_left.set_title('Systemic Isolated Variation', fontsize=24, fontweight='bold', pad=10, y=-1.3)
+            ax_label_left.set_title('Systemic Isolated Variation', fontsize=24, fontweight='bold', pad=10, y=-1.0)
             ax_label_left.axis('off')  # Hide axes
             
-            ax_label_right.set_title('Randomized Sampling', fontsize=24, fontweight='bold', pad=10, y=-1.3)
+            ax_label_right.set_title('Randomized Sampling', fontsize=24, fontweight='bold', pad=10, y=-1.0)
             ax_label_right.axis('off')  # Hide axes
         
         # Save figure
@@ -2940,7 +3217,8 @@ def extract_random_baseline_data(random_results):
 
 def plot_single_metric_data(ax, param_name, metric, metric_type, param_config, 
                            param_results, x_values, x_labels, method_name, annotation_color,
-                           raw_param_values=None, raw_metric_values=None, raw_metric_stds=None):
+                           raw_param_values=None, raw_metric_values=None, raw_metric_stds=None,
+                           is_bottom_row=False, display_names=HEATMAP_DISPLAY_NAMES):
     """
     Plot a single metric using the exact same logic as the individual plotting methods.
     This function contains the unified plotting logic for both baseline and randomized data.
@@ -2948,10 +3226,10 @@ def plot_single_metric_data(ax, param_name, metric, metric_type, param_config,
     # Get metric data from the appropriate dictionary
     if metric_type == 'signal':
         metric_data = param_results['signal_metrics'][metric]
-    elif metric_type == 'property':
-        metric_data = param_results['property_metrics'][metric]
-    else:  # consistency
+    elif metric_type == 'consistency':
         metric_data = param_results['consistency_metrics'][metric]
+    elif metric_type in ['main_property', 'technical']:
+        metric_data = param_results['property_metrics'][metric]
     
     # Check if this is a categorical parameter
     # Special handling for degree_center_method which should be treated as categorical
@@ -2981,10 +3259,12 @@ def plot_single_metric_data(ax, param_name, metric, metric_type, param_config,
         # Use appropriate colors based on metric type - colorblind friendly
         if metric_type == 'signal':
             colors = {'face': 'lightblue', 'median': 'blue', 'whiskers': 'blue'}
-        elif metric_type == 'property':
-            colors = {'face': 'mistyrose', 'median': 'firebrick', 'whiskers': 'firebrick'}
-        else:  # consistency
+        elif metric_type == 'consistency':
             colors = {'face': 'lightgreen', 'median': 'darkgreen', 'whiskers': 'darkgreen'}
+        elif metric_type == 'main_property':
+            colors = {'face': 'mistyrose', 'median': 'firebrick', 'whiskers': 'firebrick'}
+        else:  # technical
+            colors = {'face': 'lightgray', 'median': 'black', 'whiskers': 'black'}
         # Use different annotation colors based on method
         if method_name == "Randomized":
             annotation_color = 'lightgray'  # Use gray for randomized method
@@ -3010,7 +3290,8 @@ def plot_single_metric_data(ax, param_name, metric, metric_type, param_config,
                         means.append(mean_val)
                         stds.append(std_val)
                         
-                        # Also calculate confidence intervals for shaded area
+                        # For baseline method, we'll use standard deviation for shading
+                        # (confidence intervals calculated but not used for shading)
                         ci_lower, ci_upper = calculate_confidence_intervals(all_graph_values)[1:3]
                         ci_lowers.append(ci_lower)
                         ci_uppers.append(ci_upper)
@@ -3025,31 +3306,35 @@ def plot_single_metric_data(ax, param_name, metric, metric_type, param_config,
                     ci_lowers.append(np.nan)
                     ci_uppers.append(np.nan)
             
-            # Plot both confidence intervals (shaded) and error bars
+            # Plot with standard deviation shading for baseline
             valid_indices = [i for i, m in enumerate(means) if not np.isnan(m)]
             if valid_indices:
                 valid_x = [x_values[i] for i in valid_indices]
                 valid_means = [means[i] for i in valid_indices]
                 valid_stds = [stds[i] for i in valid_indices]
-                valid_ci_lower = [ci_lowers[i] for i in valid_indices]
-                valid_ci_upper = [ci_uppers[i] for i in valid_indices]
+                
+                # Calculate standard deviation bounds for shading
+                valid_std_lower = [valid_means[i] - valid_stds[i] for i in range(len(valid_means))]
+                valid_std_upper = [valid_means[i] + valid_stds[i] for i in range(len(valid_means))]
                 
                 # Get color based on metric type - colorblind friendly
                 if metric_type == 'signal':
                     plot_color = 'blue'
-                elif metric_type == 'property':
-                    plot_color = 'firebrick'
-                else:  # consistency
+                elif metric_type == 'consistency':
                     plot_color = 'darkgreen'
+                elif metric_type == 'main_property':
+                    plot_color = 'firebrick'
+                else:  # technical
+                    plot_color = 'black'
                 
-                # Plot shaded confidence intervals first (background)
-                ax.fill_between(valid_x, valid_ci_lower, valid_ci_upper, 
-                              alpha=0.3, color=plot_color, label='95% CI')
+                # Plot shaded standard deviation areas (no label)
+                ax.fill_between(valid_x, valid_std_lower, valid_std_upper, 
+                              alpha=0.3, color=plot_color)
                 
-                # Plot error bars for each family on top
+                # Plot error bars for each family
                 ax.errorbar(valid_x, valid_means, yerr=valid_stds, 
                            fmt='o-', alpha=0.8, markersize=6, capsize=3, capthick=1, 
-                           color=plot_color, linewidth=2, label='Family Mean ± SD')
+                           color=plot_color, linewidth=2)
         else:
             # For randomized continuous parameters, use EXACT same logic as plot_random_baseline_results
             if raw_param_values is not None and raw_metric_values is not None and raw_metric_stds is not None:
@@ -3071,10 +3356,12 @@ def plot_single_metric_data(ax, param_name, metric, metric_type, param_config,
                         # Get color based on metric type - colorblind friendly
                         if metric_type == 'signal':
                             point_color = 'blue'
-                        elif metric_type == 'property':
-                            point_color = 'firebrick'
-                        else:  # consistency
+                        elif metric_type == 'consistency':
                             point_color = 'darkgreen'
+                        elif metric_type == 'main_property':
+                            point_color = 'firebrick'
+                        else:  # technical
+                            point_color = 'black'
                         
                         # Plot scatter with error bars - EXACT same as existing randomized method
                         ax.errorbar(valid_params, valid_metrics, yerr=valid_stds, 
@@ -3112,10 +3399,12 @@ def plot_single_metric_data(ax, param_name, metric, metric_type, param_config,
                     
                     if metric_type == 'signal':
                         point_color = 'blue'
-                    elif metric_type == 'property':
-                        point_color = 'firebrick'
-                    else:  # consistency
+                    elif metric_type == 'consistency':
                         point_color = 'darkgreen'
+                    elif metric_type == 'main_property':
+                        point_color = 'firebrick'
+                    else:  # technical
+                        point_color = 'black'
                     
                     ax.errorbar(valid_params, valid_metrics, yerr=valid_stds, 
                                fmt='o', alpha=0.6, markersize=4, capsize=3, capthick=1, color=point_color)
@@ -3131,6 +3420,7 @@ def plot_single_metric_data(ax, param_name, metric, metric_type, param_config,
         # Use all individual data points, not just means
         all_x_values = []
         all_y_values = []
+        all_family_ids = []
         
         for i, data_point in enumerate(metric_data):
             if data_point['values']:
@@ -3141,10 +3431,18 @@ def plot_single_metric_data(ax, param_name, metric, metric_type, param_config,
                     # Add x value for each individual measurement
                     all_x_values.extend([x_values[i]] * len(all_graph_values))
                     all_y_values.extend(all_graph_values)
+                    # For baseline data, each test value represents a different family
+                    # For randomized data, we need to handle it differently in the calling function
+                    if method_name == "Baseline":
+                        all_family_ids.extend([f"family_{i}"] * len(all_graph_values))
+                    else:  # Randomized
+                        # For randomized, each sample is its own family - but we need to map properly
+                        all_family_ids.extend([f"sample_{i}"] * len(all_graph_values))
         
         if len(all_x_values) > 2:
             result_tuple = calculate_correlation_with_significance(
-                np.array(all_x_values), np.array(all_y_values), param_config['type']
+                np.array(all_x_values), np.array(all_y_values), param_config['type'],
+                family_ids=np.array(all_family_ids)
             )
             results = extract_correlation_results(result_tuple)
             
@@ -3164,20 +3462,28 @@ def plot_single_metric_data(ax, param_name, metric, metric_type, param_config,
                    transform=ax.transAxes, verticalalignment='top', fontsize=13, fontweight='bold',
                    bbox=dict(boxstyle='round,pad=0.4', facecolor='white', edgecolor='black', linewidth=1.0, alpha=0.95))
     
-    ax.set_xlabel(get_plot_param_name(param_name), fontsize=17)
+    # Only show x-axis title on bottom row
+    if is_bottom_row:
+        ax.set_xlabel(get_plot_param_name(param_name), fontsize=17)
+    else:
+        ax.set_xlabel('')
     
     # Set appropriate y-axis label and limits based on metric type
     if metric_type == 'signal':
-        ax.set_ylabel('Signal Value', fontsize=17)
+        ax.set_ylabel('Signal Value', fontsize=18)
         ax.set_ylim(0, 1)
     elif metric_type == 'consistency':
-        ax.set_ylabel('Consistency Value', fontsize=17)
+        ax.set_ylabel('Consistency Value', fontsize=18)
         ax.set_ylim(0, 1)
-    else:  # property
-        ax.set_ylabel('Property Value', fontsize=17)
-        # Don't fix limits for property metrics as they have different scales
+    elif metric_type == 'main_property':
+        ax.set_ylabel('Property Value', fontsize=18)
+        # Set specific limits for main property metrics
         if metric == 'homophily_levels':
             ax.set_ylim(0, 1)
+        # avg_degrees and tail_ratio_99 will use automatic scaling
+    else:  # technical
+        ax.set_ylabel('Technical Value', fontsize=17)
+        # Don't fix limits for technical metrics as they have different scales
     
     # Enhanced publication styling
     ax.tick_params(axis='both', which='major', labelsize=15, length=8, width=1.5)
@@ -3188,6 +3494,7 @@ def plot_single_metric_data(ax, param_name, metric, metric_type, param_config,
     ax.set_facecolor('white')
     
     maybe_add_legend(ax)
+    
     
     # Special handling for x-axis based on method and parameter type
     if method_name == "Randomized" and param_config.get('type') in ['continuous', 'discrete', 'range']:
@@ -3247,6 +3554,9 @@ if __name__ == "__main__":
                        help='Create side-by-side comparison plots for parameters run with both baseline and randomized methods')
     
     args = parser.parse_args()
+    
+    # Always use family means for correlation analysis
+    print("Using correlation method: Family means (simplified approach)")
     
     if not args.plot_only:
         # Update global settings

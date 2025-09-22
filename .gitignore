@@ -7,6 +7,7 @@ transductive_results/
 multi_transductive_results/
 multi_ssl_experiments/
 multi_finetune_results/
+parameter_analysis_results/
 datasets/
 */__pycache__/
 *.pyc
