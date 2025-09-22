@@ -224,7 +224,7 @@ def main():
     st.markdown('<h1 class="main-header">GraphUniverse</h1>', unsafe_allow_html=True)
     
     # Create tabs for better organization
-    tab1, tab2, tab3, tab4 = st.tabs(["🌌 Universe Generation", "📊 Graph Family Generation", "📊 Analysis", "💾 Download"])
+    tab1, tab2, tab3, tab4 = st.tabs(["🌌 Universe Generation", "📊 Graph Family Generation", "🔎 Analysis", "💾 Download"])
     
     # TAB 1: UNIVERSE GENERATION
     with tab1:
@@ -664,7 +664,7 @@ def main():
             
             # Add an announcement banner for downloading or moving to the next page
             st.success("🎉 Graph family successfully generated! You can now download the family or analyze it in detail.")
-            st.info("💡 **Tip:** Use the tabs above to navigate to '📊 Analysis' or '💾 Download' sections.")
+            st.info("💡 **Tip:** Use the tabs above to navigate to '🔎 Analysis' or '💾 Download' sections.")
             
             # We'll show the property validation plot when the user clicks 'Analyze Graph Family'
             
@@ -733,14 +733,14 @@ def main():
             col_nav1, col_nav2 = st.columns(2)
             
             with col_nav1:
-                st.info("💾 **Download:** Use the '💾 Download' tab above to download your graph family")
+                st.info("Use the **'💾 Download'** tab above to download your graph family")
             with col_nav2:
-                st.info("📊 **Analysis:** Use the '📊 Analysis' tab above to analyze your graph family")
+                st.info("Use the **'🔎 Analysis'** tab above to analyze your graph family")
                 
     
     # TAB 3: ANALYSIS
     with tab3:
-        st.markdown('<h2 class="section-header">Graph Family Analysis</h2>', unsafe_allow_html=True)
+        st.markdown('<h2 class="section-header">🔎 Graph Family Analysis</h2>', unsafe_allow_html=True)
         
         # Check if graphs exist
         if 'graphs' not in st.session_state or not st.session_state.graphs:
@@ -918,7 +918,7 @@ def main():
     
     # TAB 4: DOWNLOAD
     with tab4:
-        st.markdown('<h2 class="section-header">Download Graph Family</h2>', unsafe_allow_html=True)
+        st.markdown('<h2 class="section-header">💾 Download Generated Graphs</h2>', unsafe_allow_html=True)
         
         # Check if graphs exist
         if 'graphs' not in st.session_state or not st.session_state.graphs:
@@ -928,11 +928,11 @@ def main():
             graphs = st.session_state.graphs
             family_generator = st.session_state.family_generator
             
-            st.markdown("### 💾 Download PyTorch Geometric Graphs")
+            # st.markdown("### 💾 Download PyTorch Geometric Dataset")
             
             if len(family_generator.graphs) > 0:
                 # Task selection
-                st.markdown("#### Select Tasks and Configure Download")
+                st.markdown("#### Select Tasks and Construct Dataset")
                 available_tasks = [
                     "community_detection",
                     "triangle_counting",
@@ -951,11 +951,12 @@ def main():
                 )
                 
                 # Directory for saving
-                family_dir = st.text_input(
-                    "Save Directory",
-                    value="datasets",
-                    help="Directory where the PyG graphs will be saved"
-                )
+                family_dir = "datasets"
+                # family_dir = st.text_input(
+                #     "Save Directory",
+                #     value="datasets",
+                #     help="Directory where the PyG graphs will be saved"
+                # )
             
                 # Validation and download button
                 if not selected_tasks:
@@ -963,7 +964,7 @@ def main():
                 
                 # Prominent download button
                 if selected_tasks:
-                    if st.button("💾 Download PyG Graphs", type="primary", use_container_width=True):
+                    if st.button("Create PyG Dataset", type="primary", use_container_width=True):
                         try:
                             # Create progress containers
                             progress_container = st.container()
@@ -1007,6 +1008,24 @@ def main():
                             progress_text.text("100% - Complete!")
                             
                             st.success(f"✅ Successfully saved PyG graphs for {len(selected_tasks)} task(s)!")
+
+                            import shutil
+                            # Compress the directory into a ZIP file for download
+                            folder_to_compress = family_generator.dataset.processed_root
+                            dataset_hash = folder_to_compress.split('_')[-1]
+                            shutil.make_archive(dataset_hash, 'zip', folder_to_compress)
+
+                            with open(f"{dataset_hash}.zip", "rb") as fp:
+                                st.download_button(
+                                    label="Download PyG Dataset & Metadata (ZIP)",
+                                    data=fp,
+                                    file_name=f'{dataset_hash}.zip',
+                                    mime='application/zip',
+                                    type="primary", 
+                                    use_container_width=True,
+                                    on_click="ignore",
+                                    icon=":material/download:",
+                                )
                             
                             # Clear progress indicators after a short delay
                             time.sleep(1)
