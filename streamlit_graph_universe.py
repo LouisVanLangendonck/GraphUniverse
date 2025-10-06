@@ -224,7 +224,7 @@ def main():
     st.markdown('<h1 class="main-header">GraphUniverse</h1>', unsafe_allow_html=True)
     
     # Create tabs for better organization
-    tab_names = ["🌌 Universe Generation", "📊 Graph Family Generation", "📊 Analysis", "💾 Download"]
+    tab_names = ["🌌 Universe Generation", "📊 Graph Family Generation", "🔍 Analysis", "💾 Download"]
     
     # Determine which tab should be active
     if 'active_tab' in st.session_state:
@@ -268,27 +268,26 @@ def main():
         st.markdown('<h2 class="section-header">Graph Universe Generation</h2>', unsafe_allow_html=True)
         st.markdown("**Step 1:** Create a new universe. The universe holds all community-related latent properties that can reappear throughout all graphs in the family.")
         
-        # Universe creation
-        st.markdown("### Create New Universe")
-        
         # Universe parameters in main area
-        col1, col2 = st.columns([2, 1])
+        # col1, col2 = st.columns([2, 1])
         
-        with col1:
-            st.markdown("### Universe Parameters")
+        # with col1:
+        st.markdown("### Universe Parameters")
             
-            # Basic universe parameters
-            col_a, col_b = st.columns(2)
-            with col_a:
-                K = st.slider(r"Number of Communities $\boldsymbol{K}$", 2, 20, 10)
-                edge_propensity_variance = st.slider(
-                    r"Edge Propensity Variance $\boldsymbol{\epsilon}$", 
-                    0.0, 1.0, 0.5, 0.01,
-                    help="Amount of variance in edge propensities"
-                )
-                
-                with col_b:
-                    feature_dim = st.slider("Feature Dimension", 1, 50, 15)
+        # Basic universe parameters
+        col_a, col_b = st.columns(2)
+        with col_a:
+            K = st.slider(r"Number of Communities $\boldsymbol{K}$", 2, 20, 10,
+            help="Total number of latent communities in the universe.")
+            edge_propensity_variance = st.slider(
+                r"Edge Propensity Variance $\boldsymbol{\epsilon}$", 
+                0.0, 1.0, 0.5, 0.01,
+                help="Amount of relative variance in base edge connection strength between communities.\n \n Later, for individual graphs, these will eventually be scaled to actual edge probabilties but relative strengths between communities are maintained (apart from homophily scaling)."
+            )
+            
+        with col_b:
+            feature_dim = st.slider("Feature Dimension", 1, 50, 15,
+            help="Feature vector size for each node that will be generated.")
             
         # Feature generation parameters outside the column nesting
         if feature_dim > 0:
@@ -298,31 +297,32 @@ def main():
                 center_variance = st.slider(
                     r"Center Variance $\boldsymbol{\sigma_{\text{center}}}$", 
                     0.01, 1.0, 0.1, 0.01,
-                    help="Separation between cluster centers"
+                    help="Separation between feature cluster centers (one center per community). \n \n High center variance encodes for more community-specific feature signal."
                 )
             with col_d:
                 cluster_variance = st.slider(
                     r"Cluster Variance $\boldsymbol{\sigma_{\text{cluster}}}$", 
                     0.01, 1.0, 0.5, 0.01,
-                    help="Spread within each cluster"
+                    help="Variance applied on community feature center when drawing feature values for each node. \n \n High cluster variance encodes for less community-specific feature signal."
                 )
         else:
             center_variance = 1.0
             cluster_variance = 0.1
         
         # Generation parameters
+        st.markdown("#### Random Seed")
         universe_seed = st.number_input("Universe Seed", value=42, help="Random seed for universe generation")
     
         # Generate Universe Button
         generate_button = st.button("🌌 Generate Universe", type="primary", use_container_width=True)
         
         # Add navigation message below the button (always visible)
-        st.markdown("""
-        <div style="background-color: #e6f3ff; padding: 15px; border-radius: 10px; border-left: 5px solid #0066cc; margin: 15px 0; text-align: center;">
-            <h3 style="color: #0066cc;">🔍 NEXT STEP</h3>
-            <p style="font-size: 16px;">After generating your universe, proceed to the <b>📊 Graph Family Generation</b> tab <b>at the top of the page</b> to create graphs.</p>
-        </div>
-        """, unsafe_allow_html=True)
+        # st.markdown("""
+        # <div style="background-color: #e6f3ff; padding: 15px; border-radius: 10px; border-left: 5px solid #0066cc; margin: 15px 0; text-align: center;">
+        #     <h3 style="color: #0066cc;">🔍 NEXT STEP</h3>
+        #     <p style="font-size: 16px;">After generating your universe, proceed to the <b>📊 Graph Family Generation</b> tab <b>at the top of the page</b> to create graphs.</p>
+        # </div>
+        # """, unsafe_allow_html=True)
         
         if generate_button:
             with st.spinner("Creating Graph Universe..."):
@@ -377,9 +377,9 @@ def main():
                 
                 # Add a more visible navigation guide that spans the entire page
                 st.markdown("""
-                <div style="background-color: #e6f3ff; padding: 20px; border-radius: 10px; border-left: 5px solid #0066cc; margin: 20px 0; text-align: center;">
-                    <h2 style="color: #0066cc;">🔍 WHAT'S NEXT?</h2>
-                    <p style="font-size: 18px;">Now that you have created your universe, click on the <b>📊 Graph Family Generation</b> tab <b>at the top of the page</b> to create graphs based on this universe.</p>
+                <div style="background-color: #f0f2f6; padding: 20px; border-radius: 10px; border-left: 5px solid #4b6584; margin: 20px 0; text-align: center;">
+                    <h2 style="color: #4b6584;">🔍 WHAT'S NEXT?</h2>
+                    <p style="font-size: 18px; color: #2d3436;">Now that you have created your universe, click on the <b>📊 Graph Family Generation</b> tab <b>at the top of the page</b> to create graphs based on this universe.</p>
                 </div>
                 """, unsafe_allow_html=True)
                     
@@ -387,16 +387,32 @@ def main():
         
         # Universe Status section (visible for both options)
         st.markdown("---")
-        col_status1, col_status2 = st.columns([1, 1])
-        
-        with col_status1:
-            st.markdown("### Universe Status")
+
+        st.markdown("### Universe Status")
             
+        if 'universe' in st.session_state and st.session_state.universe is not None:
+            universe = st.session_state.universe
+            params = st.session_state.get('universe_params', {})
+
+            st.success("🌌 Universe Ready")
+
+            st.markdown("""
+            <div style="background-color: #f0f2f6; padding: 15px; border-radius: 10px; border-left: 5px solid #4b6584; margin: 15px 0; text-align: center;">
+                <h3 style="color: #4b6584;">❗ NEXT STEP</h3>
+                <p style="font-size: 16px; color: #2d3436;">After generating your universe, proceed to the <b>📊 Graph Family Generation</b> tab <b>at the top of the page</b> to create graphs.</p>
+            </div>
+            """, unsafe_allow_html=True)
+        else:
+            st.warning("⚠️ No Universe Available")
+            st.info("Create a new universe to proceed with graph family generation.")
+        
+        col_status1, col_status2 = st.columns([1, 1])
+
+        with col_status1:
             if 'universe' in st.session_state and st.session_state.universe is not None:
                 universe = st.session_state.universe
-                params = st.session_state.get('universe_params', {})
-                
-                st.success("🌌 Universe Ready")
+
+                st.markdown("#### Generated Universe Details")
                 st.metric("Communities", universe.K)
                 st.metric("Feature Dim", universe.feature_dim)
                 st.metric("Edge Propensity Variance", f"{universe.edge_propensity_variance:.3f}")
@@ -407,15 +423,15 @@ def main():
                 fig_feature_centers = plot_universe_feature_centers(universe)
                 st.pyplot(fig_feature_centers)
                 plt.close(fig_feature_centers)
-            else:
-                st.warning("⚠️ No Universe Available")
-                st.info("Create a new universe to proceed with graph family generation.")
+            # else:
+            #     st.warning("⚠️ No Universe Available")
+            #     st.info("Create a new universe to proceed with graph family generation.")
         
         with col_status2:
             if 'universe' in st.session_state and st.session_state.universe is not None:
                 universe = st.session_state.universe
 
-                st.markdown("#### Universe Raw Edge Propensity Matrix " + r"$\tilde{\mathbf{P}}$")
+                st.markdown("#### Raw Edge Propensity Matrix " + r"$\tilde{\mathbf{P}}$")
                 # Create a simple probability matrix visualization
                 fig, ax = plt.subplots(figsize=(8, 6))
                 im = ax.imshow(universe.P, cmap='viridis', aspect='auto')
@@ -446,12 +462,12 @@ def main():
                 st.markdown("---")
         
         # Add a prominent navigation message at the bottom of the universe tab that spans the full page width
-        st.markdown("""
-        <div style="background-color: #e6f3ff; padding: 25px; border-radius: 10px; border-left: 8px solid #0066cc; margin: 30px 0; text-align: center;">
-            <h2 style="color: #0066cc; font-size: 24px;">🔍 WHAT'S NEXT?</h2>
-            <p style="font-size: 18px; margin: 15px 0;">Now that you have created your universe, proceed to the <b>📊 Graph Family Generation</b> tab <b>at the top of the page</b> to create graphs based on this universe.</p>
-        </div>
-        """, unsafe_allow_html=True)
+        # st.markdown("""
+        # <div style="background-color: #e6f3ff; padding: 25px; border-radius: 10px; border-left: 8px solid #0066cc; margin: 30px 0; text-align: center;">
+        #     <h2 style="color: #0066cc; font-size: 24px;">🔍 WHAT'S NEXT?</h2>
+        #     <p style="font-size: 18px; margin: 15px 0;">Now that you have created your universe, proceed to the <b>📊 Graph Family Generation</b> tab <b>at the top of the page</b> to create graphs based on this universe.</p>
+        # </div>
+        # """, unsafe_allow_html=True)
                     
     # TAB 2: GRAPH FAMILY GENERATION  
     with tab2:
@@ -470,129 +486,150 @@ def main():
         
         # Create a container with a light background for parameters
         with st.container():
-            st.markdown("""
-            <style>
-            .parameter-container {
-                background-color: #f8f9fa;
-                padding: 15px;
-                border-radius: 10px;
-                margin-bottom: 20px;
-            }
-            </style>
-            """, unsafe_allow_html=True)
+            # st.markdown("""
+            # <style>
+            # .parameter-container {
+            #     background-color: #f8f9fa;
+            #     padding: 15px;
+            #     border-radius: 10px;
+            #     margin-bottom: 20px;
+            # }
+            # </style>
+            # """, unsafe_allow_html=True)
             
-            st.markdown('<div class="parameter-container">', unsafe_allow_html=True)
+            # st.markdown('<div class="parameter-container">', unsafe_allow_html=True)
+
+            st.markdown("#### Basic Properties")
             
             # Basic parameters in the first row
             col1, col2 = st.columns(2)
             with col1:
                 n_graphs = st.slider("Number of Graphs " + r"$\boldsymbol{g}$", 1, 100, 20, 
-                                    help="Number of graphs to generate. In this demo version, for limited app hosting purposes, the number of graphs is limited to 100.")
+                                    help="Number of graphs to generate in the family. \n \n In this demo version, for limited app hosting purposes, the maximum number of graphs is limited to 100.")
                 
                 min_n_nodes, max_n_nodes = st.slider("Node Count " + r"$\boldsymbol{n_{\text{min}}}$ - " + r"$\boldsymbol{n_{\text{max}}}$", 
                                                     10, 500, (100, 300), 
-                                                    help="Minimum and maximum number of nodes per graph. In this demo version, for limited app hosting purposes, the number of nodes is limited to 500.")
+                                                    help="The allowed range (minimum and maximum) of number of nodes in each graph of the family. That is, each graph instance will sample one target value from this range. \n \n In this demo version, for limited app hosting purposes, the maximum number of nodes is limited to 500.")
             
             with col2:
                 homophily_min, homophily_max = st.slider(
                     r"Homophily Range $\boldsymbol{h_{\text{min}}}$ - " + r"$\boldsymbol{h_{\text{max}}}$",
                     0.0, 1.0, (0.1, 0.4),
+                    help="The allowed range (minimum and maximum) of homophily in each graph of the family. That is, each graph instance will sample one target value from this range. \n \n Homophily is the probability of a node connecting to a node in the same community (so label homophily and indirectly also feature homophily)."
                 )
                 
                 avg_degree_min, avg_degree_max = st.slider(
                     "Average Degree Range " + r"$\boldsymbol{d_{\text{min}}}$ - " + r"$\boldsymbol{d_{\text{max}}}$",
                     1.0, 30.0, (2.0, 5.0),
-                    help="In this demo version, for limited app hosting purposes, the average degree is limited to 30."
+                    help="The allowed range (minimum and maximum) of average degree in each graph of the family. That is, each graph instance will sample one target value from this range. \n \n In this demo version, for limited app hosting purposes, the maximum average degree is limited to 30."
                 )
             
             # Community parameters
-            st.markdown("#### Community Settings")
-            col3, col4 = st.columns(2)
+            st.markdown("#### Community Participation")
+            # col3, col4 = st.columns(2)
             
-            with col3:
-                # Ensure max_communities doesn't exceed the universe's K value
-                universe_k = universe.K
-                
-                # If the universe K value has changed, we need to adjust the default values
-                stored_k = st.session_state.get('universe_k', universe_k)
-                if stored_k != universe_k:
-                    st.session_state.universe_k = universe_k
-                
-                default_min = min(3, universe_k)
-                default_max = min(8, universe_k)
-                
-                # If the user previously selected values, try to preserve them within the new constraints
-                if 'min_communities' in st.session_state and 'max_communities' in st.session_state:
-                    prev_min = st.session_state.min_communities
-                    prev_max = st.session_state.max_communities
-                    default_min = min(prev_min, universe_k)
-                    default_max = min(prev_max, universe_k)
-                
-                min_communities, max_communities = st.slider(
-                    "Number of participating communities per graph " + r"$\boldsymbol{k_{\text{min}}}$ - " + r"$\boldsymbol{k_{\text{max}}}$", 
-                    2, universe_k, (default_min, default_max),
-                    key="communities_slider"
-                )
-                
-                # Store the current values for future reference
-                st.session_state.min_communities = min_communities
-                st.session_state.max_communities = max_communities
+            # with col3:
+            # Ensure max_communities doesn't exceed the universe's K value
+            universe_k = universe.K
             
-            with col4:
-                degree_separation_min, degree_separation_max = st.slider(
-                    r"Degree Separation Range $\boldsymbol{\rho _{\text{min}}}$ - " + r"$\boldsymbol{\rho_{\text{max}}}$",
-                    0.0, 1.0, (0.7, 1.0),
-                )
+            # If the universe K value has changed, we need to adjust the default values
+            stored_k = st.session_state.get('universe_k', universe_k)
+            if stored_k != universe_k:
+                st.session_state.universe_k = universe_k
+            
+            default_min = min(3, universe_k)
+            default_max = min(8, universe_k)
+            
+            # If the user previously selected values, try to preserve them within the new constraints
+            if 'min_communities' in st.session_state and 'max_communities' in st.session_state:
+                prev_min = st.session_state.min_communities
+                prev_max = st.session_state.max_communities
+                default_min = min(prev_min, universe_k)
+                default_max = min(prev_max, universe_k)
+            
+            min_communities, max_communities = st.slider(
+                "Number of participating communities per graph " + r"$\boldsymbol{k_{\text{min}}}$ - " + r"$\boldsymbol{k_{\text{max}}}$", 
+                2, universe_k, (default_min, default_max),
+                key="communities_slider",
+                help="The allowed range (minimum and maximum) of number of universe communities participating in each graph of the family. That is, each graph instance will sample one target value from this range. \n \n For each graph, the participating communities are drawn randomly."
+            )
+            
+            # Store the current values for future reference
+            st.session_state.min_communities = min_communities
+            st.session_state.max_communities = max_communities
+            
+            # with col4:
+            #     
             
             # Degree distribution parameters
             st.markdown("#### Degree Distribution Settings")
+            degree_separation_min, degree_separation_max = st.slider(
+                   r"Degree Separation Range $\boldsymbol{\rho _{\text{min}}}$ - " + r"$\boldsymbol{\rho_{\text{max}}}$",
+                   0.0, 1.0, (0.7, 1.0),
+                   help="The allowed range (minimum and maximum) of degree separation in each graph of the family. That is, each graph instance will sample one target value from this range. \n \n Degree separation is a measure of how much the universe-level differences in community-specific degree propensity values influence the assignment of degree factors to each node. For example, if degree seperation is high, and a participating community has a high degree propensity value (see universe level), then the high degree factors from the target degree distribution for that graph will exclusively be assigned to nodes of that community, resulting in strictly high degree nodes for that community. However, if degree seperation is low, then degree factors will be assigned basically evenly across all communities (recovering the random assignment seen in the original DC-SBM algorithm)."
+               )
+
             col5, col6 = st.columns(2)
-            
+    
             with col5:
                 degree_distribution = st.selectbox(
                     "Degree Distribution",
                     ["power_law", "exponential", "uniform"],
-                    help="Type of degree distribution. More options included here than in the original paper to play around with. Power law generally seen as most realistic.",
+                    help="Type of degree distribution. More options included here than in the original paper to play around with. Power law generally seen as most realistic for real-world networks. For a more detailed explanation, see the original paper.",
                     key="degree_distribution_selector"
                 )
-            
-            with col6:
-                family_seed = st.number_input("Family Seed", value=123)
-                timeout_minutes = st.slider("Timeout (minutes)", 1.0, 30.0, 5.0, 
-                                         help="Timeout for generation. If the generation takes too long, you can increase this value.")
-            
+                
             # Conditional parameters based on degree distribution
             if degree_distribution == "power_law":
-                power_law_min, power_law_max = st.slider(
-                    "Power Law Exponent Range",
-                    1.5, 5.0, (2.0, 2.5),
-                )
+                with col6:
+                    power_law_min, power_law_max = st.slider(
+                        "Power Law Exponent Range",
+                        1.5, 5.0, (2.0, 2.5),
+                        help="The allowed range (minimum and maximum) of power law exponent in each graph of the family. That is, each graph instance will sample one target value from this range. \n \n The power law exponent is the exponent of the power law distribution. For example, if the power law exponent is 2.5, then the target degree distribution will roughlyfollow the following distribution: P(k) = k^(-2.5). In practice we use the discrete Pareto distribution (discrete power law distribution)."
+                    )
             else:
-                power_law_min, power_law_max = 2.5, 2.5
+                with col6:
+                    power_law_min, power_law_max = 2.5, 2.5
                 
             if degree_distribution == "exponential":
-                exp_min, exp_max = st.slider(
+                with col6:
+                    exp_min, exp_max = st.slider(
                     "Exponential Rate Range",
                     0.1, 2.0, (0.3, 1.0),
+                    help="The allowed range (minimum and maximum) of exponential rate in each graph of the family. That is, each graph instance will sample one target value from this range. \n \n The exponential rate is the rate of the exponential distribution. For example, if the exponential rate is 1.0, then the target degree distribution will roughlyfollow the following distribution: P(k) = exp(-k). In practice we use the discrete exponential distribution (discrete exponential distribution)."
                 )
             else:
-                exp_min, exp_max = 0.5, 0.5
+                with col6:
+                    exp_min, exp_max = 0.5, 0.5
                 
             if degree_distribution == "uniform":
-                col_u1, col_u2 = st.columns(2)
-                with col_u1:
+                with col6:
                     uniform_min_min, uniform_min_max = st.slider(
                         "Uniform Min Factor Range",
                         0.1, 1.0, (0.3, 0.7),
+                        help="The allowed range (minimum and maximum) of uniform min factor in each graph of the family. That is, each graph instance will sample one target value from this range. \n \n The uniform min factor is the minimum factor of the uniform distribution. For example, if the uniform min factor is 0.3, then the target degree distribution will randomly draw factors (not actual degrees!) between 0.3 and a maximum factor drawn below."
                     )
+                col_u1, col_u2 = st.columns(2)
                 with col_u2:
                     uniform_max_min, uniform_max_max = st.slider(
                         "Uniform Max Factor Range",
                         1.0, 3.0, (1.3, 2.0),
+                        help="The allowed range (minimum and maximum) of uniform max factor in each graph of the family. \n \n The uniform max factor is the maximum factor of the uniform distribution. For example, if the uniform max factor is 2.0, then the target degree distribution will randomly draw factors (not actual degrees!) between a minimum factor drawn above and 2.0."
                     )
             else:
                 uniform_min_min, uniform_min_max = 0.5, 0.5
                 uniform_max_min, uniform_max_max = 1.5, 1.5
+            
+            st.markdown("#### Generation Timeout & Seeding")
+
+            col7, col8 = st.columns(2)
+    
+            with col7:  
+                family_seed = st.number_input("Family Seed", value=123, help="Seed for the family generation. If you want to generate the same family again, you can set the same seed.")
+            with col8:
+                timeout_minutes = st.slider("Timeout (minutes)", 1.0, 30.0, 5.0, 
+                                         help="Timeout for generation. If the generation takes too long, you can increase this value.")
+            
             
             st.markdown('</div>', unsafe_allow_html=True)
             
@@ -731,8 +768,8 @@ def main():
             
             # Add a more subtle navigation guide
             st.markdown("""
-            <div style="background-color: #f0fff4; padding: 15px; border-radius: 10px; border-left: 5px solid #2e7d32; margin: 15px 0;">
-                <p style="font-size: 16px; margin: 0;">Click on the <b>📊 Analysis</b> tab <b>at the top of the page</b> to analyze your graph family in detail, or the <b>💾 Download</b> tab to save your data.</p>
+            <div style="background-color: #f0f2f6; padding: 15px; border-radius: 10px; border-left: 5px solid #4b6584; margin: 15px 0;">
+                <p style="font-size: 16px; color: #2d3436; margin: 0;">Click on the <b>🔍 Analysis</b> tab <b>at the top of the page</b> to analyze your graph family in detail, or the <b>💾 Download</b> tab to save your data.</p>
             </div>
             """, unsafe_allow_html=True)
             
@@ -804,20 +841,20 @@ def main():
             # Create a more prominent next steps section
             st.markdown("""
             <div style="display: flex; gap: 20px; margin: 20px 0;">
-                <div style="flex: 1; background-color: #e1f5fe; padding: 20px; border-radius: 10px; border-left: 6px solid #0288d1; text-align: center;">
-                    <h3 style="color: #0288d1; font-size: 20px;">💾 DOWNLOAD</h3>
-                    <p style="font-size: 16px; margin-top: 10px;">Use the <b>💾 Download</b> tab <b>at the top of the page</b> to save your graph family</p>
+                <div style="flex: 1; background-color: #f0f2f6; padding: 20px; border-radius: 10px; border-left: 6px solid #4b6584; text-align: center;">
+                    <h3 style="color: #4b6584; font-size: 20px;">💾 DOWNLOAD</h3>
+                    <p style="font-size: 16px; color: #2d3436; margin-top: 10px;">Use the <b>💾 Download</b> tab <b>at the top of the page</b> to save your graph family</p>
                 </div>
-                <div style="flex: 1; background-color: #e8f5e9; padding: 20px; border-radius: 10px; border-left: 6px solid #2e7d32; text-align: center;">
-                    <h3 style="color: #2e7d32; font-size: 20px;">📊 ANALYSIS</h3>
-                    <p style="font-size: 16px; margin-top: 10px;">Use the <b>📊 Analysis</b> tab <b>at the top of the page</b> to analyze your graph family</p>
+                <div style="flex: 1; background-color: #f0f2f6; padding: 20px; border-radius: 10px; border-left: 6px solid #4b6584; text-align: center;">
+                    <h3 style="color: #4b6584; font-size: 20px;">🔍 ANALYSIS</h3>
+                    <p style="font-size: 16px; color: #2d3436; margin-top: 10px;">Use the <b>📊 Analysis</b> tab <b>at the top of the page</b> to analyze your graph family</p>
                 </div>
             </div>
             """, unsafe_allow_html=True)
                 
     # TAB 3: ANALYSIS
     with tab3:
-        st.markdown('<h2 class="section-header">🔎 Graph Family Analysis</h2>', unsafe_allow_html=True)
+        st.markdown('<h2 class="section-header">🔍 Graph Family Analysis</h2>', unsafe_allow_html=True)
         
         # Check if graphs exist
         if 'graphs' not in st.session_state or not st.session_state.graphs:

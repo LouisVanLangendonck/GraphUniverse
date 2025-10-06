@@ -1224,7 +1224,7 @@ def create_summary_heatmap(results_dict, save_path='parameter_sensitivity_heatma
         # FIX: Set tick positions AND labels for continuous parameters
         ax1.set_xticks(np.arange(len(metrics)))
         ax1.set_yticks(np.arange(len(continuous_params)))
-        ax1.set_xticklabels([display_names.get(m, m.replace('_', ' ').title()) for m in metrics], rotation=45, ha='right', fontsize=14)
+        ax1.set_xticklabels([display_names.get(m, m.replace('_', ' ').title()) for m in metrics], rotation=25, ha='right', fontsize=14)
         ax1.set_yticklabels([display_names.get(p, get_plot_param_name(p)) for p in continuous_params], fontsize=14)
         ax1.set_title('Continuous Parameters: Pearson Correlation Coefficients', fontsize=16, pad=20)
         
@@ -1282,7 +1282,7 @@ def create_summary_heatmap(results_dict, save_path='parameter_sensitivity_heatma
         # FIX: Set tick positions AND labels for categorical parameters
         ax2.set_xticks(np.arange(len(metrics)))
         ax2.set_yticks(np.arange(len(categorical_params)))
-        ax2.set_xticklabels([display_names.get(m, m.replace('_', ' ').title()) for m in metrics], rotation=45, ha='right', fontsize=14)
+        ax2.set_xticklabels([display_names.get(m, m.replace('_', ' ').title()) for m in metrics], rotation=25, ha='right', fontsize=14)
         ax2.set_yticklabels([display_names.get(p, get_plot_param_name(p)) for p in categorical_params], fontsize=14)
         ax2.set_title('Categorical Parameters: Mann-Whitney U Test of Identical Distribution', fontsize=16, pad=20)
         
@@ -1335,7 +1335,7 @@ def create_summary_heatmap(results_dict, save_path='parameter_sensitivity_heatma
         # FIX: Set tick positions AND labels for continuous parameters only case
         ax.set_xticks(np.arange(len(metrics)))
         ax.set_yticks(np.arange(len(continuous_params)))  # This is the key fix!
-        ax.set_xticklabels([display_names.get(m, m.replace('_', ' ').title()) for m in metrics], rotation=45, ha='right', fontsize=16)
+        ax.set_xticklabels([display_names.get(m, m.replace('_', ' ').title()) for m in metrics], rotation=25, ha='right', fontsize=16)
         ax.set_yticklabels([display_names.get(p, get_plot_param_name(p)) for p in continuous_params], fontsize=16)
         
         # Add vertical lines to separate metric groups
