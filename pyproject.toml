@@ -60,10 +60,10 @@ doc = [
 ]
 lint = [
     "pre-commit",
-    "ruff"
+    "ruff>=0.1.0"
 ]
 test = [
-    "pytest",
+    "pytest>=7.0",
     "pytest-cov",
     "coverage",
     "jupyter",
@@ -85,3 +85,103 @@ include = [
     "graph_universe",
     "graph_universe.*"
 ]
+
+[tool.coverage.run]
+source = ["graph_universe"]
+omit = ["*/test/*", "*/__pycache__/*"]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise AssertionError",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["test"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "--import-mode=importlib"
+
+# ============================================================
+# Ruff Configuration
+# ============================================================
+
+[tool.ruff]
+# Maximum line length (matches Black default)
+line-length = 100
+
+# Python version for compatibility
+target-version = "py310"
+
+# Directories to exclude from linting
+exclude = [
+    ".git",
+    ".pytest_cache",
+    "__pycache__",
+    "*.egg-info",
+    ".venv",
+    "venv",
+    "build",
+    "dist",
+]
+
+[tool.ruff.lint]
+# Enable specific rule sets
+select = [
+    "E",     # pycodestyle errors (PEP 8 violations)
+    "W",     # pycodestyle warnings
+    "F",     # pyflakes (undefined names, unused imports)
+    "I",     # isort (import sorting)
+    "N",     # pep8-naming (naming conventions)
+    "UP",    # pyupgrade (modern Python syntax)
+    "B",     # flake8-bugbear (likely bugs)
+    "C4",    # flake8-comprehensions (better comprehensions)
+    "SIM",   # flake8-simplify (simplification suggestions)
+    "NPY",   # numpy-specific rules
+    "RUF",   # ruff-specific rules
+]
+
+# Rules to ignore
+ignore = [
+    "E501",   # Line too long (let formatter handle this)
+    "B008",   # Function call in default argument (common in ML)
+    "N803",   # Argument name should be lowercase (for math: K, P, etc.)
+    "N806",   # Variable in function should be lowercase (for math)
+    "SIM108", # Use ternary operator (sometimes less readable)
+    "NPY002", # Using np.random.Generator instead of np.random.seed and no.random.Uniform etc.
+]
+
+# Allow specific violations in specific files
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = [
+    "F401",  # Unused import (OK in __init__.py for re-exports)
+    "F403",  # Star import (sometimes needed)
+]
+"test_*.py" = [
+    "N802",  # Function name should be lowercase (test_ClassName is OK)
+    "N806",  # Variable should be lowercase (OK in tests)
+    "B011",  # Assert false (used in tests)
+]
+
+# Specific rule configurations
+[tool.ruff.lint.isort]
+known-first-party = ["graph_universe"]
+section-order = ["future", "standard-library", "third-party", "first-party", "local-folder"]
+
+[tool.ruff.lint.pep8-naming]
+# Allow mathematical variable names
+extend-ignore-names = ["K", "P", "N", "X", "Y"]
+
+[tool.ruff.format]
+# Use double quotes (default)
+quote-style = "double"
+
+# Use spaces for indentation
+indent-style = "space"
+
+# Respect magic trailing comma (keeps multi-line formatting)
+skip-magic-trailing-comma = false
