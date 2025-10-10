@@ -259,6 +259,10 @@ class GraphSample:
                 )
                 if degree_distribution == "power_law":
                     self.generation_params["power_law_exponent"] = power_law_exponent
+                else:
+                    raise ValueError(
+                        f"Invalid degree distribution for classical DC-SBM: {degree_distribution}"
+                    )
 
             # Set random seed if provided
             if seed is not None:
@@ -550,57 +554,55 @@ class GraphSample:
         other_components: list[set[int]],
         deviation_matrix: np.ndarray,
         actual_matrix: np.ndarray,
-    ) -> tuple[int, int] | None:
+    ):
         """
-        Find the best connection between the smallest component and other components.
-
-        Args:
-            smallest_component: Set of nodes in the smallest component
-            other_components: List of other component node sets
-            deviation_matrix: Current deviation matrix (actual - expected)
-            actual_matrix: Current actual probability matrix
-
-        Returns:
-            Tuple of (node_from, node_to) for the best connection, or None if no valid connection
+        Connect disconnected components of the graph iteratively, starting with the smallest component.
+        Uses deviation analysis to find optimal connections that bring the actual probability matrix
+        closer to the expected P_sub matrix.
         """
-        best_connection = None
-        best_score = float("-inf")
-
         # Get communities in the smallest component
-        smallest_communities = {self.community_labels[node] for node in smallest_component}
+        smallest_communities = set(self.community_labels[node] for node in smallest_component)
 
-        # Check all possible connections from smallest component to other components
+        # Track allowed and disallowed connections separately
+        allowed_connections = []  # (score, node_from, node_to)
+        disallowed_connections = []  # (score, node_from, node_to)
+
+        # Check all possible connections
         for other_component in other_components:
-            other_communities = {self.community_labels[node] for node in other_component}
+            other_communities = set(self.community_labels[node] for node in other_component)
 
-            # Check all community pairs between smallest and other component
             for comm_small in smallest_communities:
                 for comm_other in other_communities:
-                    # Skip if P_sub[comm_small, comm_other] is 0 (no connection allowed)
-                    if self.P_sub[comm_small, comm_other] <= 0:
+                    node_from = self._find_node_in_community(smallest_component, comm_small)
+                    node_to = self._find_node_in_community(other_component, comm_other)
+
+                    if node_from is None or node_to is None:
                         continue
 
-                    # Calculate potential improvement score
-                    current_deviation = deviation_matrix[comm_small, comm_other]
-
-                    # Prefer negative deviations (actual < expected) - these are good to increase
-                    if current_deviation < 0:
-                        score = -current_deviation  # Higher score for more negative deviation
+                    # Score the connection
+                    if self.P_sub[comm_small, comm_other] > 0:
+                        # Allowed connection - score by deviation
+                        current_deviation = deviation_matrix[comm_small, comm_other]
+                        if current_deviation < 0:
+                            score = -current_deviation
+                        else:
+                            score = -abs(current_deviation)
+                        allowed_connections.append((score, node_from, node_to))
                     else:
-                        # For positive deviations, prefer smaller ones
-                        score = -abs(current_deviation)
+                        # Disallowed connection - score by minimal damage
+                        score = -actual_matrix[comm_small, comm_other]
+                        disallowed_connections.append((score, node_from, node_to))
 
-                    # If this is better than current best, update
-                    if score > best_score:
-                        best_score = score
-                        # Find a node from each community to connect
-                        node_from = self._find_node_in_community(smallest_component, comm_small)
-                        node_to = self._find_node_in_community(other_component, comm_other)
-
-                        if node_from is not None and node_to is not None:
-                            best_connection = (node_from, node_to)
-
-        return best_connection
+        # Prefer allowed connections, fall back to disallowed
+        if allowed_connections:
+            best = max(allowed_connections, key=lambda x: x[0])
+            return (best[1], best[2])
+        elif disallowed_connections:
+            best = max(disallowed_connections, key=lambda x: x[0])
+            return (best[1], best[2])
+        else:
+            # Ultimate fallback - just connect any two nodes
+            raise ValueError("No valid connections found")
 
     def _find_node_in_community(self, component: set[int], community: int) -> int | None:
         """
@@ -943,11 +945,10 @@ class GraphSample:
         P_scaled = P_sub.copy()
 
         # Convert target average degree to equivalent density
-        # avg_degree = (2 * edges / n_nodes) / 2 -> avg_degree = edges / n_nodes -> extra /2 because undirected graph
+        # avg_degree = (2 * edges / n_nodes) -> avg_degree = edges / n_nodes
         # density = edges / (n_nodes * (n_nodes - 1) / 2)
-        # Therefore: density = 2 * avg_degree / (n_nodes - 1)
+        # Therefore: density = avg_degree / (n_nodes - 1)
         target_density = target_avg_degree / (n_nodes - 1)
-        # These extra *2 factors are more internal to the practicalities of the graph libraries and not included in paper formulas. Empirically validated though.
 
         # Create masks for diagonal and off-diagonal elements
         diagonal_mask = np.eye(n, dtype=bool)
@@ -991,18 +992,6 @@ class GraphSample:
 
         # Now ensure all probabilities are in [0, 1] for actual graph generation
         P_scaled = np.clip(P_scaled, 0, 1)
-        # print(P_scaled)
-
-        # # Recalculate actual values after clipping
-        # actual_diagonal_sum = np.sum(P_scaled[diagonal_mask])
-        # actual_total_sum = np.sum(P_scaled)
-
-        # # If clipping significantly affected our targets, do one final density adjustment
-        # actual_density = actual_total_sum / (n * n)
-        # if abs(actual_density - target_density) > 1e-3:
-        #     density_correction = target_density / actual_density
-        #     P_scaled = P_scaled * density_correction
-        #     P_scaled = np.clip(P_scaled, 0, 1)  # Clip again after final adjustment
 
         return P_scaled
 
@@ -1138,9 +1127,11 @@ class GraphSample:
         Returns:
             Dictionary with analysis results
         """
-        actual_matrix, community_sizes, connection_counts = (
-            self.calculate_actual_probability_matrix()
-        )
+        (
+            actual_matrix,
+            community_sizes,
+            connection_counts,
+        ) = self.calculate_actual_probability_matrix()
 
         # Calculate deviations
         deviation_matrix = np.abs(actual_matrix - self.P_sub)
