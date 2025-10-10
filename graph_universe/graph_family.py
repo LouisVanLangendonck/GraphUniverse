@@ -154,7 +154,8 @@ class GraphFamilyGenerator:
             # Check for timeout
             if time.time() - start_time > timeout_seconds:
                 warnings.warn(
-                    f"Timeout reached after {timeout_minutes} minutes. Generated {len(self.graphs)} graphs instead of {self.n_graphs}", stacklevel=2
+                    f"Timeout reached after {timeout_minutes} minutes. Generated {len(self.graphs)} graphs instead of {self.n_graphs}",
+                    stacklevel=2,
                 )
                 break
 
@@ -890,9 +891,7 @@ class GraphFamilyGenerator:
                 P_sub = graph.P_sub
 
                 # Get actual connections
-                actual_edge_probabilities, _, _ = (
-                    graph.calculate_actual_probability_matrix()
-                )
+                actual_edge_probabilities, _, _ = graph.calculate_actual_probability_matrix()
 
                 # Calculate rank correlation per row comparing the expected and actual edge probabilities and average them
                 if len(P_sub) > 1 and np.std(P_sub) > 0 and np.std(actual_edge_probabilities) > 0:
@@ -903,7 +902,9 @@ class GraphFamilyGenerator:
                             correlations.append(correlation)
                     pattern_correlations.append(np.mean(correlations))
             except Exception as e:
-                warnings.warn(f"Error in pattern consistency calculation for graph: {e}", stacklevel=2)
+                warnings.warn(
+                    f"Error in pattern consistency calculation for graph: {e}", stacklevel=2
+                )
                 continue
 
         return pattern_correlations
@@ -936,7 +937,9 @@ class GraphFamilyGenerator:
                     fidelity_scores.append(pearsonr(expected_flat, actual_flat)[0])
 
             except Exception as e:
-                warnings.warn(f"Error in generation fidelity calculation for graph: {e}", stacklevel=2)
+                warnings.warn(
+                    f"Error in generation fidelity calculation for graph: {e}", stacklevel=2
+                )
                 continue
 
         if not fidelity_scores:

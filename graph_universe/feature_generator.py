@@ -11,12 +11,8 @@ class FeatureGenerator:
     Args:
         universe_K: Total number of communities in the universe
         feature_dim: Dimension of node features
-        cluster_count_factor: Controls number of clusters relative to communities
-                                (0.1 = few clusters, 1.0 = same as communities, 4.0 = many clusters)
         center_variance: Controls separation between cluster centers
         cluster_variance: Controls spread within each cluster
-        assignment_skewness: Kept for backward compatibility (not used)
-        community_exclusivity: Kept for backward compatibility (not used)
         seed: Random seed for reproducibility
     """
 
@@ -24,11 +20,8 @@ class FeatureGenerator:
         self,
         universe_K: int,
         feature_dim: int,
-        cluster_count_factor: float = 1.0,  # Number of clusters relative to communities (0.1 to 4.0)
         center_variance: float = 1.0,  # Separation between cluster centers
         cluster_variance: float = 0.1,  # Spread within each cluster
-        assignment_skewness: float = 0.0,  # Kept for backward compatibility (not used)
-        community_exclusivity: float = 1.0,  # Kept for backward compatibility (not used)
         seed: int | None = None,
     ):
         self.universe_K = universe_K
@@ -36,22 +29,22 @@ class FeatureGenerator:
         self.center_variance = center_variance
         self.cluster_variance = cluster_variance
 
-        # Kept for backward compatibility
-        self.assignment_skewness = 0.0
-        self.community_exclusivity = 1.0
-
-        # Set random seed if provided
+        # Set random seed
         if seed is not None:
+            self.seed = seed
             np.random.seed(seed)
+        else:
+            np.random.seed(42)
+            self.seed = 42
 
         # Determine number of clusters
-        self.n_clusters = max(1, int(universe_K * cluster_count_factor))
+        self.n_clusters = universe_K
 
         # Generate cluster centers
         self.cluster_centers = self._generate_cluster_centers()
 
         # Create simple one-to-one community-cluster mapping
-        self.community_cluster_probs = self._create_community_cluster_mapping()
+        self.community_cluster_probs = np.eye(self.n_clusters)
 
         # Track assignment statistics
         self.cluster_stats = {}
@@ -68,25 +61,6 @@ class FeatureGenerator:
             0, self.center_variance, size=(self.n_clusters, self.feature_dim)
         )
         return centers
-
-    def _create_community_cluster_mapping(self) -> np.ndarray:
-        """
-        Create simple one-to-one mapping between communities and clusters.
-        Each community is assigned to exactly one cluster.
-
-        Returns:
-            Matrix of community-cluster probabilities (universe_K x n_clusters)
-        """
-        probs = np.zeros((self.universe_K, self.n_clusters))
-
-        # Simple assignment: each community gets one cluster
-        # If more communities than clusters, multiple communities share clusters
-        # If more clusters than communities, some clusters may not be used
-        for comm_idx in range(self.universe_K):
-            cluster_idx = comm_idx % self.n_clusters
-            probs[comm_idx, cluster_idx] = 1.0
-
-        return probs
 
     def assign_node_clusters(self, community_assignments: np.ndarray) -> np.ndarray:
         """
@@ -120,13 +94,6 @@ class FeatureGenerator:
             cluster = node_clusters[i]
             self.cluster_stats["cluster_counts"][cluster] += 1
             self.cluster_stats["community_distribution"][cluster, comm_id] += 1
-
-        # Log some basic statistics
-        # print(f"Cluster assignment stats:")
-        # print(f"  Most frequent cluster: {np.argmax(self.cluster_stats['cluster_counts'])} "
-        #       f"with {np.max(self.cluster_stats['cluster_counts'])} nodes")
-        # print(f"  Least frequent cluster: {np.argmin(self.cluster_stats['cluster_counts'])} "
-        #       f"with {np.min(self.cluster_stats['cluster_counts'])} nodes")
 
         return node_clusters
 
@@ -167,23 +134,3 @@ class FeatureGenerator:
             features[cluster_mask] = cluster_features
 
         return features
-
-    def analyze_cluster_community_relationship(self):
-        """
-        Analyze how clusters are distributed across communities.
-        Simplified version that returns basic stats about cluster usage.
-
-        Returns:
-            Dictionary with analysis metrics
-        """
-        if not hasattr(self, "cluster_stats") or not self.cluster_stats:
-            return {"error": "No nodes have been assigned to clusters yet"}
-
-        # Calculate cluster balance
-        cluster_counts = self.cluster_stats["cluster_counts"]
-
-        return {
-            "community_exclusivity": 1.0,  # Always 1.0 in simplified version
-            "cluster_skewness": 0.0,  # Always 0.0 in simplified version
-            "cluster_counts": cluster_counts.tolist(),
-        }

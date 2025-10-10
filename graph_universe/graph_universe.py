@@ -52,11 +52,8 @@ class GraphUniverse:
             self.feature_generator = FeatureGenerator(
                 universe_K=K,
                 feature_dim=feature_dim,
-                cluster_count_factor=1.0,
                 center_variance=center_variance,
                 cluster_variance=cluster_variance,
-                assignment_skewness=0.0,
-                community_exclusivity=1.0,
                 seed=seed,
             )
         else:
