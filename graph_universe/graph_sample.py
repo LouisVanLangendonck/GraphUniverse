@@ -1508,6 +1508,55 @@ class GraphSample:
 
         return torch.tensor(counts, dtype=torch.float)
 
+    def compute_community_aware_diameter(self) -> np.ndarray:
+        """
+        Calculating community-aware diameter for the graph
+        (so for any combination of communities, we calculate the maximum distance between any two nodes in the two communities)
+        """
+        K = self.universe.K
+        diameter_matrix = np.zeros((K, K), dtype=np.float32)
+
+        # Get participating communities
+        participating_communities = set(self.community_labels_universe_level)
+
+        if len(participating_communities) == 0:
+            return diameter_matrix
+
+        # Compute all-pairs shortest paths once (more efficient)
+        try:
+            all_shortest_paths = dict(nx.all_pairs_shortest_path_length(self.graph))
+        except:
+            # Fallback for disconnected components (shouldn't happen)
+            print("Warning: Graph has disconnected components in diameter computation")
+            return diameter_matrix
+
+        # For each pair of participating communities
+        for comm_i_universe in participating_communities:
+            for comm_j_universe in participating_communities:
+                # Get nodes in each community
+                nodes_i = np.where(self.community_labels_universe_level == comm_i_universe)[0]
+                nodes_j = np.where(self.community_labels_universe_level == comm_j_universe)[0]
+
+                if len(nodes_i) == 0 or len(nodes_j) == 0:
+                    continue
+
+                # Find max distance by looking up in precomputed paths
+                max_distance = 0
+                for u in nodes_i:
+                    u_paths = all_shortest_paths[int(u)]
+                    for v in nodes_j:
+                        # Skip same node for diagonal
+                        if comm_i_universe == comm_j_universe and u == v:
+                            continue
+
+                        if int(v) in u_paths:
+                            distance = u_paths[int(v)]
+                            max_distance = max(max_distance, distance)
+
+                diameter_matrix[comm_i_universe, comm_j_universe] = max_distance
+
+        return diameter_matrix
+
     def compute_positional_encodings(
         self,
         pyg_graph: pyg.data.Data,
