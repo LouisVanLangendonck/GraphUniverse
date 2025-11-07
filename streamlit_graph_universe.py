@@ -12,7 +12,7 @@ import time
 
 from graph_universe.graph_family import GraphFamilyGenerator
 from graph_universe.graph_universe import GraphUniverse
-from utils.visualizations import (
+from graph_universe.viz_utils import (
     plot_graph_communities,
     plot_property_validation,
     plot_universe_community_degree_propensity_vector,
@@ -974,7 +974,7 @@ def main():
                 )
 
             with col2:
-                node_size = st.slider("Node Size", 10, 200, 50, key="node_size_slider_tab2")
+                node_size = st.slider("Node Size", 10, 200, 80, key="node_size_slider_tab2")
 
             with col3:
                 show_labels = st.checkbox(
