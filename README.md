@@ -2,7 +2,7 @@
 
 **Generate families of graphs with finely controllable properties for systematic evaluation of inductive graph learning models.**
 
-[Quick Start](#quick-start) | [Interactive Demo](https://graphuniverse.streamlit.app/)
+[Quick Start](#quick-start) | [Reproduce Validation](#reproduce-validation-experiment) | [Interactive Demo](https://graphuniverse.streamlit.app/)
 
 ![Example Graph Family][graphplot]
 
@@ -112,10 +112,15 @@ print(f"Generated dataset with {len(dataset)} graphs!")
 Try GraphUniverse in your browser with real-time parameter tuning and direct dataset download:
 **[https://graphuniverse.streamlit.app/](https://graphuniverse.streamlit.app/)**
 
-### Validation & Quality
+### Reproduce Validation Experiment
+GraphUniverse includes comprehensive metrics to validate property realization and quantify learnable community signals
 
-GraphUniverse includes comprehensive metrics to validate property realization and quantify learnable community signals:
+#### Reproduce Validation Analysis in Paper Automatically
+```bash
+python validate_parameter_sensitivity.py --n-random-samples 100 --n-graphs 30
+```
 
+#### Manually inspect generated family
 ```python
 # Validate standard graph properties
 family_properties = family.analyze_graph_family_properties()
