@@ -26,7 +26,13 @@ Current graph learning benchmarks are limited to **single-graph, transductive se
 
 ### Installation
 ```bash
-pip install graphuniverse
+# Install directly from GitHub
+pip install git+https://github.com/LouisVanLangendonck/GraphUniverse.git
+
+# Or clone and install in development mode
+git clone https://github.com/LouisVanLangendonck/GraphUniverse.git
+cd GraphUniverse
+pip install -e .
 ```
 
 ### Basic Usage
