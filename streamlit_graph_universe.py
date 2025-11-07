@@ -1,35 +1,35 @@
-import streamlit as st
-import numpy as np
-import networkx as nx
-import matplotlib.pyplot as plt
-from typing import Tuple
-import pandas as pd
 import warnings
-warnings.filterwarnings('ignore')
+
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+import streamlit as st
+
+warnings.filterwarnings("ignore")
 
 # Import the graph generation classes
-from graph_universe.graph_universe import GraphUniverse
-from graph_universe.graph_sample import GraphSample
-from graph_universe.graph_family import GraphFamilyGenerator
+import time
 
+from graph_universe.graph_family import GraphFamilyGenerator
+from graph_universe.graph_universe import GraphUniverse
 from utils.visualizations import (
-    plot_graph_communities, 
+    plot_graph_communities,
+    plot_property_validation,
     plot_universe_community_degree_propensity_vector,
     plot_universe_feature_centers,
-    plot_property_validation
 )
-import time
+
 
 # Add function to generate theoretical power law distribution
 def generate_theoretical_power_law(n_nodes: int, exponent: float, x_min: float = 1.0) -> np.ndarray:
     """
     Generate theoretical power law distribution.
-    
+
     Args:
         n_nodes: Number of nodes
         exponent: Power law exponent (alpha)
         x_min: Minimum value for power law
-        
+
     Returns:
         Array of theoretical degrees
     """
@@ -37,159 +37,199 @@ def generate_theoretical_power_law(n_nodes: int, exponent: float, x_min: float =
     theoretical_degrees = np.random.pareto(exponent, size=n_nodes) + x_min
     return theoretical_degrees
 
-def plot_probability_matrices_comparison(graph_sample, figsize: Tuple[int, int] = (15, 6)) -> plt.Figure:
+
+def plot_probability_matrices_comparison(
+    graph_sample, figsize: tuple[int, int] = (15, 6)
+) -> plt.Figure:
     """
     Plot target (P_sub) and actual (P_real) probability matrices side by side with same color scale.
-    
+
     Args:
         graph_sample: GraphSample object
         figsize: Figure size
-        
+
     Returns:
         matplotlib figure
     """
     # Get the target probability matrix (P_sub)
     P_sub = graph_sample.P_sub
-    
+
     # Get the actual probability matrix
     P_real, community_sizes, connection_counts = graph_sample.calculate_actual_probability_matrix()
-    
+
     # Create figure with two subplots side by side
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=figsize)
-    
+
     # Find the global min and max for consistent color scaling
     vmin = min(np.min(P_sub), np.min(P_real))
     vmax = max(np.max(P_sub), np.max(P_real))
-    
+
     # Plot target probability matrix (P_sub)
-    im1 = ax1.imshow(P_sub, cmap='viridis', vmin=vmin, vmax=vmax, aspect='auto')
-    ax1.set_title('Target Propensity Matrix (P_sub)')
-    ax1.set_xlabel('Community')
-    ax1.set_ylabel('Community')
-    
+    im1 = ax1.imshow(P_sub, cmap="viridis", vmin=vmin, vmax=vmax, aspect="auto")
+    ax1.set_title("Target Propensity Matrix (P_sub)")
+    ax1.set_xlabel("Community")
+    ax1.set_ylabel("Community")
+
     # Add colorbar for the first plot
     cbar1 = plt.colorbar(im1, ax=ax1, shrink=0.8)
-    cbar1.set_label('Propensity')
-    
+    cbar1.set_label("Propensity")
+
     # Add text annotations to the first plot
     for i in range(P_sub.shape[0]):
         for j in range(P_sub.shape[1]):
             # Adaptive text color based on background
             value = P_sub[i, j]
             text_color = "white" if value > (vmin + vmax) / 2 else "black"
-            text = ax1.text(j, i, f'{value:.3f}',
-                           ha="center", va="center", color=text_color, fontsize=8, fontweight='bold')
-    
+            text = ax1.text(
+                j,
+                i,
+                f"{value:.3f}",
+                ha="center",
+                va="center",
+                color=text_color,
+                fontsize=8,
+                fontweight="bold",
+            )
+
     # Plot actual probability matrix (P_real)
-    im2 = ax2.imshow(P_real, cmap='viridis', vmin=vmin, vmax=vmax, aspect='auto')
-    ax2.set_title('Actual Probability Matrix (P_real)')
-    ax2.set_xlabel('Community')
-    ax2.set_ylabel('Community')
-    
+    im2 = ax2.imshow(P_real, cmap="viridis", vmin=vmin, vmax=vmax, aspect="auto")
+    ax2.set_title("Actual Probability Matrix (P_real)")
+    ax2.set_xlabel("Community")
+    ax2.set_ylabel("Community")
+
     # Add colorbar for the second plot
     cbar2 = plt.colorbar(im2, ax=ax2, shrink=0.8)
-    cbar2.set_label('Probability')
-    
+    cbar2.set_label("Probability")
+
     # Add text annotations to the second plot
     for i in range(P_real.shape[0]):
         for j in range(P_real.shape[1]):
             # Adaptive text color based on background
             value = P_real[i, j]
             text_color = "white" if value > (vmin + vmax) / 2 else "black"
-            text = ax2.text(j, i, f'{value:.3f}',
-                           ha="center", va="center", color=text_color, fontsize=8, fontweight='bold')
-    
+            text = ax2.text(
+                j,
+                i,
+                f"{value:.3f}",
+                ha="center",
+                va="center",
+                color=text_color,
+                fontsize=8,
+                fontweight="bold",
+            )
+
     # Set tick labels
     n_communities = len(graph_sample.communities)
-    tick_labels = [f'C{i}' for i in range(n_communities)]
+    tick_labels = [f"C{i}" for i in range(n_communities)]
     ax1.set_xticks(range(n_communities))
     ax1.set_yticks(range(n_communities))
     ax1.set_xticklabels(tick_labels)
     ax1.set_yticklabels(tick_labels)
-    
+
     ax2.set_xticks(range(n_communities))
     ax2.set_yticks(range(n_communities))
     ax2.set_xticklabels(tick_labels)
     ax2.set_yticklabels(tick_labels)
-    
+
     # Calculate and display statistics
     deviation = np.abs(P_real - P_sub)
     mean_deviation = np.mean(deviation)
     max_deviation = np.max(deviation)
-    
+
     # Add statistics as text
-    stats_text = f'Mean Deviation: {mean_deviation:.4f}\nMax Deviation: {max_deviation:.4f}'
-    fig.text(0.5, 0.02, stats_text, ha='center', va='bottom', fontsize=10, 
-             bbox=dict(boxstyle="round,pad=0.3", facecolor="lightgray", alpha=0.8))
-    
+    stats_text = f"Mean Deviation: {mean_deviation:.4f}\nMax Deviation: {max_deviation:.4f}"
+    fig.text(
+        0.5,
+        0.02,
+        stats_text,
+        ha="center",
+        va="bottom",
+        fontsize=10,
+        bbox=dict(boxstyle="round,pad=0.3", facecolor="lightgray", alpha=0.8),
+    )
+
     plt.tight_layout()
     return fig
 
-def plot_degree_distribution_comparison(actual_degrees: np.ndarray, theoretical_degrees: np.ndarray, 
-                                      exponent: float, title: str = "Degree Distribution Comparison"):
+
+def plot_degree_distribution_comparison(
+    actual_degrees: np.ndarray,
+    theoretical_degrees: np.ndarray,
+    exponent: float,
+    title: str = "Degree Distribution Comparison",
+):
     """
     Plot comparison between actual and theoretical degree distributions.
-    
+
     Args:
         actual_degrees: Actual degrees from the graph
         theoretical_degrees: Theoretical degrees from power law
         exponent: Power law exponent used
         title: Plot title
-        
+
     Returns:
         matplotlib figure
     """
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 6))
-    
+
     # Plot 1: Histogram comparison
-    ax1.hist(actual_degrees, bins=30, alpha=0.7, label='Actual', density=True, color='blue')
-    ax1.hist(theoretical_degrees, bins=30, alpha=0.7, label='Theoretical', density=True, color='red')
-    ax1.set_xlabel('Degree')
-    ax1.set_ylabel('Density')
-    ax1.set_title(f'Degree Distribution Histogram (α={exponent:.2f})')
+    ax1.hist(actual_degrees, bins=30, alpha=0.7, label="Actual", density=True, color="blue")
+    ax1.hist(
+        theoretical_degrees, bins=30, alpha=0.7, label="Theoretical", density=True, color="red"
+    )
+    ax1.set_xlabel("Degree")
+    ax1.set_ylabel("Density")
+    ax1.set_title(f"Degree Distribution Histogram (α={exponent:.2f})")
     ax1.legend()
     ax1.grid(True, alpha=0.3)
-    
+
     # Plot 2: Log-log plot for power law verification
     # Sort degrees for CCDF
     actual_sorted = np.sort(actual_degrees)[::-1]  # Descending
     theoretical_sorted = np.sort(theoretical_degrees)[::-1]  # Descending
-    
+
     # Calculate CCDF (Complementary Cumulative Distribution Function)
     n_actual = len(actual_sorted)
     n_theoretical = len(theoretical_sorted)
-    
+
     actual_ccdf = np.arange(1, n_actual + 1) / n_actual
     theoretical_ccdf = np.arange(1, n_theoretical + 1) / n_theoretical
-    
-    ax2.loglog(actual_sorted, actual_ccdf, 'o-', label='Actual', alpha=0.7, markersize=4)
-    ax2.loglog(theoretical_sorted, theoretical_ccdf, 's-', label='Theoretical', alpha=0.7, markersize=4)
-    
+
+    ax2.loglog(actual_sorted, actual_ccdf, "o-", label="Actual", alpha=0.7, markersize=4)
+    ax2.loglog(
+        theoretical_sorted, theoretical_ccdf, "s-", label="Theoretical", alpha=0.7, markersize=4
+    )
+
     # Add theoretical power law line
-    x_range = np.logspace(np.log10(min(actual_sorted.min(), theoretical_sorted.min())), 
-                          np.log10(max(actual_sorted.max(), theoretical_sorted.max())), 100)
+    x_range = np.logspace(
+        np.log10(min(actual_sorted.min(), theoretical_sorted.min())),
+        np.log10(max(actual_sorted.max(), theoretical_sorted.max())),
+        100,
+    )
     ccdf_theoretical = (x_range / x_range.min()) ** (-exponent + 1)
-    ax2.loglog(x_range, ccdf_theoretical, '--', label=f'Theoretical α={exponent:.2f}', alpha=0.8)
-    
-    ax2.set_xlabel('Degree (log scale)')
-    ax2.set_ylabel('CCDF (log scale)')
-    ax2.set_title('Power Law Verification (Log-Log Plot)')
+    ax2.loglog(x_range, ccdf_theoretical, "--", label=f"Theoretical α={exponent:.2f}", alpha=0.8)
+
+    ax2.set_xlabel("Degree (log scale)")
+    ax2.set_ylabel("CCDF (log scale)")
+    ax2.set_title("Power Law Verification (Log-Log Plot)")
     ax2.legend()
     ax2.grid(True, alpha=0.3)
-    
+
     plt.tight_layout()
     return fig
+
 
 # Set page config
 st.set_page_config(
     page_title="Graph Family Generator",
     page_icon="📊",
     layout="wide",
-    initial_sidebar_state="expanded"
+    initial_sidebar_state="expanded",
 )
 
 # Custom CSS for better styling
-st.markdown("""
+st.markdown(
+    """
 <style>
     .main-header {
         font-size: 2.5rem;
@@ -218,16 +258,24 @@ st.markdown("""
         border-left: 4px solid #1f77b4;
     }
 </style>
-""", unsafe_allow_html=True)
+""",
+    unsafe_allow_html=True,
+)
+
 
 def main():
     st.markdown('<h1 class="main-header">GraphUniverse</h1>', unsafe_allow_html=True)
-    
+
     # Create tabs for better organization
-    tab_names = ["🌌 Universe Generation", "📊 Graph Family Generation", "🔍 Analysis", "💾 Download"]
-    
+    tab_names = [
+        "🌌 Universe Generation",
+        "📊 Graph Family Generation",
+        "🔍 Analysis",
+        "💾 Download",
+    ]
+
     # Determine which tab should be active
-    if 'active_tab' in st.session_state:
+    if "active_tab" in st.session_state:
         if st.session_state.active_tab == "family_generation":
             active_tab_index = 1  # Index for "Graph Family Generation"
         elif st.session_state.active_tab == "analysis":
@@ -240,10 +288,10 @@ def main():
         st.session_state.active_tab = None
     else:
         active_tab_index = 0
-    
+
     # Create tabs and set the active one based on session state
     tab1, tab2, tab3, tab4 = st.tabs(tab_names)
-    
+
     # Use a JavaScript hack to click the appropriate tab
     if active_tab_index > 0:
         js_code = f"""
@@ -262,60 +310,87 @@ def main():
         </script>
         """
         st.components.v1.html(js_code, height=0)
-    
+
     # TAB 1: UNIVERSE GENERATION
     with tab1:
-        st.markdown('<h2 class="section-header">Graph Universe Generation</h2>', unsafe_allow_html=True)
-        st.markdown("**Step 1:** Create a new universe. The universe holds all community-related latent properties that can reappear throughout all graphs in the family.")
-        
+        st.markdown(
+            '<h2 class="section-header">Graph Universe Generation</h2>', unsafe_allow_html=True
+        )
+        st.markdown(
+            "**Step 1:** Create a new universe. The universe holds all community-related latent properties that can reappear throughout all graphs in the family."
+        )
+
         # Universe parameters in main area
         # col1, col2 = st.columns([2, 1])
-        
+
         # with col1:
         st.markdown("### Universe Parameters")
-            
+
         # Basic universe parameters
         col_a, col_b = st.columns(2)
         with col_a:
-            K = st.slider(r"Number of Communities $\boldsymbol{K}$", 2, 20, 10,
-            help="Total number of latent communities in the universe.")
-            edge_propensity_variance = st.slider(
-                r"Edge Propensity Variance $\boldsymbol{\epsilon}$", 
-                0.0, 1.0, 0.5, 0.01,
-                help="Amount of relative variance in base edge connection strength between communities.\n \n Later, for individual graphs, these will eventually be scaled to actual edge probabilties but relative strengths between communities are maintained (apart from homophily scaling)."
+            K = st.slider(
+                r"Number of Communities $\boldsymbol{K}$",
+                2,
+                20,
+                10,
+                help="Total number of latent communities in the universe.",
             )
-            
+            edge_propensity_variance = st.slider(
+                r"Edge Propensity Variance $\boldsymbol{\epsilon}$",
+                0.0,
+                1.0,
+                0.5,
+                0.01,
+                help="Amount of relative variance in base edge connection strength between communities.\n \n Later, for individual graphs, these will eventually be scaled to actual edge probabilties but relative strengths between communities are maintained (apart from homophily scaling).",
+            )
+
         with col_b:
-            feature_dim = st.slider("Feature Dimension", 1, 50, 15,
-            help="Feature vector size for each node that will be generated.")
-            
+            feature_dim = st.slider(
+                "Feature Dimension",
+                1,
+                50,
+                15,
+                help="Feature vector size for each node that will be generated.",
+            )
+
         # Feature generation parameters outside the column nesting
         if feature_dim > 0:
             st.markdown("#### Feature Generation Parameters")
             col_c, col_d = st.columns(2)
             with col_c:
                 center_variance = st.slider(
-                    r"Center Variance $\boldsymbol{\sigma_{\text{center}}}$", 
-                    0.01, 1.0, 0.1, 0.01,
-                    help="Separation between feature cluster centers (one center per community). \n \n High center variance encodes for more community-specific feature signal."
+                    r"Center Variance $\boldsymbol{\sigma_{\text{center}}}$",
+                    0.01,
+                    1.0,
+                    0.1,
+                    0.01,
+                    help="Separation between feature cluster centers (one center per community). \n \n High center variance encodes for more community-specific feature signal.",
                 )
             with col_d:
                 cluster_variance = st.slider(
-                    r"Cluster Variance $\boldsymbol{\sigma_{\text{cluster}}}$", 
-                    0.01, 1.0, 0.5, 0.01,
-                    help="Variance applied on community feature center when drawing feature values for each node. \n \n High cluster variance encodes for less community-specific feature signal."
+                    r"Cluster Variance $\boldsymbol{\sigma_{\text{cluster}}}$",
+                    0.01,
+                    1.0,
+                    0.5,
+                    0.01,
+                    help="Variance applied on community feature center when drawing feature values for each node. \n \n High cluster variance encodes for less community-specific feature signal.",
                 )
         else:
             center_variance = 1.0
             cluster_variance = 0.1
-        
+
         # Generation parameters
         st.markdown("#### Random Seed")
-        universe_seed = st.number_input("Universe Seed", value=42, help="Random seed for universe generation")
-    
+        universe_seed = st.number_input(
+            "Universe Seed", value=42, help="Random seed for universe generation"
+        )
+
         # Generate Universe Button
-        generate_button = st.button("🌌 Generate Universe", type="primary", use_container_width=True)
-        
+        generate_button = st.button(
+            "🌌 Generate Universe", type="primary", use_container_width=True
+        )
+
         # Add navigation message below the button (always visible)
         # st.markdown("""
         # <div style="background-color: #e6f3ff; padding: 15px; border-radius: 10px; border-left: 5px solid #0066cc; margin: 15px 0; text-align: center;">
@@ -323,7 +398,7 @@ def main():
         #     <p style="font-size: 16px;">After generating your universe, proceed to the <b>📊 Graph Family Generation</b> tab <b>at the top of the page</b> to create graphs.</p>
         # </div>
         # """, unsafe_allow_html=True)
-        
+
         if generate_button:
             with st.spinner("Creating Graph Universe..."):
                 universe = GraphUniverse(
@@ -332,91 +407,101 @@ def main():
                     edge_propensity_variance=edge_propensity_variance,
                     center_variance=center_variance,
                     cluster_variance=cluster_variance,
-                    seed=universe_seed
+                    seed=universe_seed,
                 )
-                
+
                 # Store in session state
                 st.session_state.universe = universe
                 st.session_state.universe_params = {
-                    'K': K,
-                    'feature_dim': feature_dim,
-                    'edge_propensity_variance': edge_propensity_variance,
-                    'center_variance': center_variance,
-                    'cluster_variance': cluster_variance,
-                    'seed': universe_seed
+                    "K": K,
+                    "feature_dim": feature_dim,
+                    "edge_propensity_variance": edge_propensity_variance,
+                    "center_variance": center_variance,
+                    "cluster_variance": cluster_variance,
+                    "seed": universe_seed,
                 }
-                
+
                 # Reset analysis state
-                if 'graphs' in st.session_state:
+                if "graphs" in st.session_state:
                     del st.session_state.graphs
-                if 'family_generator' in st.session_state:
+                if "family_generator" in st.session_state:
                     del st.session_state.family_generator
-                if 'show_analysis' in st.session_state:
+                if "show_analysis" in st.session_state:
                     del st.session_state.show_analysis
-                if 'show_download' in st.session_state:
+                if "show_download" in st.session_state:
                     del st.session_state.show_download
-                if 'show_properties' in st.session_state:
+                if "show_properties" in st.session_state:
                     del st.session_state.show_properties
-                if 'show_consistency' in st.session_state:
+                if "show_consistency" in st.session_state:
                     del st.session_state.show_consistency
-                if 'show_signals' in st.session_state:
+                if "show_signals" in st.session_state:
                     del st.session_state.show_signals
-                if 'cached_signals' in st.session_state:
+                if "cached_signals" in st.session_state:
                     del st.session_state.cached_signals
-                if 'validation_plot' in st.session_state:
+                if "validation_plot" in st.session_state:
                     del st.session_state.validation_plot
-                    
+
                 # Store the K value for use in constraining community parameters
                 st.session_state.universe_k = K
-                
-                
+
                 st.success("✅ Universe generated successfully!")
-                
+
                 # Show a prominent call-to-action to go to next tab
-                st.success("🎯 **NEXT STEP:** Go to the '📊 Graph Family Generation' tab **at the top of the page** to create your graph family!")
-                
+                st.success(
+                    "🎯 **NEXT STEP:** Go to the '📊 Graph Family Generation' tab **at the top of the page** to create your graph family!"
+                )
+
                 # Add a more visible navigation guide that spans the entire page
-                st.markdown("""
+                st.markdown(
+                    """
                 <div style="background-color: #f0f2f6; padding: 20px; border-radius: 10px; border-left: 5px solid #4b6584; margin: 20px 0; text-align: center;">
                     <h2 style="color: #4b6584;">🔍 WHAT'S NEXT?</h2>
                     <p style="font-size: 18px; color: #2d3436;">Now that you have created your universe, click on the <b>📊 Graph Family Generation</b> tab <b>at the top of the page</b> to create graphs based on this universe.</p>
                 </div>
-                """, unsafe_allow_html=True)
-                    
+                """,
+                    unsafe_allow_html=True,
+                )
+
                 st.rerun()
-        
+
         # Universe Status section (visible for both options)
         st.markdown("---")
 
         st.markdown("### Universe Status")
-            
-        if 'universe' in st.session_state and st.session_state.universe is not None:
+
+        if "universe" in st.session_state and st.session_state.universe is not None:
             universe = st.session_state.universe
-            params = st.session_state.get('universe_params', {})
+            params = st.session_state.get("universe_params", {})
 
             st.success("🌌 Universe Ready")
 
-            st.markdown("""
+            st.markdown(
+                """
             <div style="background-color: #f0f2f6; padding: 15px; border-radius: 10px; border-left: 5px solid #4b6584; margin: 15px 0; text-align: center;">
                 <h3 style="color: #4b6584;">❗ NEXT STEP</h3>
                 <p style="font-size: 16px; color: #2d3436;">After generating your universe, proceed to the <b>📊 Graph Family Generation</b> tab <b>at the top of the page</b> to create graphs.</p>
             </div>
-            """, unsafe_allow_html=True)
+            """,
+                unsafe_allow_html=True,
+            )
         else:
             st.warning("⚠️ No Universe Available")
             st.info("Create a new universe to proceed with graph family generation.")
-        
+
         col_status1, col_status2 = st.columns([1, 1])
 
         with col_status1:
-            if 'universe' in st.session_state and st.session_state.universe is not None:
+            if "universe" in st.session_state and st.session_state.universe is not None:
                 universe = st.session_state.universe
 
                 st.markdown("#### Generated Universe Details")
                 st.metric("Communities", universe.K)
                 st.metric("Feature Dim", universe.feature_dim)
                 st.metric("Edge Propensity Variance", f"{universe.edge_propensity_variance:.3f}")
-                st.metric("Fixed Within-cluster Variance " + r"$\boldsymbol{\sigma_{\text{cluster}}}$", f"{universe.feature_generator.cluster_variance:.3f}")
+                st.metric(
+                    "Fixed Within-cluster Variance " + r"$\boldsymbol{\sigma_{\text{cluster}}}$",
+                    f"{universe.feature_generator.cluster_variance:.3f}",
+                )
 
                 # Here we'll plot the values of the feature centers
                 st.markdown("#### Feature Centers " + r"$\boldsymbol{\mu}$")
@@ -426,15 +511,15 @@ def main():
             # else:
             #     st.warning("⚠️ No Universe Available")
             #     st.info("Create a new universe to proceed with graph family generation.")
-        
+
         with col_status2:
-            if 'universe' in st.session_state and st.session_state.universe is not None:
+            if "universe" in st.session_state and st.session_state.universe is not None:
                 universe = st.session_state.universe
 
                 st.markdown("#### Raw Edge Propensity Matrix " + r"$\tilde{\mathbf{P}}$")
                 # Create a simple probability matrix visualization
                 fig, ax = plt.subplots(figsize=(8, 6))
-                im = ax.imshow(universe.P, cmap='viridis', aspect='auto')
+                im = ax.imshow(universe.P, cmap="viridis", aspect="auto")
                 plt.colorbar(im, ax=ax, label="Edge Propensity")
                 ax.set_title(r"$\tilde{\mathbf{P}}$")
                 ax.set_xticks(np.arange(universe.K))
@@ -449,18 +534,26 @@ def main():
                 fig_degree_centers = plot_universe_community_degree_propensity_vector(universe)
                 st.pyplot(fig_degree_centers)
                 plt.close(fig_degree_centers)
-                
+
                 # Add text annotations
                 for i in range(universe.K):
                     for j in range(universe.K):
                         value = universe.P[i, j]
                         text_color = "white" if value > np.mean(universe.P) else "black"
-                        ax.text(j, i, f'{value:.3f}', ha="center", va="center", 
-                                color=text_color, fontsize=8, fontweight='bold')
-                
+                        ax.text(
+                            j,
+                            i,
+                            f"{value:.3f}",
+                            ha="center",
+                            va="center",
+                            color=text_color,
+                            fontsize=8,
+                            fontweight="bold",
+                        )
+
                 # Break out of the column layout for the navigation message
                 st.markdown("---")
-        
+
         # Add a prominent navigation message at the bottom of the universe tab that spans the full page width
         # st.markdown("""
         # <div style="background-color: #e6f3ff; padding: 25px; border-radius: 10px; border-left: 8px solid #0066cc; margin: 30px 0; text-align: center;">
@@ -468,22 +561,29 @@ def main():
         #     <p style="font-size: 18px; margin: 15px 0;">Now that you have created your universe, proceed to the <b>📊 Graph Family Generation</b> tab <b>at the top of the page</b> to create graphs based on this universe.</p>
         # </div>
         # """, unsafe_allow_html=True)
-                    
-    # TAB 2: GRAPH FAMILY GENERATION  
+
+    # TAB 2: GRAPH FAMILY GENERATION
     with tab2:
-        st.markdown('<h2 class="section-header">Graph Family Generation</h2>', unsafe_allow_html=True)
-        
-        
-        st.markdown("**Step 2:** Generate a family of graphs using the created universe with user-definable properties.")
-        
+        st.markdown(
+            '<h2 class="section-header">Graph Family Generation</h2>', unsafe_allow_html=True
+        )
+
+        st.markdown(
+            "**Step 2:** Generate a family of graphs using the created universe with user-definable properties."
+        )
+
         # Check if universe exists
-        if 'universe' not in st.session_state or st.session_state.universe is None:
-            st.error("❌ No universe available. Please generate a universe first in the 'Universe Generation' tab.")
+        if "universe" not in st.session_state or st.session_state.universe is None:
+            st.error(
+                "❌ No universe available. Please generate a universe first in the 'Universe Generation' tab."
+            )
             return
-        
+
         # Graph family parameters in the main area
-        st.markdown('<h3 class="section-header">Graph Family Parameters</h3>', unsafe_allow_html=True)
-        
+        st.markdown(
+            '<h3 class="section-header">Graph Family Parameters</h3>', unsafe_allow_html=True
+        )
+
         # Create a container with a light background for parameters
         with st.container():
             # st.markdown("""
@@ -496,196 +596,244 @@ def main():
             # }
             # </style>
             # """, unsafe_allow_html=True)
-            
+
             # st.markdown('<div class="parameter-container">', unsafe_allow_html=True)
 
             st.markdown("#### Basic Properties")
-            
+
             # Basic parameters in the first row
             col1, col2 = st.columns(2)
             with col1:
-                n_graphs = st.slider("Number of Graphs " + r"$\boldsymbol{g}$", 1, 100, 20, 
-                                    help="Number of graphs to generate in the family. \n \n In this demo version, for limited app hosting purposes, the maximum number of graphs is limited to 100.")
-                
-                min_n_nodes, max_n_nodes = st.slider("Node Count " + r"$\boldsymbol{n_{\text{min}}}$ - " + r"$\boldsymbol{n_{\text{max}}}$", 
-                                                    10, 500, (100, 300), 
-                                                    help="The allowed range (minimum and maximum) of number of nodes in each graph of the family. That is, each graph instance will sample one target value from this range. \n \n In this demo version, for limited app hosting purposes, the maximum number of nodes is limited to 500.")
-            
+                n_graphs = st.slider(
+                    "Number of Graphs " + r"$\boldsymbol{g}$",
+                    1,
+                    100,
+                    20,
+                    help="Number of graphs to generate in the family. \n \n In this demo version, for limited app hosting purposes, the maximum number of graphs is limited to 100.",
+                )
+
+                min_n_nodes, max_n_nodes = st.slider(
+                    "Node Count "
+                    + r"$\boldsymbol{n_{\text{min}}}$ - "
+                    + r"$\boldsymbol{n_{\text{max}}}$",
+                    10,
+                    500,
+                    (100, 300),
+                    help="The allowed range (minimum and maximum) of number of nodes in each graph of the family. That is, each graph instance will sample one target value from this range. \n \n In this demo version, for limited app hosting purposes, the maximum number of nodes is limited to 500.",
+                )
+
             with col2:
                 homophily_min, homophily_max = st.slider(
-                    r"Homophily Range $\boldsymbol{h_{\text{min}}}$ - " + r"$\boldsymbol{h_{\text{max}}}$",
-                    0.0, 1.0, (0.1, 0.4),
-                    help="The allowed range (minimum and maximum) of homophily in each graph of the family. That is, each graph instance will sample one target value from this range. \n \n Homophily is the probability of a node connecting to a node in the same community (so label homophily and indirectly also feature homophily)."
+                    r"Homophily Range $\boldsymbol{h_{\text{min}}}$ - "
+                    + r"$\boldsymbol{h_{\text{max}}}$",
+                    0.0,
+                    1.0,
+                    (0.1, 0.4),
+                    help="The allowed range (minimum and maximum) of homophily in each graph of the family. That is, each graph instance will sample one target value from this range. \n \n Homophily is the probability of a node connecting to a node in the same community (so label homophily and indirectly also feature homophily).",
                 )
-                
+
                 avg_degree_min, avg_degree_max = st.slider(
-                    "Average Degree Range " + r"$\boldsymbol{d_{\text{min}}}$ - " + r"$\boldsymbol{d_{\text{max}}}$",
-                    1.0, 30.0, (2.0, 5.0),
-                    help="The allowed range (minimum and maximum) of average degree in each graph of the family. That is, each graph instance will sample one target value from this range. \n \n In this demo version, for limited app hosting purposes, the maximum average degree is limited to 30."
+                    "Average Degree Range "
+                    + r"$\boldsymbol{d_{\text{min}}}$ - "
+                    + r"$\boldsymbol{d_{\text{max}}}$",
+                    1.0,
+                    30.0,
+                    (2.0, 5.0),
+                    help="The allowed range (minimum and maximum) of average degree in each graph of the family. That is, each graph instance will sample one target value from this range. \n \n In this demo version, for limited app hosting purposes, the maximum average degree is limited to 30.",
                 )
-            
+
             # Community parameters
             st.markdown("#### Community Participation")
             # col3, col4 = st.columns(2)
-            
+
             # with col3:
             # Ensure max_communities doesn't exceed the universe's K value
             universe_k = universe.K
-            
+
             # If the universe K value has changed, we need to adjust the default values
-            stored_k = st.session_state.get('universe_k', universe_k)
+            stored_k = st.session_state.get("universe_k", universe_k)
             if stored_k != universe_k:
                 st.session_state.universe_k = universe_k
-            
+
             default_min = min(3, universe_k)
             default_max = min(8, universe_k)
-            
+
             # If the user previously selected values, try to preserve them within the new constraints
-            if 'min_communities' in st.session_state and 'max_communities' in st.session_state:
+            if "min_communities" in st.session_state and "max_communities" in st.session_state:
                 prev_min = st.session_state.min_communities
                 prev_max = st.session_state.max_communities
                 default_min = min(prev_min, universe_k)
                 default_max = min(prev_max, universe_k)
-            
+
             min_communities, max_communities = st.slider(
-                "Number of participating communities per graph " + r"$\boldsymbol{k_{\text{min}}}$ - " + r"$\boldsymbol{k_{\text{max}}}$", 
-                2, universe_k, (default_min, default_max),
+                "Number of participating communities per graph "
+                + r"$\boldsymbol{k_{\text{min}}}$ - "
+                + r"$\boldsymbol{k_{\text{max}}}$",
+                2,
+                universe_k,
+                (default_min, default_max),
                 key="communities_slider",
-                help="The allowed range (minimum and maximum) of number of universe communities participating in each graph of the family. That is, each graph instance will sample one target value from this range. \n \n For each graph, the participating communities are drawn randomly."
+                help="The allowed range (minimum and maximum) of number of universe communities participating in each graph of the family. That is, each graph instance will sample one target value from this range. \n \n For each graph, the participating communities are drawn randomly.",
             )
-            
+
             # Store the current values for future reference
             st.session_state.min_communities = min_communities
             st.session_state.max_communities = max_communities
-            
+
             # with col4:
-            #     
-            
+            #
+
             # Degree distribution parameters
             st.markdown("#### Degree Distribution Settings")
             degree_separation_min, degree_separation_max = st.slider(
-                   r"Degree Separation Range $\boldsymbol{\rho _{\text{min}}}$ - " + r"$\boldsymbol{\rho_{\text{max}}}$",
-                   0.0, 1.0, (0.7, 1.0),
-                   help="The allowed range (minimum and maximum) of degree separation in each graph of the family. That is, each graph instance will sample one target value from this range. \n \n Degree separation is a measure of how much the universe-level differences in community-specific degree propensity values influence the assignment of degree factors to each node. For example, if degree seperation is high, and a participating community has a high degree propensity value (see universe level), then the high degree factors from the target degree distribution for that graph will exclusively be assigned to nodes of that community, resulting in strictly high degree nodes for that community. However, if degree seperation is low, then degree factors will be assigned basically evenly across all communities (recovering the random assignment seen in the original DC-SBM algorithm)."
-               )
+                r"Degree Separation Range $\boldsymbol{\rho _{\text{min}}}$ - "
+                + r"$\boldsymbol{\rho_{\text{max}}}$",
+                0.0,
+                1.0,
+                (0.7, 1.0),
+                help="The allowed range (minimum and maximum) of degree separation in each graph of the family. That is, each graph instance will sample one target value from this range. \n \n Degree separation is a measure of how much the universe-level differences in community-specific degree propensity values influence the assignment of degree factors to each node. For example, if degree seperation is high, and a participating community has a high degree propensity value (see universe level), then the high degree factors from the target degree distribution for that graph will exclusively be assigned to nodes of that community, resulting in strictly high degree nodes for that community. However, if degree seperation is low, then degree factors will be assigned basically evenly across all communities (recovering the random assignment seen in the original DC-SBM algorithm).",
+            )
 
             col5, col6 = st.columns(2)
-    
+
             with col5:
                 degree_distribution = st.selectbox(
                     "Degree Distribution",
                     ["power_law", "exponential", "uniform"],
                     help="Type of degree distribution. More options included here than in the original paper to play around with. Power law generally seen as most realistic for real-world networks. For a more detailed explanation, see the original paper.",
-                    key="degree_distribution_selector"
+                    key="degree_distribution_selector",
                 )
-                
+
             # Conditional parameters based on degree distribution
             if degree_distribution == "power_law":
                 with col6:
                     power_law_min, power_law_max = st.slider(
                         "Power Law Exponent Range",
-                        1.5, 5.0, (2.0, 2.5),
-                        help="The allowed range (minimum and maximum) of power law exponent in each graph of the family. That is, each graph instance will sample one target value from this range. \n \n The power law exponent is the exponent of the power law distribution. For example, if the power law exponent is 2.5, then the target degree distribution will roughlyfollow the following distribution: P(k) = k^(-2.5). In practice we use the discrete Pareto distribution (discrete power law distribution)."
+                        1.5,
+                        5.0,
+                        (2.0, 2.5),
+                        help="The allowed range (minimum and maximum) of power law exponent in each graph of the family. That is, each graph instance will sample one target value from this range. \n \n The power law exponent is the exponent of the power law distribution. For example, if the power law exponent is 2.5, then the target degree distribution will roughlyfollow the following distribution: P(k) = k^(-2.5). In practice we use the discrete Pareto distribution (discrete power law distribution).",
                     )
             else:
                 with col6:
                     power_law_min, power_law_max = 2.5, 2.5
-                
+
             if degree_distribution == "exponential":
                 with col6:
                     exp_min, exp_max = st.slider(
-                    "Exponential Rate Range",
-                    0.1, 2.0, (0.3, 1.0),
-                    help="The allowed range (minimum and maximum) of exponential rate in each graph of the family. That is, each graph instance will sample one target value from this range. \n \n The exponential rate is the rate of the exponential distribution. For example, if the exponential rate is 1.0, then the target degree distribution will roughlyfollow the following distribution: P(k) = exp(-k). In practice we use the discrete exponential distribution (discrete exponential distribution)."
-                )
+                        "Exponential Rate Range",
+                        0.1,
+                        2.0,
+                        (0.3, 1.0),
+                        help="The allowed range (minimum and maximum) of exponential rate in each graph of the family. That is, each graph instance will sample one target value from this range. \n \n The exponential rate is the rate of the exponential distribution. For example, if the exponential rate is 1.0, then the target degree distribution will roughlyfollow the following distribution: P(k) = exp(-k). In practice we use the discrete exponential distribution (discrete exponential distribution).",
+                    )
             else:
                 with col6:
                     exp_min, exp_max = 0.5, 0.5
-                
+
             if degree_distribution == "uniform":
                 with col6:
                     uniform_min_min, uniform_min_max = st.slider(
                         "Uniform Min Factor Range",
-                        0.1, 1.0, (0.3, 0.7),
-                        help="The allowed range (minimum and maximum) of uniform min factor in each graph of the family. That is, each graph instance will sample one target value from this range. \n \n The uniform min factor is the minimum factor of the uniform distribution. For example, if the uniform min factor is 0.3, then the target degree distribution will randomly draw factors (not actual degrees!) between 0.3 and a maximum factor drawn below."
+                        0.1,
+                        1.0,
+                        (0.3, 0.7),
+                        help="The allowed range (minimum and maximum) of uniform min factor in each graph of the family. That is, each graph instance will sample one target value from this range. \n \n The uniform min factor is the minimum factor of the uniform distribution. For example, if the uniform min factor is 0.3, then the target degree distribution will randomly draw factors (not actual degrees!) between 0.3 and a maximum factor drawn below.",
                     )
                 col_u1, col_u2 = st.columns(2)
                 with col_u2:
                     uniform_max_min, uniform_max_max = st.slider(
                         "Uniform Max Factor Range",
-                        1.0, 3.0, (1.3, 2.0),
-                        help="The allowed range (minimum and maximum) of uniform max factor in each graph of the family. \n \n The uniform max factor is the maximum factor of the uniform distribution. For example, if the uniform max factor is 2.0, then the target degree distribution will randomly draw factors (not actual degrees!) between a minimum factor drawn above and 2.0."
+                        1.0,
+                        3.0,
+                        (1.3, 2.0),
+                        help="The allowed range (minimum and maximum) of uniform max factor in each graph of the family. \n \n The uniform max factor is the maximum factor of the uniform distribution. For example, if the uniform max factor is 2.0, then the target degree distribution will randomly draw factors (not actual degrees!) between a minimum factor drawn above and 2.0.",
                     )
             else:
                 uniform_min_min, uniform_min_max = 0.5, 0.5
                 uniform_max_min, uniform_max_max = 1.5, 1.5
-            
+
             st.markdown("#### Generation Timeout & Seeding")
 
             col7, col8 = st.columns(2)
-    
-            with col7:  
-                family_seed = st.number_input("Family Seed", value=123, help="Seed for the family generation. If you want to generate the same family again, you can set the same seed.")
+
+            with col7:
+                family_seed = st.number_input(
+                    "Family Seed",
+                    value=123,
+                    help="Seed for the family generation. If you want to generate the same family again, you can set the same seed.",
+                )
             with col8:
-                timeout_minutes = st.slider("Timeout (minutes)", 1.0, 30.0, 5.0, 
-                                         help="Timeout for generation. If the generation takes too long, you can increase this value.")
-            
-            
-            st.markdown('</div>', unsafe_allow_html=True)
-            
+                timeout_minutes = st.slider(
+                    "Timeout (minutes)",
+                    1.0,
+                    30.0,
+                    5.0,
+                    help="Timeout for generation. If the generation takes too long, you can increase this value.",
+                )
+
+            st.markdown("</div>", unsafe_allow_html=True)
+
         # Main generation area
         universe = st.session_state.universe
-        
+
         # Display current universe info
-        st.info(f"🌌 Using universe with {universe.K} communities, {universe.feature_dim}D features")
-        
-            
+        st.info(
+            f"🌌 Using universe with {universe.K} communities, {universe.feature_dim}D features"
+        )
+
         # Generate Graph Family Button
         if st.button("📊 Generate Graph Family", type="primary", use_container_width=True):
             # Reset analysis state
-            if 'show_properties' in st.session_state:
+            if "show_properties" in st.session_state:
                 del st.session_state.show_properties
-            if 'show_consistency' in st.session_state:
+            if "show_consistency" in st.session_state:
                 del st.session_state.show_consistency
-            if 'show_signals' in st.session_state:
+            if "show_signals" in st.session_state:
                 del st.session_state.show_signals
-            if 'cached_signals' in st.session_state:
+            if "cached_signals" in st.session_state:
                 del st.session_state.cached_signals
-            if 'validation_plot' in st.session_state:
+            if "validation_plot" in st.session_state:
                 del st.session_state.validation_plot
             # Create progress containers
             progress_container = st.container()
             status_container = st.container()
-            
+
             with progress_container:
                 progress_bar = st.progress(0)
                 progress_text = st.empty()
-            
+
             with status_container:
                 status_text = st.empty()
-        
+
             # Step 1: Create family generator
             status_text.text("Step 1/3: Setting up Graph Family Generator...")
             progress_bar.progress(0)
             progress_text.text("0% - Initializing...")
-            
+
             # Final safety check to ensure communities parameters are valid
             safe_max_communities = min(max_communities, universe.K)
             if safe_max_communities < max_communities:
-                st.warning(f"Maximum communities adjusted from {max_communities} to {safe_max_communities} to match universe constraints.")
+                st.warning(
+                    f"Maximum communities adjusted from {max_communities} to {safe_max_communities} to match universe constraints."
+                )
                 max_communities = safe_max_communities
-            
+
             # Also ensure min_communities doesn't exceed universe.K
             safe_min_communities = min(min_communities, universe.K)
             if safe_min_communities < min_communities:
-                st.warning(f"Minimum communities adjusted from {min_communities} to {safe_min_communities} to match universe constraints.")
+                st.warning(
+                    f"Minimum communities adjusted from {min_communities} to {safe_min_communities} to match universe constraints."
+                )
                 min_communities = safe_min_communities
-                
+
             # Ensure min_communities <= max_communities
             if min_communities > max_communities:
-                st.warning(f"Minimum communities ({min_communities}) exceeds maximum communities ({max_communities}). Setting minimum to {max_communities}.")
+                st.warning(
+                    f"Minimum communities ({min_communities}) exceeds maximum communities ({max_communities}). Setting minimum to {max_communities}."
+                )
                 min_communities = max_communities
-            
+
             family_generator = GraphFamilyGenerator(
                 universe=universe,
                 min_n_nodes=min_n_nodes,
@@ -694,51 +842,51 @@ def main():
                 max_communities=max_communities,
                 homophily_range=(homophily_min, homophily_max),
                 avg_degree_range=(avg_degree_min, avg_degree_max),
-                use_dccc_sbm=True,
                 degree_distribution=degree_distribution,
                 power_law_exponent_range=(power_law_min, power_law_max),
                 exponential_rate_range=(exp_min, exp_max),
                 uniform_min_factor_range=(uniform_min_min, uniform_min_max),
                 uniform_max_factor_range=(uniform_max_min, uniform_max_max),
                 degree_separation_range=(degree_separation_min, degree_separation_max),
-                degree_heterogeneity=0.5,
-                seed=family_seed
+                seed=family_seed,
             )
-            
+
             progress_bar.progress(33)
             progress_text.text("33% - Family generator ready")
-            
+
             # Step 2: Generate family
             status_text.text("Step 2/3: Generating Graph Family...")
-            
+
             start_time = time.time()
-            
+
             # Use the family generator's generate_family method
             family_generator.generate_family(
                 n_graphs=n_graphs,
                 show_progress=True,
                 collect_stats=True,
-                timeout_minutes=timeout_minutes
+                timeout_minutes=timeout_minutes,
             )
             graphs = family_generator.graphs
-            
+
             progress_bar.progress(90)
             progress_text.text("90% - Family generation complete")
-            
+
             # Step 3: Finalize
             status_text.text("Step 3/3: Finalizing...")
             progress_bar.progress(100)
             progress_text.text("100% - Complete!")
-            
+
             # Final stats
             elapsed_total = time.time() - start_time
             success_rate = len(graphs) / n_graphs * 100
-            
-            st.success(f"✅ Generation complete! Generated {len(graphs)}/{n_graphs} graphs "
-                        f"({success_rate:.1f}% success rate) in {elapsed_total:.1f}s")
-            
+
+            st.success(
+                f"✅ Generation complete! Generated {len(graphs)}/{n_graphs} graphs "
+                f"({success_rate:.1f}% success rate) in {elapsed_total:.1f}s"
+            )
+
             # Display generation stats if available
-            if hasattr(family_generator, 'generation_stats') and family_generator.generation_stats:
+            if hasattr(family_generator, "generation_stats") and family_generator.generation_stats:
                 stats = family_generator.generation_stats
                 col_a, col_b, col_c = st.columns(3)
                 with col_a:
@@ -747,43 +895,48 @@ def main():
                     st.metric("Success Rate", f"{stats.get('success_rate', 0):.1%}")
                 with col_c:
                     st.metric("Avg Time per Graph", f"{stats.get('avg_time_per_graph', 0):.2f}s")
-            
+
             # Store in session state
             st.session_state.graphs = graphs
             st.session_state.family_generator = family_generator
-            
+
             # Clear progress indicators
             progress_container.empty()
             status_container.empty()
-            
+
             st.rerun()
-        
+
         # Show existing graphs if available
-        if 'graphs' in st.session_state and st.session_state.graphs:
+        if "graphs" in st.session_state and st.session_state.graphs:
             graphs = st.session_state.graphs
             family_generator = st.session_state.family_generator
-            
+
             # Add an announcement banner for downloading or moving to the next page
-            st.success("🎉 Graph family successfully generated! You can now download the family or analyze it in detail.")
-            
+            st.success(
+                "🎉 Graph family successfully generated! You can now download the family or analyze it in detail."
+            )
+
             # Add a more subtle navigation guide
-            st.markdown("""
+            st.markdown(
+                """
             <div style="background-color: #f0f2f6; padding: 15px; border-radius: 10px; border-left: 5px solid #4b6584; margin: 15px 0;">
                 <p style="font-size: 16px; color: #2d3436; margin: 0;">Click on the <b>🔍 Analysis</b> tab <b>at the top of the page</b> to analyze your graph family in detail, or the <b>💾 Download</b> tab to save your data.</p>
             </div>
-            """, unsafe_allow_html=True)
-            
+            """,
+                unsafe_allow_html=True,
+            )
+
             # We'll show the property validation plot when the user clicks 'Analyze Graph Family'
-            
+
             st.markdown("### Quick Stats")
             col_a, col_b, col_c, col_d = st.columns(4)
-            
+
             # Basic stats
             total_nodes = sum(g.n_nodes for g in graphs)
             avg_nodes = total_nodes / len(graphs)
             total_edges = sum(g.graph.number_of_edges() for g in graphs)
             avg_edges = total_edges / len(graphs)
-            
+
             with col_a:
                 st.metric("Total Graphs", len(graphs))
             with col_b:
@@ -796,32 +949,38 @@ def main():
                 for g in graphs:
                     all_communities.update(g.communities)
                 st.metric("Unique Communities", len(all_communities))
-            
+
             # Graph visualization section
             st.markdown("### Graph Visualizations")
-            
+
             # Graph selection
             graph_idx = st.selectbox(
                 "Select Graph to Visualize",
                 range(len(graphs)),
-                format_func=lambda x: f"Graph {x+1} ({graphs[x].n_nodes} nodes, {graphs[x].graph.number_of_edges()} edges)",
-                key="graph_selector_tab2"
+                format_func=lambda x: f"Graph {x + 1} ({graphs[x].n_nodes} nodes, {graphs[x].graph.number_of_edges()} edges)",
+                key="graph_selector_tab2",
             )
-            
+
             selected_graph = graphs[graph_idx]
-            
+
             # Visualization options
             col1, col2, col3 = st.columns(3)
-            
+
             with col1:
-                layout = st.selectbox("Layout", ["spring", "kamada_kawai", "spectral", "circular"], key="layout_selector_tab2")
-            
+                layout = st.selectbox(
+                    "Layout",
+                    ["spring", "kamada_kawai", "spectral", "circular"],
+                    key="layout_selector_tab2",
+                )
+
             with col2:
                 node_size = st.slider("Node Size", 10, 200, 50, key="node_size_slider_tab2")
-            
+
             with col3:
-                show_labels = st.checkbox("Show Node Labels", value=False, key="show_labels_checkbox_tab2")
-            
+                show_labels = st.checkbox(
+                    "Show Node Labels", value=False, key="show_labels_checkbox_tab2"
+                )
+
             # Create visualization
             fig = plot_graph_communities(
                 selected_graph,
@@ -829,17 +988,18 @@ def main():
                 node_size=node_size,
                 with_labels=show_labels,
                 figsize=(12, 8),
-                title=f"Graph {graph_idx+1} - {selected_graph.n_nodes} nodes, {selected_graph.graph.number_of_edges()} edges"
+                title=f"Graph {graph_idx + 1} - {selected_graph.n_nodes} nodes, {selected_graph.graph.number_of_edges()} edges",
             )
-            
+
             st.pyplot(fig)
             plt.close(fig)
-            
+
             # Add info about next steps
             st.markdown("### Next Steps")
-            
+
             # Create a more prominent next steps section
-            st.markdown("""
+            st.markdown(
+                """
             <div style="display: flex; gap: 20px; margin: 20px 0;">
                 <div style="flex: 1; background-color: #f0f2f6; padding: 20px; border-radius: 10px; border-left: 6px solid #4b6584; text-align: center;">
                     <h3 style="color: #4b6584; font-size: 20px;">💾 DOWNLOAD</h3>
@@ -850,124 +1010,146 @@ def main():
                     <p style="font-size: 16px; color: #2d3436; margin-top: 10px;">Use the <b>📊 Analysis</b> tab <b>at the top of the page</b> to analyze your graph family</p>
                 </div>
             </div>
-            """, unsafe_allow_html=True)
-                
+            """,
+                unsafe_allow_html=True,
+            )
+
     # TAB 3: ANALYSIS
     with tab3:
-        st.markdown('<h2 class="section-header">🔍 Graph Family Analysis</h2>', unsafe_allow_html=True)
-        
+        st.markdown(
+            '<h2 class="section-header">🔍 Graph Family Analysis</h2>', unsafe_allow_html=True
+        )
+
         # Check if graphs exist
-        if 'graphs' not in st.session_state or not st.session_state.graphs:
-            st.error("❌ No graphs available. Please generate a graph family first in the 'Graph Family Generation' tab.")
-            st.info("💡 **Tip:** Go to the '📊 Graph Family Generation' tab to create your graph family first.")
+        if "graphs" not in st.session_state or not st.session_state.graphs:
+            st.error(
+                "❌ No graphs available. Please generate a graph family first in the 'Graph Family Generation' tab."
+            )
+            st.info(
+                "💡 **Tip:** Go to the '📊 Graph Family Generation' tab to create your graph family first."
+            )
         else:
             graphs = st.session_state.graphs
             family_generator = st.session_state.family_generator
-            
+
             # Property Validation Visualization
             st.markdown("#### Property Target vs. Actual Ranges")
-            st.markdown("This visualization shows how well the generated graphs match the target property ranges:")
-            
+            st.markdown(
+                "This visualization shows how well the generated graphs match the target property ranges:"
+            )
+
             # Display property validation plot
             with st.spinner("Generating property validation plot..."):
                 try:
                     # Check if we have cached the validation plot
-                    if 'validation_plot' not in st.session_state:
+                    if "validation_plot" not in st.session_state:
                         validation_fig = plot_property_validation(family_generator)
                         st.session_state.validation_plot = validation_fig
                     else:
                         validation_fig = st.session_state.validation_plot
-                    
+
                     st.pyplot(validation_fig)
                     plt.close(validation_fig)
                 except Exception as e:
-                    st.error(f"Error generating property validation plot: {str(e)}")
-            
+                    st.error(f"Error generating property validation plot: {e!s}")
+
             st.markdown("---")
             st.markdown("#### Detailed Analysis")
-            
+
             # Create three buttons for different analysis types
             col_btn1, col_btn2, col_btn3 = st.columns(3)
-            
+
             with col_btn1:
-                analyze_properties = st.button("General Family Properties", use_container_width=True, key="analyze_properties_btn")
-            
+                analyze_properties = st.button(
+                    "General Family Properties",
+                    use_container_width=True,
+                    key="analyze_properties_btn",
+                )
+
             with col_btn2:
-                analyze_consistency = st.button("Consistency Metrics", use_container_width=True, key="analyze_consistency_btn")
-            
+                analyze_consistency = st.button(
+                    "Consistency Metrics", use_container_width=True, key="analyze_consistency_btn"
+                )
+
             with col_btn3:
-                analyze_signals = st.button("Signal Properties", use_container_width=True, key="analyze_signals_btn")
-            
+                analyze_signals = st.button(
+                    "Signal Properties", use_container_width=True, key="analyze_signals_btn"
+                )
+
             # Store button states in session state if clicked
             if analyze_properties:
                 st.session_state.show_properties = True
                 st.session_state.show_consistency = False
                 st.session_state.show_signals = False
                 st.rerun()
-            
+
             if analyze_consistency:
                 st.session_state.show_consistency = True
                 st.session_state.show_properties = False
                 st.session_state.show_signals = False
                 st.rerun()
-            
+
             if analyze_signals:
                 st.session_state.show_signals = True
                 st.session_state.show_properties = False
                 st.session_state.show_consistency = False
                 st.rerun()
-            
+
             # Initialize session state variables if they don't exist
-            if 'show_properties' not in st.session_state:
+            if "show_properties" not in st.session_state:
                 st.session_state.show_properties = True
-            if 'show_consistency' not in st.session_state:
+            if "show_consistency" not in st.session_state:
                 st.session_state.show_consistency = False
-            if 'show_signals' not in st.session_state:
+            if "show_signals" not in st.session_state:
                 st.session_state.show_signals = False
-                
+
             # Add a cancel button to stop analysis
             if st.session_state.show_signals:
                 if st.button("Cancel Signal Analysis", type="secondary"):
                     del st.session_state.show_signals
                     st.session_state.show_properties = True
                     st.rerun()
-            
+
             # Show analysis based on selection
             try:
                 # General Family Properties
                 if st.session_state.show_properties:
                     st.markdown("#### General Family Properties")
                     family_properties = family_generator.analyze_graph_family_properties()
-                    
+
                     # Convert to DataFrame for table display
                     data = []
                     for key, value in family_properties.items():
-                        if isinstance(value, list) and all(isinstance(v, (int, float)) for v in value):
+                        if isinstance(value, list) and all(
+                            isinstance(v, (int, float)) for v in value
+                        ):
                             if len(value) > 0:
                                 mean_val = np.mean(value)
                                 std_val = np.std(value)
                                 min_val = np.min(value)
                                 max_val = np.max(value)
-                                data.append({
-                                    "Metric": key,
-                                    "Mean": f"{mean_val:.3f}",
-                                    "Std Dev": f"{std_val:.3f}",
-                                    "Min": f"{min_val:.3f}",
-                                    "Max": f"{max_val:.3f}"
-                                })
-                    
+                                data.append(
+                                    {
+                                        "Metric": key,
+                                        "Mean": f"{mean_val:.3f}",
+                                        "Std Dev": f"{std_val:.3f}",
+                                        "Min": f"{min_val:.3f}",
+                                        "Max": f"{max_val:.3f}",
+                                    }
+                                )
+
                     # Display as a table
                     if data:
                         df = pd.DataFrame(data)
                         st.table(df.set_index("Metric"))
                     else:
                         st.info("No property data available.")
-                
+
                 # Consistency Metrics
                 elif st.session_state.show_consistency:
                     st.markdown("#### Consistency Metrics")
                     consistency = family_generator.analyze_graph_family_consistency()
-                    
+
                     # Convert to DataFrame for table display
                     data = []
                     for metric, value in consistency.items():
@@ -977,22 +1159,26 @@ def main():
                                 std_val = np.std(value)
                                 min_val = np.min(value)
                                 max_val = np.max(value)
-                                data.append({
-                                    "Metric": metric,
-                                    "Mean": f"{mean_val:.3f}",
-                                    "Std Dev": f"{std_val:.3f}",
-                                    "Min": f"{min_val:.3f}",
-                                    "Max": f"{max_val:.3f}"
-                                })
+                                data.append(
+                                    {
+                                        "Metric": metric,
+                                        "Mean": f"{mean_val:.3f}",
+                                        "Std Dev": f"{std_val:.3f}",
+                                        "Min": f"{min_val:.3f}",
+                                        "Max": f"{max_val:.3f}",
+                                    }
+                                )
                         else:
-                            data.append({
-                                "Metric": metric,
-                                "Value": str(value),
-                                "Std Dev": "-",
-                                "Min": "-",
-                                "Max": "-"
-                            })
-                    
+                            data.append(
+                                {
+                                    "Metric": metric,
+                                    "Value": str(value),
+                                    "Std Dev": "-",
+                                    "Min": "-",
+                                    "Max": "-",
+                                }
+                            )
+
                     # Display as a table
                     if data:
                         df = pd.DataFrame(data)
@@ -1002,48 +1188,62 @@ def main():
                             st.table(df.set_index("Metric"))
                     else:
                         st.info("No consistency data available.")
-                
+
                 # Signal Properties
                 elif st.session_state.show_signals:
                     st.markdown("#### Signal Properties")
-                    
+
                     # Check if signals have already been calculated
-                    if 'cached_signals' not in st.session_state:
+                    if "cached_signals" not in st.session_state:
                         with st.spinner("Calculating signal properties... This may take a while."):
                             signals = family_generator.analyze_graph_family_signals()
                             # Cache the results
                             st.session_state.cached_signals = signals
                     else:
                         signals = st.session_state.cached_signals
-                    
+
                     if signals:
-                        signals_structured_dict = {signal_name: {'mean': np.mean(metric_data), 'std': np.std(metric_data), 'min': np.min(metric_data), 'max': np.max(metric_data)} for signal_name, metric_data in signals.items()}
+                        signals_structured_dict = {
+                            signal_name: {
+                                "mean": np.mean(metric_data),
+                                "std": np.std(metric_data),
+                                "min": np.min(metric_data),
+                                "max": np.max(metric_data),
+                            }
+                            for signal_name, metric_data in signals.items()
+                        }
                         df = pd.DataFrame.from_dict(signals_structured_dict)
 
                         # Display as a table
                         st.table(df)
-                        
+
                     else:
                         st.info("No signal data available.")
-            
+
             except Exception as e:
-                st.error(f"❌ Error analyzing family properties: {str(e)}")
+                st.error(f"❌ Error analyzing family properties: {e!s}")
                 st.exception(e)
-    
+
     # TAB 4: DOWNLOAD
     with tab4:
-        st.markdown('<h2 class="section-header">💾 Download Generated Graphs</h2>', unsafe_allow_html=True)
-        
+        st.markdown(
+            '<h2 class="section-header">💾 Download Generated Graphs</h2>', unsafe_allow_html=True
+        )
+
         # Check if graphs exist
-        if 'graphs' not in st.session_state or not st.session_state.graphs:
-            st.error("❌ No graphs available. Please generate a graph family first in the 'Graph Family Generation' tab.")
-            st.info("💡 **Tip:** Go to the '📊 Graph Family Generation' tab to create your graph family first.")
+        if "graphs" not in st.session_state or not st.session_state.graphs:
+            st.error(
+                "❌ No graphs available. Please generate a graph family first in the 'Graph Family Generation' tab."
+            )
+            st.info(
+                "💡 **Tip:** Go to the '📊 Graph Family Generation' tab to create your graph family first."
+            )
         else:
             graphs = st.session_state.graphs
             family_generator = st.session_state.family_generator
-            
+
             # st.markdown("### 💾 Download PyTorch Geometric Dataset")
-            
+
             if len(family_generator.graphs) > 0:
                 # Task selection
                 st.markdown("#### Select Tasks and Construct Dataset")
@@ -1051,19 +1251,23 @@ def main():
                     "community_detection",
                     "triangle_counting",
                     "k_hop_community_counts_k1",
-                    "k_hop_community_counts_k2", 
+                    "k_hop_community_counts_k2",
                     "k_hop_community_counts_k3",
                     "k_hop_community_counts_k4",
                     "k_hop_community_counts_k5",
                 ]
-                
+
                 selected_tasks = st.multiselect(
                     "Choose tasks to generate PyG graphs for:",
                     available_tasks,
-                    default=["community_detection", "triangle_counting", "k_hop_community_counts_k1"],
-                    help="Select one or more tasks. Each task will create different target labels for the graphs."
+                    default=[
+                        "community_detection",
+                        "triangle_counting",
+                        "k_hop_community_counts_k1",
+                    ],
+                    help="Select one or more tasks. Each task will create different target labels for the graphs.",
                 )
-                
+
                 # Directory for saving
                 family_dir = "datasets"
                 # family_dir = st.text_input(
@@ -1071,11 +1275,11 @@ def main():
                 #     value="datasets",
                 #     help="Directory where the PyG graphs will be saved"
                 # )
-            
+
                 # Validation and download button
                 if not selected_tasks:
                     st.warning("Please select at least one task to proceed.")
-                
+
                 # Prominent download button
                 if selected_tasks:
                     if st.button("Create PyG Dataset", type="primary", use_container_width=True):
@@ -1083,77 +1287,88 @@ def main():
                             # Create progress containers
                             progress_container = st.container()
                             status_container = st.container()
-                            
+
                             with progress_container:
                                 progress_bar = st.progress(0)
                                 progress_text = st.empty()
-                            
+
                             with status_container:
                                 status_text = st.empty()
-                            
+
                             # Step 1: Convert to PyG graphs
-                            status_text.text("Step 1/2: Converting graphs to PyTorch Geometric format...")
+                            status_text.text(
+                                "Step 1/2: Converting graphs to PyTorch Geometric format..."
+                            )
                             progress_bar.progress(25)
                             progress_text.text("25% - Starting conversion...")
-                            
+
                             # Check if graphs have features (required for PyG conversion)
-                            graphs_with_features = all(hasattr(g, 'features') and g.features is not None for g in family_generator.graphs)
+                            graphs_with_features = all(
+                                hasattr(g, "features") and g.features is not None
+                                for g in family_generator.graphs
+                            )
                             if not graphs_with_features:
-                                st.error("❌ Cannot convert to PyG: Some graphs don't have features. Please generate graphs with feature_dim > 0.")
+                                st.error(
+                                    "❌ Cannot convert to PyG: Some graphs don't have features. Please generate graphs with feature_dim > 0."
+                                )
                                 progress_container.empty()
                                 status_container.empty()
                                 return
-                            
+
                             progress_bar.progress(50)
                             progress_text.text("50% - Converting graphs...")
-                            
+
                             # Step 2: Save PyG graphs and universe
                             status_text.text("Step 2/2: Saving PyG graphs and universe...")
                             progress_bar.progress(75)
                             progress_text.text("75% - Saving to disk...")
-                            
+
                             # Use the family generator's save method
                             family_generator.save_pyg_graphs_and_universe(
-                                tasks=selected_tasks,
-                                root_dir=family_dir
+                                tasks=selected_tasks, root_dir=family_dir
                             )
-                            
+
                             progress_bar.progress(100)
                             progress_text.text("100% - Complete!")
-                            
-                            st.success(f"✅ Successfully saved PyG graphs for {len(selected_tasks)} task(s)!")
+
+                            st.success(
+                                f"✅ Successfully saved PyG graphs for {len(selected_tasks)} task(s)!"
+                            )
 
                             import shutil
+
                             # Compress the directory into a ZIP file for download
                             folder_to_compress = family_generator.dataset.processed_root
-                            dataset_hash = folder_to_compress.split('_')[-1]
-                            shutil.make_archive(dataset_hash, 'zip', folder_to_compress)
+                            dataset_hash = folder_to_compress.split("_")[-1]
+                            shutil.make_archive(dataset_hash, "zip", folder_to_compress)
 
                             with open(f"{dataset_hash}.zip", "rb") as fp:
                                 st.download_button(
                                     label="Download PyG Dataset & Metadata (ZIP)",
                                     data=fp,
-                                    file_name=f'{dataset_hash}.zip',
-                                    mime='application/zip',
-                                    type="primary", 
+                                    file_name=f"{dataset_hash}.zip",
+                                    mime="application/zip",
+                                    type="primary",
                                     use_container_width=True,
                                     on_click="ignore",
                                     icon=":material/download:",
                                 )
-                            
+
                             # Clear progress indicators after a short delay
                             time.sleep(1)
                             progress_container.empty()
                             status_container.empty()
-                            
+
                         except Exception as e:
-                            st.error(f"❌ Error saving PyG graphs: {str(e)}")
+                            st.error(f"❌ Error saving PyG graphs: {e!s}")
                             st.exception(e)
                             progress_container.empty()
                             status_container.empty()
             else:
-                st.warning("No graphs available in family generator. Please generate a graph family first.")
-    
+                st.warning(
+                    "No graphs available in family generator. Please generate a graph family first."
+                )
+
 
 if __name__ == "__main__":
-    main() 
+    main()

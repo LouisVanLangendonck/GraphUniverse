@@ -57,7 +57,7 @@ You now use a **degree-corrected MMSBM-like rule**:
 
 For each node pair \( i, j \):
 1. Sample community pair \( (a, b) \sim \pi_i \otimes \pi_j \)
-2. Use degree-scaled probability:  
+2. Use degree-scaled probability:
    \[
    p_{ij} = \theta_i \theta_j P_{ab}
    \]

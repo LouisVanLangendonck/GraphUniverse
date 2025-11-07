@@ -29,7 +29,7 @@ class GraphFamilyGenerator:
         max_communities: Maximum number of communities per graph (defaults to universe.K)
         homophily_range: Tuple of (min_homophily, max_homophily) in graph family
         density_range: Tuple of (min_density, max_density) in graph family
-        use_dccc_sbm: Whether to use DCCC-SBM model or standard DC-SBM
+        degree_distribution: Degree distribution type ("power_law", "exponential", "uniform")
         degree_separation_range: Range for degree distribution separation (min, max)
         enable_deviation_limiting: Whether to enable deviation checks
         max_mean_community_deviation: If enabled, maximum allowed mean target scaled edge probability community deviation
@@ -38,7 +38,7 @@ class GraphFamilyGenerator:
         exponential_rate_range: Range for exponential distribution rate (min, max)
         uniform_min_factor_range: Range for uniform distribution min factor (min, max)
         uniform_max_factor_range: Range for uniform distribution max factor (min, max)
-        degree_heterogeneity: Fixed degree heterogeneity for all graphs (if use_dccc_sbm is False, this is used)
+        degree_separation_range: Range for degree distribution separation (min, max)
         seed: Random seed for reproducibility
     """
 
@@ -52,16 +52,12 @@ class GraphFamilyGenerator:
         max_communities: int | None = None,
         homophily_range: tuple[float, float] = (0.0, 0.4),  # Homophily range
         avg_degree_range: tuple[float, float] = (1.0, 3.0),  # Average degree range
-        use_dccc_sbm: bool = True,  # Whether to use DCCC-SBM or standard DC-SBM
-        enable_deviation_limiting: bool = False,  # Deviation limiting
-        max_mean_community_deviation: float = 0.10,
-        degree_distribution: str = "standard",  # DCCC distribution-specific parameter ranges
+        degree_distribution: str = "power_law",  # Distribution-specific parameter ranges
         power_law_exponent_range: tuple[float, float] = (2.0, 3.5),
         exponential_rate_range: tuple[float, float] = (0.3, 1.0),
         uniform_min_factor_range: tuple[float, float] = (0.3, 0.7),
         uniform_max_factor_range: tuple[float, float] = (1.3, 2.0),
         degree_separation_range: tuple[float, float] = (0.5, 0.5),  # Range for degree separation
-        degree_heterogeneity: float = 0.5,  # Standard DC-SBM parameters (so if use_dccc_sbm is False, this is used)
         seed: int | None = 42,
     ):
         self.universe = universe
@@ -72,30 +68,16 @@ class GraphFamilyGenerator:
         self.max_communities = max_communities if max_communities is not None else universe.K
         self.homophily_range = homophily_range
         self.avg_degree_range = avg_degree_range
-        # self.density_range = density_range
-
-        # Whether to use DCCC-SBM or standard DC-SBM
-        self.use_dccc_sbm = use_dccc_sbm
 
         # DCCC distribution-specific parameters
         self.degree_separation_range = degree_separation_range  # Range for degree separation
 
-        # Community co-occurrence homogeneity
-        # self.community_cooccurrence_homogeneity = community_cooccurrence_homogeneity
-
-        # Deviation limiting
-        self.enable_deviation_limiting = enable_deviation_limiting
-        self.max_mean_community_deviation = max_mean_community_deviation
-
-        # DCCC distribution parameters
+        # Distribution parameters
         self.degree_distribution = degree_distribution
         self.power_law_exponent_range = power_law_exponent_range
         self.exponential_rate_range = exponential_rate_range
         self.uniform_min_factor_range = uniform_min_factor_range
         self.uniform_max_factor_range = uniform_max_factor_range
-
-        # Standard DC-SBM parameters (so if use_dccc_sbm is False, this is used)
-        self.degree_heterogeneity = degree_heterogeneity
 
         # Set random seed
         self.seed = seed
@@ -191,14 +173,9 @@ class GraphFamilyGenerator:
                 target_average_degree=params["target_average_degree"],
                 degree_distribution=self.degree_distribution,
                 power_law_exponent=params.get("power_law_exponent", None),
-                max_mean_community_deviation=self.max_mean_community_deviation,
-                # Standard DC-SBM parameters (so if use_dccc_sbm is False, this is used)
-                degree_heterogeneity=self.degree_heterogeneity,
                 # DCCC-SBM parameters
-                use_dccc_sbm=self.use_dccc_sbm,
                 degree_separation=params.get("degree_separation", 0.5),
                 dccc_global_degree_params=params.get("dccc_global_degree_params", {}),
-                enable_deviation_limiting=self.enable_deviation_limiting,
                 # Random seed
                 seed=graph_seed,
                 # Optional Parameter for user-defined communites to be sampled (Such that NO unseen communities are sampled for val or test)
@@ -299,6 +276,8 @@ class GraphFamilyGenerator:
                 "community_detection",
                 "triangle_counting",
                 "k_hop_community_counts_k",
+                "community_homophily_vector",
+                "graph_diameter",
             ]
             for task in tasks:
                 if not any(task.startswith(prefix) for prefix in valid_task_prefixes):
@@ -312,8 +291,8 @@ class GraphFamilyGenerator:
                 "k_hop_community_counts_k1",
                 "k_hop_community_counts_k2",
                 "k_hop_community_counts_k3",
-                "k_hop_community_counts_k4",
-                "k_hop_community_counts_k5",
+                "community_homophily_vector",
+                "graph_diameter",
             ]
 
         pyg_graphs = []
@@ -346,8 +325,6 @@ class GraphFamilyGenerator:
                 "max_communities": self.max_communities,
                 "homophily_range": self.homophily_range,
                 "avg_degree_range": self.avg_degree_range,
-                "degree_heterogeneity": self.degree_heterogeneity,
-                "use_dccc_sbm": self.use_dccc_sbm,
                 "degree_separation_range": self.degree_separation_range,
                 "degree_distribution": self.degree_distribution,
                 "power_law_exponent_range": self.power_law_exponent_range,
@@ -464,43 +441,42 @@ class GraphFamilyGenerator:
         # # Sample target density
         # target_density = np.random.uniform(self.density_range[0], self.density_range[1])
 
-        # Sample DCCC parameters if using DCCC-SBM
+        # Sample DCCC parameters
         dccc_params = {}
-        if self.use_dccc_sbm:
-            # Sample degree separation
-            degree_separation = np.random.uniform(
-                self.degree_separation_range[0], self.degree_separation_range[1]
+        # Sample degree separation
+        degree_separation = np.random.uniform(
+            self.degree_separation_range[0], self.degree_separation_range[1]
+        )
+
+        # Sample distribution-specific parameters
+        distribution_params = {}
+        if self.degree_distribution == "power_law":
+            power_law_exponent = np.random.uniform(
+                self.power_law_exponent_range[0], self.power_law_exponent_range[1]
             )
+            distribution_params = {"exponent": power_law_exponent, "x_min": 1.0}
+        elif self.degree_distribution == "exponential":
+            rate = np.random.uniform(
+                self.exponential_rate_range[0], self.exponential_rate_range[1]
+            )
+            distribution_params = {"rate": rate}
+        elif self.degree_distribution == "uniform":
+            min_factor = np.random.uniform(
+                self.uniform_min_factor_range[0], self.uniform_min_factor_range[1]
+            )
+            max_factor = np.random.uniform(
+                self.uniform_max_factor_range[0], self.uniform_max_factor_range[1]
+            )
+            # Ensure max_factor > min_factor
+            if max_factor <= min_factor:
+                max_factor = min_factor + 0.1
+            distribution_params = {"min_degree": min_factor, "max_degree": max_factor}
 
-            # Sample distribution-specific parameters
-            distribution_params = {}
-            if self.degree_distribution == "power_law":
-                power_law_exponent = np.random.uniform(
-                    self.power_law_exponent_range[0], self.power_law_exponent_range[1]
-                )
-                distribution_params = {"exponent": power_law_exponent, "x_min": 1.0}
-            elif self.degree_distribution == "exponential":
-                rate = np.random.uniform(
-                    self.exponential_rate_range[0], self.exponential_rate_range[1]
-                )
-                distribution_params = {"rate": rate}
-            elif self.degree_distribution == "uniform":
-                min_factor = np.random.uniform(
-                    self.uniform_min_factor_range[0], self.uniform_min_factor_range[1]
-                )
-                max_factor = np.random.uniform(
-                    self.uniform_max_factor_range[0], self.uniform_max_factor_range[1]
-                )
-                # Ensure max_factor > min_factor
-                if max_factor <= min_factor:
-                    max_factor = min_factor + 0.1
-                distribution_params = {"min_degree": min_factor, "max_degree": max_factor}
-
-            dccc_params = {
-                "degree_separation": degree_separation,
-                "dccc_global_degree_params": distribution_params,
-                "power_law_exponent": distribution_params.get("exponent"),
-            }
+        dccc_params = {
+            "degree_separation": degree_separation,
+            "dccc_global_degree_params": distribution_params,
+            "power_law_exponent": distribution_params.get("exponent"),
+        }
 
         # Combine all parameters
         params = {
@@ -566,14 +542,9 @@ class GraphFamilyGenerator:
                         target_average_degree=params["target_average_degree"],
                         degree_distribution=self.degree_distribution,
                         power_law_exponent=params.get("power_law_exponent", None),
-                        max_mean_community_deviation=self.max_mean_community_deviation,
-                        # Standard DC-SBM parameters (so if use_dccc_sbm is False, this is used)
-                        degree_heterogeneity=self.degree_heterogeneity,
                         # DCCC-SBM parameters
-                        use_dccc_sbm=self.use_dccc_sbm,
                         degree_separation=params.get("degree_separation", 0.5),
                         dccc_global_degree_params=params.get("dccc_global_degree_params", {}),
-                        enable_deviation_limiting=self.enable_deviation_limiting,
                         # Random seed
                         seed=graph_seed,
                         # Optional Parameter for user-defined communites to be sampled
@@ -663,7 +634,6 @@ class GraphFamilyGenerator:
             "max_communities": self.max_communities,
             "homophily_range": self.homophily_range,
             "density_range": self.density_range,
-            "use_dccc_sbm": self.use_dccc_sbm,
             "degree_separation_range": self.degree_separation_range,
             "degree_distribution": self.degree_distribution,
             "power_law_exponent_range": self.power_law_exponent_range,
@@ -737,15 +707,14 @@ class GraphFamilyGenerator:
 
             properties["community_counts"].append(len(np.unique(graph.community_labels)))
 
-            # Calculate homophily level
+            # Calculate average homophily level across communities
             if graph.n_nodes > 0 and graph.graph.number_of_edges() > 0:
-                # Count edges between nodes of same community
-                same_community_edges = 0
-                for u, v in graph.graph.edges():
-                    if graph.community_labels[u] == graph.community_labels[v]:
-                        same_community_edges += 1
-                homophily = same_community_edges / graph.graph.number_of_edges()
-                properties["homophily_levels"].append(homophily)
+                per_community_homophily = graph.calculate_per_community_homophily()
+                # Get only values for communities that are present in the graph
+                present_communities = list(graph.communities)
+                community_homophilies = [per_community_homophily[comm].item() for comm in present_communities]
+                avg_homophily = sum(community_homophilies) / len(community_homophilies) if community_homophilies else 0.0
+                properties["homophily_levels"].append(avg_homophily)
             else:
                 properties["homophily_levels"].append(0.0)
 
@@ -1209,7 +1178,13 @@ class GraphFamilyGenerator:
     def _calculate_degree_tail_metrics(self, degrees: list[int]) -> dict[str, float]:
         """Calculate tail-based degree metrics instead of power law fitting"""
         if len(degrees) == 0:
-            return {"tail_ratio": 0.0, "cv": 0.0}
+            return {
+                "tail_ratio_95": 0.0,
+                "tail_ratio_99": 0.0,
+                "coefficient_variation": 0.0,
+                "max_degree": 0.0,
+                "mean_degree": 0.0
+            }
 
         tail_95 = np.percentile(degrees, 95)
         tail_99 = np.percentile(degrees, 99)

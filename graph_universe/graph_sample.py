@@ -170,16 +170,9 @@ class GraphSample:
         target_average_degree: float,
         degree_distribution: str,
         power_law_exponent: float | None,
-        max_mean_community_deviation: float,
-        # Whether to use the poisson version of the DC-SBM (i.e. the edge count matrix is scaled to match the target average degree)
-        poisson_version: bool = False,
-        # Standard DC-SBM parameters (so if use_dccc_sbm is False, this is used)
-        degree_heterogeneity: float | None = None,
         # DCCC-SBM parameters
-        use_dccc_sbm: bool = True,
         degree_separation: float = 0.5,
         dccc_global_degree_params: dict | None = None,
-        enable_deviation_limiting: bool = False,
         # Random seed
         seed: int | None = None,
         # Optional Parameter for user-defined communuties to be sampled
@@ -192,11 +185,9 @@ class GraphSample:
         # Store the GraphUniverse object
         self.universe = universe
 
-        # Store additional DCCC-SBM parameters
-        self.use_dccc_sbm = use_dccc_sbm
+        # Store DCCC-SBM parameters
         self.degree_separation = degree_separation
         self.dccc_global_degree_params = dccc_global_degree_params or {}
-        self.enable_deviation_limiting = enable_deviation_limiting  # Store the parameter
 
         # Original initialization code with modifications...
         self.timing_info = {}
@@ -232,8 +223,7 @@ class GraphSample:
             self.degree_distribution = degree_distribution
             self.power_law_exponent = power_law_exponent
 
-            # Store community deviation parameters as instance attributes
-            self.max_mean_community_deviation = max_mean_community_deviation
+            # No community deviation parameters needed
 
             # Create mapping between local community indices and universe community IDs
             self.community_id_mapping = dict(enumerate(self.communities))
@@ -242,27 +232,17 @@ class GraphSample:
             }
 
             # Initialize generation method and parameters
-            self.generation_method = "standard"
+            self.generation_method = "dccc_sbm"
             self.generation_params = {
-                "degree_heterogeneity": degree_heterogeneity,
-                "max_mean_community_deviation": max_mean_community_deviation,
+                "degree_separation": degree_separation,
+                "degree_distribution_type": degree_distribution,
             }
-
-            # If DCCC-SBM is enabled, update generation method
-            if self.use_dccc_sbm:
-                self.generation_method = "dccc_sbm"
-                self.generation_params.update(
-                    {
-                        "degree_separation": degree_separation,
-                        "degree_distribution_type": degree_distribution,
-                    }
+            if degree_distribution == "power_law":
+                self.generation_params["power_law_exponent"] = power_law_exponent
+            else:
+                raise ValueError(
+                    f"Invalid degree distribution: {degree_distribution}"
                 )
-                if degree_distribution == "power_law":
-                    self.generation_params["power_law_exponent"] = power_law_exponent
-                else:
-                    raise ValueError(
-                        f"Invalid degree distribution for classical DC-SBM: {degree_distribution}"
-                    )
 
             # Set random seed if provided
             if seed is not None:
@@ -283,22 +263,12 @@ class GraphSample:
                     self.P_sub[i, j] = universe.P[ci, cj]
 
             # Scale the probability matrix
-            if poisson_version:
-                self.P_sub = self._scale_edge_propensity_to_edge_count(
-                    self.P_sub,
-                    self.target_average_degree,
-                    self.target_homophily,
-                    self.original_n_nodes,
-                    self.use_dccc_sbm,
-                )
-            else:
-                self.P_sub = self._scale_edge_propensity_to_edge_probability(
-                    self.P_sub,
-                    self.target_average_degree,
-                    self.target_homophily,
-                    self.original_n_nodes,
-                    self.use_dccc_sbm,
-                )
+            self.P_sub = self._scale_edge_propensity_to_edge_probability(
+                self.P_sub,
+                self.target_average_degree,
+                self.target_homophily,
+                self.original_n_nodes,
+            )
             self.timing_info["propensity_matrix_scaling"] = time.time() - start
 
             check_timeout()
@@ -323,52 +293,41 @@ class GraphSample:
 
             # Time: Generate degree factors
             start = time.time()
-            if self.use_dccc_sbm:
-                # For DCCC-SBM, generate community-coupled degree factors
-                global_degree_params = {}
-                if degree_distribution == "power_law":
-                    global_degree_params = {"exponent": power_law_exponent, "x_min": 1.0}
-                elif degree_distribution == "exponential":
-                    global_degree_params = {"rate": getattr(self, "rate", 0.5)}
-                elif degree_distribution == "uniform":
-                    global_degree_params = {
-                        "min_degree": getattr(self, "min_factor", 0.5),
-                        "max_degree": getattr(self, "max_factor", 1.5),
-                    }
+            # For DCCC-SBM, generate community-coupled degree factors
+            global_degree_params = {}
+            if degree_distribution == "power_law":
+                global_degree_params = {"exponent": power_law_exponent, "x_min": 1.0}
+            elif degree_distribution == "exponential":
+                global_degree_params = {"rate": getattr(self, "rate", 0.5)}
+            elif degree_distribution == "uniform":
+                global_degree_params = {
+                    "min_degree": getattr(self, "min_factor", 0.5),
+                    "max_degree": getattr(self, "max_factor", 1.5),
+                }
 
-                # Update with any user-provided parameters
-                if dccc_global_degree_params:
-                    global_degree_params.update(dccc_global_degree_params)
+            # Update with any user-provided parameters
+            if dccc_global_degree_params:
+                global_degree_params.update(dccc_global_degree_params)
 
-                # Generate community-specific degree factors
-                self.degree_factors = self._generate_community_degree_factors(
-                    self.community_labels,
-                    degree_distribution,
-                    degree_separation,
-                    global_degree_params,
-                    poisson_version,
-                )
-
-            else:
-                self.degree_factors = self._generate_degree_factors(n_nodes, degree_heterogeneity)
+            # Generate community-specific degree factors
+            self.degree_factors = self._generate_community_degree_factors(
+                self.community_labels,
+                degree_distribution,
+                degree_separation,
+                global_degree_params,
+                False,
+            )
             self.timing_info["degree_factors"] = time.time() - start
 
             check_timeout()
 
             # Time: Generate edges
             start = time.time()
-            if poisson_version:
-                self.adjacency = self._generate_edges_poisson(
-                    self.community_labels,
-                    self.P_sub,
-                    self.degree_factors,
-                )
-            else:
-                self.adjacency = self._generate_edges(
-                    self.community_labels,
-                    self.P_sub,
-                    self.degree_factors,
-                )
+            self.adjacency = self._generate_edges(
+                self.community_labels,
+                self.P_sub,
+                self.degree_factors,
+            )
             self.timing_info["edge_generation"] = time.time() - start
 
             check_timeout()
@@ -389,16 +348,7 @@ class GraphSample:
             self.graph = nx.from_scipy_sparse_array(self.adjacency)
             self.n_nodes = self.graph.number_of_nodes()
 
-            if self.enable_deviation_limiting:
-                deviations = self._calculate_community_deviations(
-                    self.graph, self.community_labels, self.P_sub
-                )
-                mean_deviation = deviations["mean_deviation"]
-
-                if mean_deviation > self.max_mean_community_deviation:
-                    raise ValueError(
-                        f"Graph exceeds mean community deviation limit: {mean_deviation:.4f} > {self.max_mean_community_deviation:.4f}"
-                    )
+            # No deviation limiting needed
 
             check_timeout()
 
@@ -471,11 +421,6 @@ class GraphSample:
                 current_deviation_matrix,
                 current_actual_matrix,
             )
-
-            if best_connection is None:
-                # No valid connection found, remove the smallest component
-                components.pop(0)
-                continue
 
             # Make the connection
             node_from, node_to = best_connection
@@ -561,7 +506,7 @@ class GraphSample:
         closer to the expected P_sub matrix.
         """
         # Get communities in the smallest component
-        smallest_communities = set(self.community_labels[node] for node in smallest_component)
+        smallest_communities = {self.community_labels[node] for node in smallest_component}
 
         # Track allowed and disallowed connections separately
         allowed_connections = []  # (score, node_from, node_to)
@@ -569,7 +514,7 @@ class GraphSample:
 
         # Check all possible connections
         for other_component in other_components:
-            other_communities = set(self.community_labels[node] for node in other_component)
+            other_communities = {self.community_labels[node] for node in other_component}
 
             for comm_small in smallest_communities:
                 for comm_other in other_communities:
@@ -635,42 +580,13 @@ class GraphSample:
         # Directly assign each node to a random community
         return np.random.choice(K_sub, size=n_nodes)
 
-    def _generate_degree_factors(
-        self, n_nodes: int, heterogeneity: float, poisson_version: bool
-    ) -> np.ndarray:
-        """
-        Generate degree correction factors for nodes.
-
-        Args:
-            n_nodes: Number of nodes
-            heterogeneity: Controls degree variability (0=homogeneous, 1=highly skewed)
-
-        Returns:
-            Array of degree correction factors
-        """
-        if heterogeneity == 0:
-            # Homogeneous degrees
-            return np.ones(n_nodes)
-
-        # Generate factors from a power-law distribution
-        # Interpolate between homogeneous (exponent→∞) and heterogeneous (exponent→2)
-        exponent = 2 + 8 * (1 - heterogeneity)
-
-        # Sample from power law
-        factors = np.random.pareto(exponent, size=n_nodes) + 1
-
-        # Normalize to keep expected edge count unchanged
-        factors = factors / factors.mean()
-
-        return factors
-
     def _generate_community_degree_factors(
         self,
         community_labels: np.ndarray,
         degree_distribution_type: str,
         degree_separation: float,
         global_degree_params: dict,
-        poisson_version: bool = True,
+        poisson_version: bool = False,
     ) -> np.ndarray:
         n_nodes = len(community_labels)
 
@@ -788,55 +704,6 @@ class GraphSample:
 
         return degree_factors
 
-    def _generate_edges_poisson(
-        self,
-        community_labels: np.ndarray,
-        Lambda_sub: np.ndarray,
-        degree_factors: np.ndarray,
-        simple_graph: bool = True,
-    ) -> sp.spmatrix:
-        """
-        Generate edges using Poisson DC-SBM.
-
-        Args:
-            community_labels: Node community assignments (indices)
-            Lambda_sub: Community-community expected edge count matrix
-            degree_factors: Node degree factors
-            simple_graph: If True, collapse multiedges to single edges
-
-        Returns:
-            Sparse adjacency matrix
-        """
-        n_nodes = len(community_labels)
-
-        # Upper-triangular node pairs
-        i_nodes, j_nodes = np.triu_indices(n_nodes, k=1)
-        comm_i = community_labels[i_nodes]
-        comm_j = community_labels[j_nodes]
-
-        # Poisson mean parameter
-        lam = Lambda_sub[comm_i, comm_j] * degree_factors[i_nodes] * degree_factors[j_nodes]
-
-        # Sample edge counts
-        edge_counts = np.random.poisson(lam)
-
-        if simple_graph:
-            mask = edge_counts > 0
-            rows, cols = i_nodes[mask], j_nodes[mask]
-            data = np.ones(len(rows) * 2)
-        else:
-            # Keep multiplicities: repeat indices according to count
-            rows = np.repeat(i_nodes, edge_counts)
-            cols = np.repeat(j_nodes, edge_counts)
-            data = np.ones(len(rows) * 2)
-
-        # Make undirected adjacency
-        all_rows = np.concatenate([rows, cols])
-        all_cols = np.concatenate([cols, rows])
-
-        adj = sp.csr_matrix((data, (all_rows, all_cols)), shape=(n_nodes, n_nodes))
-        return adj
-
     def _generate_edges(
         self,
         community_labels: np.ndarray,
@@ -887,67 +754,21 @@ class GraphSample:
 
         return adj
 
-    def _scale_edge_propensity_to_edge_count(
-        self,
-        P_sub: np.ndarray,
-        target_avg_degree: float,
-        target_homophily: float,
-        n_nodes: int,
-        use_dccc_sbm: bool = True,
-    ) -> np.ndarray:
-        """
-        Scale edge propensity matrix so entries represent expected edge counts (Poisson DC-SBM form).
-        """
-        n = P_sub.shape[0]
-        if not use_dccc_sbm:
-            P_sub = np.ones((n, n))
-
-        P_scaled = P_sub.copy()
-
-        # Total expected edges in the graph
-        target_total_edges = n_nodes * target_avg_degree
-
-        # Diagonal vs off-diagonal masks
-        diagonal_mask = np.eye(n, dtype=bool)
-        off_diagonal_mask = ~diagonal_mask
-
-        diagonal_sum = np.sum(P_sub[diagonal_mask])
-        off_diagonal_sum = np.sum(P_sub[off_diagonal_mask])
-
-        # Split total edge budget by homophily
-        target_diag_sum = target_homophily * target_total_edges
-        target_off_sum = (1 - target_homophily) * target_total_edges
-
-        # Scale so that diagonals/off-diagonals match
-        diag_scale = target_diag_sum / diagonal_sum if diagonal_sum > 0 else 0
-        off_scale = target_off_sum / off_diagonal_sum if off_diagonal_sum > 0 else 0
-
-        P_scaled[diagonal_mask] *= diag_scale
-        P_scaled[off_diagonal_mask] *= off_scale
-
-        return P_scaled
-
     def _scale_edge_propensity_to_edge_probability(
         self,
         P_sub: np.ndarray,
         target_avg_degree: float | None = None,
         target_homophily: float | None = None,
         n_nodes: int | None = None,
-        use_dccc_sbm: bool = True,
     ) -> np.ndarray:
         n = P_sub.shape[0]
 
-        # If using standard dc_sbm, the inter-community structure is FLAT (uniform). Set the P_sub to ones all and let it be scaled
-        if not use_dccc_sbm:
-            P_sub = np.ones((n, n))
+        # Always using DCCC-SBM
 
         # Make copy to avoid modifying the original matrix
         P_scaled = P_sub.copy()
 
         # Convert target average degree to equivalent density
-        # avg_degree = (2 * edges / n_nodes) -> avg_degree = edges / n_nodes
-        # density = edges / (n_nodes * (n_nodes - 1) / 2)
-        # Therefore: density = avg_degree / (n_nodes - 1)
         target_density = target_avg_degree / (n_nodes - 1)
 
         # Create masks for diagonal and off-diagonal elements
@@ -1007,6 +828,8 @@ class GraphSample:
         - "community_detection"
         - "triangle_counting"
         - "k_hop_community_counts_k{N}" (where N is the hop count, e.g., "k_hop_community_counts_k2")
+        - "realized_homophily"
+        - "graph_diameter"
 
         Args:
             tasks: Single task string or list of task strings to include
@@ -1065,6 +888,27 @@ class GraphSample:
                 task_binary = task + "_binary"
                 setattr(data, task, k_hop_counts)
                 setattr(data, task_binary, k_hop_counts_binary)
+
+            elif task == "community_homophily_vector":
+                # Calculate per-community homophily (vector of size K)
+                per_community_homophily = self.calculate_per_community_homophily()
+                data.community_homophily_vector = per_community_homophily
+
+            elif task == "graph_diameter":
+                # Calculate graph diameter (maximum shortest path length)
+                try:
+                    if nx.is_connected(graph):
+                        diameter = nx.diameter(graph)
+                    else:
+                        # For disconnected graphs, get diameter of largest component
+                        components = list(nx.connected_components(graph))
+                        largest_cc = max(components, key=len)
+                        largest_subgraph = graph.subgraph(largest_cc)
+                        diameter = nx.diameter(largest_subgraph)
+                except Exception as e:
+                    warnings.warn(f"Failed to calculate graph diameter: {e}", stacklevel=2)
+                    diameter = 0
+                data.graph_diameter = torch.tensor(diameter, dtype=torch.float)
 
             else:
                 raise ValueError(f"Unknown task: {task}")
@@ -1144,9 +988,7 @@ class GraphSample:
             "mean_deviation": float(mean_deviation),
             "community_sizes": community_sizes,
             "connection_counts": connection_counts,
-            "constraints": {  # Keep constraints in output for verification
-                "max_mean_deviation": self.max_mean_community_deviation,
-            },
+            "constraints": {},  # No constraints needed
         }
 
     def _calculate_community_deviations(
@@ -1525,9 +1367,9 @@ class GraphSample:
         # Compute all-pairs shortest paths once (more efficient)
         try:
             all_shortest_paths = dict(nx.all_pairs_shortest_path_length(self.graph))
-        except:
+        except Exception as e:
             # Fallback for disconnected components (shouldn't happen)
-            print("Warning: Graph has disconnected components in diameter computation")
+            warnings.warn(f"Error when calculating all-pairs shortest paths. Probably because the graph has disconnected components in diameter computation: {e}", stacklevel=2)
             return diameter_matrix
 
         # For each pair of participating communities
@@ -1556,6 +1398,52 @@ class GraphSample:
                 diameter_matrix[comm_i_universe, comm_j_universe] = max_distance
 
         return diameter_matrix
+
+    def calculate_per_community_homophily(self) -> torch.Tensor:
+        """
+        Calculate per-community homophily.
+
+        Returns:
+            Tensor of size K (universe.K) with homophily values for each community.
+            Communities not present in the graph will have a value of 0.
+        """
+        # Initialize homophily vector for all universe communities
+        K = self.universe.K
+        homophily_vector = torch.zeros(K, dtype=torch.float)
+
+        # Get community-to-community edge counts
+        community_edge_counts = {}  # (comm_id, comm_id) -> count
+        total_community_edges = {}  # comm_id -> total edges
+
+        # Count edges between communities
+        for u, v in self.graph.edges():
+            # Map local community labels to universe community IDs
+            u_comm = self.community_labels_universe_level[u]
+            v_comm = self.community_labels_universe_level[v]
+
+            # Count total edges for each community
+            if u_comm not in total_community_edges:
+                total_community_edges[u_comm] = 0
+            if v_comm not in total_community_edges:
+                total_community_edges[v_comm] = 0
+
+            total_community_edges[u_comm] += 1
+            if u_comm != v_comm:  # Don't double count for same community
+                total_community_edges[v_comm] += 1
+
+            # Count same-community edges
+            if u_comm == v_comm:
+                if (u_comm, u_comm) not in community_edge_counts:
+                    community_edge_counts[(u_comm, u_comm)] = 0
+                community_edge_counts[(u_comm, u_comm)] += 1
+
+        # Calculate homophily for each community
+        for comm_id in range(K):
+            if comm_id in total_community_edges and total_community_edges[comm_id] > 0:
+                same_comm_edges = community_edge_counts.get((comm_id, comm_id), 0)
+                homophily_vector[comm_id] = same_comm_edges / total_community_edges[comm_id]
+
+        return homophily_vector
 
     def compute_positional_encodings(
         self,

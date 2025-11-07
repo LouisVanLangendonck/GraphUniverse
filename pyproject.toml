@@ -153,6 +153,7 @@ ignore = [
     "N806",   # Variable in function should be lowercase (for math)
     "SIM108", # Use ternary operator (sometimes less readable)
     "NPY002", # Using np.random.Generator instead of np.random.seed and no.random.Uniform etc.
+    "N999",  # Invalid module name
 ]
 
 # Allow specific violations in specific files

@@ -23,7 +23,7 @@ class GraphUniverse:
     def __init__(
         self,
         K: int,
-        edge_propensity_variance: float = 0.5,  # 0-1: how much variance in the edge propensities. Only used if use_dccc_sbm is True
+        edge_propensity_variance: float = 0.5,  # 0-1: how much variance in the edge propensities
         feature_dim: int = 0,
         center_variance: float = 1.0,  # Separation between cluster centers
         cluster_variance: float = 0.1,  # Spread within each cluster
@@ -126,41 +126,3 @@ class GraphUniverse:
             if np.sum(self.P[new_community, result]) > 0 and new_community not in result:
                 result.append(new_community)
         return result
-
-        # # Start with a random seed community
-        # first_community = np.random.choice(K)
-        # result = {first_community}
-        # remaining_size = size - 1
-
-        # # Iteratively add communities based on co-occurrence probabilities
-        # while remaining_size > 0 and len(result) < K:
-
-        #     # Calculate sampling probabilities based on co-occurrence with existing communities
-        #     remaining_communities = list(set(range(K)) - result)
-        #     if not remaining_communities:
-        #         break
-
-        #     # For each remaining community, calculate its average co-occurrence with selected ones
-        #     cooccurrence_scores = np.zeros(len(remaining_communities))
-        #     for i, candidate in enumerate(remaining_communities):
-        #         # Average co-occurrence probability with all selected communities
-        #         avg_cooccurrence = np.mean([
-        #             self.community_cooccurrence_matrix[candidate, selected]
-        #             for selected in result
-        #         ])
-        #         cooccurrence_scores[i] = avg_cooccurrence
-
-        #     # Convert scores to probabilities
-        #     if np.sum(cooccurrence_scores) > 0:
-        #         probabilities = cooccurrence_scores / np.sum(cooccurrence_scores)
-        #     else:
-        #         # Fallback to uniform if all scores are zero
-        #         probabilities = np.ones(len(remaining_communities)) / len(remaining_communities)
-
-        #     # Sample next community
-        #     next_idx = np.random.choice(len(remaining_communities), p=probabilities)
-        #     next_community = remaining_communities[next_idx]
-        #     result.add(next_community)
-        #     remaining_size -= 1
-
-        # return list(result)
