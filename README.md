@@ -2,7 +2,7 @@
 
 **Generate families of graphs with finely controllable properties for systematic evaluation of inductive graph learning models.**
 
-[Quick Start](#quick-start) | [Documentation](#documentation) | [Interactive Demo](https://graphuniverse.streamlit.app/)
+[Quick Start](#quick-start) | [Interactive Demo](https://graphuniverse.streamlit.app/)
 
 ![Example Graph Family][graphplot]
 
