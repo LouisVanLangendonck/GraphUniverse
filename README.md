@@ -120,7 +120,7 @@ GraphUniverse includes comprehensive metrics to validate property realization an
 python validate_parameter_sensitivity.py --n-random-samples 100 --n-graphs 30
 ```
 
-### Manually inspect generated family
+### Or manually inspect a generated family
 ```python
 # Validate standard graph properties
 family_properties = family.analyze_graph_family_properties()
