@@ -112,15 +112,15 @@ print(f"Generated dataset with {len(dataset)} graphs!")
 Try GraphUniverse in your browser with real-time parameter tuning and direct dataset download:
 **[https://graphuniverse.streamlit.app/](https://graphuniverse.streamlit.app/)**
 
-### Reproduce Validation Experiment
+## Reproduce Validation Experiment
 GraphUniverse includes comprehensive metrics to validate property realization and quantify learnable community signals
 
-#### Reproduce Validation Analysis in Paper Automatically
+### Reproduce Validation Analysis in Paper Automatically
 ```bash
 python validate_parameter_sensitivity.py --n-random-samples 100 --n-graphs 30
 ```
 
-#### Manually inspect generated family
+### Manually inspect generated family
 ```python
 # Validate standard graph properties
 family_properties = family.analyze_graph_family_properties()
