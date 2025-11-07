@@ -35,7 +35,7 @@ cd GraphUniverse
 pip install -e .
 ```
 
-### Basic Usage
+### Basic Usage (see examples/quickstart.py)
 
 #### Option 1: Via individual classes
 
