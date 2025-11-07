@@ -13,8 +13,6 @@ family_parameters:
   max_communities: 8
   homophily_range: [0.1, 0.4]
   avg_degree_range: [1.0, 5.0]
-  degree_heterogeneity: 0.5
-  use_dccc_sbm: true
   degree_separation_range: [0.7, 1.0]
   degree_distribution: power_law
   seed: 42
