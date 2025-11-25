@@ -151,6 +151,7 @@ HEATMAP_DISPLAY_NAMES = {
     "homophily_levels": "Mean Homophily Levels",
     "avg_degrees": "Mean Average Degree",
     "tail_ratio_99": "Mean Tail Ratio 99",
+    "gini_degree": r"Mean Gini Coefficient $G_d$",
     # Technical Metrics
     "mean_edge_probability_deviation": "Mean Edge Probability Deviation",
     "graph_generation_times": "Mean Graph Generation Time",
@@ -163,7 +164,7 @@ CONSISTENCY_METRICS = [
     "degree_consistency",
     "structure_consistency",
 ]
-MAIN_PROPERTY_METRICS = ["homophily_levels", "avg_degrees", "tail_ratio_99"]
+MAIN_PROPERTY_METRICS = ["homophily_levels", "avg_degrees", "tail_ratio_99", "gini_degree"]
 TECHNICAL_METRICS = ["mean_edge_probability_deviation", "graph_generation_times"]
 PROPERTY_METRICS = MAIN_PROPERTY_METRICS + TECHNICAL_METRICS
 
@@ -1043,8 +1044,8 @@ def plot_random_baseline_results(
         # Create subplots for all metrics with new organization:
         # Row 1: 3 signal metrics
         # Row 2: 3 consistency metrics
-        # Row 3: 3 main property metrics
-        # Row 4: 2 technical metrics (centered)
+        # Row 3: 4 main property metrics (including Gini coefficient)
+        # Row 4: 2 technical metrics
 
         # Use simple 4 rows, 3 columns grid layout
         n_rows_metric, n_cols_metric = 4, 3
@@ -1062,8 +1063,8 @@ def plot_random_baseline_results(
         # Create new ordered list of metrics with proper organization:
         # Row 1: Signal metrics (3)
         # Row 2: Consistency metrics (3)
-        # Row 3: Main property metrics (3)
-        # Row 4: Technical metrics (2, centered)
+        # Row 3: Main property metrics (4, including Gini coefficient)
+        # Row 4: Technical metrics (2)
         ordered_metrics = (
             SIGNAL_METRICS + CONSISTENCY_METRICS + MAIN_PROPERTY_METRICS + TECHNICAL_METRICS
         )
@@ -1268,12 +1269,12 @@ if __name__ == "__main__":
     parser.add_argument(
         "--output-dir", default="parameter_analysis_results", help="Directory to save results"
     )
-    parser.add_argument("--n-graphs", type=int, default=10, help="Number of graphs per family")
+    parser.add_argument("--n-graphs", type=int, default=20, help="Number of graphs per family")
     parser.add_argument("--plot-only", action="store_true", help="Only plot existing results")
     parser.add_argument(
         "--n-random-samples",
         type=int,
-        default=10,
+        default=20,
         help="Number of random parameter samples to generate",
     )
     parser.add_argument(

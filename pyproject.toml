@@ -10,7 +10,7 @@ authors = [
 ]
 readme = "README.md"
 description = "Graph Universe: A Library for Generating Inductive Graph Datasets"
-license = {file = "LICENSE.txt"}
+license = {file = "LICENSE"}
 classifiers = [
     "License :: OSI Approved :: MIT License",
     "Development Status :: 4 - Beta",

@@ -272,7 +272,7 @@ class TestGraphFamilyGenerator:
         # Generate a small family
         self.family_generator.generate_family(n_graphs=2, show_progress=False)
 
-        # Convert to PyG graphs with default tasks
+        # Convert to PyG graphs with default task
         pyg_graphs = self.family_generator.to_pyg_graphs()
 
         assert len(pyg_graphs) == 2
@@ -280,53 +280,192 @@ class TestGraphFamilyGenerator:
             # Check that all expected attributes are present
             assert hasattr(graph, "x")  # Node features
             assert hasattr(graph, "edge_index")  # Edge indices
-            assert hasattr(graph, "community_detection")  # Community labels
-            assert hasattr(graph, "realized_homophily")  # New task: realized homophily
-            assert hasattr(graph, "graph_diameter")  # New task: graph diameter
+            assert hasattr(graph, "y")  # Task labels (default is community_detection)
 
-    def test_to_pyg_graphs_with_custom_tasks(self):
-        """Test conversion to PyG graphs with custom tasks."""
+    def test_to_pyg_graphs_with_community_detection_task(self):
+        """Test conversion to PyG graphs with community_detection task."""
         # Generate a small family
         self.family_generator.generate_family(n_graphs=2, show_progress=False)
 
-        # Convert to PyG graphs with specific tasks
-        tasks = ["community_detection", "triangle_counting"]
-        pyg_graphs = self.family_generator.to_pyg_graphs(tasks=tasks)
+        # Convert to PyG graphs with community_detection task
+        task = "community_detection"
+        pyg_graphs = self.family_generator.to_pyg_graphs(task=task)
 
         assert len(pyg_graphs) == 2
         for graph in pyg_graphs:
-            assert hasattr(graph, "community_detection")
-            assert hasattr(graph, "triangle_counting")
-            # Should not have k-hop tasks
-            assert not hasattr(graph, "k_hop_community_counts_k1")
-
-    def test_to_pyg_graphs_with_new_tasks(self):
-        """Test conversion to PyG graphs with the new tasks."""
+            assert hasattr(graph, "x")
+            assert hasattr(graph, "edge_index")
+            assert hasattr(graph, "y")
+            # Check that y contains community labels
+            assert graph.y.dtype == torch.long
+            assert len(graph.y) == graph.num_nodes
+    
+    def test_to_pyg_graphs_with_triangle_counting_task(self):
+        """Test conversion to PyG graphs with triangle_counting task."""
         # Generate a small family
         self.family_generator.generate_family(n_graphs=2, show_progress=False)
 
-        # Convert to PyG graphs with new tasks
-        tasks = ["realized_homophily", "graph_diameter"]
-        pyg_graphs = self.family_generator.to_pyg_graphs(tasks=tasks)
+        # Convert to PyG graphs with triangle_counting task
+        task = "triangle_counting"
+        pyg_graphs = self.family_generator.to_pyg_graphs(task=task)
 
         assert len(pyg_graphs) == 2
         for graph in pyg_graphs:
-            # Check that new task attributes are present
-            assert hasattr(graph, "realized_homophily")
-            assert hasattr(graph, "graph_diameter")
-            # Check that realized_homophily is a tensor of size K
-            assert isinstance(graph.realized_homophily, torch.Tensor)
-            assert graph.realized_homophily.shape == (self.K,)
-            # Should not have other tasks
-            assert not hasattr(graph, "community_detection")
-            assert not hasattr(graph, "triangle_counting")
+            assert hasattr(graph, "y")
+            # Check that y contains triangle count (scalar)
+            assert graph.y.dtype == torch.float
+            assert graph.y.numel() == 1  # Scalar value
+
+    def test_to_pyg_graphs_with_k_hop_task(self):
+        """Test conversion to PyG graphs with k_hop_community_counts task."""
+        # Generate a small family
+        self.family_generator.generate_family(n_graphs=2, show_progress=False)
+
+        # Convert to PyG graphs with k_hop task
+        task = "k_hop_community_counts_k1"
+        pyg_graphs = self.family_generator.to_pyg_graphs(task=task)
+
+        assert len(pyg_graphs) == 2
+        for graph in pyg_graphs:
+            assert hasattr(graph, "y")
+            # Check that y contains k-hop counts (matrix of shape [num_nodes, K])
+            assert graph.y.shape == (graph.num_nodes, self.K)
+    
+    def test_to_pyg_graphs_with_community_homophily_vector_task(self):
+        """Test conversion to PyG graphs with community_homophily_vector task."""
+        # Generate a small family
+        self.family_generator.generate_family(n_graphs=2, show_progress=False)
+
+        # Convert to PyG graphs with community_homophily_vector task
+        task = "community_homophily_vector"
+        pyg_graphs = self.family_generator.to_pyg_graphs(task=task)
+
+        assert len(pyg_graphs) == 2
+        for graph in pyg_graphs:
+            assert hasattr(graph, "y")
+            # Check that y contains per-community homophily (vector of size K)
+            assert graph.y.shape == (self.K,)
+            assert graph.y.dtype == torch.float
+    
+    def test_to_pyg_graphs_with_graph_diameter_task(self):
+        """Test conversion to PyG graphs with graph_diameter task."""
+        # Generate a small family
+        self.family_generator.generate_family(n_graphs=2, show_progress=False)
+
+        # Convert to PyG graphs with graph_diameter task
+        task = "graph_diameter"
+        pyg_graphs = self.family_generator.to_pyg_graphs(task=task)
+
+        assert len(pyg_graphs) == 2
+        for graph in pyg_graphs:
+            assert hasattr(graph, "y")
+            # Check that y contains diameter (scalar)
+            assert graph.y.dtype == torch.float
+            assert graph.y.numel() == 1  # Scalar value
+
+    def test_same_seed_same_graphs_different_tasks(self):
+        """Test that same seed produces identical graphs regardless of task."""
+        # Create two separate generators with IDENTICAL parameters and seeds
+        generator1 = GraphFamilyGenerator(
+            universe=self.universe,
+            min_n_nodes=self.min_n_nodes,
+            max_n_nodes=self.max_n_nodes,
+            n_graphs=2,
+            min_communities=self.min_communities,
+            max_communities=self.max_communities,
+            seed=12345,  # Fixed seed
+        )
+        
+        generator2 = GraphFamilyGenerator(
+            universe=self.universe,
+            min_n_nodes=self.min_n_nodes,
+            max_n_nodes=self.max_n_nodes,
+            n_graphs=2,
+            min_communities=self.min_communities,
+            max_communities=self.max_communities,
+            seed=12345,  # Same seed
+        )
+
+        # Generate families
+        generator1.generate_family(show_progress=False)
+        generator2.generate_family(show_progress=False)
+
+        # Convert with different tasks
+        task1 = "community_detection"
+        task2 = "triangle_counting"
+        pyg_graphs_task1 = generator1.to_pyg_graphs(task=task1)
+        pyg_graphs_task2 = generator2.to_pyg_graphs(task=task2)
+
+        # Should have same number of graphs
+        assert len(pyg_graphs_task1) == len(pyg_graphs_task2)
+
+        # For each pair of graphs, verify structure is IDENTICAL
+        for i, (graph1, graph2) in enumerate(zip(pyg_graphs_task1, pyg_graphs_task2)):
+            # Node features should be identical
+            assert torch.allclose(graph1.x, graph2.x), f"Graph {i}: Node features differ"
+            
+            # Edge indices should be identical
+            assert torch.equal(graph1.edge_index, graph2.edge_index), f"Graph {i}: Edge indices differ"
+            
+            # Number of nodes and edges should be the same
+            assert graph1.num_nodes == graph2.num_nodes, f"Graph {i}: Number of nodes differ"
+            assert graph1.num_edges == graph2.num_edges, f"Graph {i}: Number of edges differ"
+            
+            # But y should be different (different task targets)
+            # Task 1 (community_detection) produces vector of length num_nodes
+            # Task 2 (triangle_counting) produces a scalar
+            assert graph1.y.shape != graph2.y.shape, f"Graph {i}: y shapes should differ for different tasks"
+            assert graph1.y.shape == (graph1.num_nodes,), f"Graph {i}: Task1 should have node-level labels"
+            assert graph2.y.numel() == 1, f"Graph {i}: Task2 should have scalar label"
+
+    def test_to_pyg_graphs_different_tasks_same_graph_structure(self):
+        """Test that converting same GraphSample with different tasks keeps structure identical."""
+        # Generate a small family
+        self.family_generator.generate_family(n_graphs=2, show_progress=False)
+
+        # Store the generated GraphSample objects
+        graph_samples = self.family_generator.graphs.copy()
+
+        # Convert with first task
+        task1 = "community_detection"
+        pyg_graphs_task1 = []
+        for graph_sample in graph_samples:
+            pyg_graphs_task1.append(graph_sample.to_pyg_graph(task1))
+        
+        # Convert the same GraphSample objects with second task
+        task2 = "triangle_counting"
+        pyg_graphs_task2 = []
+        for graph_sample in graph_samples:
+            pyg_graphs_task2.append(graph_sample.to_pyg_graph(task2))
+
+        # Check that both produced the same number of graphs
+        assert len(pyg_graphs_task1) == len(pyg_graphs_task2)
+
+        # For each pair of graphs, verify structure is identical except for y
+        for graph1, graph2 in zip(pyg_graphs_task1, pyg_graphs_task2):
+            # Node features should be identical
+            assert torch.allclose(graph1.x, graph2.x)
+            
+            # Edge indices should be identical
+            assert torch.equal(graph1.edge_index, graph2.edge_index)
+            
+            # Number of nodes and edges should be the same
+            assert graph1.num_nodes == graph2.num_nodes
+            assert graph1.num_edges == graph2.num_edges
+            
+            # But y should be different (different task targets)
+            # Task 1 (community_detection) produces vector of length num_nodes
+            # Task 2 (triangle_counting) produces a scalar
+            assert graph1.y.shape != graph2.y.shape
+            assert graph1.y.shape == (graph1.num_nodes,)
+            assert graph2.y.numel() == 1
 
     def test_to_pyg_graphs_invalid_task(self):
         """Test conversion with invalid task raises error."""
         self.family_generator.generate_family(n_graphs=1, show_progress=False)
 
         with pytest.raises(ValueError, match="Invalid task specified"):
-            self.family_generator.to_pyg_graphs(tasks=["invalid_task"])
+            self.family_generator.to_pyg_graphs(task="invalid_task")
 
     # ============================================================
     # Metadata and Analysis Tests

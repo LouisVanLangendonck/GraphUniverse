@@ -59,7 +59,7 @@ family.generate_family(n_graphs=30, show_progress=True)
 
 # Access generated graphs and convert to PyG format
 print(f"Generated {len(family.graphs)} graphs!")
-pyg_graphs = family.to_pyg_graphs(tasks=["community_detection"])
+pyg_graphs = family.to_pyg_graphs(task="community_detection")
 ```
 
 #### Option 2: Via YAML config file
@@ -87,7 +87,7 @@ family_parameters:
   degree_separation_range: [0.4, 0.8]
   seed: 42
 
-tasks: ["community_detection", "triangle_counting"]
+task: "community_detection"
 ```
 
 ```python

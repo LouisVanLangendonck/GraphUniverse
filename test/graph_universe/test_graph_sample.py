@@ -407,47 +407,84 @@ class TestGraphSample:
     def test_to_pyg_graph(self):
         """Test conversion to PyG graph."""
         # Convert to PyG graph with community detection task
-        pyg_graph = self.graph_sample.to_pyg_graph(["community_detection"])
+        pyg_graph = self.graph_sample.to_pyg_graph("community_detection")
 
         # Check that graph has expected attributes
         assert hasattr(pyg_graph, "x")  # Node features
         assert hasattr(pyg_graph, "edge_index")  # Edge indices
-        assert hasattr(pyg_graph, "community_detection")  # Community labels
-        assert hasattr(pyg_graph, "y")  # Default y attribute set to community_detection
+        assert hasattr(pyg_graph, "y")  # Task labels
 
         # Check shapes
         assert pyg_graph.x.shape == (self.graph_sample.n_nodes, self.feature_dim)
         assert pyg_graph.edge_index.shape[0] == 2  # 2 rows for source and target nodes
-        assert len(pyg_graph.community_detection) == self.graph_sample.n_nodes
+        assert len(pyg_graph.y) == self.graph_sample.n_nodes
+        assert pyg_graph.y.dtype == torch.long  # Community labels are long
 
-    def test_to_pyg_graph_with_multiple_tasks(self):
-        """Test conversion to PyG graph with multiple tasks."""
-        # Convert to PyG graph with multiple tasks
-        tasks = ["community_detection", "triangle_counting", "k_hop_community_counts_k1"]
-        pyg_graph = self.graph_sample.to_pyg_graph(tasks)
+    def test_to_pyg_graph_with_triangle_counting_task(self):
+        """Test conversion to PyG graph with triangle counting task."""
+        # Convert to PyG graph with triangle counting task
+        task = "triangle_counting"
+        pyg_graph = self.graph_sample.to_pyg_graph(task)
 
-        # Check that graph has all task attributes
-        assert hasattr(pyg_graph, "community_detection")
-        assert hasattr(pyg_graph, "triangle_counting")
-        assert hasattr(pyg_graph, "k_hop_community_counts_k1")
-        assert hasattr(pyg_graph, "k_hop_community_counts_k1_binary")  # Binary version is also created
+        # Check that graph has the y attribute with triangle count
+        assert hasattr(pyg_graph, "y")
+        assert pyg_graph.y.dtype == torch.float
+        assert pyg_graph.y.numel() == 1  # Scalar value
+
+    def test_to_pyg_graph_k_hop_task(self):
+        """Test conversion to PyG graph with k_hop_community_counts task."""
+        # Convert to PyG graph with k_hop task
+        pyg_graph = self.graph_sample.to_pyg_graph("k_hop_community_counts_k1")
+
+        # Check that y attribute exists with k-hop counts
+        assert hasattr(pyg_graph, "y")
+        # Check that y is a matrix of shape [num_nodes, K]
+        assert pyg_graph.y.shape == (self.graph_sample.n_nodes, self.K)
+        # Check that all values are non-negative (counts)
+        assert torch.all(pyg_graph.y >= 0)
+
+    def test_to_pyg_graph_different_tasks_same_structure(self):
+        """Test that different tasks produce the same graph structure, only different labels."""
+        # Convert the same graph with two different tasks
+        task1 = "community_detection"
+        task2 = "triangle_counting"
+        
+        pyg_graph1 = self.graph_sample.to_pyg_graph(task1)
+        pyg_graph2 = self.graph_sample.to_pyg_graph(task2)
+
+        # Node features should be identical
+        assert torch.allclose(pyg_graph1.x, pyg_graph2.x)
+        
+        # Edge indices should be identical
+        assert torch.equal(pyg_graph1.edge_index, pyg_graph2.edge_index)
+        
+        # Number of nodes and edges should be the same
+        assert pyg_graph1.num_nodes == pyg_graph2.num_nodes
+        assert pyg_graph1.num_edges == pyg_graph2.num_edges
+        
+        # But y should be different (different task targets)
+        # Task 1 (community_detection) produces vector of length num_nodes
+        # Task 2 (triangle_counting) produces a scalar
+        assert pyg_graph1.y.shape != pyg_graph2.y.shape
+        assert pyg_graph1.y.shape == (self.graph_sample.n_nodes,)
+        assert pyg_graph2.y.numel() == 1
 
     def test_to_pyg_graph_invalid_task(self):
         """Test conversion with invalid task raises error."""
-        with pytest.raises(ValueError, match="Unknown task"):
-            self.graph_sample.to_pyg_graph(["invalid_task"])
+        with pytest.raises(ValueError, match="Invalid task specified"):
+            self.graph_sample.to_pyg_graph("invalid_task")
 
-    def test_to_pyg_graph_realized_homophily(self):
-        """Test that realized_homophily task works correctly with per-community homophily."""
-        # Convert to PyG graph with realized_homophily task
-        pyg_graph = self.graph_sample.to_pyg_graph(["realized_homophily"])
+    def test_to_pyg_graph_community_homophily_vector(self):
+        """Test that community_homophily_vector task works correctly with per-community homophily."""
+        # Convert to PyG graph with community_homophily_vector task
+        pyg_graph = self.graph_sample.to_pyg_graph("community_homophily_vector")
 
-        # Check that realized_homophily attribute exists
-        assert hasattr(pyg_graph, "realized_homophily")
+        # Check that y attribute exists with per-community homophily
+        assert hasattr(pyg_graph, "y")
 
-        # Check that realized_homophily is a tensor of size K (universe.K)
-        assert isinstance(pyg_graph.realized_homophily, torch.Tensor)
-        assert pyg_graph.realized_homophily.shape == (self.K,)
+        # Check that y is a tensor of size K (universe.K)
+        assert isinstance(pyg_graph.y, torch.Tensor)
+        assert pyg_graph.y.shape == (self.K,)
 
         # Manually calculate per-community homophily for verification
         # Get the community-to-community edge counts
@@ -484,15 +521,17 @@ class TestGraphSample:
                 expected_homophily[comm_id] = same_comm_edges / total_community_edges[comm_id]
 
         # Compare with the values in the PyG graph
-        assert torch.allclose(pyg_graph.realized_homophily, expected_homophily, atol=1e-5)
+        assert torch.allclose(pyg_graph.y, expected_homophily, atol=1e-5)
 
     def test_to_pyg_graph_graph_diameter(self):
         """Test that graph_diameter task works correctly."""
         # Convert to PyG graph with graph_diameter task
-        pyg_graph = self.graph_sample.to_pyg_graph(["graph_diameter"])
+        pyg_graph = self.graph_sample.to_pyg_graph("graph_diameter")
 
-        # Check that graph_diameter attribute exists
-        assert hasattr(pyg_graph, "graph_diameter")
+        # Check that y attribute exists with graph diameter
+        assert hasattr(pyg_graph, "y")
+        assert pyg_graph.y.dtype == torch.float
+        assert pyg_graph.y.numel() == 1  # Scalar value
 
         # Manually calculate diameter for verification
         if nx.is_connected(self.graph_sample.graph):
@@ -505,7 +544,7 @@ class TestGraphSample:
             expected_diameter = nx.diameter(largest_subgraph)
 
         # Compare with the value in the PyG graph
-        assert pyg_graph.graph_diameter.item() == expected_diameter
+        assert pyg_graph.y.item() == expected_diameter
 
     # ============================================================
     # Community Analysis Tests
@@ -642,7 +681,7 @@ class TestGraphSample:
     def test_compute_positional_encodings(self):
         """Test computation of positional encodings."""
         # Create a PyG graph
-        pyg_graph = self.graph_sample.to_pyg_graph(["community_detection"])
+        pyg_graph = self.graph_sample.to_pyg_graph("community_detection")
 
         # Compute positional encodings
         pe_dict = self.graph_sample.compute_positional_encodings(

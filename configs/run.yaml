@@ -18,9 +18,7 @@ family_parameters:
   - 2.0
   - 3.0
   seed: 42
-tasks:
-- community_detection
-- triangle_counting
+task: community_detection
 universe_parameters:
   K: 10
   center_variance: 1.0

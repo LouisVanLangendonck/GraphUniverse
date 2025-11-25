@@ -818,13 +818,13 @@ class GraphSample:
 
     def to_pyg_graph(
         self,
-        tasks: str | list[str],
+        task: str,
         pe_types: list[str] | None = None,
         pe_dim: int = 10,
     ) -> pyg.data.Data:
         """
-        Convert the graph to a PyG graph including all specified tasks as properties.
-        Possible tasks are:
+        Convert the graph to a PyG graph including the specified task as a property.
+        Available tasks are:
         - "community_detection"
         - "triangle_counting"
         - "k_hop_community_counts_k{N}" (where N is the hop count, e.g., "k_hop_community_counts_k2")
@@ -832,7 +832,7 @@ class GraphSample:
         - "graph_diameter"
 
         Args:
-            tasks: Single task string or list of task strings to include
+            task: String of task to include as property on the graph.
             pe_types: List of positional encoding types to compute
             pe_dim: Dimension of the positional encodings
 
@@ -844,8 +844,9 @@ class GraphSample:
         self.pe_types = pe_types
 
         # Handle single task input
-        if isinstance(tasks, str):
-            tasks = [tasks]
+        if task not in ["community_detection", "triangle_counting", "k_hop_community_counts_k1", "k_hop_community_counts_k2", "k_hop_community_counts_k3", "community_homophily_vector", "graph_diameter"]:
+            raise ValueError(f"Invalid task specified: {task}")
+        self.task = task
 
         graph = self.graph
         edges = list(graph.edges())
@@ -862,65 +863,52 @@ class GraphSample:
         data = Data(x=features, edge_index=edge_index)
 
         # Process each task and add as property
-        for task in tasks:
-            if task == "community_detection":
-                if (
-                    hasattr(self, "community_labels_universe_level")
-                    and self.community_labels_universe_level is not None
-                ):
-                    data.community_detection = torch.tensor(
-                        self.community_labels_universe_level, dtype=torch.long
-                    )
-                else:
-                    raise ValueError("Community labels are not available for the graph")
-
-            elif task == "triangle_counting":
-                # Triangle counting (via networkx then to tensor)
-                triangle_count = self.count_triangles_graph()
-                data.triangle_counting = torch.tensor(triangle_count, dtype=torch.float)
-
-            elif task.startswith("k_hop_community_counts_k"):
-                # Extract k value from task name
-                k = int(task.split("k")[-1])
-                # K-hop community counting - universe-indexed
-                k_hop_counts = self.compute_khop_community_counts_universe_indexed(k)
-                k_hop_counts_binary = (k_hop_counts > 0).float()
-                task_binary = task + "_binary"
-                setattr(data, task, k_hop_counts)
-                setattr(data, task_binary, k_hop_counts_binary)
-
-            elif task == "community_homophily_vector":
-                # Calculate per-community homophily (vector of size K)
-                per_community_homophily = self.calculate_per_community_homophily()
-                data.community_homophily_vector = per_community_homophily
-
-            elif task == "graph_diameter":
-                # Calculate graph diameter (maximum shortest path length)
-                try:
-                    if nx.is_connected(graph):
-                        diameter = nx.diameter(graph)
-                    else:
-                        # For disconnected graphs, get diameter of largest component
-                        components = list(nx.connected_components(graph))
-                        largest_cc = max(components, key=len)
-                        largest_subgraph = graph.subgraph(largest_cc)
-                        diameter = nx.diameter(largest_subgraph)
-                except Exception as e:
-                    warnings.warn(f"Failed to calculate graph diameter: {e}", stacklevel=2)
-                    diameter = 0
-                data.graph_diameter = torch.tensor(diameter, dtype=torch.float)
-
+        if task == "community_detection":
+            if (
+                hasattr(self, "community_labels_universe_level")
+                and self.community_labels_universe_level is not None
+            ):
+                data.y = torch.tensor(
+                    self.community_labels_universe_level, dtype=torch.long
+                )
             else:
-                raise ValueError(f"Unknown task: {task}")
+                raise ValueError("Community labels are not available for the graph")
 
-        # Set y to the first task's result for backward compatibility (if only one task)
-        if len(tasks) == 1:
-            data.y = getattr(data, tasks[0])
+        elif task == "triangle_counting":
+            # Triangle counting (via networkx then to tensor)
+            triangle_count = self.count_triangles_graph()
+            data.y = torch.tensor(triangle_count, dtype=torch.float)
 
-        # Compute positional encodings
-        # pe_dict = self.compute_positional_encodings(pyg_graph=data, pe_types=pe_types, pe_dim=pe_dim)
-        # for pe_type, pe in pe_dict.items():
-        #     setattr(data, pe_type, pe)
+        elif task.startswith("k_hop_community_counts_k"):
+            # Extract k value from task name
+            k = int(task.split("k")[-1])
+            # K-hop community counting - universe-indexed
+            k_hop_counts = self.compute_khop_community_counts_universe_indexed(k)
+            data.y = k_hop_counts
+
+        elif task == "community_homophily_vector":
+            # Calculate per-community homophily (vector of size K)
+            per_community_homophily = self.calculate_per_community_homophily()
+            data.y = per_community_homophily
+
+        elif task == "graph_diameter":
+            # Calculate graph diameter (maximum shortest path length)
+            try:
+                if nx.is_connected(graph):
+                    diameter = nx.diameter(graph)
+                else:
+                    # For disconnected graphs, get diameter of largest component
+                    components = list(nx.connected_components(graph))
+                    largest_cc = max(components, key=len)
+                    largest_subgraph = graph.subgraph(largest_cc)
+                    diameter = nx.diameter(largest_subgraph)
+            except Exception as e:
+                warnings.warn(f"Failed to calculate graph diameter: {e}", stacklevel=2)
+                diameter = 0
+            data.y = torch.tensor(diameter, dtype=torch.float)
+
+        else:
+            raise ValueError(f"Unknown task: {task}")
 
         return data
 

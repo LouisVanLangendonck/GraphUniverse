@@ -44,7 +44,7 @@ class TestGraphUniverseDataset:
                 "degree_separation_range": [0.5, 0.5],
                 "seed": 42,
             },
-            "tasks": ["community_detection", "triangle_counting"]
+            "task": "community_detection"
         }
 
         # Create sample PyG graphs

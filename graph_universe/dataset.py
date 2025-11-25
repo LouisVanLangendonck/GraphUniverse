@@ -52,8 +52,10 @@ class GraphUniverseDataset(InMemoryDataset):
         # Create the directory structure
         # Create a hash of the uniquely identifying metadata
         unique_hash = hashlib.sha256(str(config).encode()).hexdigest()
+        
         # First level K_val_edge_prop_var_val
         dataset_dir = f"K_{config['universe_parameters']['K']}_edge_prop_var_{config['universe_parameters']['edge_propensity_variance']}"
+        
         # Second level homophily_[minval_maxval]
         dataset_dir = os.path.join(
             dataset_dir,
@@ -69,7 +71,12 @@ class GraphUniverseDataset(InMemoryDataset):
             dataset_dir,
             f"n_communities_{config['family_parameters']['min_communities']}_to_{config['family_parameters']['max_communities']}",
         )
-        # Then we use the HASH as a folder name and within the folder we save the config and we save the graphs list as graphs.pkl file
+        
+        # Fifth level task (if it exists)
+        if 'task' in config and config['task'] is not None:
+            dataset_dir = os.path.join(dataset_dir, f"task_{config['task']}")
+        
+        # Final level hash
         dataset_dir = os.path.join(dataset_dir, f"hash_{unique_hash}")
         return dataset_dir
 
@@ -149,7 +156,7 @@ class GraphUniverseDataset(InMemoryDataset):
 
         # Generate and save graph family
         family.generate_family(show_progress=True)
-        self.graph_list = family.to_pyg_graphs(self.parameters.get("tasks", None))
+        self.graph_list = family.to_pyg_graphs(self.parameters.get("task", None))
 
     def process(self) -> None:
         r"""Handle the data for the dataset."""

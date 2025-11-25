@@ -61,7 +61,7 @@ print(f"Generated {len(family.graphs)} graphs!")
 # Convert to PyG graphs, ready for training on community detection task
 print("🔗 Converting to PyTorch Geometric format...")
 try:
-    pyg_graphs = family.to_pyg_graphs(tasks=["community_detection"])
+    pyg_graphs = family.to_pyg_graphs(task="community_detection")
     print(f"Created {len(pyg_graphs)} PyG Data objects")
     
     # Show sample properties
@@ -106,7 +106,7 @@ experiment_config = {
         "degree_separation_range": [0.4, 0.8],
         "seed": 42
     },
-    "tasks": ["community_detection", "triangle_counting"]
+    "task": "community_detection"
 }
 
 # Save config file
@@ -137,10 +137,10 @@ try:
     print(f"   - Edges: {sample.num_edges}")
     if hasattr(sample, 'x'):
         print(f"   - Features: {sample.x.shape}")
-    if 'tasks' in config:
-        for task in config['tasks']:
-            if hasattr(sample, task):
-                print(f"   - {task}: {getattr(sample, task).shape}")
+    if 'task' in config and config['task'] is not None:
+        task = config['task']
+        if hasattr(sample, task):
+            print(f"   - {task}: {getattr(sample, task).shape}")
         
 except Exception as e:
     print(f"Dataset creation failed: {e}")

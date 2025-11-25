@@ -1257,31 +1257,18 @@ def main():
                     "k_hop_community_counts_k5",
                 ]
 
-                selected_tasks = st.multiselect(
-                    "Choose tasks to generate PyG graphs for:",
+                selected_task = st.selectbox(
+                    "Choose task to generate PyG graphs for:",
                     available_tasks,
-                    default=[
-                        "community_detection",
-                        "triangle_counting",
-                        "k_hop_community_counts_k1",
-                    ],
-                    help="Select one or more tasks. Each task will create different target labels for the graphs.",
+                    index=0,  # Default to first option (community_detection)
+                    help="Select a task. This will create target labels for the graphs.",
                 )
 
                 # Directory for saving
                 family_dir = "datasets"
-                # family_dir = st.text_input(
-                #     "Save Directory",
-                #     value="datasets",
-                #     help="Directory where the PyG graphs will be saved"
-                # )
-
-                # Validation and download button
-                if not selected_tasks:
-                    st.warning("Please select at least one task to proceed.")
 
                 # Prominent download button
-                if selected_tasks:
+                if selected_task:
                     if st.button("Create PyG Dataset", type="primary", use_container_width=True):
                         try:
                             # Create progress containers
@@ -1325,14 +1312,14 @@ def main():
 
                             # Use the family generator's save method
                             family_generator.save_pyg_graphs_and_universe(
-                                tasks=selected_tasks, root_dir=family_dir
+                                task=selected_task, root_dir=family_dir
                             )
 
                             progress_bar.progress(100)
                             progress_text.text("100% - Complete!")
 
                             st.success(
-                                f"✅ Successfully saved PyG graphs for {len(selected_tasks)} task(s)!"
+                                f"✅ Successfully saved PyG graphs for task: {selected_task}!"
                             )
 
                             import shutil

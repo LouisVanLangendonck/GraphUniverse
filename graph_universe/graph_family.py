@@ -124,9 +124,9 @@ class GraphFamilyGenerator:
         self.graph_generation_times = []
         failed_graphs = 0
 
-        # Every time this function is called we need to reset Seed
-        # self.seed = np.random.randint(0, 1000000)
-        # np.random.seed(self.seed)
+        # Reset seed at the start of generation to ensure reproducibility
+        if self.seed is not None:
+            np.random.seed(self.seed)
 
         # Progress bar setup
         if show_progress:
@@ -256,48 +256,31 @@ class GraphFamilyGenerator:
         # Mark family as generated
         self.family_generated = True
 
-    def to_pyg_graphs(self, tasks: list[str] | None = None) -> list[pyg.data.Data]:
+    def to_pyg_graphs(self, task: str | None = None) -> list[pyg.data.Data]:
         """
-        Convert the graphs to PyG graphs with all specified tasks as properties.
+        Convert the graphs to PyG graphs with the specified task as a property.
 
         Args:
-            tasks: List of task strings to include as properties on each graph.
-                If None, include all tasks.
+            task: String of task to include as property on each graph.
+                If None, include community detection
 
         Returns:
-            List of PyG Data objects, each containing all tasks as properties
+            List of PyG Data objects, each containing the task as a property
         """
         # Check if graphs are created
         assert self.family_generated, "Graph family has not been generated yet"
 
-        # Check if tasks are valid - updated to handle k-hop tasks
-        if tasks is not None:
-            valid_task_prefixes = [
-                "community_detection",
-                "triangle_counting",
-                "k_hop_community_counts_k",
-                "community_homophily_vector",
-                "graph_diameter",
-            ]
-            for task in tasks:
-                if not any(task.startswith(prefix) for prefix in valid_task_prefixes):
-                    raise ValueError(f"Invalid task specified: {task}")
-            self.tasks = tasks
+        # Check if task is valid
+        if task is not None:
+            if task not in ["community_detection", "triangle_counting", "k_hop_community_counts_k1", "k_hop_community_counts_k2", "k_hop_community_counts_k3", "community_homophily_vector", "graph_diameter"]:
+                raise ValueError(f"Invalid task specified: {task}")
+            self.task = task
         else:
-            # Include all tasks if None
-            self.tasks = [
-                "community_detection",
-                "triangle_counting",
-                "k_hop_community_counts_k1",
-                "k_hop_community_counts_k2",
-                "k_hop_community_counts_k3",
-                "community_homophily_vector",
-                "graph_diameter",
-            ]
+            self.task = "community_detection"
 
         pyg_graphs = []
         for graph in tqdm(self.graphs, desc="Converting graphs to PyG graphs"):
-            pyg_graphs.append(graph.to_pyg_graph(self.tasks))
+            pyg_graphs.append(graph.to_pyg_graph(self.task))
 
         return pyg_graphs
 
@@ -341,7 +324,7 @@ class GraphFamilyGenerator:
         return uniquely_identifying_metadata
 
     def save_pyg_graphs_and_universe(
-        self, tasks: list[str] | None = None, root_dir: str = "datasets"
+        self, task: str | None = None, root_dir: str = "datasets"
     ):
         """
         Save the PyG graphs and universe to a file.
@@ -350,8 +333,11 @@ class GraphFamilyGenerator:
 
         uniquely_identifying_metadata = self.get_uniquely_identifying_metadata()
 
-        # Convert the graphs to PyG graphs including tasks
-        pyg_graphs = self.to_pyg_graphs(tasks)
+        # Convert the graphs to PyG graphs including task
+        pyg_graphs = self.to_pyg_graphs(task)
+
+        # Add task to metadata so it's included in the directory structure
+        uniquely_identifying_metadata['task'] = task
 
         self.dataset = GraphUniverseDataset(
             graph_list=pyg_graphs, root=root_dir, parameters=uniquely_identifying_metadata
@@ -678,6 +664,7 @@ class GraphFamilyGenerator:
             "tail_ratio_99": [],
             "mean_edge_probability_deviation": [],
             "graph_generation_times": self.graph_generation_times,
+            "gini_degree": [],
         }
 
         for graph in tqdm(
@@ -751,6 +738,21 @@ class GraphFamilyGenerator:
                 properties["mean_edge_probability_deviation"].append(deviations["mean_deviation"])
             else:
                 properties["mean_edge_probability_deviation"].append(0.0)
+
+            # Calculate Gini index of degree distribution
+            if graph.n_nodes > 0:
+                degrees = list(dict(graph.graph.degree()).values())
+                # Sort degrees in non-decreasing order
+                sorted_degrees = sorted(degrees)
+                n = len(sorted_degrees)
+                # Calculate Gini coefficient using discrete formula
+                # Gini = Σ(2i - n - 1) * d_(i) / (n * Σd_(i))
+                numerator = sum((2 * i - n - 1) * d for i, d in enumerate(sorted_degrees, 1))
+                denominator = n * sum(sorted_degrees)
+                gini = numerator / denominator if denominator > 0 else 0.0
+                properties["gini_degree"].append(gini)
+            else:
+                properties["gini_degree"].append(0.0)
 
         # Calculate statistics and convert to native Python types
         for key in [
