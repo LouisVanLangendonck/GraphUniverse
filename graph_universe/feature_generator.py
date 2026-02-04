@@ -29,13 +29,13 @@ class FeatureGenerator:
         self.center_variance = center_variance
         self.cluster_variance = cluster_variance
 
-        # Set random seed
+        # Set random seed and create independent RNG instance
         if seed is not None:
             self.seed = seed
-            np.random.seed(seed)
+            self.rng = np.random.RandomState(seed)
         else:
-            np.random.seed(42)
             self.seed = 42
+            self.rng = np.random.RandomState(42)
 
         # Determine number of clusters
         self.n_clusters = universe_K
@@ -57,7 +57,7 @@ class FeatureGenerator:
             Matrix of cluster centers (n_clusters x feature_dim)
         """
         # Generate centers from multivariate normal distribution with specified variance
-        centers = np.random.normal(
+        centers = self.rng.normal(
             0, self.center_variance, size=(self.n_clusters, self.feature_dim)
         )
         return centers
@@ -86,7 +86,7 @@ class FeatureGenerator:
             comm_id = community_assignments[i]
 
             # Sample cluster from community's distribution
-            node_clusters[i] = np.random.choice(
+            node_clusters[i] = self.rng.choice(
                 self.n_clusters, p=self.community_cluster_probs[comm_id]
             )
 
@@ -126,7 +126,7 @@ class FeatureGenerator:
             cov = np.eye(self.feature_dim) * self.cluster_variance
 
             # Generate features from multivariate normal
-            cluster_features = np.random.multivariate_normal(
+            cluster_features = self.rng.multivariate_normal(
                 mean=center, cov=cov, size=n_cluster_nodes
             )
 
