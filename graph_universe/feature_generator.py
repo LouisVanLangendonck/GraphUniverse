@@ -62,6 +62,19 @@ class FeatureGenerator:
         )
         return centers
 
+    def reset_rng(self, seed: int) -> None:
+        """
+        Reset the RNG state with a new seed.
+        
+        This is useful when generating features for multiple graphs from the same
+        universe - each graph should have its features determined by its own seed,
+        not by the order in which graphs were generated.
+        
+        Args:
+            seed: Random seed to reset the RNG with
+        """
+        self.rng = np.random.RandomState(seed)
+
     def assign_node_clusters(self, community_assignments: np.ndarray) -> np.ndarray:
         """
         Assign nodes to feature clusters based on their community assignments.

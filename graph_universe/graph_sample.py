@@ -355,6 +355,12 @@ class GraphSample:
             # Time: Feature generation
             start = time.time()
             if universe.feature_dim > 0:
+                # how many graphs were generated before this one
+                if seed is not None:
+                    # Use graph seed + 1000000 to derive feature seed (avoid collision with graph structure seed)
+                    feature_seed = seed + 1000000
+                    universe.feature_generator.reset_rng(feature_seed)
+                
                 # Get community assignments and map to universe community IDs
                 universe_community_assignments = np.array(self.community_labels_universe_level)
 
