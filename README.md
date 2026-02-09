@@ -1,5 +1,8 @@
 # GraphUniverse: Enabling Systematic Evaluation of Inductive Generalization
 
+![ICLR 2026](https://img.shields.io/badge/ICLR-2026-blue)
+![Demo](https://img.shields.io/badge/demo-streamlit-red)
+
 **Generate families of graphs with finely controllable properties for systematic evaluation of inductive graph learning models.**
 
 [Quick Start](#quick-start) | [Reproduce Validation Experiment](#reproduce-validation-experiment) | [Interactive Demo](https://graphuniverse.streamlit.app/)
