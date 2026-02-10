@@ -18,6 +18,7 @@ family_parameters:
   - 2.0
   - 3.0
   seed: 42
+  timeout_seconds: 120.0
 task: community_detection
 universe_parameters:
   K: 10

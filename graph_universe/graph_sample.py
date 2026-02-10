@@ -172,11 +172,13 @@ class GraphSample:
         power_law_exponent: float | None,
         # DCCC-SBM parameters
         degree_separation: float = 0.5,
-        dccc_global_degree_params: dict | None = None,
+        global_degree_params: dict | None = None,
         # Random seed
         seed: int | None = None,
         # Optional Parameter for user-defined communuties to be sampled
         user_defined_communities: list[int] | None = None,
+        # Generation control parameters
+        timeout_seconds: float = 60.0
     ):
         """
         Initialize and generate a graph sample from the GraphUniverse.
@@ -187,19 +189,19 @@ class GraphSample:
 
         # Store DCCC-SBM parameters
         self.degree_separation = degree_separation
-        self.dccc_global_degree_params = dccc_global_degree_params or {}
+        self.global_degree_params = global_degree_params or {}
+
+        # Store generation control parameters
+        self.timeout_seconds = timeout_seconds
 
         # Original initialization code with modifications...
         self.timing_info = {}
         total_start = time.time()
 
-        # Add timeout mechanism
-        TIMEOUT_SECONDS = 60
-
         def check_timeout():
-            if time.time() - total_start > TIMEOUT_SECONDS:
+            if time.time() - total_start > self.timeout_seconds:
                 raise TimeoutError(
-                    f"GraphSample initialization timed out after {TIMEOUT_SECONDS} seconds"
+                    f"GraphSample initialization timed out after {self.timeout_seconds} seconds"
                 )
 
         try:
@@ -306,8 +308,8 @@ class GraphSample:
                 }
 
             # Update with any user-provided parameters
-            if dccc_global_degree_params:
-                global_degree_params.update(dccc_global_degree_params)
+            if global_degree_params:
+                global_degree_params.update(global_degree_params)
 
             # Generate community-specific degree factors
             self.degree_factors = self._generate_community_degree_factors(
@@ -342,11 +344,15 @@ class GraphSample:
             components = list(nx.connected_components(temp_graph))
             components.sort(key=len, reverse=True)
 
+            # Eenforce connectivity
             self.adjacency = self._connect_disconnected_components(components)
 
             # Update the number of nodes
             self.graph = nx.from_scipy_sparse_array(self.adjacency)
             self.n_nodes = self.graph.number_of_nodes()
+            
+            # Store component connection time
+            self.timing_info["component_connection"] = time.time() - start
 
             # No deviation limiting needed
 
@@ -397,10 +403,16 @@ class GraphSample:
         Connect disconnected components of the graph iteratively, starting with the smallest component.
         Uses deviation analysis to find optimal connections that bring the actual probability matrix
         closer to the expected P_sub matrix.
+        
+        For large graphs (>1000 nodes), uses a fast approximation method.
         """
         if len(components) <= 1:
             # Already connected or empty graph; return current adjacency unchanged
             return self.adjacency
+
+        # For large graphs, use fast approximation
+        if self.original_n_nodes > 1000:
+            return self._connect_disconnected_components_fast(components)
 
         # Create a copy of the graph to work with
         temp_graph = nx.from_scipy_sparse_array(self.adjacency)
@@ -438,6 +450,145 @@ class GraphSample:
 
         # return the adjacency matrix of the connected graph
         return nx.adjacency_matrix(temp_graph)
+
+    def _connect_disconnected_components_fast(self, components: list[set[int]]) -> sp.spmatrix:
+        """
+        Fast approximation for connecting disconnected components in large graphs (>1000 nodes).
+        
+        Key optimizations:
+        1. Calculate deviation matrix only once at the start
+        2. Use probabilistic connection based on P_sub and degree factors
+        3. Sample nodes instead of exhaustive search
+        4. Connect to largest component directly (star topology)
+        
+        This is slightly less optimal than the full method but much faster.
+        """
+        if len(components) <= 1:
+            return self.adjacency
+        
+        # Create a copy of the graph to work with
+        temp_graph = nx.from_scipy_sparse_array(self.adjacency)
+        
+        # Calculate deviation matrix once at the start
+        initial_analysis = self._calculate_community_deviations_with_matrix(
+            temp_graph, self.community_labels, self.P_sub
+        )
+        deviation_matrix = initial_analysis["deviation_matrix"]
+        
+        # Sort components by size (largest first for fast method)
+        components = sorted(components, key=len, reverse=True)
+        largest_component = components[0]
+        
+        # Connect all other components to the largest component
+        for component in components[1:]:
+            # Find best connection between this component and largest component
+            best_connection = self._find_best_connection_fast(
+                component,
+                largest_component,
+                deviation_matrix,
+            )
+            
+            # Make the connection
+            node_from, node_to = best_connection
+            temp_graph.add_edge(node_from, node_to)
+            
+            # Update largest component (merge the newly connected component)
+            largest_component = largest_component.union(component)
+        
+        return nx.adjacency_matrix(temp_graph)
+
+    def _find_best_connection_fast(
+        self,
+        component_a: set[int],
+        component_b: set[int],
+        deviation_matrix: np.ndarray,
+    ) -> tuple[int, int]:
+        """
+        Fast approximation for finding the best connection between two components.
+        
+        Instead of checking all possible pairs, samples nodes based on:
+        1. Community pair probabilities from P_sub
+        2. Node degree factors (prefer high-degree nodes for connectivity)
+        3. Deviation matrix (prefer connections that reduce deviation)
+        
+        Args:
+            component_a: First component (smaller)
+            component_b: Second component (larger)
+            deviation_matrix: Current deviation matrix
+            
+        Returns:
+            Tuple of (node_from_a, node_to_b)
+        """
+        # Get community distributions in each component
+        communities_a = {}  # {community_id: [list of nodes]}
+        communities_b = {}
+        
+        for node in component_a:
+            comm = self.community_labels[node]
+            if comm not in communities_a:
+                communities_a[comm] = []
+            communities_a[comm].append(node)
+        
+        for node in component_b:
+            comm = self.community_labels[node]
+            if comm not in communities_b:
+                communities_b[comm] = []
+            communities_b[comm].append(node)
+        
+        # Calculate connection scores for each community pair
+        connection_scores = []  # (score, comm_a, comm_b)
+        
+        for comm_a in communities_a.keys():
+            for comm_b in communities_b.keys():
+                # Score based on P_sub and deviation
+                p_sub_value = self.P_sub[comm_a, comm_b]
+                
+                if p_sub_value > 0:
+                    # Allowed connection - prioritize if deviation is negative (under-connected)
+                    deviation = deviation_matrix[comm_a, comm_b]
+                    if deviation < 0:
+                        # Under-connected: high priority
+                        score = p_sub_value * (1 - deviation)
+                    else:
+                        # Over-connected: lower priority but still allowed
+                        score = p_sub_value * 0.5
+                else:
+                    # Disallowed connection: very low score
+                    score = 0.01
+                
+                connection_scores.append((score, comm_a, comm_b))
+        
+        if not connection_scores:
+            # Fallback: just pick any two nodes
+            node_a = next(iter(component_a))
+            node_b = next(iter(component_b))
+            return (node_a, node_b)
+        
+        # Sample community pair based on scores
+        scores = np.array([s[0] for s in connection_scores])
+        scores = scores / np.sum(scores)  # Normalize to probabilities
+        
+        chosen_idx = np.random.choice(len(connection_scores), p=scores)
+        _, chosen_comm_a, chosen_comm_b = connection_scores[chosen_idx]
+        
+        # Within chosen communities, sample nodes based on degree factors
+        # Prefer higher-degree nodes for better connectivity
+        nodes_a = communities_a[chosen_comm_a]
+        nodes_b = communities_b[chosen_comm_b]
+        
+        # Get degree factors for these nodes
+        degree_factors_a = np.array([self.degree_factors[n] for n in nodes_a])
+        degree_factors_b = np.array([self.degree_factors[n] for n in nodes_b])
+        
+        # Normalize to probabilities
+        probs_a = degree_factors_a / np.sum(degree_factors_a)
+        probs_b = degree_factors_b / np.sum(degree_factors_b)
+        
+        # Sample nodes
+        node_a = np.random.choice(nodes_a, p=probs_a)
+        node_b = np.random.choice(nodes_b, p=probs_b)
+        
+        return (node_a, node_b)
 
     def _calculate_community_deviations_with_matrix(
         self, graph: nx.Graph, community_labels: np.ndarray, P_sub: np.ndarray
@@ -595,6 +746,17 @@ class GraphSample:
         poisson_version: bool = False,
     ) -> np.ndarray:
         n_nodes = len(community_labels)
+        
+        # For large graphs, use fast approximation
+        # This avoids the expensive sampling-without-replacement loop
+        if n_nodes > 1000:
+            return self._generate_community_degree_factors_fast(
+                community_labels,
+                degree_distribution_type,
+                degree_separation,
+                global_degree_params,
+                poisson_version,
+            )
 
         # 1. Sample global degree distribution
         if degree_distribution_type == "power_law":
@@ -655,7 +817,8 @@ class GraphSample:
         community_std = min_std + max((1 - degree_separation), 0.1) * (max_std - min_std)
 
         # 7. Create available positions array and sample for each node
-        available_positions = list(range(n_nodes))
+        # Use numpy array for efficiency (avoids O(n) list.remove operations)
+        available_positions = np.arange(n_nodes)
         degree_factors = np.zeros(n_nodes)
 
         # 8. For each node, sample from its community's truncated normal distribution
@@ -667,26 +830,22 @@ class GraphSample:
             std_pos = community_std
 
             # Sample from truncated normal distribution over available positions
-            if len(available_positions) == 1:
+            n_available = len(available_positions)
+            if n_available == 1:
                 # Only one position left, take it
+                chosen_idx = 0
                 chosen_pos = available_positions[0]
             else:
-                # Calculate probabilities for each available position based on normal distribution
-                probabilities = np.array(
-                    [
-                        np.exp(-0.5 * ((pos - mean_pos) / std_pos) ** 2)
-                        for pos in available_positions
-                    ]
-                )
+                positions_array = available_positions  # Already numpy array
+                probabilities = np.exp(-0.5 * ((positions_array - mean_pos) / std_pos) ** 2)
                 probabilities = probabilities / np.sum(probabilities)  # Normalize
 
                 # Sample from available positions based on probabilities
-                chosen_idx = np.random.choice(len(available_positions), p=probabilities)
+                chosen_idx = np.random.choice(n_available, p=probabilities)
                 chosen_pos = available_positions[chosen_idx]
 
-            # Assign the degree and remove position from available
             degree_factors[node_idx] = sorted_degrees[chosen_pos]
-            available_positions.remove(chosen_pos)
+            available_positions = np.delete(available_positions, chosen_idx)
 
         if poisson_version:
             # Degree factor sum-to-1 normalization to minimize effect on expected edge count PER COMMUNITY
@@ -701,13 +860,90 @@ class GraphSample:
         else:
             degree_factors_mean = np.mean(degree_factors)
             degree_factors = degree_factors / degree_factors_mean
-            # # Degree factor mean normalization to minimize effect on expected edge count PER COMMUNITY
-            # for community_local_idx in range(k):
-            #     community_nodes = np.where(community_labels == community_local_idx)[0]
-            #     community_degree_factors = degree_factors[community_nodes]
-            #     community_degree_factors_mean = np.mean(community_degree_factors)
-            #     degree_factors[community_nodes] = community_degree_factors / community_degree_factors_mean
 
+        return degree_factors
+    
+    def _generate_community_degree_factors_fast(
+        self,
+        community_labels: np.ndarray,
+        degree_distribution_type: str,
+        degree_separation: float,
+        global_degree_params: dict,
+        poisson_version: bool = False,
+    ) -> np.ndarray:
+        """
+        Fast approximation for community degree factors for large graphs.
+        Instead of sampling without replacement (O(n²)), uses a direct approach.
+        
+        This is slightly less accurate in degree separation but much faster.
+        """
+        n_nodes = len(community_labels)
+        k = len(np.unique(community_labels))
+        
+        # 1. Get universe community-degree propensity vector for our communities
+        community_id_mapping = dict(enumerate(sorted(set(community_labels))))
+        universe_degree_centers = np.array(
+            [
+                self.universe.community_degree_propensity_vector[
+                    community_id_mapping[local_comm_id]
+                ]
+                for local_comm_id in range(k)
+            ]
+        )
+        
+        # 2. Normalize degree centers to [0, 1] range
+        if k > 1:
+            min_center = np.min(universe_degree_centers)
+            max_center = np.max(universe_degree_centers)
+            if max_center > min_center:
+                normalized_centers = (universe_degree_centers - min_center) / (max_center - min_center)
+            else:
+                normalized_centers = np.ones(k) * 0.5
+        else:
+            normalized_centers = np.array([0.5])
+        
+        # 3. Generate base degrees from distribution
+        if degree_distribution_type == "power_law":
+            exponent = global_degree_params.get("exponent", 2.5)
+            base_degrees = np.random.pareto(exponent, size=n_nodes) + 1
+        elif degree_distribution_type == "exponential":
+            rate = global_degree_params.get("rate", 1.0)
+            base_degrees = np.random.exponential(scale=1 / rate, size=n_nodes)
+        elif degree_distribution_type == "uniform":
+            low = global_degree_params.get("min_degree", 1.0)
+            high = global_degree_params.get("max_degree", 10.0)
+            base_degrees = np.random.uniform(low, high, size=n_nodes)
+        else:
+            raise ValueError("Unknown distribution type")
+        
+        # 4. Apply community-based scaling
+        # Nodes in high-degree communities get a boost, low-degree communities get reduced
+        degree_factors = np.zeros(n_nodes)
+        for node_idx in range(n_nodes):
+            comm_idx = community_labels[node_idx]
+            # Scale factor based on community's degree propensity
+            # degree_separation controls how strong this effect is
+            scale = 1.0 + degree_separation * (normalized_centers[comm_idx] - 0.5) * 2
+            degree_factors[node_idx] = base_degrees[node_idx] * scale
+        
+        # 5. Normalize
+        if poisson_version:
+            # Per-community normalization
+            for community_local_idx in range(k):
+                community_nodes = np.where(community_labels == community_local_idx)[0]
+                if len(community_nodes) > 0:
+                    community_degree_factors = degree_factors[community_nodes]
+                    community_degree_factors_sum = np.sum(community_degree_factors)
+                    if community_degree_factors_sum > 0:
+                        degree_factors[community_nodes] = (
+                            community_degree_factors / community_degree_factors_sum
+                        )
+        else:
+            # Global normalization
+            degree_factors_mean = np.mean(degree_factors)
+            if degree_factors_mean > 0:
+                degree_factors = degree_factors / degree_factors_mean
+        
         return degree_factors
 
     def _generate_edges(
@@ -718,7 +954,7 @@ class GraphSample:
     ) -> sp.spmatrix:
         """
         Generate edges with minimum density guarantee.
-        Uses vectorized operations for faster edge generation with community labels.
+        Uses community-aware generation for efficiency on large graphs.
 
         Args:
             community_labels: Node community assignments (indices)
@@ -729,7 +965,8 @@ class GraphSample:
             Sparse adjacency matrix
         """
         n_nodes = len(community_labels)
-
+        
+        # For smaller graphs, use the original fast vectorized method
         # Create node pairs using meshgrid
         i_nodes, j_nodes = np.triu_indices(n_nodes, k=1)
 

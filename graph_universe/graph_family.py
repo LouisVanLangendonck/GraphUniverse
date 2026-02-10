@@ -40,6 +40,7 @@ class GraphFamilyGenerator:
         uniform_max_factor_range: Range for uniform distribution max factor (min, max)
         degree_separation_range: Range for degree distribution separation (min, max)
         seed: Random seed for reproducibility
+        timeout_seconds: Timeout in seconds for individual graph generation (default: 60.0)
     """
 
     def __init__(
@@ -59,6 +60,7 @@ class GraphFamilyGenerator:
         uniform_max_factor_range: tuple[float, float] = (1.3, 2.0),
         degree_separation_range: tuple[float, float] = (0.5, 0.5),  # Range for degree separation
         seed: int | None = 42,
+        timeout_seconds: float = 60.0,  # Graph generation control parameters
     ):
         self.universe = universe
         self.min_n_nodes = min_n_nodes
@@ -78,6 +80,9 @@ class GraphFamilyGenerator:
         self.exponential_rate_range = exponential_rate_range
         self.uniform_min_factor_range = uniform_min_factor_range
         self.uniform_max_factor_range = uniform_max_factor_range
+
+        # Graph generation control parameters
+        self.timeout_seconds = timeout_seconds
 
         # Set random seed
         self.seed = seed
@@ -141,13 +146,6 @@ class GraphFamilyGenerator:
                 )
                 break
 
-            # graph_generated = False
-            # attempts = 0
-
-            # while not graph_generated and attempts < max_attempts_per_graph:
-            #     attempts += 1
-
-            #     try:
             # Get a random seed for this graph
             graph_seed = np.random.randint(0, 1000000)
 
@@ -175,13 +173,15 @@ class GraphFamilyGenerator:
                 power_law_exponent=params.get("power_law_exponent", None),
                 # DCCC-SBM parameters
                 degree_separation=params.get("degree_separation", 0.5),
-                dccc_global_degree_params=params.get("dccc_global_degree_params", {}),
+                global_degree_params=params.get("global_degree_params", {}),
                 # Random seed
                 seed=graph_seed,
                 # Optional Parameter for user-defined communites to be sampled (Such that NO unseen communities are sampled for val or test)
                 user_defined_communities=sampled_community_combination
                 if allowed_community_combinations is not None
                 else None,
+                # Generation control parameters
+                timeout_seconds=self.timeout_seconds,
             )
 
             # Store graph and metadata
@@ -213,27 +213,6 @@ class GraphFamilyGenerator:
 
             if show_progress:
                 pbar.update(1)
-
-                # except Exception as e:
-                #     tb_str = traceback.format_exc()
-                #     # Short error version
-                #     # print(f"Failed to generate graph after {attempts} attempts: {e}")
-
-                #     # Long error version
-                #     # print(f"Failed to generate graph after {attempts} attempts: {e}\n{tb_str}")
-
-                #     if attempts == max_attempts_per_graph:
-                #         warnings.warn(f"Failed to generate graph after {attempts} attempts: {e}")
-                #         failed_graphs += 1
-                #         # Add empty metadata for failed graph
-                #         self.generation_metadata.append({
-                #             'graph_id': len(self.graphs),
-                #             'attempts': attempts,
-                #             'failed': True,
-                #             'error': str(e),
-                #             'traceback': tb_str
-                #         })
-                #     # Continue to next attempt
 
         # Use set of sorted tuples for uniqueness
         unique_set_of_community_combinations = {
@@ -314,13 +293,7 @@ class GraphFamilyGenerator:
                 "seed": self.seed,
             },
         }
-        # # Create a hash of all UNIVERSE generation parameters to be able to indentify common universes between different graph families
-        # universe_hash_parts = []
-        # for key, value in uniquely_identifying_metadata['universe_parameters'].items():
-        #     universe_hash_parts.append(f"{key}:{value}")
 
-        # universe_hash = hashlib.sha256(str(universe_hash_parts).encode()).hexdigest()
-        # uniquely_identifying_metadata['universe_hash'] = universe_hash
         return uniquely_identifying_metadata
 
     def save_pyg_graphs_and_universe(
@@ -460,7 +433,7 @@ class GraphFamilyGenerator:
 
         dccc_params = {
             "degree_separation": degree_separation,
-            "dccc_global_degree_params": distribution_params,
+            "global_degree_params": distribution_params,
             "power_law_exponent": distribution_params.get("exponent"),
         }
 
@@ -530,11 +503,13 @@ class GraphFamilyGenerator:
                         power_law_exponent=params.get("power_law_exponent", None),
                         # DCCC-SBM parameters
                         degree_separation=params.get("degree_separation", 0.5),
-                        dccc_global_degree_params=params.get("dccc_global_degree_params", {}),
+                        global_degree_params=params.get("global_degree_params", {}),
                         # Random seed
                         seed=graph_seed,
                         # Optional Parameter for user-defined communites to be sampled
                         user_defined_communities=None,
+                        # Generation control parameters
+                        timeout_seconds=self.timeout_seconds
                     )
                     print(f"Attempt {attempts}: GraphSample initialization completed successfully")
                 except Exception as e:

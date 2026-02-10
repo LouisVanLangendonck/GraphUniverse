@@ -9,11 +9,16 @@ This script demonstrates all three usage patterns from the GraphUniverse Quick S
 3. Validation & quality analysis 
 """
 
+import sys
+from pathlib import Path
+
+# Add parent directory to path to use local graph_universe instead of installed package
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
 import numpy as np
 import matplotlib.pyplot as plt
 import yaml
 import os
-from pathlib import Path
 
 # Import GraphUniverse components
 from graph_universe import (
@@ -47,7 +52,8 @@ family = GraphFamilyGenerator(
     degree_distribution="power_law",
     power_law_exponent_range=(2.0, 5.0),
     degree_separation_range=(0.1, 0.7),
-    seed=42
+    seed=42,
+    timeout_seconds=120.0
 )
 
 print("Generating 100 graphs...")
@@ -104,7 +110,8 @@ experiment_config = {
         "degree_distribution": "power_law",
         "power_law_exponent_range": [2.0, 3.0],
         "degree_separation_range": [0.4, 0.8],
-        "seed": 42
+        "seed": 42,
+        "timeout_seconds": 120.0
     },
     "task": "community_detection"
 }
