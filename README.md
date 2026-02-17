@@ -31,6 +31,8 @@ Current graph learning benchmarks are limited to **single-graph, transductive se
 ```bash
 # Install directly from GitHub
 pip install git+https://github.com/LouisVanLangendonck/GraphUniverse.git
+# For extra vizualization options and local streamlit app hosting choose
+pip install "git+https://github.com/LouisVanLangendonck/GraphUniverse.git#egg=graph-universe[viz]"
 
 # Or clone and install in development mode
 git clone https://github.com/LouisVanLangendonck/GraphUniverse.git
@@ -51,13 +53,10 @@ universe = GraphUniverse(K=8, edge_propensity_variance=0.3, feature_dim=10)
 # Generate family with full parameter control
 family = GraphFamilyGenerator(
     universe=universe,
-    min_n_nodes=25, 
-    max_n_nodes=50,
-    min_communities=2,
-    max_communities=7,
+    n_nodes_range=(35, 50),
+    n_communities_range=(2, 6),
     homophily_range=(0.2, 0.8),
     avg_degree_range=(2.0, 10.0),
-    degree_distribution="power_law",
     power_law_exponent_range=(2.0, 5.0),
     degree_separation_range=(0.1, 0.7),
     seed=42
@@ -85,13 +84,10 @@ universe_parameters:
 
 family_parameters:
   n_graphs: 100
-  min_n_nodes: 25
-  max_n_nodes: 200
-  min_communities: 3
-  max_communities: 7
+  n_nodes_range: [25, 200]
+  n_communities_range: [3, 7]
   homophily_range: [0.1, 0.9]
   avg_degree_range: [2.0, 8.0]
-  degree_distribution: "power_law"
   power_law_exponent_range: [2.0, 3.0]
   degree_separation_range: [0.4, 0.8]
   seed: 42
@@ -112,8 +108,19 @@ print(f"Generated dataset with {len(dataset)} graphs!")
 ```
 
 #### Option 3: Interactive Demo
-Try GraphUniverse in your browser with real-time parameter tuning and direct dataset download:
-**[https://graphuniverse.streamlit.app/](https://graphuniverse.streamlit.app/)**
+Try GraphUniverse in your browser — either via the hosted app or locally:
+
+**Hosted:** [https://graphuniverse.streamlit.app/](https://graphuniverse.streamlit.app/)
+
+**Local (requires `pip install graph-universe[viz]`):**
+```bash
+graph-universe-ui
+```
+Or from Python:
+```python
+from graph_universe import launch_ui
+launch_ui()  # Opens browser, press Ctrl+C to stop
+```
 
 ## Reproduce Validation Experiment
 GraphUniverse includes comprehensive metrics to validate property realization and quantify learnable community signals
