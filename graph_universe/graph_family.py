@@ -14,75 +14,45 @@ from graph_universe.graph_universe import GraphUniverse
 
 class GraphFamilyGenerator:
     """
-    Generates families of graphs sampled from a graph universe.
-    Each graph in the family is a subgraph of the universe with its own community structure.
+    Generates families of graphs sampled from a graph universe object dictating global graph building rules.
+    Each graph in the family samples it's communities from the universe and uses the universe as global template for the graph structure.
 
     Initialize the graph family generator.
 
     Args:
         universe: GraphUniverse to sample from
-        n_graphs: Number of graphs to generate in the family
-        min_n_nodes: Minimum number of nodes per graph
-        max_n_nodes: Maximum number of nodes per graph
-        n_graphs: Default number of graphs to generate
-        min_communities: Minimum number of communities per graph
-        max_communities: Maximum number of communities per graph (defaults to universe.K)
+        n_nodes_range: Tuple of (min_n_nodes, max_n_nodes) per graph
+        n_graphs: Default number of graphs to generate (can be overridden if specified in generate_family. Kinf of default behaviour when using the CONFIG)
+        n_communities_range: Tuple of (min_communities, max_communities) per graph (max defaults to universe.K if None)
         homophily_range: Tuple of (min_homophily, max_homophily) in graph family
-        density_range: Tuple of (min_density, max_density) in graph family
-        degree_distribution: Degree distribution type ("power_law", "exponential", "uniform")
-        degree_separation_range: Range for degree distribution separation (min, max)
-        enable_deviation_limiting: Whether to enable deviation checks
-        max_mean_community_deviation: If enabled, maximum allowed mean target scaled edge probability community deviation
-        degree_distribution: Degree distribution type ("standard", "power_law", "exponential", "uniform")
+        avg_degree_range: Tuple of (min_avg_degree, max_avg_degree) in graph family
         power_law_exponent_range: Range for power law exponent (min, max)
-        exponential_rate_range: Range for exponential distribution rate (min, max)
-        uniform_min_factor_range: Range for uniform distribution min factor (min, max)
-        uniform_max_factor_range: Range for uniform distribution max factor (min, max)
         degree_separation_range: Range for degree distribution separation (min, max)
         seed: Random seed for reproducibility
-        timeout_seconds: Timeout in seconds for individual graph generation (default: 60.0)
     """
 
     def __init__(
         self,
         universe: GraphUniverse,
-        min_n_nodes: int,
-        max_n_nodes: int,
+        n_nodes_range: tuple[int, int],
         n_graphs: int = 100,
-        min_communities: int = 2,
-        max_communities: int | None = None,
-        homophily_range: tuple[float, float] = (0.0, 0.4),  # Homophily range
-        avg_degree_range: tuple[float, float] = (1.0, 3.0),  # Average degree range
-        degree_distribution: str = "power_law",  # Distribution-specific parameter ranges
+        n_communities_range: tuple[int, int] = (2, None),
+        homophily_range: tuple[float, float] = (0.0, 0.4),
+        avg_degree_range: tuple[float, float] = (1.0, 3.0),
         power_law_exponent_range: tuple[float, float] = (2.0, 3.5),
-        exponential_rate_range: tuple[float, float] = (0.3, 1.0),
-        uniform_min_factor_range: tuple[float, float] = (0.3, 0.7),
-        uniform_max_factor_range: tuple[float, float] = (1.3, 2.0),
-        degree_separation_range: tuple[float, float] = (0.5, 0.5),  # Range for degree separation
+        degree_separation_range: tuple[float, float] = (0.5, 0.5),
         seed: int | None = 42,
-        timeout_seconds: float = 60.0,  # Graph generation control parameters
     ):
         self.universe = universe
-        self.min_n_nodes = min_n_nodes
-        self.max_n_nodes = max_n_nodes
+        self.min_n_nodes = n_nodes_range[0]
+        self.max_n_nodes = n_nodes_range[1]
         self.n_graphs = n_graphs
-        self.min_communities = min_communities
-        self.max_communities = max_communities if max_communities is not None else universe.K
+        self.min_communities = n_communities_range[0]
+        self.max_communities = n_communities_range[1] if n_communities_range[1] is not None else universe.K
         self.homophily_range = homophily_range
         self.avg_degree_range = avg_degree_range
-
-        # DCCC distribution-specific parameters
-        self.degree_separation_range = degree_separation_range  # Range for degree separation
-
-        # Distribution parameters
-        self.degree_distribution = degree_distribution
+        self.degree_separation_range = degree_separation_range
         self.power_law_exponent_range = power_law_exponent_range
-        self.exponential_rate_range = exponential_rate_range
-        self.uniform_min_factor_range = uniform_min_factor_range
-        self.uniform_max_factor_range = uniform_max_factor_range
-
-        # Graph generation control parameters
-        self.timeout_seconds = timeout_seconds
 
         # Set random seed
         self.seed = seed
@@ -104,25 +74,21 @@ class GraphFamilyGenerator:
         n_graphs: int | None = None,
         show_progress: bool = True,
         collect_stats: bool = True,
-        timeout_minutes: float = 5.0,
         allowed_community_combinations: list[list[int]] | None = None,
     ) -> list[GraphSample]:
         """
         Generate a family of graphs from the universe.
 
         Args:
-            n_graphs: Number of graphs to generate (overrides initial configuration)
+            n_graphs: Number of graphs to generate (if None, uses default n_graphs of initialization.)
             show_progress: Whether to show progress bar
             collect_stats: Whether to collect generation statistics
-            timeout_minutes: Maximum time in minutes to spend generating graphs
             allowed_community_combinations: Optional list of lists of community indices to be sampled from the universe
         Returns:
             List of generated GraphSample objects
         """
         self.n_graphs = n_graphs if n_graphs is not None else self.n_graphs
         start_time = time.time()
-        starting_time_new_graph = start_time
-        timeout_seconds = timeout_minutes * 60
         self.graphs = []
         self.community_labels_per_graph = []
         self.generation_metadata = []
@@ -138,81 +104,73 @@ class GraphFamilyGenerator:
             pbar = tqdm(total=self.n_graphs, desc="Generating graph family")
 
         while len(self.graphs) < self.n_graphs:
-            # Check for timeout
-            if time.time() - start_time > timeout_seconds:
+            graph_start_time = time.time()
+
+            try:
+                # Get a random seed for this graph
+                graph_seed = np.random.randint(0, 1000000)
+
+                # Sample parameters for this graph
+                params = self._sample_graph_parameters()
+
+                if allowed_community_combinations is not None:
+                    sampled_community_combination_index = np.random.randint(
+                        0, len(allowed_community_combinations)
+                    )
+                    sampled_community_combination = allowed_community_combinations[
+                        sampled_community_combination_index
+                    ]
+
+                graph_sample = GraphSample(
+                    universe=self.universe,
+                    num_communities=params["n_communities"],
+                    n_nodes=params["n_nodes"],
+                    target_homophily=params["target_homophily"],
+                    target_average_degree=params["target_average_degree"],
+                    power_law_exponent=params.get("power_law_exponent", None),
+                    degree_separation=params.get("degree_separation", 0.5),
+                    global_degree_params=params.get("global_degree_params", {}),
+                    seed=graph_seed,
+                    user_defined_communities=sampled_community_combination
+                    if allowed_community_combinations is not None
+                    else None,
+                )
+
+                # Store graph and metadata
+                self.graphs.append(graph_sample)
+                self.community_labels_per_graph.append(
+                    np.unique(graph_sample.community_labels_universe_level, axis=0)
+                )
+                metadata = {
+                    "graph_id": len(self.graphs) - 1,
+                    "final_n_nodes": graph_sample.n_nodes,
+                    "final_n_edges": graph_sample.graph.number_of_edges(),
+                    "actual_density": graph_sample.graph.number_of_edges()
+                    / (graph_sample.n_nodes * (graph_sample.n_nodes - 1) / 2)
+                    if graph_sample.n_nodes > 1
+                    else 0,
+                    "timing_info": graph_sample.timing_info.copy()
+                    if hasattr(graph_sample, "timing_info")
+                    else {},
+                    **params,  # Include sampled parameters
+                }
+
+                self.generation_metadata.append(metadata)
+
+                graph_generation_time = time.time() - graph_start_time
+                self.graph_generation_times.append(graph_generation_time)
+
+                if show_progress:
+                    pbar.update(1)
+
+            except Exception as e:
+                failed_graphs += 1
                 warnings.warn(
-                    f"Timeout reached after {timeout_minutes} minutes. Generated {len(self.graphs)} graphs instead of {self.n_graphs}",
+                    f"Failed to generate graph {len(self.graphs) + failed_graphs}: {e}",
                     stacklevel=2,
                 )
-                break
-
-            # Get a random seed for this graph
-            graph_seed = np.random.randint(0, 1000000)
-
-            # Sample parameters for this graph
-            params = self._sample_graph_parameters()
-
-            if allowed_community_combinations is not None:
-                sampled_community_combination_index = np.random.randint(
-                    0, len(allowed_community_combinations)
-                )
-                sampled_community_combination = allowed_community_combinations[
-                    sampled_community_combination_index
-                ]
-
-            # Create graph sample
-            graph_sample = GraphSample(
-                # Give GraphUniverse object to sample from
-                universe=self.universe,
-                # Graph Sample specific parameters
-                num_communities=params["n_communities"],
-                n_nodes=params["n_nodes"],
-                target_homophily=params["target_homophily"],
-                target_average_degree=params["target_average_degree"],
-                degree_distribution=self.degree_distribution,
-                power_law_exponent=params.get("power_law_exponent", None),
-                # DCCC-SBM parameters
-                degree_separation=params.get("degree_separation", 0.5),
-                global_degree_params=params.get("global_degree_params", {}),
-                # Random seed
-                seed=graph_seed,
-                # Optional Parameter for user-defined communites to be sampled (Such that NO unseen communities are sampled for val or test)
-                user_defined_communities=sampled_community_combination
-                if allowed_community_combinations is not None
-                else None,
-                # Generation control parameters
-                timeout_seconds=self.timeout_seconds,
-            )
-
-            # Store graph and metadata
-            self.graphs.append(graph_sample)
-            self.community_labels_per_graph.append(
-                np.unique(graph_sample.community_labels_universe_level, axis=0)
-            )
-            metadata = {
-                "graph_id": len(self.graphs) - 1,
-                "final_n_nodes": graph_sample.n_nodes,
-                "final_n_edges": graph_sample.graph.number_of_edges(),
-                "actual_density": graph_sample.graph.number_of_edges()
-                / (graph_sample.n_nodes * (graph_sample.n_nodes - 1) / 2)
-                if graph_sample.n_nodes > 1
-                else 0,
-                "generation_method": graph_sample.generation_method,
-                "timing_info": graph_sample.timing_info.copy()
-                if hasattr(graph_sample, "timing_info")
-                else {},
-                **params,  # Include sampled parameters
-            }
-
-            self.generation_metadata.append(metadata)
-            # graph_generated = True
-
-            graph_generation_time = time.time() - starting_time_new_graph
-            self.graph_generation_times.append(graph_generation_time)
-            starting_time_new_graph = time.time()
-
-            if show_progress:
-                pbar.update(1)
+                # Continue to next graph
+                continue
 
         # Use set of sorted tuples for uniqueness
         unique_set_of_community_combinations = {
@@ -251,7 +209,7 @@ class GraphFamilyGenerator:
 
         # Check if task is valid
         if task is not None:
-            if task not in ["community_detection", "triangle_counting", "k_hop_community_counts_k1", "k_hop_community_counts_k2", "k_hop_community_counts_k3", "community_homophily_vector", "graph_diameter"]:
+            if task not in ["community_detection", "triangle_counting"]:
                 raise ValueError(f"Invalid task specified: {task}")
             self.task = task
         else:
@@ -275,20 +233,14 @@ class GraphFamilyGenerator:
                 "cluster_variance": self.universe.cluster_variance,
                 "edge_propensity_variance": self.universe.edge_propensity_variance,
                 "seed": self.universe.seed,
-                # 'community_degree_propensity_vector': self.universe.community_degree_propensity_vector.tolist(),
-                # 'propensity_matrix_hash': hash(self.universe.P.tobytes()),
-                # 'community_degree_propensity_vector_hash': hash(self.universe.community_degree_propensity_vector.tobytes()),
             },
             "family_parameters": {
                 "n_graphs": self.n_graphs,
-                "min_n_nodes": self.min_n_nodes,
-                "max_n_nodes": self.max_n_nodes,
-                "min_communities": self.min_communities,
-                "max_communities": self.max_communities,
+                "n_nodes_range": [self.min_n_nodes, self.max_n_nodes],
+                "n_communities_range": [self.min_communities, self.max_communities],
                 "homophily_range": self.homophily_range,
                 "avg_degree_range": self.avg_degree_range,
                 "degree_separation_range": self.degree_separation_range,
-                "degree_distribution": self.degree_distribution,
                 "power_law_exponent_range": self.power_law_exponent_range,
                 "seed": self.seed,
             },
@@ -344,37 +296,15 @@ class GraphFamilyGenerator:
         ):
             raise ValueError("degree_separation_range must be a tuple (min, max) with min <= max")
 
-        # Validate DCCC distribution parameter ranges
+        # Validate degree distribution parameter ranges
         if (
             len(self.power_law_exponent_range) != 2
             or self.power_law_exponent_range[0] > self.power_law_exponent_range[1]
         ):
             raise ValueError("power_law_exponent_range must be a tuple (min, max) with min <= max")
-        if (
-            len(self.exponential_rate_range) != 2
-            or self.exponential_rate_range[0] > self.exponential_rate_range[1]
-        ):
-            raise ValueError("exponential_rate_range must be a tuple (min, max) with min <= max")
-        if (
-            len(self.uniform_min_factor_range) != 2
-            or self.uniform_min_factor_range[0] > self.uniform_min_factor_range[1]
-        ):
-            raise ValueError("uniform_min_factor_range must be a tuple (min, max) with min <= max")
-        if (
-            len(self.uniform_max_factor_range) != 2
-            or self.uniform_max_factor_range[0] > self.uniform_max_factor_range[1]
-        ):
-            raise ValueError("uniform_max_factor_range must be a tuple (min, max) with min <= max")
 
-        # Validate that distribution ranges make sense
         if self.power_law_exponent_range[0] <= 1.0:
             raise ValueError("power_law_exponent_range values must be > 1.0")
-        if self.exponential_rate_range[0] <= 0.0:
-            raise ValueError("exponential_rate_range values must be > 0.0")
-        if self.uniform_min_factor_range[0] <= 0.0:
-            raise ValueError("uniform_min_factor_range values must be > 0.0")
-        if self.uniform_max_factor_range[0] <= 0.0:
-            raise ValueError("uniform_max_factor_range values must be > 0.0")
 
     def _sample_graph_parameters(self) -> dict[str, Any]:
         """
@@ -397,44 +327,20 @@ class GraphFamilyGenerator:
             self.avg_degree_range[0], self.avg_degree_range[1]
         )
 
-        # # Sample target density
-        # target_density = np.random.uniform(self.density_range[0], self.density_range[1])
-
-        # Sample DCCC parameters
-        dccc_params = {}
-        # Sample degree separation
+        # Sample degree distribution related parameters
         degree_separation = np.random.uniform(
             self.degree_separation_range[0], self.degree_separation_range[1]
         )
 
-        # Sample distribution-specific parameters
-        distribution_params = {}
-        if self.degree_distribution == "power_law":
-            power_law_exponent = np.random.uniform(
-                self.power_law_exponent_range[0], self.power_law_exponent_range[1]
-            )
-            distribution_params = {"exponent": power_law_exponent, "x_min": 1.0}
-        elif self.degree_distribution == "exponential":
-            rate = np.random.uniform(
-                self.exponential_rate_range[0], self.exponential_rate_range[1]
-            )
-            distribution_params = {"rate": rate}
-        elif self.degree_distribution == "uniform":
-            min_factor = np.random.uniform(
-                self.uniform_min_factor_range[0], self.uniform_min_factor_range[1]
-            )
-            max_factor = np.random.uniform(
-                self.uniform_max_factor_range[0], self.uniform_max_factor_range[1]
-            )
-            # Ensure max_factor > min_factor
-            if max_factor <= min_factor:
-                max_factor = min_factor + 0.1
-            distribution_params = {"min_degree": min_factor, "max_degree": max_factor}
+        power_law_exponent = np.random.uniform(
+            self.power_law_exponent_range[0], self.power_law_exponent_range[1]
+        )
+        distribution_params = {"exponent": power_law_exponent, "x_min": 1.0}
 
-        dccc_params = {
+        degree_params = {
             "degree_separation": degree_separation,
             "global_degree_params": distribution_params,
-            "power_law_exponent": distribution_params.get("exponent"),
+            "power_law_exponent": power_law_exponent,
         }
 
         # Combine all parameters
@@ -445,20 +351,19 @@ class GraphFamilyGenerator:
             "n_communities": n_communities,
         }
 
-        # Add DCCC parameters
-        params.update(dccc_params)
+        # Add degree distribution related parameters
+        params.update(degree_params)
 
         return params
 
     def _generate_single_graph(
-        self, max_attempts: int = 10, timeout_minutes: float = 5.0
+        self, max_attempts: int = 10
     ) -> GraphSample:
         """
         Generate a single graph with progress tracking.
 
         Args:
             max_attempts: Maximum attempts per graph before giving up
-            timeout_minutes: Maximum time in minutes to spend generating this graph
 
         Returns:
             Generated GraphSample object
@@ -466,16 +371,10 @@ class GraphFamilyGenerator:
         Raises:
             Exception: If graph generation fails after max_attempts
         """
-        start_time = time.time()
-        timeout_seconds = timeout_minutes * 60
         attempts = 0
 
         while attempts < max_attempts:
             attempts += 1
-
-            # Check for timeout
-            if time.time() - start_time > timeout_seconds:
-                raise Exception(f"Timeout reached after {timeout_minutes} minutes")
 
             try:
                 # Get a random seed for this graph
@@ -492,24 +391,16 @@ class GraphFamilyGenerator:
 
                 try:
                     graph_sample = GraphSample(
-                        # Give GraphUniverse object to sample from
                         universe=self.universe,
-                        # Graph Sample specific parameters
                         num_communities=params["n_communities"],
                         n_nodes=params["n_nodes"],
                         target_homophily=params["target_homophily"],
                         target_average_degree=params["target_average_degree"],
-                        degree_distribution=self.degree_distribution,
                         power_law_exponent=params.get("power_law_exponent", None),
-                        # DCCC-SBM parameters
                         degree_separation=params.get("degree_separation", 0.5),
                         global_degree_params=params.get("global_degree_params", {}),
-                        # Random seed
                         seed=graph_seed,
-                        # Optional Parameter for user-defined communites to be sampled
                         user_defined_communities=None,
-                        # Generation control parameters
-                        timeout_seconds=self.timeout_seconds
                     )
                     print(f"Attempt {attempts}: GraphSample initialization completed successfully")
                 except Exception as e:
@@ -520,7 +411,6 @@ class GraphFamilyGenerator:
                 return graph_sample
 
             except Exception as e:
-                # print(f"Attempt {attempts} failed: {str(e)}")
                 if attempts == max_attempts:
                     raise Exception(
                         f"Failed to generate graph after {attempts} attempts: {e}"
@@ -552,7 +442,6 @@ class GraphFamilyGenerator:
             node_counts = [m["final_n_nodes"] for m in successful_metadata]
             edge_counts = [m["final_n_edges"] for m in successful_metadata]
             densities = [m["actual_density"] for m in successful_metadata]
-            # attempts = [m['attempts'] for m in successful_metadata]
 
             self.generation_stats.update(
                 {
@@ -589,14 +478,10 @@ class GraphFamilyGenerator:
 
         save_data = {
             "n_graphs": n_graphs,
-            "min_n_nodes": self.min_n_nodes,
-            "max_n_nodes": self.max_n_nodes,
-            "min_communities": self.min_communities,
-            "max_communities": self.max_communities,
+            "n_nodes_range": [self.min_n_nodes, self.max_n_nodes],
+            "n_communities_range": [self.min_communities, self.max_communities],
             "homophily_range": self.homophily_range,
-            "density_range": self.density_range,
             "degree_separation_range": self.degree_separation_range,
-            "degree_distribution": self.degree_distribution,
             "power_law_exponent_range": self.power_law_exponent_range,
         }
 
@@ -632,7 +517,6 @@ class GraphFamilyGenerator:
             "community_counts": [],
             "homophily_levels": [],
             "nr_of_triangles": [],
-            "generation_methods": [],
             "degree_distributions": [],
             "degree_distribution_power_law_exponents": [],
             "tail_ratio_95": [],
@@ -654,7 +538,7 @@ class GraphFamilyGenerator:
             else:
                 properties["densities"].append(0.0)
 
-            if graph.n_nodes > 0:
+            if graph.n_nodes > 1:
                 avg_degree = sum(dict(graph.graph.degree()).values()) / (graph.n_nodes)
                 properties["avg_degrees"].append(avg_degree)
             else:
@@ -671,11 +555,14 @@ class GraphFamilyGenerator:
 
             # Calculate average homophily level across communities
             if graph.n_nodes > 0 and graph.graph.number_of_edges() > 0:
-                per_community_homophily = graph.calculate_per_community_homophily()
-                # Get only values for communities that are present in the graph
-                present_communities = list(graph.communities)
-                community_homophilies = [per_community_homophily[comm].item() for comm in present_communities]
-                avg_homophily = sum(community_homophilies) / len(community_homophilies) if community_homophilies else 0.0
+                # Calculate homophily directly
+                same_community_edges = 0
+                total_edges = 0
+                for u, v in graph.graph.edges():
+                    total_edges += 1
+                    if graph.community_labels[u] == graph.community_labels[v]:
+                        same_community_edges += 1
+                avg_homophily = same_community_edges / total_edges if total_edges > 0 else 0.0
                 properties["homophily_levels"].append(avg_homophily)
             else:
                 properties["homophily_levels"].append(0.0)
@@ -686,10 +573,6 @@ class GraphFamilyGenerator:
                 properties["nr_of_triangles"].append(np.sum(triangle_values) / 3)
             else:
                 properties["nr_of_triangles"].append(0.0)
-
-            # Track generation method
-            if hasattr(graph, "generation_method"):
-                properties["generation_methods"].append(graph.generation_method)
 
             # Extract degree distribution and fit power law exponent
             if graph.n_nodes > 0:
@@ -753,13 +636,6 @@ class GraphFamilyGenerator:
                 properties[f"{key}_std"] = 0.0
                 properties[f"{key}_min"] = 0.0
                 properties[f"{key}_max"] = 0.0
-
-        # Add generation method summary
-        if properties["generation_methods"]:
-            from collections import Counter
-
-            method_counts = Counter(properties["generation_methods"])
-            properties["generation_method_distribution"] = dict(method_counts)
 
         return properties
 
@@ -1068,30 +944,6 @@ class GraphFamilyGenerator:
 
         correlation, _ = spearmanr(expected_ranks, actual_ranks)
         return correlation if not np.isnan(correlation) else 0.0
-
-    def _calculate_cooccurrence_consistency(self) -> list[float]:
-        """
-        Measure how well community co-occurrence patterns are preserved.
-        """
-        # Calculate how often communities co-occur in the family
-        cooccurrence_counts_matrix = np.zeros((self.universe.K, self.universe.K))
-        for graph in self.graphs:
-            for i in range(len(graph.communities)):
-                for j in range(i + 1, len(graph.communities)):
-                    cooccurrence_counts_matrix[
-                        graph.community_id_mapping[i], graph.community_id_mapping[j]
-                    ] += 1
-                    cooccurrence_counts_matrix[
-                        graph.community_id_mapping[j], graph.community_id_mapping[i]
-                    ] += 1
-
-        # Calculate how correlated the cooccurrence counts are with the universe cooccurrence matrix
-        correlation, _ = pearsonr(
-            cooccurrence_counts_matrix.flatten(),
-            self.universe.community_cooccurrence_matrix.flatten(),
-        )
-
-        return correlation
 
     def _fit_power_law_exponent(self, degrees: list[int]) -> float:
         """

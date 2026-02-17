@@ -227,19 +227,19 @@ class TestGraphUniverse:
 
         assert len(set(communities)) == len(communities)
 
-    def test_sample_connected_community_use_cooccurrence_parameter(self):
-        """Test that use_cooccurrence parameter doesn't crash."""
-        # Test both True and False
-        communities_true = self.universe.sample_connected_community_subset(
-            size=3, seed=42, use_cooccurrence=True
+    def test_sample_connected_community_subset(self):
+        """Test sampling connected community subsets."""
+        # Test sampling with different seeds
+        communities_1 = self.universe.sample_connected_community_subset(
+            size=3, seed=42
         )
-        communities_false = self.universe.sample_connected_community_subset(
-            size=3, seed=42, use_cooccurrence=False
+        communities_2 = self.universe.sample_connected_community_subset(
+            size=3, seed=42
         )
 
-        # Both should work (currently they do the same thing based on your code)
-        assert len(communities_true) == 3
-        assert len(communities_false) == 3
+        # Same seed should give same result
+        assert communities_1 == communities_2
+        assert len(communities_1) == 3
 
     # ============================================================
     # Edge Cases

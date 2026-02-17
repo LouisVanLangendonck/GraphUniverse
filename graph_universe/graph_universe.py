@@ -97,16 +97,15 @@ class GraphUniverse:
         return P
 
     def sample_connected_community_subset(
-        self, size: int, seed: int | None = None, use_cooccurrence: bool = True
+        self, size: int, seed: int | None = None
     ) -> list[int]:
         """
-        Sample a subset of communities using co-occurrence patterns if cooccurrence_homogeneity is not 1.0.
+        Sample a subset of communities using the edge propensity matrix.
 
         Args:
             size: Number of communities to sample
             existing_communities: Optional list of communities to condition on
             seed: Random seed for reproducibility
-            use_cooccurrence: Whether to use co-occurrence matrix for sampling
 
         Returns:
             List of sampled community indices
@@ -117,7 +116,6 @@ class GraphUniverse:
         K = self.K
         size = min(size, K)
 
-        # if not use_cooccurrence or self.community_cooccurrence_homogeneity == 1.0:
         # Sample community one by one and always check for a new candidate that is has a non-zero probabilty connection to the existing communities
         result = [np.random.choice(self.K)]
         while len(result) < size:

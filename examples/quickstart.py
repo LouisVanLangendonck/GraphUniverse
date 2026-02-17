@@ -1,29 +1,25 @@
 #!/usr/bin/env python3
 """
-GraphUniverse Quick Start Notebook Script
+GraphUniverse Quick Start Script
 =========================================
 
-This script demonstrates all three usage patterns from the GraphUniverse Quick Start (except interactive demo):
+This script demonstrates all three usage patterns from the GraphUniverse Quick Start:
 1. Via individual classes
-2. Via YAML config file  
-3. Validation & quality analysis 
+2. Via YAML config file
+3. Interactive UI via Streamlit
+4. Validation & quality analysis
 """
 
-import sys
 from pathlib import Path
 
-# Add parent directory to path to use local graph_universe instead of installed package
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
-import numpy as np
 import matplotlib.pyplot as plt
+import numpy as np
 import yaml
-import os
 
 # Import GraphUniverse components
 from graph_universe import (
-    GraphUniverse,
     GraphFamilyGenerator,
+    GraphUniverse,
     GraphUniverseDataset,
     plot_graph_communities,
 )
@@ -39,45 +35,41 @@ print("-" * 40)
 print("Creating GraphUniverse...")
 universe = GraphUniverse(K=8, edge_propensity_variance=0.3, feature_dim=10)
 
-# Generate family  
+# Generate family
 print("Creating GraphFamilyGenerator...")
 family = GraphFamilyGenerator(
     universe=universe,
-    min_n_nodes=25, 
-    max_n_nodes=50,
-    min_communities=2,
-    max_communities=7,
+    n_nodes_range=(35, 50),
+    n_communities_range=(2, 6),
     homophily_range=(0.2, 0.8),
     avg_degree_range=(2.0, 10.0),
-    degree_distribution="power_law",
     power_law_exponent_range=(2.0, 5.0),
     degree_separation_range=(0.1, 0.7),
     seed=42,
-    timeout_seconds=120.0
 )
 
-print("Generating 100 graphs...")
+print("Generating 10 graphs...")
 family.generate_family(
-    n_graphs=30,
+    n_graphs=10,
     show_progress=True
 )
 
 print(f"Generated {len(family.graphs)} graphs!")
 
 # Convert to PyG graphs, ready for training on community detection task
-print("🔗 Converting to PyTorch Geometric format...")
+print("Converting to PyTorch Geometric format...")
 try:
     pyg_graphs = family.to_pyg_graphs(task="community_detection")
     print(f"Created {len(pyg_graphs)} PyG Data objects")
-    
+
     # Show sample properties
     sample_graph = pyg_graphs[0]
-    print(f"Sample graph properties:")
+    print("Sample graph properties:")
     print(f"   - Nodes: {sample_graph.num_nodes}")
     print(f"   - Edges: {sample_graph.num_edges}")
     print(f"   - Features shape: {sample_graph.x.shape}")
     print(f"   - Labels shape: {sample_graph.y.shape}")
-    
+
 except Exception as e:
     print(f"PyG conversion failed (this is normal if PyTorch not installed): {e}")
     pyg_graphs = None
@@ -101,17 +93,13 @@ experiment_config = {
     },
     "family_parameters": {
         "n_graphs": 100,
-        "min_n_nodes": 25,
-        "max_n_nodes": 200,
-        "min_communities": 3,
-        "max_communities": 7,
+        "n_nodes_range": [25, 200],
+        "n_communities_range": [3, 7],
         "homophily_range": [0.1, 0.9],
         "avg_degree_range": [2.0, 8.0],
-        "degree_distribution": "power_law",
         "power_law_exponent_range": [2.0, 3.0],
         "degree_separation_range": [0.4, 0.8],
         "seed": 42,
-        "timeout_seconds": 120.0
     },
     "task": "community_detection"
 }
@@ -129,17 +117,17 @@ print(f"Saved config to: {config_path}")
 
 # Use config-driven workflow (as shown in your README)
 print("Loading config and generating dataset...")
-with open(config_path, "r") as f:
+with open(config_path) as f:
     config = yaml.safe_load(f)
 
 try:
     dataset = GraphUniverseDataset(root="./data", parameters=config)
     print(f"Generated dataset with {len(dataset)} graphs!")
     print(f"Dataset location: {dataset.get_data_dir()}")
-    
+
     # Show sample from dataset
     sample = dataset[0]
-    print(f"Sample from dataset:")
+    print("Sample from dataset:")
     print(f"   - Nodes: {sample.num_nodes}")
     print(f"   - Edges: {sample.num_edges}")
     if hasattr(sample, 'x'):
@@ -148,10 +136,33 @@ try:
         task = config['task']
         if hasattr(sample, task):
             print(f"   - {task}: {getattr(sample, task).shape}")
-        
+
 except Exception as e:
     print(f"Dataset creation failed: {e}")
     dataset = None
+
+# =============================================================================
+# OPTION 3: INTERACTIVE UI VIA STREAMLIT (OPTIONAL)
+# =============================================================================
+
+print("\n" + "=" * 80)
+print("Option 3: Interactive UI via Streamlit!")
+print("-" * 40)
+print("\nGraphUniverse includes an interactive Streamlit-based UI for exploring")
+print("and generating graph datasets visually.")
+print("\nTo use the UI, you have two options:")
+print("\n  1. Command line (recommended):")
+print("     $ graph-universe-ui")
+print("\n  2. From Python (convenience wrapper):")
+print("     from graph_universe import launch_ui")
+print("     launch_ui()")
+print("\nNote: The UI requires streamlit and seaborn.")
+print("      Install with: pip install graph-universe[viz]")
+print("\nWould you like to launch the UI now? (This will open a browser window)")
+print("Uncomment the lines below to launch:")
+# from graph_universe import launch_ui
+# launch_ui()  # Opens browser, press Ctrl+C to stop
+print("=" * 80)
 
 # =============================================================================
 # VALIDATION & QUALITY (Your exact code from README)
@@ -168,7 +179,7 @@ print("Analyzing graph family properties...")
 try:
     # Validate Standard Graph Property Generation
     family_properties = family.analyze_graph_family_properties()
-    
+
     print("\nGraph Family Properties:")
     for property_name in ['node_counts', 'avg_degrees', 'homophily_levels', 'mean_edge_probability_deviation']:
         if property_name in family_properties:
@@ -183,7 +194,7 @@ try:
     # Calculate Within-graph Community-related Signals
     print("\nCalculating within-graph community-related signals (might take a while. Fitting a RF per graph)...")
     family_signals = family.analyze_graph_family_signals()
-    
+
     print("Graph Family Signals:")
     for signal_metric in ['structure_signal', 'feature_signal', 'degree_signal']:
         if signal_metric in family_signals:
@@ -195,10 +206,10 @@ try:
         else:
             print(f"   {signal_metric}: Not calculated")
 
-    # Calculate Between-graph Community-related Consistency  
+    # Calculate Between-graph Community-related Consistency
     print("\nCalculating between-graph community-related consistency...")
     family_consistency = family.analyze_graph_family_consistency()
-    
+
     print("Graph Family Consistency:")
     for consistency_metric in ['structure_consistency', 'feature_consistency', 'degree_consistency']:
         if consistency_metric in family_consistency:
@@ -223,18 +234,16 @@ print("-" * 40)
 try:
     # Select 3 different graphs from the family for publication-quality visualization
     n_graphs_to_show = min(3, len(family.graphs))
-    
+
     if n_graphs_to_show > 0:
         # Create figure with 3 subplots side by side - publication quality
         fig, axes = plt.subplots(1, 3, figsize=(18, 6))
-        
+
         # Plot each graph with publication-quality settings
-        # Note: plot_graph_communities automatically uses consistent colors based on community IDs
         for i in range(n_graphs_to_show):
             graph = family.graphs[i]
-            
+
             # Plot using viz_utils helper function
-            # Colors are automatically consistent: community 0 is always the same color, etc.
             plot_graph_communities(
                 graph=graph,
                 layout="spring",
@@ -245,25 +254,25 @@ try:
                 ax=axes[i],
                 title=f"Graph {i+1}",
             )
-            
+
             # Remove all spines/borders to make subplots seamless
             axes[i].spines['top'].set_visible(False)
             axes[i].spines['right'].set_visible(False)
             axes[i].spines['bottom'].set_visible(False)
             axes[i].spines['left'].set_visible(False)
-            
+
             # Improve title font for publication quality
             axes[i].title.set_fontsize(14)
             axes[i].title.set_fontweight('bold')
-        
+
         # Adjust spacing between subplots for better appearance
         plt.subplots_adjust(wspace=0.05, hspace=0)
-        
+
         # Show plot
         plt.show()
     else:
         print("No graphs available to visualize")
-    
+
 except Exception as e:
     print(f"Visualization failed: {e}")
     import traceback

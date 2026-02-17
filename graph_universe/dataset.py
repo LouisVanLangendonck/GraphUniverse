@@ -49,33 +49,38 @@ class GraphUniverseDataset(InMemoryDataset):
         Returns:
             str: Unique dataset directory.
         """
-        # Create the directory structure
         # Create a hash of the uniquely identifying metadata
         unique_hash = hashlib.sha256(str(config).encode()).hexdigest()
-        
+
         # First level K_val_edge_prop_var_val
         dataset_dir = f"K_{config['universe_parameters']['K']}_edge_prop_var_{config['universe_parameters']['edge_propensity_variance']}"
-        
+
         # Second level homophily_[minval_maxval]
         dataset_dir = os.path.join(
             dataset_dir,
             f"homophily_{config['family_parameters']['homophily_range'][0]}_to_{config['family_parameters']['homophily_range'][1]}",
         )
         # Third level n_graphs_val_n_nodes_[minval_maxval]
+        n_nodes_range = config['family_parameters'].get('n_nodes_range',
+                                                         [config['family_parameters'].get('min_n_nodes'),
+                                                          config['family_parameters'].get('max_n_nodes')])
         dataset_dir = os.path.join(
             dataset_dir,
-            f"n_graphs_{config['family_parameters']['n_graphs']}_n_nodes_{config['family_parameters']['min_n_nodes']}_to_{config['family_parameters']['max_n_nodes']}",
+            f"n_graphs_{config['family_parameters']['n_graphs']}_n_nodes_{n_nodes_range[0]}_to_{n_nodes_range[1]}",
         )
         # Fourth level n_communities_[minval_maxval]
+        n_communities_range = config['family_parameters'].get('n_communities_range',
+                                                               [config['family_parameters'].get('min_communities'),
+                                                                config['family_parameters'].get('max_communities')])
         dataset_dir = os.path.join(
             dataset_dir,
-            f"n_communities_{config['family_parameters']['min_communities']}_to_{config['family_parameters']['max_communities']}",
+            f"n_communities_{n_communities_range[0]}_to_{n_communities_range[1]}",
         )
-        
+
         # Fifth level task (if it exists)
         if 'task' in config and config['task'] is not None:
             dataset_dir = os.path.join(dataset_dir, f"task_{config['task']}")
-        
+
         # Final level hash
         dataset_dir = os.path.join(dataset_dir, f"hash_{unique_hash}")
         return dataset_dir
@@ -161,14 +166,16 @@ class GraphUniverseDataset(InMemoryDataset):
     def process(self) -> None:
         r"""Handle the data for the dataset."""
 
+        if not self.graph_list or len(self.graph_list) == 0:
+            raise ValueError("Cannot process dataset: graph_list is empty. Generate or provide graphs before calling process().")
+
         self.data, self.slices = self.collate(self.graph_list)
-        self.graph_list = []  # Reset cache.
-        self._data_list = None  # Reset cache.
+        self.graph_list = []
+        self._data_list = None
         fs.torch_save(
             (self._data.to_dict(), self.slices, {}, self._data.__class__),
             self.processed_paths[0],
         )
-        # Save the metadata
         metadata_file = os.path.join(self.processed_root, "metadata.json")
         with open(metadata_file, "w") as f:
             json.dump(self.parameters, f, indent=2, default=str)

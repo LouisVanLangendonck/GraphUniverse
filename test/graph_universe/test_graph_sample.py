@@ -42,7 +42,6 @@ class TestGraphSample:
             n_nodes=self.n_nodes,
             target_homophily=self.target_homophily,
             target_average_degree=self.target_average_degree,
-            degree_distribution="power_law",
             power_law_exponent=self.power_law_exponent,
             seed=self.seed,
         )
@@ -65,7 +64,6 @@ class TestGraphSample:
         assert graph.original_n_nodes == self.n_nodes
         assert graph.target_homophily == self.target_homophily
         assert graph.target_average_degree == self.target_average_degree
-        assert graph.degree_distribution == "power_law"
         assert graph.power_law_exponent == self.power_law_exponent
         assert len(graph.communities) == self.num_communities
 
@@ -95,7 +93,6 @@ class TestGraphSample:
             n_nodes=self.n_nodes,
             target_homophily=self.target_homophily,
             target_average_degree=self.target_average_degree,
-            degree_distribution="power_law",
             power_law_exponent=self.power_law_exponent,
             seed=self.seed,
             user_defined_communities=user_communities,
@@ -138,7 +135,6 @@ class TestGraphSample:
                 n_nodes=self.n_nodes,
                 target_homophily=self.target_homophily,
                 target_average_degree=self.target_average_degree,
-                degree_distribution="power_law",
                 power_law_exponent=self.power_law_exponent,
                 seed=seed,
             )
@@ -290,14 +286,11 @@ class TestGraphSample:
         """Test generation of community degree factors."""
         # Set up test data
         community_labels = np.array([0, 0, 0, 1, 1, 1, 2, 2, 2])
-        degree_distribution_type = "power_law"
         degree_separation = 0.5
         global_degree_params = {"exponent": 2.5, "x_min": 1.0}
 
-        # Generate degree factors
         degree_factors = self.graph_sample._generate_community_degree_factors(
             community_labels,
-            degree_distribution_type,
             degree_separation,
             global_degree_params,
         )
@@ -431,37 +424,25 @@ class TestGraphSample:
         assert pyg_graph.y.dtype == torch.float
         assert pyg_graph.y.numel() == 1  # Scalar value
 
-    def test_to_pyg_graph_k_hop_task(self):
-        """Test conversion to PyG graph with k_hop_community_counts task."""
-        # Convert to PyG graph with k_hop task
-        pyg_graph = self.graph_sample.to_pyg_graph("k_hop_community_counts_k1")
-
-        # Check that y attribute exists with k-hop counts
-        assert hasattr(pyg_graph, "y")
-        # Check that y is a matrix of shape [num_nodes, K]
-        assert pyg_graph.y.shape == (self.graph_sample.n_nodes, self.K)
-        # Check that all values are non-negative (counts)
-        assert torch.all(pyg_graph.y >= 0)
-
     def test_to_pyg_graph_different_tasks_same_structure(self):
         """Test that different tasks produce the same graph structure, only different labels."""
         # Convert the same graph with two different tasks
         task1 = "community_detection"
         task2 = "triangle_counting"
-        
+
         pyg_graph1 = self.graph_sample.to_pyg_graph(task1)
         pyg_graph2 = self.graph_sample.to_pyg_graph(task2)
 
         # Node features should be identical
         assert torch.allclose(pyg_graph1.x, pyg_graph2.x)
-        
+
         # Edge indices should be identical
         assert torch.equal(pyg_graph1.edge_index, pyg_graph2.edge_index)
-        
+
         # Number of nodes and edges should be the same
         assert pyg_graph1.num_nodes == pyg_graph2.num_nodes
         assert pyg_graph1.num_edges == pyg_graph2.num_edges
-        
+
         # But y should be different (different task targets)
         # Task 1 (community_detection) produces vector of length num_nodes
         # Task 2 (triangle_counting) produces a scalar
@@ -473,78 +454,6 @@ class TestGraphSample:
         """Test conversion with invalid task raises error."""
         with pytest.raises(ValueError, match="Invalid task specified"):
             self.graph_sample.to_pyg_graph("invalid_task")
-
-    def test_to_pyg_graph_community_homophily_vector(self):
-        """Test that community_homophily_vector task works correctly with per-community homophily."""
-        # Convert to PyG graph with community_homophily_vector task
-        pyg_graph = self.graph_sample.to_pyg_graph("community_homophily_vector")
-
-        # Check that y attribute exists with per-community homophily
-        assert hasattr(pyg_graph, "y")
-
-        # Check that y is a tensor of size K (universe.K)
-        assert isinstance(pyg_graph.y, torch.Tensor)
-        assert pyg_graph.y.shape == (self.K,)
-
-        # Manually calculate per-community homophily for verification
-        # Get the community-to-community edge counts
-        community_edge_counts = {}  # (comm_id, comm_id) -> count
-        total_community_edges = {}  # comm_id -> total edges
-
-        # Count edges between communities
-        for u, v in self.graph_sample.graph.edges():
-            # Map local community labels to universe community IDs
-            u_comm = self.graph_sample.community_labels_universe_level[u]
-            v_comm = self.graph_sample.community_labels_universe_level[v]
-
-            # Count total edges for each community
-            if u_comm not in total_community_edges:
-                total_community_edges[u_comm] = 0
-            if v_comm not in total_community_edges:
-                total_community_edges[v_comm] = 0
-
-            total_community_edges[u_comm] += 1
-            if u_comm != v_comm:  # Don't double count for same community
-                total_community_edges[v_comm] += 1
-
-            # Count same-community edges
-            if u_comm == v_comm:
-                if (u_comm, u_comm) not in community_edge_counts:
-                    community_edge_counts[(u_comm, u_comm)] = 0
-                community_edge_counts[(u_comm, u_comm)] += 1
-
-        # Calculate expected homophily for each community
-        expected_homophily = torch.zeros(self.K)
-        for comm_id in range(self.K):
-            if comm_id in total_community_edges and total_community_edges[comm_id] > 0:
-                same_comm_edges = community_edge_counts.get((comm_id, comm_id), 0)
-                expected_homophily[comm_id] = same_comm_edges / total_community_edges[comm_id]
-
-        # Compare with the values in the PyG graph
-        assert torch.allclose(pyg_graph.y, expected_homophily, atol=1e-5)
-
-    def test_to_pyg_graph_graph_diameter(self):
-        """Test that graph_diameter task works correctly."""
-        # Convert to PyG graph with graph_diameter task
-        pyg_graph = self.graph_sample.to_pyg_graph("graph_diameter")
-
-        # Check that y attribute exists with graph diameter
-        assert hasattr(pyg_graph, "y")
-        assert pyg_graph.y.dtype == torch.float
-        assert pyg_graph.y.numel() == 1  # Scalar value
-
-        # Manually calculate diameter for verification
-        if nx.is_connected(self.graph_sample.graph):
-            expected_diameter = nx.diameter(self.graph_sample.graph)
-        else:
-            # For disconnected graphs, get diameter of largest component
-            components = list(nx.connected_components(self.graph_sample.graph))
-            largest_cc = max(components, key=len)
-            largest_subgraph = self.graph_sample.graph.subgraph(largest_cc)
-            expected_diameter = nx.diameter(largest_subgraph)
-
-        # Compare with the value in the PyG graph
-        assert pyg_graph.y.item() == expected_diameter
 
     # ============================================================
     # Community Analysis Tests
@@ -631,163 +540,106 @@ class TestGraphSample:
         nx_triangles = sum(nx.triangles(self.graph_sample.graph).values()) // 3
         assert triangle_count == nx_triangles
 
-    def test_compute_khop_community_counts_universe_indexed(self):
-        """Test computation of k-hop community counts."""
-        # Compute 1-hop community counts
-        k_hop_counts = self.graph_sample.compute_khop_community_counts_universe_indexed(1)
-
-        # Check shape
-        assert isinstance(k_hop_counts, torch.Tensor)
-        assert k_hop_counts.shape == (self.graph_sample.n_nodes, self.K)
-
-        # Check that counts are non-negative
-        assert torch.all(k_hop_counts >= 0)
-
-        # For k=1, each node should have counts matching its neighbors' communities
-        for node in range(self.graph_sample.n_nodes):
-            neighbors = list(self.graph_sample.graph.neighbors(node))
-            neighbor_communities = [self.graph_sample.community_labels_universe_level[n] for n in neighbors]
-
-            for comm in range(self.K):
-                expected_count = neighbor_communities.count(comm)
-                actual_count = k_hop_counts[node, comm].item()
-                assert expected_count == actual_count, f"Node {node}, community {comm}: expected {expected_count}, got {actual_count}"
-
-    def test_compute_community_aware_diameter(self):
-        """Test computation of community-aware diameter."""
-        # Compute community-aware diameter
-        diameter_matrix = self.graph_sample.compute_community_aware_diameter()
-
-        # Check shape
-        assert isinstance(diameter_matrix, np.ndarray)
-        assert diameter_matrix.shape == (self.K, self.K)
-
-        # Check that values are non-negative
-        assert np.all(diameter_matrix >= 0)
-
-        # Diagonal elements should be the diameter within each community
-        for i in range(self.K):
-            if i in self.graph_sample.community_labels_universe_level:
-                # If community i is present in the graph
-                community_nodes = np.where(self.graph_sample.community_labels_universe_level == i)[0]
-                if len(community_nodes) > 1:
-                    # Diameter should be at least 1 if there are multiple nodes
-                    assert diameter_matrix[i, i] >= 1
-
     # ============================================================
     # Positional Encoding Tests
     # ============================================================
 
-    def test_compute_positional_encodings(self):
-        """Test computation of positional encodings."""
-        # Create a PyG graph
-        pyg_graph = self.graph_sample.to_pyg_graph("community_detection")
+    # Positional encoding tests removed - PositionalEncodingComputer class has been removed from the codebase
 
-        # Compute positional encodings
-        pe_dict = self.graph_sample.compute_positional_encodings(
-            pyg_graph=pyg_graph,
-            pe_types=["laplacian", "degree"],
-            pe_dim=5
+    # ============================================================
+    # Additional Edge Case Tests
+    # ============================================================
+
+    def test_connect_disconnected_components_already_connected(self):
+        """Test that connect_disconnected_components handles already connected graphs."""
+        import networkx as nx
+
+        G = nx.from_scipy_sparse_array(self.graph_sample.adjacency)
+        components = list(nx.connected_components(G))
+
+        if len(components) > 1:
+            result = self.graph_sample._connect_disconnected_components(components)
+            assert result.shape == self.graph_sample.adjacency.shape
+        else:
+            assert len(components) == 1
+
+    def test_find_best_connection_fast(self):
+        """Test the fast connection finding method."""
+        # Create two small components
+        component_a = {0, 1, 2}
+        component_b = {3, 4, 5}
+
+        # Create a simple deviation matrix
+        deviation_matrix = np.zeros((self.K, self.K))
+
+        # Find best connection
+        node_a, node_b = self.graph_sample._find_best_connection_fast(
+            component_a, component_b, deviation_matrix
         )
 
-        # Check that dictionary contains expected keys
-        assert "laplacian_pe" in pe_dict
-        assert "degree_pe" in pe_dict
+        # Check that nodes are from different components
+        assert node_a in component_a
+        assert node_b in component_b
 
-        # Check shapes
-        assert pe_dict["laplacian_pe"].shape == (self.graph_sample.n_nodes, 5)
-        assert pe_dict["degree_pe"].shape == (self.graph_sample.n_nodes, 5)
+    def test_calculate_community_deviations_with_matrix(self):
+        """Test community deviation calculation with matrix."""
+        import networkx as nx
 
-        # Check that values are finite
-        assert torch.all(torch.isfinite(pe_dict["laplacian_pe"]))
-        assert torch.all(torch.isfinite(pe_dict["degree_pe"]))
+        G = nx.from_scipy_sparse_array(self.graph_sample.adjacency)
 
-    def test_positional_encoding_computer_degree_pe(self):
-        """Test PositionalEncodingComputer's degree PE computation."""
-        from graph_universe.graph_sample import PositionalEncodingComputer
+        result = self.graph_sample._calculate_community_deviations_with_matrix(
+            G, self.graph_sample.community_labels, self.graph_sample.P_sub
+        )
 
-        # Create a PE computer
-        pe_computer = PositionalEncodingComputer(max_pe_dim=5, pe_types=["degree"])
+        assert "deviation_matrix" in result
+        assert result["deviation_matrix"].shape == self.graph_sample.P_sub.shape
 
-        # Create a simple edge index
-        edge_index = torch.tensor([[0, 1, 1, 2], [1, 0, 2, 1]], dtype=torch.long)
-        num_nodes = 3
+    def test_graph_with_single_community(self):
+        """Test graph generation with only one community."""
+        single_comm_graph = GraphSample(
+            universe=self.universe,
+            num_communities=1,
+            n_nodes=10,
+            target_homophily=0.3,
+            target_average_degree=2.0,
+            power_law_exponent=2.5,
+            seed=42,
+        )
 
-        # Compute degree PE
-        pe = pe_computer.compute_degree_pe(edge_index, num_nodes)
+        assert single_comm_graph.n_nodes == 10
+        assert len(single_comm_graph.communities) == 1
+        assert len(np.unique(single_comm_graph.community_labels)) == 1
 
-        # Check shape
-        assert pe.shape == (num_nodes, 5)
+    def test_graph_with_very_low_homophily(self):
+        """Test graph generation with very low homophily."""
+        low_homophily_graph = GraphSample(
+            universe=self.universe,
+            num_communities=3,
+            n_nodes=30,
+            target_homophily=0.0,
+            target_average_degree=2.0,
+            power_law_exponent=2.5,
+            seed=42,
+        )
 
-        # Check that values are in [0, 1]
-        assert torch.all(pe >= 0)
-        assert torch.all(pe <= 1)
+        assert low_homophily_graph.n_nodes == 30
+        assert low_homophily_graph.target_homophily == 0.0
 
-        # Node degrees should be [1, 2, 1]
-        # Check that degree values are consistent with node degrees
-        # Since the exact values depend on the formula used, we'll just check that they're within expected range
-        assert torch.all(pe[0] >= 0) and torch.all(pe[0] <= 1)
-        assert torch.all(pe[1] >= 0) and torch.all(pe[1] <= 1)
-        assert torch.all(pe[2] >= 0) and torch.all(pe[2] <= 1)
+    def test_graph_with_high_homophily(self):
+        """Test graph generation with very high homophily."""
+        high_homophily_graph = GraphSample(
+            universe=self.universe,
+            num_communities=3,
+            n_nodes=30,
+            target_homophily=0.9,
+            target_average_degree=2.0,
+            power_law_exponent=2.5,
+            seed=42,
+        )
 
-    def test_positional_encoding_computer_laplacian_pe(self):
-        """Test PositionalEncodingComputer's Laplacian PE computation."""
-        from graph_universe.graph_sample import PositionalEncodingComputer
+        assert high_homophily_graph.n_nodes == 30
+        assert high_homophily_graph.target_homophily == 0.9
 
-        # Create a PE computer
-        pe_computer = PositionalEncodingComputer(max_pe_dim=5, pe_types=["laplacian"])
-
-        # Create a simple edge index for a path graph
-        edge_index = torch.tensor([[0, 1, 1, 2], [1, 0, 2, 1]], dtype=torch.long)
-        num_nodes = 3
-
-        # Compute Laplacian PE
-        pe = pe_computer.compute_laplacian_pe(edge_index, num_nodes)
-
-        # Check shape
-        assert pe.shape == (num_nodes, 5)
-
-        # Check that values are finite
-        assert torch.all(torch.isfinite(pe))
-
-    def test_positional_encoding_computer_compute_all_pe(self):
-        """Test PositionalEncodingComputer's compute_all_pe method."""
-        from graph_universe.graph_sample import PositionalEncodingComputer
-
-        # Create a PE computer with all PE types
-        pe_computer = PositionalEncodingComputer(max_pe_dim=5, pe_types=["laplacian", "degree", "rwse"])
-
-        # Create a simple edge index
-        edge_index = torch.tensor([[0, 1, 1, 2], [1, 0, 2, 1]], dtype=torch.long)
-        num_nodes = 3
-
-        # Compute all PEs
-        pe_dict = pe_computer.compute_all_pe(edge_index, num_nodes)
-
-        # Check that dictionary contains all PE types
-        assert "laplacian_pe" in pe_dict
-        assert "degree_pe" in pe_dict
-        assert "rwse_pe" in pe_dict
-
-        # Check shapes
-        assert pe_dict["laplacian_pe"].shape == (num_nodes, 5)
-        assert pe_dict["degree_pe"].shape == (num_nodes, 5)
-        assert pe_dict["rwse_pe"].shape == (num_nodes, 5)
-
-    def test_positional_encoding_computer_with_invalid_pe_type(self):
-        """Test PositionalEncodingComputer with invalid PE type."""
-        from graph_universe.graph_sample import PositionalEncodingComputer
-
-        # Create a PE computer with invalid PE type
-        pe_computer = PositionalEncodingComputer(max_pe_dim=5, pe_types=["invalid"])
-
-        # Create a simple edge index
-        edge_index = torch.tensor([[0, 1], [1, 0]], dtype=torch.long)
-        num_nodes = 2
-
-        # Should raise ValueError
-        with pytest.raises(ValueError, match="Invalid PE type"):
-            pe_computer.compute_all_pe(edge_index, num_nodes)
 
 
 if __name__ == "__main__":

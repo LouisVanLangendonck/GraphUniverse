@@ -114,12 +114,6 @@ ALL_VARIABLE_PARAMS = {
         "random_range": (0.0, 1.0),
         "level": "family",
     },
-    "degree_distribution": {
-        "type": "categorical",
-        "test_values": ["power_law"],
-        "random_range": ["power_law"],
-        "level": "family",
-    },
     "power_law_exponent_range": {
         "type": "range",
         "test_values": [(1.5, 2.0), (2.0, 2.5), (2.5, 3.0), (3.0, 3.5), (4.0, 4.5), (4.5, 5.0)],
@@ -254,8 +248,6 @@ def generate_random_baseline_params(n_samples=100, seed=None):
                         params["family"][param_name] + np.random.randint(1, 4), UNIVERSE_K
                     )
 
-        # Always set degree_distribution to "power_law"
-        params["family"]["degree_distribution"] = "power_law"
 
         all_samples.append(params)
 
@@ -336,7 +328,6 @@ def run_random_baseline_analysis(
                     homophily_range=family_params["homophily_range"],
                     avg_degree_range=family_params["avg_degree_range"],
                     degree_separation_range=family_params["degree_separation_range"],
-                    degree_distribution=family_params["degree_distribution"],
                     power_law_exponent_range=family_params["power_law_exponent_range"],
                     seed=seed,
                 )

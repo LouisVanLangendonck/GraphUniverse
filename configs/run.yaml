@@ -2,23 +2,23 @@ family_parameters:
   avg_degree_range:
   - 2.0
   - 8.0
-  degree_distribution: power_law
   degree_separation_range:
   - 0.4
   - 0.8
   homophily_range:
   - 0.1
   - 0.9
-  max_communities: 7
-  max_n_nodes: 200
-  min_communities: 3
-  min_n_nodes: 25
+  n_communities_range:
+  - 3
+  - 7
   n_graphs: 100
+  n_nodes_range:
+  - 25
+  - 200
   power_law_exponent_range:
   - 2.0
   - 3.0
   seed: 42
-  timeout_seconds: 120.0
 task: community_detection
 universe_parameters:
   K: 10

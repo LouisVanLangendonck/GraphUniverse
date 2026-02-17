@@ -8,8 +8,10 @@ multi_transductive_results/
 multi_ssl_experiments/
 multi_finetune_results/
 parameter_analysis_results/
+htmlcov/
 datasets/
 */__pycache__/
 *.pyc
 .vscode/
 *.zip
+*.csv

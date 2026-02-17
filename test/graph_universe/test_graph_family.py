@@ -39,11 +39,9 @@ class TestGraphFamilyGenerator:
 
         self.family_generator = GraphFamilyGenerator(
             universe=self.universe,
-            min_n_nodes=self.min_n_nodes,
-            max_n_nodes=self.max_n_nodes,
+            n_nodes_range=(self.min_n_nodes, self.max_n_nodes),
             n_graphs=self.n_graphs,
-            min_communities=self.min_communities,
-            max_communities=self.max_communities,
+            n_communities_range=(self.min_communities, self.max_communities),
             seed=self.seed,
         )
 
@@ -60,8 +58,7 @@ class TestGraphFamilyGenerator:
         """Test basic initialization with default parameters."""
         family = GraphFamilyGenerator(
             universe=self.universe,
-            min_n_nodes=10,
-            max_n_nodes=20,
+            n_nodes_range=(10, 20),
         )
 
         assert family.universe == self.universe
@@ -77,14 +74,11 @@ class TestGraphFamilyGenerator:
         """Test initialization with custom parameters."""
         family = GraphFamilyGenerator(
             universe=self.universe,
-            min_n_nodes=15,
-            max_n_nodes=30,
+            n_nodes_range=(15, 30),
             n_graphs=5,
-            min_communities=3,
-            max_communities=4,
+            n_communities_range=(3, 4),
             homophily_range=(0.2, 0.6),
             avg_degree_range=(2.0, 4.0),
-            degree_distribution="power_law",
             power_law_exponent_range=(2.2, 3.0),
             degree_separation_range=(0.3, 0.7),
             seed=123,
@@ -97,7 +91,6 @@ class TestGraphFamilyGenerator:
         assert family.max_communities == 4
         assert family.homophily_range == (0.2, 0.6)
         assert family.avg_degree_range == (2.0, 4.0)
-        assert family.degree_distribution == "power_law"
         assert family.power_law_exponent_range == (2.2, 3.0)
         assert family.degree_separation_range == (0.3, 0.7)
         assert family.seed == 123
@@ -108,52 +101,45 @@ class TestGraphFamilyGenerator:
         with pytest.raises(ValueError, match="min_n_nodes must be positive"):
             GraphFamilyGenerator(
                 universe=self.universe,
-                min_n_nodes=0,
-                max_n_nodes=20,
+                n_nodes_range=(0, 20),
             )
 
         # Test max_n_nodes < min_n_nodes
         with pytest.raises(ValueError, match="max_n_nodes must be >= min_n_nodes"):
             GraphFamilyGenerator(
                 universe=self.universe,
-                min_n_nodes=30,
-                max_n_nodes=20,
+                n_nodes_range=(30, 20),
             )
 
         # Test min_communities < 1
         with pytest.raises(ValueError, match="min_communities must be >= 1"):
             GraphFamilyGenerator(
                 universe=self.universe,
-                min_n_nodes=10,
-                max_n_nodes=20,
-                min_communities=0,
+                n_nodes_range=(10, 20),
+                n_communities_range=(0, 3),
             )
 
         # Test max_communities > universe.K
         with pytest.raises(ValueError, match="max_communities cannot exceed universe size"):
             GraphFamilyGenerator(
                 universe=self.universe,
-                min_n_nodes=10,
-                max_n_nodes=20,
-                max_communities=self.K + 1,
+                n_nodes_range=(10, 20),
+                n_communities_range=(2, self.K + 1),
             )
 
         # Test max_communities < min_communities
         with pytest.raises(ValueError, match="max_communities must be >= min_communities"):
             GraphFamilyGenerator(
                 universe=self.universe,
-                min_n_nodes=10,
-                max_n_nodes=20,
-                min_communities=3,
-                max_communities=2,
+                n_nodes_range=(10, 20),
+                n_communities_range=(3, 2),
             )
 
         # Test invalid homophily_range
         with pytest.raises(ValueError, match="homophily_range must be a tuple"):
             GraphFamilyGenerator(
                 universe=self.universe,
-                min_n_nodes=10,
-                max_n_nodes=20,
+                n_nodes_range=(10, 20),
                 homophily_range=(0.5, 0.3),  # min > max
             )
 
@@ -179,10 +165,8 @@ class TestGraphFamilyGenerator:
         assert self.family_generator.avg_degree_range[0] <= params["target_average_degree"] <= self.family_generator.avg_degree_range[1]
         assert self.family_generator.degree_separation_range[0] <= params["degree_separation"] <= self.family_generator.degree_separation_range[1]
 
-        # Check power law exponent if using power law distribution
-        if self.family_generator.degree_distribution == "power_law":
-            assert "power_law_exponent" in params
-            assert self.family_generator.power_law_exponent_range[0] <= params["power_law_exponent"] <= self.family_generator.power_law_exponent_range[1]
+        assert "power_law_exponent" in params
+        assert self.family_generator.power_law_exponent_range[0] <= params["power_law_exponent"] <= self.family_generator.power_law_exponent_range[1]
 
     # ============================================================
     # Graph Family Generation Tests
@@ -220,18 +204,7 @@ class TestGraphFamilyGenerator:
             communities = graph.communities
             assert any(set(communities).issubset(set(allowed_combo)) for allowed_combo in allowed_communities)
 
-    def test_generate_family_with_timeout(self):
-        """Test family generation with timeout."""
-        # Set a very short timeout to force early termination
-        with pytest.warns(UserWarning, match="Timeout reached"):
-            self.family_generator.generate_family(
-                n_graphs=100,  # Large number to ensure timeout
-                show_progress=False,
-                timeout_minutes=0.001  # Very short timeout (0.06 seconds)
-            )
-
-        # Should have generated some graphs but fewer than requested
-        assert self.family_generator.family_generated is True
+    # Timeout test removed - timeout functionality has been removed from the codebase
         assert len(self.family_generator.graphs) < 100
 
     def test_generate_family_reproducibility(self):
@@ -239,8 +212,7 @@ class TestGraphFamilyGenerator:
         # Generate first family
         generator1 = GraphFamilyGenerator(
             universe=self.universe,
-            min_n_nodes=20,
-            max_n_nodes=30,
+            n_nodes_range=(20, 30),
             n_graphs=2,
             seed=123,
         )
@@ -249,8 +221,7 @@ class TestGraphFamilyGenerator:
         # Generate second family with same seed
         generator2 = GraphFamilyGenerator(
             universe=self.universe,
-            min_n_nodes=20,
-            max_n_nodes=30,
+            n_nodes_range=(20, 30),
             n_graphs=2,
             seed=123,
         )
@@ -262,6 +233,290 @@ class TestGraphFamilyGenerator:
             g2 = generator2.graphs[i]
             assert g1.n_nodes == g2.n_nodes
             assert g1.graph.number_of_edges() == g2.graph.number_of_edges()
+
+    # ============================================================
+    # Random Seeding Tests
+    # ============================================================
+
+    def test_same_universe_same_family_seed_produces_identical_graphs(self):
+        """Test that same universe seed and family seed produces identical graphs."""
+        # Create first universe and generate 10 graphs
+        universe1 = GraphUniverse(
+            K=5,
+            edge_propensity_variance=0.5,
+            feature_dim=10,
+            seed=42,
+        )
+
+        generator1 = GraphFamilyGenerator(
+            universe=universe1,
+            n_nodes_range=(20, 30),
+            n_graphs=10,
+            seed=42,
+        )
+        generator1.generate_family(show_progress=False)
+
+        # Create second universe with same seed and generate 10 graphs
+        universe2 = GraphUniverse(
+            K=5,
+            edge_propensity_variance=0.5,
+            feature_dim=10,
+            seed=42,
+        )
+
+        generator2 = GraphFamilyGenerator(
+            universe=universe2,
+            n_nodes_range=(20, 30),
+            n_graphs=10,
+            seed=42,
+        )
+        generator2.generate_family(show_progress=False)
+
+        # Both should have generated 10 graphs
+        assert len(generator1.graphs) == 10
+        assert len(generator2.graphs) == 10
+
+        # Compare each pair of graphs
+        for i in range(10):
+            g1 = generator1.graphs[i]
+            g2 = generator2.graphs[i]
+
+            # Check structure is identical
+            assert g1.n_nodes == g2.n_nodes, f"Graph {i}: Different number of nodes"
+            assert g1.graph.number_of_edges() == g2.graph.number_of_edges(), f"Graph {i}: Different number of edges"
+
+            # Check communities are identical
+            assert len(g1.communities) == len(g2.communities), f"Graph {i}: Different number of communities"
+            assert g1.communities == g2.communities, f"Graph {i}: Different community IDs"
+
+            # Check community labels are identical
+            assert np.array_equal(g1.community_labels, g2.community_labels), f"Graph {i}: Different community labels"
+            assert np.array_equal(g1.community_labels_universe_level, g2.community_labels_universe_level), f"Graph {i}: Different universe-level community labels"
+
+            # Check features are identical
+            assert np.allclose(g1.features, g2.features), f"Graph {i}: Different features"
+
+            # Check edge structure is identical by comparing adjacency matrices
+            adj1 = g1.adjacency.toarray()
+            adj2 = g2.adjacency.toarray()
+            assert np.array_equal(adj1, adj2), f"Graph {i}: Different edge structure"
+
+    def test_same_universe_sequential_family_generation_with_same_seed(self):
+        """Test that generating families sequentially with same seed produces identical graphs."""
+        # Create universe once
+        universe = GraphUniverse(
+            K=5,
+            edge_propensity_variance=0.5,
+            feature_dim=10,
+            seed=42,
+        )
+
+        # Generate first family of 10 graphs
+        generator1 = GraphFamilyGenerator(
+            universe=universe,
+            n_nodes_range=(20, 30),
+            n_graphs=10,
+            seed=42,
+        )
+        generator1.generate_family(show_progress=False)
+
+        # Generate second family of 10 graphs with same seed
+        generator2 = GraphFamilyGenerator(
+            universe=universe,
+            n_nodes_range=(20, 30),
+            n_graphs=10,
+            seed=42,
+        )
+        generator2.generate_family(show_progress=False)
+
+        # Both should have generated 10 graphs
+        assert len(generator1.graphs) == 10
+        assert len(generator2.graphs) == 10
+
+        # Compare each pair of graphs - they should be identical
+        for i in range(10):
+            g1 = generator1.graphs[i]
+            g2 = generator2.graphs[i]
+
+            # Check structure is identical
+            assert g1.n_nodes == g2.n_nodes, f"Graph {i}: Different number of nodes"
+            assert g1.graph.number_of_edges() == g2.graph.number_of_edges(), f"Graph {i}: Different number of edges"
+
+            # Check features are identical
+            assert np.allclose(g1.features, g2.features), f"Graph {i}: Different features"
+
+            # Check edge structure is identical
+            adj1 = g1.adjacency.toarray()
+            adj2 = g2.adjacency.toarray()
+            assert np.array_equal(adj1, adj2), f"Graph {i}: Different edge structure"
+
+    def test_partial_generation_matches_full_generation(self):
+        """Test that first N graphs of a larger family match a family of N graphs."""
+        # Create universe
+        universe = GraphUniverse(
+            K=5,
+            edge_propensity_variance=0.5,
+            feature_dim=10,
+            seed=42,
+        )
+
+        # Generate family of 5 graphs
+        generator_small = GraphFamilyGenerator(
+            universe=universe,
+            n_nodes_range=(20, 30),
+            n_graphs=5,
+            seed=42,
+        )
+        generator_small.generate_family(show_progress=False)
+
+        # Generate family of 10 graphs with same seed
+        generator_large = GraphFamilyGenerator(
+            universe=universe,
+            n_nodes_range=(20, 30),
+            n_graphs=10,
+            seed=42,
+        )
+        generator_large.generate_family(show_progress=False)
+
+        # First 5 graphs of large family should match small family
+        assert len(generator_small.graphs) == 5
+        assert len(generator_large.graphs) == 10
+
+        for i in range(5):
+            g_small = generator_small.graphs[i]
+            g_large = generator_large.graphs[i]
+
+            # Check structure is identical
+            assert g_small.n_nodes == g_large.n_nodes, f"Graph {i}: Different number of nodes"
+            assert g_small.graph.number_of_edges() == g_large.graph.number_of_edges(), f"Graph {i}: Different number of edges"
+
+            # Check communities are identical
+            assert g_small.communities == g_large.communities, f"Graph {i}: Different communities"
+
+            # Check community labels are identical
+            assert np.array_equal(g_small.community_labels, g_large.community_labels), f"Graph {i}: Different community labels"
+
+            # Check features are identical
+            assert np.allclose(g_small.features, g_large.features), f"Graph {i}: Different features"
+
+            # Check edge structure is identical
+            adj_small = g_small.adjacency.toarray()
+            adj_large = g_large.adjacency.toarray()
+            assert np.array_equal(adj_small, adj_large), f"Graph {i}: Different edge structure"
+
+    def test_different_family_seeds_produce_different_graphs(self):
+        """Test that different family seeds produce different graphs with same universe."""
+        # Create universe once
+        universe = GraphUniverse(
+            K=5,
+            edge_propensity_variance=0.5,
+            feature_dim=10,
+            seed=42,
+        )
+
+        # Generate family with seed 42
+        generator1 = GraphFamilyGenerator(
+            universe=universe,
+            n_nodes_range=(20, 30),
+            n_graphs=5,
+            seed=42,
+        )
+        generator1.generate_family(show_progress=False)
+
+        # Generate family with seed 123
+        generator2 = GraphFamilyGenerator(
+            universe=universe,
+            n_nodes_range=(20, 30),
+            n_graphs=5,
+            seed=123,
+        )
+        generator2.generate_family(show_progress=False)
+
+        # Both should have generated 5 graphs
+        assert len(generator1.graphs) == 5
+        assert len(generator2.graphs) == 5
+
+        # At least one graph should be different (very high probability)
+        # We check that at least one graph has different structure or features
+        any_different = False
+        for i in range(5):
+            g1 = generator1.graphs[i]
+            g2 = generator2.graphs[i]
+
+            # Check if structure is different
+            if g1.n_nodes != g2.n_nodes:
+                any_different = True
+                break
+
+            if g1.graph.number_of_edges() != g2.graph.number_of_edges():
+                any_different = True
+                break
+
+            # Check if features are different
+            if not np.allclose(g1.features, g2.features):
+                any_different = True
+                break
+
+            # Check if edge structure is different
+            adj1 = g1.adjacency.toarray()
+            adj2 = g2.adjacency.toarray()
+            if not np.array_equal(adj1, adj2):
+                any_different = True
+                break
+
+        assert any_different, "Different family seeds should produce at least some different graphs"
+
+    def test_different_universe_seeds_produce_different_graphs(self):
+        """Test that different universe seeds produce different graphs even with same family seed."""
+        # Create first universe with seed 42
+        universe1 = GraphUniverse(
+            K=5,
+            edge_propensity_variance=0.5,
+            feature_dim=10,
+            seed=42,
+        )
+
+        generator1 = GraphFamilyGenerator(
+            universe=universe1,
+            n_nodes_range=(20, 30),
+            n_graphs=5,
+            seed=100,
+        )
+        generator1.generate_family(show_progress=False)
+
+        # Create second universe with seed 123
+        universe2 = GraphUniverse(
+            K=5,
+            edge_propensity_variance=0.5,
+            feature_dim=10,
+            seed=123,
+        )
+
+        generator2 = GraphFamilyGenerator(
+            universe2,
+            n_nodes_range=(20, 30),
+            n_graphs=5,
+            seed=100,  # Same family seed
+        )
+        generator2.generate_family(show_progress=False)
+
+        # Both should have generated 5 graphs
+        assert len(generator1.graphs) == 5
+        assert len(generator2.graphs) == 5
+
+        # Graphs should be different because universes are different
+        # Check that at least one graph has different features (universe affects feature generation)
+        any_different_features = False
+        for i in range(5):
+            g1 = generator1.graphs[i]
+            g2 = generator2.graphs[i]
+
+            # Features should be different because they come from different universe feature generators
+            if not np.allclose(g1.features, g2.features):
+                any_different_features = True
+                break
+
+        assert any_different_features, "Different universe seeds should produce different features"
 
     # ============================================================
     # PyG Conversion Tests
@@ -299,7 +554,7 @@ class TestGraphFamilyGenerator:
             # Check that y contains community labels
             assert graph.y.dtype == torch.long
             assert len(graph.y) == graph.num_nodes
-    
+
     def test_to_pyg_graphs_with_triangle_counting_task(self):
         """Test conversion to PyG graphs with triangle_counting task."""
         # Generate a small family
@@ -316,73 +571,22 @@ class TestGraphFamilyGenerator:
             assert graph.y.dtype == torch.float
             assert graph.y.numel() == 1  # Scalar value
 
-    def test_to_pyg_graphs_with_k_hop_task(self):
-        """Test conversion to PyG graphs with k_hop_community_counts task."""
-        # Generate a small family
-        self.family_generator.generate_family(n_graphs=2, show_progress=False)
-
-        # Convert to PyG graphs with k_hop task
-        task = "k_hop_community_counts_k1"
-        pyg_graphs = self.family_generator.to_pyg_graphs(task=task)
-
-        assert len(pyg_graphs) == 2
-        for graph in pyg_graphs:
-            assert hasattr(graph, "y")
-            # Check that y contains k-hop counts (matrix of shape [num_nodes, K])
-            assert graph.y.shape == (graph.num_nodes, self.K)
-    
-    def test_to_pyg_graphs_with_community_homophily_vector_task(self):
-        """Test conversion to PyG graphs with community_homophily_vector task."""
-        # Generate a small family
-        self.family_generator.generate_family(n_graphs=2, show_progress=False)
-
-        # Convert to PyG graphs with community_homophily_vector task
-        task = "community_homophily_vector"
-        pyg_graphs = self.family_generator.to_pyg_graphs(task=task)
-
-        assert len(pyg_graphs) == 2
-        for graph in pyg_graphs:
-            assert hasattr(graph, "y")
-            # Check that y contains per-community homophily (vector of size K)
-            assert graph.y.shape == (self.K,)
-            assert graph.y.dtype == torch.float
-    
-    def test_to_pyg_graphs_with_graph_diameter_task(self):
-        """Test conversion to PyG graphs with graph_diameter task."""
-        # Generate a small family
-        self.family_generator.generate_family(n_graphs=2, show_progress=False)
-
-        # Convert to PyG graphs with graph_diameter task
-        task = "graph_diameter"
-        pyg_graphs = self.family_generator.to_pyg_graphs(task=task)
-
-        assert len(pyg_graphs) == 2
-        for graph in pyg_graphs:
-            assert hasattr(graph, "y")
-            # Check that y contains diameter (scalar)
-            assert graph.y.dtype == torch.float
-            assert graph.y.numel() == 1  # Scalar value
-
     def test_same_seed_same_graphs_different_tasks(self):
         """Test that same seed produces identical graphs regardless of task."""
         # Create two separate generators with IDENTICAL parameters and seeds
         generator1 = GraphFamilyGenerator(
             universe=self.universe,
-            min_n_nodes=self.min_n_nodes,
-            max_n_nodes=self.max_n_nodes,
+            n_nodes_range=(self.min_n_nodes, self.max_n_nodes),
             n_graphs=2,
-            min_communities=self.min_communities,
-            max_communities=self.max_communities,
+            n_communities_range=(self.min_communities, self.max_communities),
             seed=12345,  # Fixed seed
         )
-        
+
         generator2 = GraphFamilyGenerator(
             universe=self.universe,
-            min_n_nodes=self.min_n_nodes,
-            max_n_nodes=self.max_n_nodes,
+            n_nodes_range=(self.min_n_nodes, self.max_n_nodes),
             n_graphs=2,
-            min_communities=self.min_communities,
-            max_communities=self.max_communities,
+            n_communities_range=(self.min_communities, self.max_communities),
             seed=12345,  # Same seed
         )
 
@@ -400,17 +604,17 @@ class TestGraphFamilyGenerator:
         assert len(pyg_graphs_task1) == len(pyg_graphs_task2)
 
         # For each pair of graphs, verify structure is IDENTICAL
-        for i, (graph1, graph2) in enumerate(zip(pyg_graphs_task1, pyg_graphs_task2)):
+        for i, (graph1, graph2) in enumerate(zip(pyg_graphs_task1, pyg_graphs_task2, strict=False)):
             # Node features should be identical
             assert torch.allclose(graph1.x, graph2.x), f"Graph {i}: Node features differ"
-            
+
             # Edge indices should be identical
             assert torch.equal(graph1.edge_index, graph2.edge_index), f"Graph {i}: Edge indices differ"
-            
+
             # Number of nodes and edges should be the same
             assert graph1.num_nodes == graph2.num_nodes, f"Graph {i}: Number of nodes differ"
             assert graph1.num_edges == graph2.num_edges, f"Graph {i}: Number of edges differ"
-            
+
             # But y should be different (different task targets)
             # Task 1 (community_detection) produces vector of length num_nodes
             # Task 2 (triangle_counting) produces a scalar
@@ -431,7 +635,7 @@ class TestGraphFamilyGenerator:
         pyg_graphs_task1 = []
         for graph_sample in graph_samples:
             pyg_graphs_task1.append(graph_sample.to_pyg_graph(task1))
-        
+
         # Convert the same GraphSample objects with second task
         task2 = "triangle_counting"
         pyg_graphs_task2 = []
@@ -442,17 +646,17 @@ class TestGraphFamilyGenerator:
         assert len(pyg_graphs_task1) == len(pyg_graphs_task2)
 
         # For each pair of graphs, verify structure is identical except for y
-        for graph1, graph2 in zip(pyg_graphs_task1, pyg_graphs_task2):
+        for graph1, graph2 in zip(pyg_graphs_task1, pyg_graphs_task2, strict=False):
             # Node features should be identical
             assert torch.allclose(graph1.x, graph2.x)
-            
+
             # Edge indices should be identical
             assert torch.equal(graph1.edge_index, graph2.edge_index)
-            
+
             # Number of nodes and edges should be the same
             assert graph1.num_nodes == graph2.num_nodes
             assert graph1.num_edges == graph2.num_edges
-            
+
             # But y should be different (different task targets)
             # Task 1 (community_detection) produces vector of length num_nodes
             # Task 2 (triangle_counting) produces a scalar
@@ -491,10 +695,8 @@ class TestGraphFamilyGenerator:
         # Check that family parameters are correct
         family_params = metadata["family_parameters"]
         assert family_params["n_graphs"] == self.n_graphs
-        assert family_params["min_n_nodes"] == self.min_n_nodes
-        assert family_params["max_n_nodes"] == self.max_n_nodes
-        assert family_params["min_communities"] == self.min_communities
-        assert family_params["max_communities"] == self.max_communities
+        assert family_params["n_nodes_range"] == [self.min_n_nodes, self.max_n_nodes]
+        assert family_params["n_communities_range"] == [self.min_communities, self.max_communities]
 
     def test_analyze_graph_family_properties(self):
         """Test analysis of graph family properties."""
@@ -829,6 +1031,112 @@ class TestGraphFamilyGenerator:
             assert isinstance(graph, GraphSample)
             count += 1
         assert count == 3
+
+    def test_save_family(self, tmp_path):
+        """Test saving family metadata to file."""
+        # Generate a small family
+        self.family_generator.generate_family(n_graphs=2, show_progress=False)
+
+        # Save to temporary file
+        filepath = tmp_path / "test_family.pkl"
+        self.family_generator.save_family(filepath, n_graphs=2)
+
+        # Check file exists
+        assert filepath.exists()
+
+        # Load and verify contents
+        import pickle
+        with open(filepath, "rb") as f:
+            data = pickle.load(f)
+
+        assert "n_graphs" in data
+        assert data["n_graphs"] == 2
+        assert "n_nodes_range" in data
+        assert "n_communities_range" in data
+        assert "homophily_range" in data
+
+    def test_to_dataset(self, tmp_path):
+        """Test converting family to PyG dataset."""
+        self.family_generator.generate_family(n_graphs=2, show_progress=False)
+
+        self.family_generator.save_pyg_graphs_and_universe(
+            task="community_detection",
+            root_dir=str(tmp_path)
+        )
+
+        assert hasattr(self.family_generator, 'dataset')
+        assert self.family_generator.dataset is not None
+        assert len(self.family_generator.dataset) == 2
+
+    def test_same_seeds_different_tasks_same_structure_and_features(self):
+        """Test that different tasks produce identical graphs except for labels (y).
+
+        When generating families with the same universe seed and family seed but different tasks,
+        the graph structure (edges) and node features (x) should be identical, only the labels (y) should differ.
+        """
+        universe_seed = 100
+        family_seed = 200
+
+        universe1 = GraphUniverse(
+            K=5,
+            edge_propensity_variance=0.5,
+            feature_dim=10,
+            center_variance=1.0,
+            cluster_variance=0.1,
+            seed=universe_seed,
+        )
+
+        universe2 = GraphUniverse(
+            K=5,
+            edge_propensity_variance=0.5,
+            feature_dim=10,
+            center_variance=1.0,
+            cluster_variance=0.1,
+            seed=universe_seed,
+        )
+
+        family1 = GraphFamilyGenerator(
+            universe=universe1,
+            n_nodes_range=(25, 30),
+            n_graphs=3,
+            n_communities_range=(2, 3),
+            homophily_range=(0.2, 0.4),
+            avg_degree_range=(2.0, 3.0),
+            power_law_exponent_range=(2.0, 2.5),
+            seed=family_seed,
+        )
+
+        family2 = GraphFamilyGenerator(
+            universe=universe2,
+            n_nodes_range=(25, 30),
+            n_graphs=3,
+            n_communities_range=(2, 3),
+            homophily_range=(0.2, 0.4),
+            avg_degree_range=(2.0, 3.0),
+            power_law_exponent_range=(2.0, 2.5),
+            seed=family_seed,
+        )
+
+        family1.generate_family(show_progress=False)
+        family2.generate_family(show_progress=False)
+
+        pyg_graphs1 = family1.to_pyg_graphs(task="community_detection")
+        pyg_graphs2 = family2.to_pyg_graphs(task="triangle_counting")
+
+        assert len(pyg_graphs1) == len(pyg_graphs2) == 3
+
+        for i in range(3):
+            graph1 = pyg_graphs1[i]
+            graph2 = pyg_graphs2[i]
+
+            assert graph1.num_nodes == graph2.num_nodes
+            assert graph1.num_edges == graph2.num_edges
+
+            assert torch.equal(graph1.edge_index, graph2.edge_index)
+
+            assert torch.allclose(graph1.x, graph2.x, atol=1e-6)
+
+            assert not torch.equal(graph1.y, graph2.y)
 
 
 if __name__ == "__main__":

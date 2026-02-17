@@ -1,0 +1,2 @@
+[console_scripts]
+graph-universe-ui = graph_universe.cli:main

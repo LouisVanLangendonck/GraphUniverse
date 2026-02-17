@@ -5,7 +5,7 @@ class FeatureGenerator:
     """
     Feature generator using multivariate Gaussian clusters.
 
-    Features are generated with controllable inter-cluster and intra-cluster variance.
+    Features are generated with controllable inter-cluster (between communities) and intra-cluster (within communities) feature variance.
     Each community is assigned to exactly one cluster.
 
     Args:
@@ -65,11 +65,7 @@ class FeatureGenerator:
     def reset_rng(self, seed: int) -> None:
         """
         Reset the RNG state with a new seed.
-        
-        This is useful when generating features for multiple graphs from the same
-        universe - each graph should have its features determined by its own seed,
-        not by the order in which graphs were generated.
-        
+
         Args:
             seed: Random seed to reset the RNG with
         """

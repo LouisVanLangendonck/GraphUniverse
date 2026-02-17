@@ -3,82 +3,100 @@ requires = ["setuptools", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "GraphUniverse"
+name = "graph-universe"
 dynamic = ["version"]
 authors = [
     {name = "Louis Van Langendonck", email = "louis.van.langendonck@upc.edu"}
 ]
 readme = "README.md"
-description = "Graph Universe: A Library for Generating Inductive Graph Datasets"
+description = "A library for generating synthetic graph datasets with community structure for graph neural network research"
 license = {file = "LICENSE"}
+keywords = ["graph", "neural-networks", "pytorch", "graph-generation", "community-detection", "synthetic-data"]
 classifiers = [
     "License :: OSI Approved :: MIT License",
-    "Development Status :: 4 - Beta",
+    "Development Status :: 3 - Alpha",
     "Intended Audience :: Science/Research",
+    "Intended Audience :: Developers",
     "Topic :: Scientific/Engineering",
     "Topic :: Scientific/Engineering :: Mathematics",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
     "Natural Language :: English",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
-    "Programming Language :: Python :: 3.11"
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12"
 ]
 requires-python = ">= 3.10"
 dependencies=[
-    "scikit-optimize",
-    "torch",
-    "torch-geometric",
-    "scipy",
-    "torchdiffeq",
-    "matplotlib",
-    "tqdm",
-    "streamlit",
-    "omegaconf",
-    "seaborn",
-    "wandb",
-    "tensorboard",
-    "einops==0.7.0",
-    "tabulate",
-    "ipykernel",
-    "notebook",
-    "jupyterlab",
-    "rich",
-    "rootutils",
-    "scikit-optimize",
+    "numpy>=1.21.0",
+    "scipy>=1.7.0",
+    "networkx>=2.6.0",
+    "torch>=2.0.0",
+    "torch-geometric>=2.3.0",
+    "scikit-learn>=1.0.0",
+    "matplotlib>=3.5.0",
+    "tqdm>=4.62.0",
+    "pyyaml>=6.0",
 ]
 
 [project.optional-dependencies]
-doc = [
-    "jupyter",
-    "nbsphinx",
-    "nbsphinx_link",
-    "numpydoc",
-    "sphinx",
-    "sphinx_gallery",
-    "pydata-sphinx-theme",
-    "myst_parser"
+# Visualization and UI tools
+viz = [
+    "seaborn>=0.12.0",
+    "streamlit>=1.28.0",
 ]
+
+
+# Notebook support
+notebook = [
+    "ipykernel>=6.0.0",
+    "notebook>=6.5.0",
+    "jupyterlab>=3.6.0",
+]
+
+# Documentation
+doc = [
+    "jupyter>=1.0.0",
+    "nbsphinx>=0.9.0",
+    "nbsphinx_link>=1.3.0",
+    "numpydoc>=1.5.0",
+    "sphinx>=5.0.0",
+    "sphinx_gallery>=0.13.0",
+    "pydata-sphinx-theme>=0.13.0",
+    "myst_parser>=1.0.0"
+]
+
+# Linting and formatting
 lint = [
-    "pre-commit",
+    "pre-commit>=3.0.0",
     "ruff>=0.1.0"
 ]
+
+# Testing
 test = [
-    "pytest>=7.0",
-    "pytest-cov",
-    "coverage",
-    "jupyter",
-    "mypy",
-    "pytest-mock"
+    "pytest>=7.0.0",
+    "pytest-cov>=4.0.0",
+    "coverage>=7.0.0",
+    "pytest-mock>=3.10.0"
 ]
 
-dev = ["GraphUniverse[test, lint]"]
-all = ["GraphUniverse[dev, doc]"]
+# Development (includes test and lint)
+dev = ["graph-universe[test,lint,viz,notebook]"]
+
+# Everything
+all = ["graph-universe[dev,doc]"]
 
 [project.urls]
-repository="https://github.com/LouisVanLangendonck/GraphUniverse"
+Repository = "https://github.com/LouisVanLangendonck/GraphUniverse"
+
+[project.scripts]
+graph-universe-ui = "graph_universe.cli:main"
 
 [tool.setuptools.dynamic]
 version = {attr = "graph_universe.__version__"}
+
+[tool.setuptools.package-data]
+graph_universe = ["streamlit_app.py"]
 
 [tool.setuptools.packages.find]
 include = [
@@ -88,7 +106,7 @@ include = [
 
 [tool.coverage.run]
 source = ["graph_universe"]
-omit = ["*/test/*", "*/__pycache__/*"]
+omit = ["*/test/*", "*/__pycache__/*", "*/viz_utils.py"]
 
 [tool.coverage.report]
 exclude_lines = [

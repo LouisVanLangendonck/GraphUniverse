@@ -1,14 +1,10 @@
+import time
 import warnings
 
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import streamlit as st
-
-warnings.filterwarnings("ignore")
-
-# Import the graph generation classes
-import time
 
 from graph_universe.graph_family import GraphFamilyGenerator
 from graph_universe.graph_universe import GraphUniverse
@@ -18,6 +14,8 @@ from graph_universe.viz_utils import (
     plot_universe_community_degree_propensity_vector,
     plot_universe_feature_centers,
 )
+
+warnings.filterwarnings("ignore")
 
 
 # Add function to generate theoretical power law distribution
@@ -55,7 +53,7 @@ def plot_probability_matrices_comparison(
     P_sub = graph_sample.P_sub
 
     # Get the actual probability matrix
-    P_real, community_sizes, connection_counts = graph_sample.calculate_actual_probability_matrix()
+    P_real, _community_sizes, _connection_counts = graph_sample.calculate_actual_probability_matrix()
 
     # Create figure with two subplots side by side
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=figsize)
@@ -80,7 +78,7 @@ def plot_probability_matrices_comparison(
             # Adaptive text color based on background
             value = P_sub[i, j]
             text_color = "white" if value > (vmin + vmax) / 2 else "black"
-            text = ax1.text(
+            ax1.text(
                 j,
                 i,
                 f"{value:.3f}",
@@ -107,7 +105,7 @@ def plot_probability_matrices_comparison(
             # Adaptive text color based on background
             value = P_real[i, j]
             text_color = "white" if value > (vmin + vmax) / 2 else "black"
-            text = ax2.text(
+            ax2.text(
                 j,
                 i,
                 f"{value:.3f}",
@@ -145,7 +143,7 @@ def plot_probability_matrices_comparison(
         ha="center",
         va="bottom",
         fontsize=10,
-        bbox=dict(boxstyle="round,pad=0.3", facecolor="lightgray", alpha=0.8),
+        bbox={"boxstyle": "round,pad=0.3", "facecolor": "lightgray", "alpha": 0.8},
     )
 
     plt.tight_layout()
@@ -179,7 +177,7 @@ def plot_degree_distribution_comparison(
     )
     ax1.set_xlabel("Degree")
     ax1.set_ylabel("Density")
-    ax1.set_title(f"Degree Distribution Histogram (α={exponent:.2f})")
+    ax1.set_title(f"Degree Distribution Histogram (alpha={exponent:.2f})")
     ax1.legend()
     ax1.grid(True, alpha=0.3)
 
@@ -207,7 +205,7 @@ def plot_degree_distribution_comparison(
         100,
     )
     ccdf_theoretical = (x_range / x_range.min()) ** (-exponent + 1)
-    ax2.loglog(x_range, ccdf_theoretical, "--", label=f"Theoretical α={exponent:.2f}", alpha=0.8)
+    ax2.loglog(x_range, ccdf_theoretical, "--", label=f"Theoretical alpha={exponent:.2f}", alpha=0.8)
 
     ax2.set_xlabel("Degree (log scale)")
     ax2.set_ylabel("CCDF (log scale)")
@@ -471,7 +469,7 @@ def main():
 
         if "universe" in st.session_state and st.session_state.universe is not None:
             universe = st.session_state.universe
-            params = st.session_state.get("universe_params", {})
+            st.session_state.get("universe_params", {})
 
             st.success("🌌 Universe Ready")
 
@@ -694,83 +692,24 @@ def main():
                 help="The allowed range (minimum and maximum) of degree separation in each graph of the family. That is, each graph instance will sample one target value from this range. \n \n Degree separation is a measure of how much the universe-level differences in community-specific degree propensity values influence the assignment of degree factors to each node. For example, if degree seperation is high, and a participating community has a high degree propensity value (see universe level), then the high degree factors from the target degree distribution for that graph will exclusively be assigned to nodes of that community, resulting in strictly high degree nodes for that community. However, if degree seperation is low, then degree factors will be assigned basically evenly across all communities (recovering the random assignment seen in the original DC-SBM algorithm).",
             )
 
-            col5, col6 = st.columns(2)
+            _col5, col6 = st.columns(2)
 
-            with col5:
-                degree_distribution = st.selectbox(
-                    "Degree Distribution",
-                    ["power_law", "exponential", "uniform"],
-                    help="Type of degree distribution. More options included here than in the original paper to play around with. Power law generally seen as most realistic for real-world networks. For a more detailed explanation, see the original paper.",
-                    key="degree_distribution_selector",
-                )
-
-            # Conditional parameters based on degree distribution
-            if degree_distribution == "power_law":
-                with col6:
-                    power_law_min, power_law_max = st.slider(
-                        "Power Law Exponent Range",
-                        1.5,
-                        5.0,
-                        (2.0, 2.5),
-                        help="The allowed range (minimum and maximum) of power law exponent in each graph of the family. That is, each graph instance will sample one target value from this range. \n \n The power law exponent is the exponent of the power law distribution. For example, if the power law exponent is 2.5, then the target degree distribution will roughlyfollow the following distribution: P(k) = k^(-2.5). In practice we use the discrete Pareto distribution (discrete power law distribution).",
-                    )
-            else:
-                with col6:
-                    power_law_min, power_law_max = 2.5, 2.5
-
-            if degree_distribution == "exponential":
-                with col6:
-                    exp_min, exp_max = st.slider(
-                        "Exponential Rate Range",
-                        0.1,
-                        2.0,
-                        (0.3, 1.0),
-                        help="The allowed range (minimum and maximum) of exponential rate in each graph of the family. That is, each graph instance will sample one target value from this range. \n \n The exponential rate is the rate of the exponential distribution. For example, if the exponential rate is 1.0, then the target degree distribution will roughlyfollow the following distribution: P(k) = exp(-k). In practice we use the discrete exponential distribution (discrete exponential distribution).",
-                    )
-            else:
-                with col6:
-                    exp_min, exp_max = 0.5, 0.5
-
-            if degree_distribution == "uniform":
-                with col6:
-                    uniform_min_min, uniform_min_max = st.slider(
-                        "Uniform Min Factor Range",
-                        0.1,
-                        1.0,
-                        (0.3, 0.7),
-                        help="The allowed range (minimum and maximum) of uniform min factor in each graph of the family. That is, each graph instance will sample one target value from this range. \n \n The uniform min factor is the minimum factor of the uniform distribution. For example, if the uniform min factor is 0.3, then the target degree distribution will randomly draw factors (not actual degrees!) between 0.3 and a maximum factor drawn below.",
-                    )
-                col_u1, col_u2 = st.columns(2)
-                with col_u2:
-                    uniform_max_min, uniform_max_max = st.slider(
-                        "Uniform Max Factor Range",
-                        1.0,
-                        3.0,
-                        (1.3, 2.0),
-                        help="The allowed range (minimum and maximum) of uniform max factor in each graph of the family. \n \n The uniform max factor is the maximum factor of the uniform distribution. For example, if the uniform max factor is 2.0, then the target degree distribution will randomly draw factors (not actual degrees!) between a minimum factor drawn above and 2.0.",
-                    )
-            else:
-                uniform_min_min, uniform_min_max = 0.5, 0.5
-                uniform_max_min, uniform_max_max = 1.5, 1.5
-
-            st.markdown("#### Generation Timeout & Seeding")
-
-            col7, col8 = st.columns(2)
-
-            with col7:
-                family_seed = st.number_input(
-                    "Family Seed",
-                    value=123,
-                    help="Seed for the family generation. If you want to generate the same family again, you can set the same seed.",
-                )
-            with col8:
-                timeout_minutes = st.slider(
-                    "Timeout (minutes)",
-                    1.0,
-                    30.0,
+            with col6:
+                power_law_min, power_law_max = st.slider(
+                    "Power Law Exponent Range",
+                    1.5,
                     5.0,
-                    help="Timeout for generation. If the generation takes too long, you can increase this value.",
+                    (2.0, 2.5),
+                    help="The allowed range (minimum and maximum) of power law exponent in each graph of the family. That is, each graph instance will sample one target value from this range. \n \n The power law exponent is the exponent of the power law distribution. For example, if the power law exponent is 2.5, then the target degree distribution will roughly follow the following distribution: P(k) = k^(-2.5). In practice we use the discrete Pareto distribution (discrete power law distribution).",
                 )
+
+            st.markdown("#### Generation Seeding")
+
+            family_seed = st.number_input(
+                "Family Seed",
+                value=123,
+                help="Seed for the family generation. If you want to generate the same family again, you can set the same seed.",
+            )
 
             st.markdown("</div>", unsafe_allow_html=True)
 
@@ -836,17 +775,11 @@ def main():
 
             family_generator = GraphFamilyGenerator(
                 universe=universe,
-                min_n_nodes=min_n_nodes,
-                max_n_nodes=max_n_nodes,
-                min_communities=min_communities,
-                max_communities=max_communities,
+                n_nodes_range=(min_n_nodes, max_n_nodes),
+                n_communities_range=(min_communities, max_communities),
                 homophily_range=(homophily_min, homophily_max),
                 avg_degree_range=(avg_degree_min, avg_degree_max),
-                degree_distribution=degree_distribution,
                 power_law_exponent_range=(power_law_min, power_law_max),
-                exponential_rate_range=(exp_min, exp_max),
-                uniform_min_factor_range=(uniform_min_min, uniform_min_max),
-                uniform_max_factor_range=(uniform_max_min, uniform_max_max),
                 degree_separation_range=(degree_separation_min, degree_separation_max),
                 seed=family_seed,
             )
@@ -864,7 +797,6 @@ def main():
                 n_graphs=n_graphs,
                 show_progress=True,
                 collect_stats=True,
-                timeout_minutes=timeout_minutes,
             )
             graphs = family_generator.graphs
 
@@ -1104,11 +1036,10 @@ def main():
                 st.session_state.show_signals = False
 
             # Add a cancel button to stop analysis
-            if st.session_state.show_signals:
-                if st.button("Cancel Signal Analysis", type="secondary"):
-                    del st.session_state.show_signals
-                    st.session_state.show_properties = True
-                    st.rerun()
+            if st.session_state.show_signals and st.button("Cancel Signal Analysis", type="secondary"):
+                del st.session_state.show_signals
+                st.session_state.show_properties = True
+                st.rerun()
 
             # Show analysis based on selection
             try:
@@ -1122,21 +1053,20 @@ def main():
                     for key, value in family_properties.items():
                         if isinstance(value, list) and all(
                             isinstance(v, (int, float)) for v in value
-                        ):
-                            if len(value) > 0:
-                                mean_val = np.mean(value)
-                                std_val = np.std(value)
-                                min_val = np.min(value)
-                                max_val = np.max(value)
-                                data.append(
-                                    {
-                                        "Metric": key,
-                                        "Mean": f"{mean_val:.3f}",
-                                        "Std Dev": f"{std_val:.3f}",
-                                        "Min": f"{min_val:.3f}",
-                                        "Max": f"{max_val:.3f}",
-                                    }
-                                )
+                        ) and len(value) > 0:
+                            mean_val = np.mean(value)
+                            std_val = np.std(value)
+                            min_val = np.min(value)
+                            max_val = np.max(value)
+                            data.append(
+                                {
+                                    "Metric": key,
+                                    "Mean": f"{mean_val:.3f}",
+                                    "Std Dev": f"{std_val:.3f}",
+                                    "Min": f"{min_val:.3f}",
+                                    "Max": f"{max_val:.3f}",
+                                }
+                            )
 
                     # Display as a table
                     if data:
@@ -1250,11 +1180,6 @@ def main():
                 available_tasks = [
                     "community_detection",
                     "triangle_counting",
-                    "k_hop_community_counts_k1",
-                    "k_hop_community_counts_k2",
-                    "k_hop_community_counts_k3",
-                    "k_hop_community_counts_k4",
-                    "k_hop_community_counts_k5",
                 ]
 
                 selected_task = st.selectbox(
@@ -1268,89 +1193,88 @@ def main():
                 family_dir = "datasets"
 
                 # Prominent download button
-                if selected_task:
-                    if st.button("Create PyG Dataset", type="primary", use_container_width=True):
-                        try:
-                            # Create progress containers
-                            progress_container = st.container()
-                            status_container = st.container()
+                if selected_task and st.button("Create PyG Dataset", type="primary", use_container_width=True):
+                    try:
+                        # Create progress containers
+                        progress_container = st.container()
+                        status_container = st.container()
 
-                            with progress_container:
-                                progress_bar = st.progress(0)
-                                progress_text = st.empty()
+                        with progress_container:
+                            progress_bar = st.progress(0)
+                            progress_text = st.empty()
 
-                            with status_container:
-                                status_text = st.empty()
+                        with status_container:
+                            status_text = st.empty()
 
-                            # Step 1: Convert to PyG graphs
-                            status_text.text(
-                                "Step 1/2: Converting graphs to PyTorch Geometric format..."
+                        # Step 1: Convert to PyG graphs
+                        status_text.text(
+                            "Step 1/2: Converting graphs to PyTorch Geometric format..."
+                        )
+                        progress_bar.progress(25)
+                        progress_text.text("25% - Starting conversion...")
+
+                        # Check if graphs have features (required for PyG conversion)
+                        graphs_with_features = all(
+                            hasattr(g, "features") and g.features is not None
+                            for g in family_generator.graphs
+                        )
+                        if not graphs_with_features:
+                            st.error(
+                                "❌ Cannot convert to PyG: Some graphs don't have features. Please generate graphs with feature_dim > 0."
                             )
-                            progress_bar.progress(25)
-                            progress_text.text("25% - Starting conversion...")
-
-                            # Check if graphs have features (required for PyG conversion)
-                            graphs_with_features = all(
-                                hasattr(g, "features") and g.features is not None
-                                for g in family_generator.graphs
-                            )
-                            if not graphs_with_features:
-                                st.error(
-                                    "❌ Cannot convert to PyG: Some graphs don't have features. Please generate graphs with feature_dim > 0."
-                                )
-                                progress_container.empty()
-                                status_container.empty()
-                                return
-
-                            progress_bar.progress(50)
-                            progress_text.text("50% - Converting graphs...")
-
-                            # Step 2: Save PyG graphs and universe
-                            status_text.text("Step 2/2: Saving PyG graphs and universe...")
-                            progress_bar.progress(75)
-                            progress_text.text("75% - Saving to disk...")
-
-                            # Use the family generator's save method
-                            family_generator.save_pyg_graphs_and_universe(
-                                task=selected_task, root_dir=family_dir
-                            )
-
-                            progress_bar.progress(100)
-                            progress_text.text("100% - Complete!")
-
-                            st.success(
-                                f"✅ Successfully saved PyG graphs for task: {selected_task}!"
-                            )
-
-                            import shutil
-
-                            # Compress the directory into a ZIP file for download
-                            folder_to_compress = family_generator.dataset.processed_root
-                            dataset_hash = folder_to_compress.split("_")[-1]
-                            shutil.make_archive(dataset_hash, "zip", folder_to_compress)
-
-                            with open(f"{dataset_hash}.zip", "rb") as fp:
-                                st.download_button(
-                                    label="Download PyG Dataset & Metadata (ZIP)",
-                                    data=fp,
-                                    file_name=f"{dataset_hash}.zip",
-                                    mime="application/zip",
-                                    type="primary",
-                                    use_container_width=True,
-                                    on_click="ignore",
-                                    icon=":material/download:",
-                                )
-
-                            # Clear progress indicators after a short delay
-                            time.sleep(1)
                             progress_container.empty()
                             status_container.empty()
+                            return
 
-                        except Exception as e:
-                            st.error(f"❌ Error saving PyG graphs: {e!s}")
-                            st.exception(e)
-                            progress_container.empty()
-                            status_container.empty()
+                        progress_bar.progress(50)
+                        progress_text.text("50% - Converting graphs...")
+
+                        # Step 2: Save PyG graphs and universe
+                        status_text.text("Step 2/2: Saving PyG graphs and universe...")
+                        progress_bar.progress(75)
+                        progress_text.text("75% - Saving to disk...")
+
+                        # Use the family generator's save method
+                        family_generator.save_pyg_graphs_and_universe(
+                            task=selected_task, root_dir=family_dir
+                        )
+
+                        progress_bar.progress(100)
+                        progress_text.text("100% - Complete!")
+
+                        st.success(
+                            f"✅ Successfully saved PyG graphs for task: {selected_task}!"
+                        )
+
+                        import shutil
+
+                        # Compress the directory into a ZIP file for download
+                        folder_to_compress = family_generator.dataset.processed_root
+                        dataset_hash = folder_to_compress.split("_")[-1]
+                        shutil.make_archive(dataset_hash, "zip", folder_to_compress)
+
+                        with open(f"{dataset_hash}.zip", "rb") as fp:
+                            st.download_button(
+                                label="Download PyG Dataset & Metadata (ZIP)",
+                                data=fp,
+                                file_name=f"{dataset_hash}.zip",
+                                mime="application/zip",
+                                type="primary",
+                                use_container_width=True,
+                                on_click="ignore",
+                                icon=":material/download:",
+                            )
+
+                        # Clear progress indicators after a short delay
+                        time.sleep(1)
+                        progress_container.empty()
+                        status_container.empty()
+
+                    except Exception as e:
+                        st.error(f"❌ Error saving PyG graphs: {e!s}")
+                        st.exception(e)
+                        progress_container.empty()
+                        status_container.empty()
             else:
                 st.warning(
                     "No graphs available in family generator. Please generate a graph family first."

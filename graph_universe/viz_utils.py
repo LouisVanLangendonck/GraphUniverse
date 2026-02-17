@@ -3,16 +3,15 @@ Utilities to visualize graphs with community structure,
 node embeddings, and other graph properties.
 """
 
-from typing import Union
+from typing import TYPE_CHECKING, Union
 
-import matplotlib.cm as cm
 import matplotlib.pyplot as plt
 import networkx as nx
 import numpy as np
-import pandas as pd
-import seaborn as sns
-from sklearn.decomposition import PCA
-from sklearn.manifold import TSNE
+
+if TYPE_CHECKING:
+    from graph_universe.graph_sample import GraphSample
+    from graph_universe.graph_universe import GraphUniverse
 
 
 def plot_graph_communities(
@@ -33,7 +32,7 @@ def plot_graph_communities(
     """
     Plot a graph with nodes colored by community.
     Only shows components that meet the minimum size requirement.
-    
+
     Community colors are automatically mapped based on community ID, ensuring
     consistent coloring across multiple graphs (e.g., community 0 is always
     the same color, community 1 is always the same color, etc.).
@@ -138,7 +137,7 @@ def plot_graph_communities(
         # Use community ID directly for consistent coloring across graphs
         # This ensures community 0 is always the same color, community 1 is always the same color, etc.
         color = cmap_obj(comm % cmap_obj.N)
-        
+
         nx.draw_networkx_nodes(
             kept_graph,
             pos,
@@ -383,7 +382,7 @@ def plot_property_validation(family_generator, figsize=(14, 10)):
 
         # Add scatter points for actual values (with jitter on y-axis)
         y_jitter = np.random.normal(0, 0.1, size=len(values))
-        scatter = ax.scatter(
+        ax.scatter(
             values,
             y_jitter,
             alpha=0.7,
@@ -404,7 +403,7 @@ def plot_property_validation(family_generator, figsize=(14, 10)):
             fontweight="bold",
             color=color,
             transform=ax.transAxes,
-            bbox=dict(facecolor="white", alpha=0.7, boxstyle="round,pad=0.2"),
+            bbox={"facecolor": "white", "alpha": 0.7, "boxstyle": "round,pad=0.2"},
         )
 
         # Set title and labels
@@ -472,7 +471,7 @@ def plot_universe_community_degree_propensity_vector(
     )
 
     # Add value labels on bars
-    for i, (bar, value) in enumerate(zip(bars, community_degree_propensity_vector, strict=False)):
+    for _i, (bar, value) in enumerate(zip(bars, community_degree_propensity_vector, strict=False)):
         ax.text(
             bar.get_x() + bar.get_width() / 2,
             bar.get_height() + 0.02,

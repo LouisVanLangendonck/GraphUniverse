@@ -342,6 +342,20 @@ class TestFeatureGenerator:
 
         assert features.shape == (0, self.feature_dim)
 
+    def test_generate_node_features_with_skipped_cluster_ids(self):
+        """Test feature generation when some cluster IDs have no nodes (to hit line 133)."""
+        # Create a scenario where cluster ID 1 has 0 nodes
+        # This tests the 'if n_cluster_nodes == 0: continue' branch
+        node_clusters = np.array([0, 0, 0, 2, 2, 2])  # Cluster 1 is missing
+
+        features = self.generator.generate_node_features(node_clusters)
+
+        # Should generate features for 6 nodes
+        assert features.shape == (6, self.feature_dim)
+
+        # Features should not be all zeros
+        assert not np.all(features == 0)
+
     def test_cluster_variance_affects_feature_spread(self):
         """
         CRITICAL: Higher cluster_variance should make features harder to classify.
