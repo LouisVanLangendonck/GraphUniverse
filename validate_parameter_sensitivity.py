@@ -1244,13 +1244,13 @@ if __name__ == "__main__":
     parser.add_argument(
         "--output-dir", default="parameter_analysis_results", help="Directory to save results"
     )
-    parser.add_argument("--n-graphs", type=int, default=20, help="Number of graphs per family")
-    parser.add_argument("--plot-only", action="store_true", help="Only plot existing results")
+    parser.add_argument("--n-graphs", type=int, default=30, help="Number of graphs per family")
+    parser.add_argument("--plot-only", action="store_true", help="Only plot existing results assuming the analysis has already been run and saved under random_baseline_analysis.pkl")
     parser.add_argument(
         "--n-random-samples",
         type=int,
-        default=20,
-        help="Number of random parameter samples to generate",
+        default=100,
+        help="Number of graph families generated based on random parameter sampling",
     )
     parser.add_argument(
         "--n-random-repeats-per-sample",

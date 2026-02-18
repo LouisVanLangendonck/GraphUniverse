@@ -1,11 +1,13 @@
 # GraphUniverse: Enabling Systematic Evaluation of Inductive Generalization
 
-![ICLR 2026](https://img.shields.io/badge/ICLR-2026-blue)
-![Demo](https://img.shields.io/badge/demo-streamlit-red)
+[![PyPI](https://img.shields.io/pypi/v/graph-universe)](https://pypi.org/project/graph-universe/)
+[![Python](https://img.shields.io/pypi/pyversions/graph-universe)](https://pypi.org/project/graph-universe/)
+[![License](https://img.shields.io/pypi/l/graph-universe)](https://github.com/LouisVanLangendonck/GraphUniverse/blob/main/LICENSE)
+[![ICLR 2026](https://img.shields.io/badge/ICLR-2026-blue)]()
 
 **Generate families of graphs with finely controllable properties for systematic evaluation of inductive graph learning models.**
 
-[Quick Start](#quick-start) | [Reproduce Validation Experiment](#reproduce-validation-experiment) | [Interactive Demo](https://graphuniverse.streamlit.app/)
+[Quick Start](#quick-start) | [Interactive UI](#interactive-ui) | [Validation](#validation--analysis) | [Paper Experiments](#for-researchers--contributors)
 
 ![Example Graph Family][graphplot]
 
@@ -25,29 +27,67 @@ Current graph learning benchmarks are limited to **single-graph, transductive se
 
 [logo]: https://github.com/LouisVanLangendonck/GraphUniverse/blob/main/assets/GraphUniverseMethodologyClean.png "Methodology Overview"
 
-## Quick Start
+---
 
-### Installation
+## Installation
+
+Install from PyPI:
 ```bash
-# Install directly from GitHub
-pip install git+https://github.com/LouisVanLangendonck/GraphUniverse.git
-# For extra vizualization options and local streamlit app hosting choose
-pip install "git+https://github.com/LouisVanLangendonck/GraphUniverse.git#egg=graph-universe[viz]"
-
-# Or clone and install in development mode
-git clone https://github.com/LouisVanLangendonck/GraphUniverse.git
-cd GraphUniverse
-pip install -e .
+pip install graph-universe
 ```
 
-### Basic Usage (see examples/quickstart.py)
+**For the interactive UI and visualization tools:**
+```bash
+pip install graph-universe[viz]
+```
 
-#### Option 1: Via individual classes
+**Optional extras:**
+- `[viz]` - Streamlit UI + seaborn visualization tools
+- `[dev]` - Development dependencies (testing, linting)
+- `[notebook]` - Jupyter notebook support
+- `[all]` - Everything (includes documentation tools)
 
+**Install from source (for contributors):**
+```bash
+git clone https://github.com/LouisVanLangendonck/GraphUniverse.git
+cd GraphUniverse
+pip install -e ".[dev]"
+```
+
+---
+
+## Interactive UI
+
+After installing with `[viz]`, launch the interactive dashboard:
+```bash
+graph-universe-ui
+```
+
+**This opens a browser-based UI where you can:**
+- 🎛️ Configure all generation parameters with real-time preview
+- 📊 Generate graph families and visualize their properties
+- 🔍 Analyze community structure, homophily, and degree distributions
+- 💾 Download datasets directly in PyTorch Geometric format
+
+**No coding required!** Perfect for exploration and quick dataset generation.
+
+**Hosted demo:** Try it online at [graphuniverse.streamlit.app](https://graphuniverse.streamlit.app/)
+
+**Launch from Python:**
+```python
+from graph_universe import launch_ui
+launch_ui()  # Opens browser, press Ctrl+C to stop
+```
+
+---
+
+## Quick Start
+
+### Option 1: Python API with Individual Classes
 ```python
 from graph_universe import GraphUniverse, GraphFamilyGenerator
 
-# Create universe with detailed parameters
+# Create universe with 8 communities and 10-dimensional features
 universe = GraphUniverse(K=8, edge_propensity_variance=0.3, feature_dim=10)
 
 # Generate family with full parameter control
@@ -62,18 +102,19 @@ family = GraphFamilyGenerator(
     seed=42
 )
 
-# Generate graphs (stores in family.graphs)
+# Generate 30 graphs
 family.generate_family(n_graphs=30, show_progress=True)
 
-# Access generated graphs and convert to PyG format
 print(f"Generated {len(family.graphs)} graphs!")
+
+# Convert to PyTorch Geometric format for training
 pyg_graphs = family.to_pyg_graphs(task="community_detection")
 ```
 
-#### Option 2: Via YAML config file
+### Option 2: Config-Driven Workflow
 
+Create `config.yaml`:
 ```yaml
-# configs/experiment.yaml
 universe_parameters:
   K: 10
   edge_propensity_variance: 0.5
@@ -95,42 +136,23 @@ family_parameters:
 task: "community_detection"
 ```
 
+Then load and generate:
 ```python
-# Use config-driven workflow
 import yaml
 from graph_universe import GraphUniverseDataset
 
-with open("configs/experiment.yaml") as f:
+with open("config.yaml") as f:
     config = yaml.safe_load(f)
 
 dataset = GraphUniverseDataset(root="./data", parameters=config)
 print(f"Generated dataset with {len(dataset)} graphs!")
 ```
 
-#### Option 3: Interactive Demo
-Try GraphUniverse in your browser — either via the hosted app or locally:
+---
 
-**Hosted:** [https://graphuniverse.streamlit.app/](https://graphuniverse.streamlit.app/)
+## Validation & Analysis
 
-**Local (requires `pip install graph-universe[viz]`):**
-```bash
-graph-universe-ui
-```
-Or from Python:
-```python
-from graph_universe import launch_ui
-launch_ui()  # Opens browser, press Ctrl+C to stop
-```
-
-## Reproduce Validation Experiment
-GraphUniverse includes comprehensive metrics to validate property realization and quantify learnable community signals
-
-### Reproduce Validation Analysis in Paper Automatically
-```bash
-python validate_parameter_sensitivity.py --n-random-samples 100 --n-graphs 30
-```
-
-### Or manually inspect a generated family
+GraphUniverse includes built-in validation to ensure generated graphs match target properties:
 ```python
 # Validate standard graph properties
 family_properties = family.analyze_graph_family_properties()
@@ -151,5 +173,77 @@ for metric in ['structure_consistency', 'feature_consistency', 'degree_consisten
     print(f"{metric}: {value:.3f}")
 ```
 
+---
 
+## Documentation & Support
 
+- **GitHub Repository**: https://github.com/LouisVanLangendonck/GraphUniverse
+- **PyPI Package**: https://pypi.org/project/graph-universe/
+- **Issue Tracker**: https://github.com/LouisVanLangendonck/GraphUniverse/issues
+- **Changelog**: https://github.com/LouisVanLangendonck/GraphUniverse/blob/main/CHANGELOG.md
+
+---
+
+## Citation
+
+If you use GraphUniverse in your research, please cite:
+```bibtex
+@inproceedings{vanlangendonck2026graphuniverse,
+  title={GraphUniverse: Enabling Systematic Evaluation of Inductive Generalization},
+  author={Van Langendonck, Louis and Bernardez, Guillermo},
+  booktitle={International Conference on Learning Representations},
+  year={2026}
+}
+```
+
+---
+
+## For Researchers & Contributors
+
+The sections below contain resources for reproducing paper experiments and contributing to development.
+
+### Reproducing Paper Experiments
+
+Clone the repository to access validation and experiment scripts:
+```bash
+git clone https://github.com/LouisVanLangendonck/GraphUniverse.git
+cd GraphUniverse
+pip install -e ".[dev]"
+```
+
+**Run parameter sensitivity validation (reproduces paper results):**
+```bash
+python experiments/validate_parameter_sensitivity.py --n-random-samples 100 --n-graphs 30
+```
+
+**Run scalability experiments:**
+```bash
+python experiments/scalability_experiment.py
+```
+
+### Example Gallery & Additional Resources
+
+Visit the [GitHub repository](https://github.com/LouisVanLangendonck/GraphUniverse) for:
+- Complete example scripts in `examples/` directory
+- Detailed methodology diagrams and visualizations
+- Additional documentation and tutorials
+
+### Contributing
+
+We welcome contributions! To get started:
+
+1. Fork the repository
+2. Create a feature branch
+3. Install development dependencies: `pip install -e ".[dev]"`
+4. Run tests: `pytest test/`
+5. Submit a pull request
+
+See the repository for detailed contribution guidelines.
+
+---
+
+## License
+
+MIT License - see [LICENSE](https://github.com/LouisVanLangendonck/GraphUniverse/blob/main/LICENSE) for details.
+
+Copyright (c) 2025 Louis Van Langendonck and Guillermo Bernardez

@@ -1,4 +1,0 @@
-FROM python:3.10
-WORKDIR /test
-RUN pip install git+https://github.com/LouisVanLangendonck/GraphUniverse.git
-CMD ["python", "-c", "from graph_universe import GraphUniverse; print('✅ GraphUniverse installed successfully!')"]
