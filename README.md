@@ -11,21 +11,21 @@
 
 ![Example Graph Family][graphplot]
 
-[graphplot]: https://github.com/LouisVanLangendonck/GraphUniverse/blob/main/assets/ExampleGraphFamily.png "Example Graph Family Visualization"
+[graphplot]: https://raw.githubusercontent.com/LouisVanLangendonck/GraphUniverse/main/assets/ExampleGraphFamily.png "Example Graph Family Visualization"
 
 ## Key Features
 
-Current graph learning benchmarks are limited to **single-graph, transductive settings**. GraphUniverse enables the first systematic evaluation of **inductive generalization** by generating entire families of graphs with:
+Synthetic graph learning benchmarks are limited to **single-graph, transductive settings**. GraphUniverse enables the first systematic evaluation of **inductive generalization** by generating entire families of graphs with:
 
 - **Consistent Semantics**: Communities maintain stable identities across graphs
 - **Fine-grained Control**: Tune homophily, degree distributions, community structure
 - **Scalable Generation**: Linear scaling, thousands of graphs per minute  
 - **Validated Framework**: Comprehensive parameter sensitivity analysis
-- **Interactive Tools**: Web-based exploration and visualization
+- **Interactive Tool**: Web-based exploration and visualization and Downloadable Pyg-dataset object ready to train!
 
 ![GraphUniverse Methodology Graphical Overview][logo]
 
-[logo]: https://github.com/LouisVanLangendonck/GraphUniverse/blob/main/assets/GraphUniverseMethodologyClean.png "Methodology Overview"
+[logo]: https://raw.githubusercontent.com/LouisVanLangendonck/GraphUniverse/main/assets/GraphUniverseMethodologyClean.png "Methodology Overview"
 
 ---
 
@@ -36,7 +36,7 @@ Install from PyPI:
 pip install graph-universe
 ```
 
-**For the interactive UI and visualization tools:**
+**For the interactive UI (streamlit) and visualization tools:**
 ```bash
 pip install graph-universe[viz]
 ```
@@ -44,10 +44,9 @@ pip install graph-universe[viz]
 **Optional extras:**
 - `[viz]` - Streamlit UI + seaborn visualization tools
 - `[dev]` - Development dependencies (testing, linting)
-- `[notebook]` - Jupyter notebook support
 - `[all]` - Everything (includes documentation tools)
 
-**Install from source (for contributors):**
+**Install from source:**
 ```bash
 git clone https://github.com/LouisVanLangendonck/GraphUniverse.git
 cd GraphUniverse
@@ -62,14 +61,6 @@ After installing with `[viz]`, launch the interactive dashboard:
 ```bash
 graph-universe-ui
 ```
-
-**This opens a browser-based UI where you can:**
-- 🎛️ Configure all generation parameters with real-time preview
-- 📊 Generate graph families and visualize their properties
-- 🔍 Analyze community structure, homophily, and degree distributions
-- 💾 Download datasets directly in PyTorch Geometric format
-
-**No coding required!** Perfect for exploration and quick dataset generation.
 
 **Hosted demo:** Try it online at [graphuniverse.streamlit.app](https://graphuniverse.streamlit.app/)
 
@@ -188,11 +179,11 @@ for metric in ['structure_consistency', 'feature_consistency', 'degree_consisten
 
 If you use GraphUniverse in your research, please cite:
 ```bibtex
-@inproceedings{vanlangendonck2026graphuniverse,
+@article{van2025graphuniverse,
   title={GraphUniverse: Enabling Systematic Evaluation of Inductive Generalization},
-  author={Van Langendonck, Louis and Bernardez, Guillermo},
-  booktitle={International Conference on Learning Representations},
-  year={2026}
+  author={Van Langendonck, Louis and Bern{\'a}rdez, Guillermo and Miolane, Nina and Barlet-Ros, Pere},
+  journal={arXiv preprint arXiv:2509.21097},
+  year={2025}
 }
 ```
 
@@ -220,25 +211,6 @@ python experiments/validate_parameter_sensitivity.py --n-random-samples 100 --n-
 ```bash
 python experiments/scalability_experiment.py
 ```
-
-### Example Gallery & Additional Resources
-
-Visit the [GitHub repository](https://github.com/LouisVanLangendonck/GraphUniverse) for:
-- Complete example scripts in `examples/` directory
-- Detailed methodology diagrams and visualizations
-- Additional documentation and tutorials
-
-### Contributing
-
-We welcome contributions! To get started:
-
-1. Fork the repository
-2. Create a feature branch
-3. Install development dependencies: `pip install -e ".[dev]"`
-4. Run tests: `pytest test/`
-5. Submit a pull request
-
-See the repository for detailed contribution guidelines.
 
 ---
 
