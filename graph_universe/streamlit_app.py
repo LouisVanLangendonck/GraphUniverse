@@ -6,9 +6,9 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
-from .graph_family import GraphFamilyGenerator
-from .graph_universe import GraphUniverse
-from .viz_utils import (
+from graph_universe.graph_family import GraphFamilyGenerator
+from graph_universe.graph_universe import GraphUniverse
+from graph_universe.viz_utils import (
     plot_graph_communities,
     plot_property_validation,
     plot_universe_community_degree_propensity_vector,
