@@ -15,3 +15,49 @@ datasets/
 .vscode/
 *.zip
 *.csv
+
+# Build artifacts
+dist/
+build/
+*.egg-info/
+*.egg
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Virtual environments
+venv/
+env/
+.venv/
+ENV/
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Package manager
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Token for PyPI
+.pypirc
+
+# Generated data
+datasets/
+*.pt
+*.pkl
