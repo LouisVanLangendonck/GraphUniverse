@@ -47,8 +47,7 @@ def run_scalability_experiment(
         "cluster_variance": 0.5,
         "homophily_range": (0.1, 0.4),
         "avg_degree_range": (2.0, 5.0),
-        "min_communities": 3,
-        "max_communities": 8,
+        "n_communities_range": (3, 8),
         "power_law_exponent_range": (2.0, 2.5),
         "degree_separation_range": (0.7, 1.0),
     }
@@ -90,10 +89,8 @@ def run_scalability_experiment(
             generator_start = time.time()
             family_generator = GraphFamilyGenerator(
                 universe=universe,
-                min_n_nodes=avg_nodes,
-                max_n_nodes=avg_nodes,
-                min_communities=default_params["min_communities"],
-                max_communities=default_params["max_communities"],
+                n_nodes_range=(min(avg_nodes - 10, 10), max(avg_nodes + 10, 1000)),
+                n_communities_range=default_params["n_communities_range"],
                 homophily_range=default_params["homophily_range"],
                 avg_degree_range=default_params["avg_degree_range"],
                 power_law_exponent_range=default_params["power_law_exponent_range"],

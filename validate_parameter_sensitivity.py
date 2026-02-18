@@ -21,8 +21,8 @@ PARAMS_OF_INTEREST = [
     "cluster_variance",
     "homophily_range",
     "avg_degree_range",
-    "min_n_nodes",
-    "min_communities",
+    "n_nodes_range",
+    "n_communities_range",
     "degree_separation_range",
     "power_law_exponent_range",
 ]
@@ -59,33 +59,17 @@ ALL_VARIABLE_PARAMS = {
         "level": "universe",
     },
     # Family generator parameters
-    "min_n_nodes": {
-        "type": "discrete",
-        "test_values": [50, 100, 250, 500, 750],
-        "random_range": (50, 400),
+    "n_nodes_range": {
+        "type": "range",
+        "test_values": [(50, 100), (100, 250), (250, 500), (500, 750), (750, 1000)],
+        "random_range": (50, 1000),
         "level": "family",
-        "paired_with": "max_n_nodes",
     },
-    "max_n_nodes": {
-        "type": "discrete",
-        "test_values": [100, 200, 400, 800],
-        "random_range": (100, 1000),
-        "level": "family",
-        "paired_with": "min_n_nodes",
-    },
-    "min_communities": {
-        "type": "discrete",
-        "test_values": [2, 4, 6, 10, 15],
+    "n_communities_range": {
+        "type": "range",
+        "test_values": [(2, 4), (4, 6), (6, 8), (8, 10), (10, 15)],
         "random_range": (2, 15),
         "level": "family",
-        "paired_with": "max_communities",
-    },
-    "max_communities": {
-        "type": "discrete",
-        "test_values": [4, 6, 8],
-        "random_range": (4, 8),
-        "level": "family",
-        "paired_with": "min_communities",
         "max_value": UNIVERSE_K,
     },
     "homophily_range": {
@@ -127,12 +111,12 @@ HEATMAP_DISPLAY_NAMES = {
     # Parameters
     "edge_propensity_variance": r"Edge Propensity Variance $\epsilon$",
     "cluster_variance": r"Cluster Variance $\sigma^2$",
-    "min_n_nodes": r"Mean Node Count $\bar{n}$",
-    "min_communities": r"Mean Communities Participating $\bar{k}$",
-    "homophily_range": r"Mean Homophily $\bar{h}$",
-    "avg_degree_range": r"Mean Average Degree $\bar{d}$",
-    "degree_separation_range": r"Mean Degree Separation $\bar{\rho}$",
-    "power_law_exponent_range": r"Mean Power Law Exponent $\bar{\alpha}$",
+    "n_nodes_range": r"Node Count Range $n$",
+    "n_communities_range": r"Communities Range $k$",
+    "homophily_range": r"Homophily Range $h$",
+    "avg_degree_range": r"Average Degree Range $d$",
+    "degree_separation_range": r"Degree Separation Range $\rho$",
+    "power_law_exponent_range": r"Power Law Exponent Range $\alpha$",
     # Signal Metrics
     "feature_signal": "Feature Signal",
     "degree_signal": "Degree Signal",
@@ -229,24 +213,26 @@ def generate_random_baseline_params(n_samples=100, seed=None):
                     params["family"][param_name] = np.random.choice(param_config["random_range"])
                 elif param_config["type"] == "range":
                     min_val, max_val = param_config["random_range"]
-                    range_size = np.random.uniform(0.05, 0.2)  # Random range size
-                    start_val = np.random.uniform(min_val, max_val - range_size)
-                    end_val = start_val + range_size
-                    params["family"][param_name] = (start_val, end_val)
-
-        # Handle paired parameters
-        for param_name, param_config in ALL_VARIABLE_PARAMS.items():
-            if "paired_with" in param_config:
-                paired_param = param_config["paired_with"]
-
-                if param_name == "min_n_nodes" and param_name in params["family"]:
-                    # Ensure max > min
-                    params["family"][paired_param] = params["family"][param_name] + np.random.uniform(50, 200)
-                elif param_name == "min_communities" and param_name in params["family"]:
-                    # Ensure max > min
-                    params["family"][paired_param] = min(
-                        params["family"][param_name] + np.random.randint(1, 4), UNIVERSE_K
-                    )
+                    # For range parameters, generate a random range within the bounds
+                    if param_name == "n_nodes_range":
+                        # Generate reasonable node count ranges
+                        range_size = np.random.uniform(50, 400)  # Range size between min and max nodes
+                        start_val = np.random.uniform(min_val, max_val - range_size)
+                        end_val = start_val + range_size
+                        params["family"][param_name] = (int(start_val), int(end_val))
+                    elif param_name == "n_communities_range":
+                        # Generate reasonable community ranges
+                        range_size = np.random.randint(2, 6)  # Range size between min and max communities
+                        start_val = np.random.randint(min_val, max(min_val + 1, max_val - range_size))
+                        end_val = min(start_val + range_size, UNIVERSE_K)
+                        params["family"][param_name] = (int(start_val), int(end_val))
+                    else:
+                        # For other ranges, use proportional range size
+                        range_width = max_val - min_val
+                        range_size = np.random.uniform(0.05 * range_width, 0.3 * range_width)
+                        start_val = np.random.uniform(min_val, max_val - range_size)
+                        end_val = start_val + range_size
+                        params["family"][param_name] = (start_val, end_val)
 
 
         all_samples.append(params)
@@ -321,10 +307,8 @@ def run_random_baseline_analysis(
                 family_params = sample_params["family"]
                 generator = GraphFamilyGenerator(
                     universe=universe,
-                    min_n_nodes=family_params["min_n_nodes"],
-                    max_n_nodes=family_params["max_n_nodes"],
-                    min_communities=family_params["min_communities"],
-                    max_communities=family_params["max_communities"],
+                    n_nodes_range=family_params["n_nodes_range"],
+                    n_communities_range=family_params["n_communities_range"],
                     homophily_range=family_params["homophily_range"],
                     avg_degree_range=family_params["avg_degree_range"],
                     degree_separation_range=family_params["degree_separation_range"],
