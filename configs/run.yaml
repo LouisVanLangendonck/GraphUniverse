@@ -22,8 +22,8 @@ family_parameters:
 task: community_detection
 universe_parameters:
   K: 10
-  center_variance: 1.0
-  cluster_variance: 0.3
+  center_variance: 0.3
+  cluster_variance: 0.6
   edge_propensity_variance: 0.5
   feature_dim: 16
   seed: 42

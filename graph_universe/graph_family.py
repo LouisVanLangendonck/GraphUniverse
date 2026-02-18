@@ -8,8 +8,8 @@ import torch_geometric.data as pyg
 from scipy.stats import pearsonr, spearmanr
 from tqdm import tqdm
 
-from graph_universe.graph_sample import GraphSample
-from graph_universe.graph_universe import GraphUniverse
+from .graph_sample import GraphSample
+from .graph_universe import GraphUniverse
 
 
 class GraphFamilyGenerator:

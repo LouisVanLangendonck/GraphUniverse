@@ -33,7 +33,7 @@ print("-" * 40)
 
 # Create universe
 print("Creating GraphUniverse...")
-universe = GraphUniverse(K=8, edge_propensity_variance=0.3, feature_dim=10)
+universe = GraphUniverse(K=8, edge_propensity_variance=0.3, feature_dim=10, center_variance=0.2, cluster_variance=0.5)
 
 # Generate family
 print("Creating GraphFamilyGenerator...")
@@ -42,9 +42,9 @@ family = GraphFamilyGenerator(
     n_nodes_range=(35, 50),
     n_communities_range=(2, 6),
     homophily_range=(0.2, 0.8),
-    avg_degree_range=(2.0, 10.0),
+    avg_degree_range=(2.0, 5.0),
     power_law_exponent_range=(2.0, 5.0),
-    degree_separation_range=(0.1, 0.7),
+    degree_separation_range=(0.5, 0.7),
     seed=42,
 )
 
@@ -87,8 +87,8 @@ experiment_config = {
         "K": 10,
         "edge_propensity_variance": 0.5,
         "feature_dim": 16,
-        "center_variance": 1.0,
-        "cluster_variance": 0.3,
+        "center_variance": 0.3,
+        "cluster_variance": 0.6,
         "seed": 42
     },
     "family_parameters": {

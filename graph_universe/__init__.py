@@ -2,13 +2,13 @@
 GraphUniverse: Multi-graph Generation package.
 """
 
-from graph_universe.cli import launch_ui
-from graph_universe.dataset import GraphUniverseDataset
-from graph_universe.feature_generator import FeatureGenerator
-from graph_universe.graph_family import GraphFamilyGenerator
-from graph_universe.graph_sample import GraphSample
-from graph_universe.graph_universe import GraphUniverse
-from graph_universe.viz_utils import plot_graph_communities
+from .cli import launch_ui
+from .dataset import GraphUniverseDataset
+from .feature_generator import FeatureGenerator
+from .graph_family import GraphFamilyGenerator
+from .graph_sample import GraphSample
+from .graph_universe import GraphUniverse
+from .viz_utils import plot_graph_communities
 
 __all__ = [
     "FeatureGenerator",
