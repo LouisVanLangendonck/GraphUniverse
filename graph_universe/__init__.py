@@ -20,4 +20,4 @@ __all__ = [
     "plot_graph_communities",
 ]
 
-__version__ = "0.1.1"
+__version__ = "0.1.2"
