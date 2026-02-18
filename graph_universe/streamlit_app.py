@@ -970,20 +970,22 @@ def main():
                 "This visualization shows how well the generated graphs match the target property ranges:"
             )
 
-            # Display property validation plot
-            with st.spinner("Generating property validation plot..."):
-                try:
-                    # Check if we have cached the validation plot
-                    if "validation_plot" not in st.session_state:
-                        validation_fig = plot_property_validation(family_generator)
-                        st.session_state.validation_plot = validation_fig
-                    else:
-                        validation_fig = st.session_state.validation_plot
+            # Only show validation plot when Properties tab is active (or no tab selected yet)
+            if st.session_state.get("show_properties", True):
+                # Display property validation plot
+                with st.spinner("Generating property validation plot..."):
+                    try:
+                        # Check if we have cached the validation plot
+                        if "validation_plot" not in st.session_state:
+                            validation_fig = plot_property_validation(family_generator)
+                            st.session_state.validation_plot = validation_fig
+                        else:
+                            validation_fig = st.session_state.validation_plot
 
-                    st.pyplot(validation_fig)
-                    plt.close(validation_fig)
-                except Exception as e:
-                    st.error(f"Error generating property validation plot: {e!s}")
+                        st.pyplot(validation_fig)
+                        # DON'T close here - we're caching it
+                    except Exception as e:
+                        st.error(f"Error generating property validation plot: {e!s}")
 
             st.markdown("---")
             st.markdown("#### Detailed Analysis")
@@ -1019,12 +1021,20 @@ def main():
                 st.session_state.show_consistency = True
                 st.session_state.show_properties = False
                 st.session_state.show_signals = False
+                # Close and clear validation plot to prevent threading issues
+                if "validation_plot" in st.session_state:
+                    plt.close(st.session_state.validation_plot)  # Close BEFORE deleting
+                    del st.session_state.validation_plot
                 st.rerun()
 
             if analyze_signals:
                 st.session_state.show_signals = True
                 st.session_state.show_properties = False
                 st.session_state.show_consistency = False
+                # Close and clear validation plot to prevent threading issues
+                if "validation_plot" in st.session_state:
+                    plt.close(st.session_state.validation_plot)  # Close BEFORE deleting
+                    del st.session_state.validation_plot
                 st.rerun()
 
             # Initialize session state variables if they don't exist
