@@ -964,15 +964,33 @@ def main():
             graphs = st.session_state.graphs
             family_generator = st.session_state.family_generator
 
-            # Initialize session state variables if they don't exist
-            if "show_properties" not in st.session_state:
-                st.session_state.show_properties = True
-            if "show_consistency" not in st.session_state:
-                st.session_state.show_consistency = False
-            if "show_signals" not in st.session_state:
-                st.session_state.show_signals = False
+            # Property Validation Visualization
+            st.markdown("#### Property Target vs. Actual Ranges")
+            st.markdown(
+                "This visualization shows how well the generated graphs match the target property ranges:"
+            )
 
-            # Create three buttons for different analysis types FIRST
+            # Only show validation plot when Properties tab is active (or no tab selected yet)
+            if st.session_state.get("show_properties", True):
+                # Display property validation plot
+                with st.spinner("Generating property validation plot..."):
+                    try:
+                        # Check if we have cached the validation plot
+                        if "validation_plot" not in st.session_state:
+                            validation_fig = plot_property_validation(family_generator)
+                            st.session_state.validation_plot = validation_fig
+                        else:
+                            validation_fig = st.session_state.validation_plot
+
+                        st.pyplot(validation_fig)
+                        # DON'T close here - we're caching it
+                    except Exception as e:
+                        st.error(f"Error generating property validation plot: {e!s}")
+
+            st.markdown("---")
+            st.markdown("#### Detailed Analysis")
+
+            # Create three buttons for different analysis types
             col_btn1, col_btn2, col_btn3 = st.columns(3)
 
             with col_btn1:
@@ -992,7 +1010,7 @@ def main():
                     "Signal Properties", use_container_width=True, key="analyze_signals_btn"
                 )
 
-            # Handle button clicks BEFORE rendering anything
+            # Store button states in session state if clicked
             if analyze_properties:
                 st.session_state.show_properties = True
                 st.session_state.show_consistency = False
@@ -1003,8 +1021,9 @@ def main():
                 st.session_state.show_consistency = True
                 st.session_state.show_properties = False
                 st.session_state.show_signals = False
+                # Close and clear validation plot to prevent threading issues
                 if "validation_plot" in st.session_state:
-                    plt.close(st.session_state.validation_plot)
+                    plt.close(st.session_state.validation_plot)  # Close BEFORE deleting
                     del st.session_state.validation_plot
                 st.rerun()
 
@@ -1012,32 +1031,25 @@ def main():
                 st.session_state.show_signals = True
                 st.session_state.show_properties = False
                 st.session_state.show_consistency = False
+                # Close and clear validation plot to prevent threading issues
                 if "validation_plot" in st.session_state:
-                    plt.close(st.session_state.validation_plot)
+                    plt.close(st.session_state.validation_plot)  # Close BEFORE deleting
                     del st.session_state.validation_plot
                 st.rerun()
 
-            # NOW render the validation plot based on current state
-            if st.session_state.show_properties:
-                st.markdown("#### Property Target vs. Actual Ranges")
-                st.markdown(
-                    "This visualization shows how well the generated graphs match the target property ranges:"
-                )
-                
-                with st.spinner("Generating property validation plot..."):
-                    try:
-                        if "validation_plot" not in st.session_state:
-                            validation_fig = plot_property_validation(family_generator)
-                            st.session_state.validation_plot = validation_fig
-                        else:
-                            validation_fig = st.session_state.validation_plot
+            # Initialize session state variables if they don't exist
+            if "show_properties" not in st.session_state:
+                st.session_state.show_properties = True
+            if "show_consistency" not in st.session_state:
+                st.session_state.show_consistency = False
+            if "show_signals" not in st.session_state:
+                st.session_state.show_signals = False
 
-                        st.pyplot(validation_fig)
-                    except Exception as e:
-                        st.error(f"Error generating property validation plot: {e!s}")
-
-            st.markdown("---")
-            st.markdown("#### Detailed Analysis")
+            # Add a cancel button to stop analysis
+            if st.session_state.show_signals and st.button("Cancel Signal Analysis", type="secondary"):
+                del st.session_state.show_signals
+                st.session_state.show_properties = True
+                st.rerun()
 
             # Show analysis based on selection
             try:
